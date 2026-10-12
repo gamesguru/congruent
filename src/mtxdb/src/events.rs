@@ -1,13 +1,14 @@
 //! Domain adapter for Matrix event bodies and DAG edge records.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use mtxdb::ShardType;
+use rezzy::bitmap::Bitmap;
 
 use crate::{
 	StorageError,
 	keys::{
-		event_locator_collection_id, event_record_id, room_auth_collection_id,
+		derive_id, event_locator_collection_id, event_record_id, room_auth_collection_id,
 		room_event_collection_id, room_prev_collection_id,
 	},
 	store::{CollectionId, MtxdbStore, MtxdbTransaction, NodeId},
@@ -120,29 +121,187 @@ impl EventAdapter {
 	}
 
 	/// The full auth chain of `event_id`: every event reachable through auth
-	/// edges, excluding `event_id` itself, each exactly once.
+	/// edges, excluding `event_id` itself, each exactly once. Order is
+	/// unspecified.
 	///
-	/// Walks the room's AUTH edges inside mtxdb, so a caller gets the closure
-	/// without reading events or consulting any other store. Order is
-	/// breadth-first from the event and is not a topological order.
+	/// Served from the persisted closure bitmap when one exists, which is one
+	/// read plus one batched id lookup. Falls back to
+	/// [`Self::walk_auth_chain`] when the event, or any ancestor it was written
+	/// before, has no closure yet.
 	pub fn get_auth_chain(
 		&self,
 		room_id: &[u8],
 		event_id: &[u8],
 	) -> Result<Vec<Vec<u8>>, StorageError> {
+		if let Some(chain) = self.persisted_auth_chain(room_id, event_id)? {
+			return Ok(chain);
+		}
+		self.walk_auth_chain(room_id, event_id)
+	}
+
+	/// The auth chain recomputed from the direct auth edges, one batched read
+	/// per level of the walk. This is the reference the persisted closure must
+	/// agree with.
+	pub fn walk_auth_chain(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+	) -> Result<Vec<Vec<u8>>, StorageError> {
+		let collection = Self::auth_collection(room_id);
+		// Keyed by the full event id: a 128-bit record id could in principle
+		// collide and silently drop an ancestor.
 		let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
 		seen.insert(event_id.to_vec());
 		let mut chain = Vec::new();
 		let mut frontier = vec![event_id.to_vec()];
-		while let Some(current) = frontier.pop() {
-			for auth in self.get_auth_events(room_id, &current)? {
-				if seen.insert(auth.clone()) {
-					chain.push(auth.clone());
-					frontier.push(auth);
+		while !frontier.is_empty() {
+			let nodes: Vec<NodeId> = frontier.iter().map(|id| event_record_id(id)).collect();
+			let values = self.store.get_many(ShardType::Edges, &collection, &nodes)?;
+			let mut next = Vec::new();
+			for bytes in values.into_iter().flatten() {
+				for auth in Self::deserialize_edges(&bytes)? {
+					if seen.insert(auth.clone()) {
+						chain.push(auth.clone());
+						next.push(auth);
+					}
 				}
 			}
+			frontier = next;
 		}
 		Ok(chain)
+	}
+
+	/// The persisted closure for `event_id`, or `None` if it was never written.
+	pub fn persisted_auth_chain(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+	) -> Result<Option<Vec<Vec<u8>>>, StorageError> {
+		let collection = Self::auth_collection(room_id);
+		let Some(Some(short)) = self
+			.committed_short_ids(&collection, &[event_id])?
+			.first()
+			.copied()
+		else {
+			return Ok(None);
+		};
+		let Some(bytes) = self
+			.store
+			.get(ShardType::Edges, &collection, closure_node(short))?
+		else {
+			return Ok(None);
+		};
+		let closure = Bitmap::decode(&bytes)
+			.map_err(|e| StorageError::Corrupt(format!("auth closure bitmap: {e}")))?;
+		let shorts: Vec<u32> = closure.iter().collect();
+		let nodes: Vec<NodeId> = shorts.iter().map(|short| reverse_node(*short)).collect();
+		let ids = self.store.get_many(ShardType::Edges, &collection, &nodes)?;
+		ids.into_iter()
+			.map(|id| {
+				id.ok_or_else(|| {
+					StorageError::Corrupt("auth closure short id has no event".to_owned())
+				})
+			})
+			.collect::<Result<Vec<_>, _>>()
+			.map(Some)
+	}
+
+	/// Committed short ids for events in a room's auth collection. A forward
+	/// record stores its event id, so a 128-bit key collision reads as a miss.
+	fn committed_short_ids(
+		&self,
+		collection: &CollectionId,
+		event_ids: &[&[u8]],
+	) -> Result<Vec<Option<u32>>, StorageError> {
+		let nodes: Vec<NodeId> = event_ids.iter().map(|id| forward_node(id)).collect();
+		let values = self.store.get_many(ShardType::Edges, collection, &nodes)?;
+		event_ids
+			.iter()
+			.zip(values)
+			.map(|(event_id, value)| {
+				value.map_or(Ok(None), |bytes| {
+					let (short, stored) = decode_forward(&bytes)?;
+					Ok((stored == *event_id).then_some(short))
+				})
+			})
+			.collect()
+	}
+
+	/// Stage the event's closure: short ids for it and its auth events, plus the
+	/// union of the auth events' closures.
+	///
+	/// The closure is written only when every auth event already has one, since
+	/// a missing ancestor would make it silently incomplete; readers fall back
+	/// to the walk. Allocating short ids advances a per-room counter, so the
+	/// commit is made conditional on the collection being unchanged and
+	/// concurrent writers to one room fail with [`StorageError::StaleRead`].
+	fn stage_closure(
+		&self,
+		tx: &MtxdbTransaction<'_>,
+		room_id: &[u8],
+		event_id: &[u8],
+		auth_events: &[&[u8]],
+	) -> Result<(), StorageError> {
+		let collection = Self::auth_collection(room_id);
+		let version = self
+			.store
+			.collection_version(ShardType::Edges, &collection)?;
+		let start = self
+			.store
+			.get(ShardType::Edges, &collection, counter_node())?
+			.map_or(Ok(0), |bytes| decode_u32(&bytes))?;
+		let mut next = start;
+
+		let mut ids: Vec<&[u8]> = vec![event_id];
+		ids.extend_from_slice(auth_events);
+		let committed = self.committed_short_ids(&collection, &ids)?;
+		let mut staged: HashMap<Vec<u8>, u32> = HashMap::new();
+		let mut shorts = Vec::with_capacity(ids.len());
+		for (id, found) in ids.iter().zip(committed) {
+			if let Some(short) = found.or_else(|| staged.get(*id).copied()) {
+				shorts.push(short);
+				continue;
+			}
+			next = next
+				.checked_add(1)
+				.ok_or_else(|| StorageError::Corrupt("room short ids exhausted".to_owned()))?;
+			staged.insert(id.to_vec(), next);
+			tx.put(ShardType::Edges, collection, forward_node(id), &encode_forward(next, id)?)?;
+			tx.put(ShardType::Edges, collection, reverse_node(next), id)?;
+			shorts.push(next);
+		}
+
+		let Some((&own_short, auth_shorts)) = shorts.split_first() else {
+			return Err(StorageError::Corrupt("no short id for event".to_owned()));
+		};
+		let nodes: Vec<NodeId> = auth_shorts
+			.iter()
+			.map(|short| closure_node(*short))
+			.collect();
+		let closures = self.store.get_many(ShardType::Edges, &collection, &nodes)?;
+		let mut closure = Bitmap::new();
+		let mut complete = true;
+		for (short, stored) in auth_shorts.iter().zip(closures) {
+			closure.insert(*short);
+			match stored {
+				| Some(bytes) => {
+					closure |= &Bitmap::decode(&bytes).map_err(|e| {
+						StorageError::Corrupt(format!("auth closure bitmap: {e}"))
+					})?;
+				},
+				| None => complete = false,
+			}
+		}
+		if complete {
+			// An encoded bitmap is never empty (it carries a header), so a
+			// leaf event's empty closure is not mistaken for a removed record.
+			tx.put(ShardType::Edges, collection, closure_node(own_short), &closure.encode())?;
+		}
+		if next != start {
+			tx.put(ShardType::Edges, collection, counter_node(), &next.to_be_bytes())?;
+			tx.expect_collection_version(ShardType::Edges, collection, version)?;
+		}
+		Ok(())
 	}
 
 	fn get_edges(
@@ -187,6 +346,7 @@ impl EventAdapter {
 		let auth = Self::serialize_edges(auth_events)?;
 		tx.put(ShardType::Edges, Self::prev_collection(room_id), node, &prev)?;
 		tx.put(ShardType::Edges, Self::auth_collection(room_id), node, &auth)?;
+		self.stage_closure(tx, room_id, event_id, auth_events)?;
 		Ok(())
 	}
 
@@ -199,9 +359,25 @@ impl EventAdapter {
 		prev_events: &[&[u8]],
 		auth_events: &[&[u8]],
 	) -> Result<(), StorageError> {
-		let tx = self.store.begin_transaction();
-		self.put_event_with_edges(&tx, room_id, event_id, event_body, prev_events, auth_events)?;
-		tx.commit()
+		// Short-id allocation makes the commit conditional on the room's auth
+		// collection being unchanged; a concurrent writer fails it and the
+		// whole write is redone against the new version.
+		let mut attempts = 0_u8;
+		loop {
+			let tx = self.store.begin_transaction();
+			self.put_event_with_edges(
+				&tx,
+				room_id,
+				event_id,
+				event_body,
+				prev_events,
+				auth_events,
+			)?;
+			match tx.commit() {
+				| Err(StorageError::StaleRead { .. }) if attempts < 3 => attempts += 1,
+				| result => return result,
+			}
+		}
 	}
 
 	fn serialize_edges(edges: &[&[u8]]) -> Result<Vec<u8>, StorageError> {
@@ -258,6 +434,37 @@ impl EventAdapter {
 		}
 		Ok(edges)
 	}
+}
+
+fn counter_node() -> NodeId { derive_id(b"authchain:counter", b"") }
+
+fn forward_node(event_id: &[u8]) -> NodeId { derive_id(b"authchain:fwd", event_id) }
+
+fn reverse_node(short: u32) -> NodeId { derive_id(b"authchain:rev", &short.to_be_bytes()) }
+
+fn closure_node(short: u32) -> NodeId { derive_id(b"authchain:closure", &short.to_be_bytes()) }
+
+fn decode_u32(bytes: &[u8]) -> Result<u32, StorageError> {
+	bytes
+		.try_into()
+		.map(u32::from_be_bytes)
+		.map_err(|_| StorageError::Corrupt("malformed auth counter".to_owned()))
+}
+
+/// `[u32 BE short id][event id]`: the event id lets a reader reject a record
+/// that merely shares the 128-bit key.
+fn encode_forward(short: u32, event_id: &[u8]) -> Result<Vec<u8>, StorageError> {
+	let mut out = Vec::with_capacity(event_id.len().saturating_add(4));
+	out.extend_from_slice(&short.to_be_bytes());
+	out.extend_from_slice(event_id);
+	Ok(out)
+}
+
+fn decode_forward(bytes: &[u8]) -> Result<(u32, &[u8]), StorageError> {
+	let (short, event) = bytes
+		.split_at_checked(4)
+		.ok_or_else(|| StorageError::Corrupt("malformed auth short-id record".to_owned()))?;
+	Ok((decode_u32(short)?, event))
 }
 
 #[cfg(test)]
@@ -568,9 +775,15 @@ mod room_tests {
 		// directly, so create is reachable by two paths.
 		let (create, power, join, message) =
 			(&b"$create"[..], &b"$power"[..], &b"$join"[..], &b"$message"[..]);
-		adapter.write_event_with_edges(room, create, b"c", &[], &[]).unwrap();
-		adapter.write_event_with_edges(room, power, b"p", &[], &[create]).unwrap();
-		adapter.write_event_with_edges(room, join, b"j", &[], &[create, power]).unwrap();
+		adapter
+			.write_event_with_edges(room, create, b"c", &[], &[])
+			.unwrap();
+		adapter
+			.write_event_with_edges(room, power, b"p", &[], &[create])
+			.unwrap();
+		adapter
+			.write_event_with_edges(room, join, b"j", &[], &[create, power])
+			.unwrap();
 		adapter
 			.write_event_with_edges(room, message, b"m", &[], &[join, create])
 			.unwrap();
@@ -579,7 +792,114 @@ mod room_tests {
 		chain.sort();
 		assert_eq!(chain, vec![create.to_vec(), join.to_vec(), power.to_vec()]);
 		assert!(adapter.get_auth_chain(room, create).unwrap().is_empty());
-		assert!(adapter.get_auth_chain(room, b"$unknown").unwrap().is_empty());
+		assert!(
+			adapter
+				.get_auth_chain(room, b"$unknown")
+				.unwrap()
+				.is_empty()
+		);
+
+		drop(adapter);
+		let _ = fs::remove_dir_all(path);
+	}
+	#[test]
+	fn persisted_closure_matches_the_walk() {
+		let path = test_path("closure-persisted");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = EventAdapter::new(store);
+
+		let (create, power, join, message) =
+			(&b"$create"[..], &b"$power"[..], &b"$join"[..], &b"$message"[..]);
+		adapter
+			.write_event_with_edges(room, create, b"c", &[], &[])
+			.unwrap();
+		adapter
+			.write_event_with_edges(room, power, b"p", &[], &[create])
+			.unwrap();
+		adapter
+			.write_event_with_edges(room, join, b"j", &[], &[create, power])
+			.unwrap();
+		adapter
+			.write_event_with_edges(room, message, b"m", &[], &[join, create])
+			.unwrap();
+
+		for event in [create, power, join, message] {
+			let mut persisted = adapter
+				.persisted_auth_chain(room, event)
+				.unwrap()
+				.expect("closure persisted for every event written in order");
+			let mut walked = adapter.walk_auth_chain(room, event).unwrap();
+			persisted.sort();
+			walked.sort();
+			assert_eq!(persisted, walked);
+		}
+		// A leaf's closure is empty but still present.
+		assert_eq!(adapter.persisted_auth_chain(room, create).unwrap(), Some(Vec::new()));
+
+		// Rewriting an event reuses its short id and leaves the closure intact.
+		adapter
+			.write_event_with_edges(room, message, b"m", &[], &[join, create])
+			.unwrap();
+		let mut again = adapter.get_auth_chain(room, message).unwrap();
+		again.sort();
+		assert_eq!(again, vec![create.to_vec(), join.to_vec(), power.to_vec()]);
+
+		drop(adapter);
+		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn out_of_order_write_has_no_closure_and_falls_back_to_the_walk() {
+		let path = test_path("closure-out-of-order");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = EventAdapter::new(store);
+
+		// `child` arrives before its auth event `parent` is written.
+		adapter
+			.write_event_with_edges(room, b"$child", b"c", &[], &[b"$parent"])
+			.unwrap();
+		assert_eq!(adapter.persisted_auth_chain(room, b"$child").unwrap(), None);
+		assert_eq!(adapter.get_auth_chain(room, b"$child").unwrap(), vec![b"$parent".to_vec()]);
+
+		adapter
+			.write_event_with_edges(room, b"$parent", b"p", &[], &[])
+			.unwrap();
+		assert_eq!(adapter.get_auth_chain(room, b"$child").unwrap(), vec![b"$parent".to_vec()]);
+		assert_eq!(adapter.persisted_auth_chain(room, b"$parent").unwrap(), Some(Vec::new()));
+
+		drop(adapter);
+		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn closures_are_scoped_per_room() {
+		let path = test_path("closure-rooms");
+		let _ = fs::remove_dir_all(&path);
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = EventAdapter::new(store);
+
+		adapter
+			.write_event_with_edges(b"!a:example.com", b"$a1", b"1", &[], &[])
+			.unwrap();
+		adapter
+			.write_event_with_edges(b"!a:example.com", b"$a2", b"2", &[], &[b"$a1"])
+			.unwrap();
+		adapter
+			.write_event_with_edges(b"!b:example.com", b"$b1", b"1", &[], &[])
+			.unwrap();
+		assert_eq!(adapter.get_auth_chain(b"!a:example.com", b"$a2").unwrap(), vec![
+			b"$a1".to_vec()
+		]);
+		assert!(
+			adapter
+				.get_auth_chain(b"!b:example.com", b"$a2")
+				.unwrap()
+				.is_empty()
+		);
 
 		drop(adapter);
 		let _ = fs::remove_dir_all(path);

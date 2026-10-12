@@ -415,7 +415,13 @@ mod tests {
 		// The state event writes its event root and the room root; the message
 		// writes only its event root.
 		assert_eq!(roots, vec![b"r1".to_vec(), b"r1".to_vec(), b"r2".to_vec()]);
-		assert!(adapter.room_roots(b"!empty:example.com").unwrap().roots.is_empty());
+		assert!(
+			adapter
+				.room_roots(b"!empty:example.com")
+				.unwrap()
+				.roots
+				.is_empty()
+		);
 
 		drop(adapter);
 		drop(store);
@@ -437,7 +443,9 @@ mod tests {
 			.unwrap();
 		// hash(9) is stored but no root references it, in this room and another.
 		adapter.put_node(room, &hash(9), b"orphan").unwrap();
-		adapter.put_node(other, &hash(9), b"other-room-copy").unwrap();
+		adapter
+			.put_node(other, &hash(9), b"other-room-copy")
+			.unwrap();
 
 		let roots = adapter.room_roots(room).unwrap();
 		let live = reachable(&roots);
@@ -450,7 +458,9 @@ mod tests {
 		assert_eq!(orphans, vec![hamt_node_id(&hash(9))]);
 
 		let tx = store.begin_transaction();
-		adapter.expect_roots_unchanged(&tx, room, roots.version).unwrap();
+		adapter
+			.expect_roots_unchanged(&tx, room, roots.version)
+			.unwrap();
 		adapter.remove_nodes(&tx, room, &orphans).unwrap();
 		tx.commit().unwrap();
 
@@ -478,9 +488,17 @@ mod tests {
 		let adapter = StateAdapter::new(store.clone());
 
 		adapter
-			.publish(room, b"$a:example.com", &[(hash(1), b"n1".to_vec())], &root_of(&[hash(1)]), true)
+			.publish(
+				room,
+				b"$a:example.com",
+				&[(hash(1), b"n1".to_vec())],
+				&root_of(&[hash(1)]),
+				true,
+			)
 			.unwrap();
-		adapter.put_node(room, &hash(9), b"soon-referenced").unwrap();
+		adapter
+			.put_node(room, &hash(9), b"soon-referenced")
+			.unwrap();
 
 		let roots = adapter.room_roots(room).unwrap();
 		let live = reachable(&roots);
@@ -493,7 +511,9 @@ mod tests {
 		assert_eq!(orphans, vec![hamt_node_id(&hash(9))]);
 
 		let sweep = store.begin_transaction();
-		adapter.expect_roots_unchanged(&sweep, room, roots.version).unwrap();
+		adapter
+			.expect_roots_unchanged(&sweep, room, roots.version)
+			.unwrap();
 		adapter.remove_nodes(&sweep, room, &orphans).unwrap();
 
 		// A publisher now references the node without writing it again, because

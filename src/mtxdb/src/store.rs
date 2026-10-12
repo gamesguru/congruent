@@ -148,7 +148,8 @@ impl MtxdbTransaction<'_> {
 		collection: CollectionId,
 		version: u64,
 	) -> Result<(), StorageError> {
-		self.tx.expect_collection_version(shard, collection, version)?;
+		self.tx
+			.expect_collection_version(shard, collection, version)?;
 		Ok(())
 	}
 
