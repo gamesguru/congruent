@@ -781,7 +781,7 @@ async fn join_room_by_id_helper_remote_process(
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive_deferred(room_id.as_bytes(), root_node);
+		.persist_node_recursive_deferred(room_id.as_bytes(), root_node)?;
 
 	// Sample the joining user's membership *before* the `/send_join` state root is
 	// installed. That state includes the joiner's own membership, so reading the

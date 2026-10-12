@@ -629,7 +629,7 @@ pub async fn state_map_to_root_handle(
 		.services
 		.state_hamt
 		.store
-		.persist_node_recursive_deferred(room_id.as_bytes(), root_node);
+		.persist_node_recursive_deferred(room_id.as_bytes(), root_node)?;
 
 	Ok((root_handle, nodes))
 }

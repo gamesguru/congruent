@@ -611,7 +611,7 @@ async fn knock_room_helper_remote(
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive_deferred(room_id.as_bytes(), root_node);
+		.persist_node_recursive_deferred(room_id.as_bytes(), root_node)?;
 
 	services
 		.rooms

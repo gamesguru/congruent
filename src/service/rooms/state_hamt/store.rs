@@ -23,6 +23,7 @@ use super::orphan_scan::{NodePrefix, OrphanReport, RoomInput, RoomOrphans, SkipR
 /// A node's structural hash and encoded bytes, held back so it is published to
 /// mtxdb in the same transaction as the roots that reference it.
 pub type PendingNode = (StructuralHash, Vec<u8>);
+type NodeCache = moka::sync::Cache<(Vec<u8>, StructuralHash), Arc<HamtNode<u64, u64>>>;
 
 /// Counters describing how much redundant node writing the content-addressed
 /// elision in [`Store`] avoided.
@@ -52,12 +53,11 @@ pub struct Store {
 	mtxdb: conduwuit_mtxdb::state::StateAdapter,
 
 	/// Content-addressed cache of parsed HamtNodes in memory.
-	/// Deduplicates subtrees across different room states automatically since
-	/// the key is purely the StructuralHash.
+	/// Room is part of the key because mtxdb scopes node records by room.
 	///
 	/// Note: `u64, u64` is currently a placeholder for `ShortStateKey` and
 	/// `ShortEventId` which are the actual domain types.
-	node_cache: moka::sync::Cache<StructuralHash, Arc<HamtNode<u64, u64>>>,
+	node_cache: NodeCache,
 
 	/// Redundant-write counters for the content-addressed elision below.
 	write_stats: WriteStats,
@@ -88,19 +88,16 @@ impl Store {
 
 	/// Returns true when `hash` is provably already stored in `room_id`.
 	///
-	/// Proof means a committed mtxdb record, never a cache hit. The node cache
-	/// also holds nodes staged for a publish that has not happened yet, so a
-	/// cached node may have no stored record, and may never acquire one if that
-	/// publish fails. Treating a cache hit as durability would let such a node be
-	/// skipped forever instead of being rewritten on the next materialization,
-	/// turning transient in-flight state into permanent loss for any root that
-	/// ends up referencing it.
+	/// Proof means a committed mtxdb record, never a cache hit. Deferred nodes
+	/// are not cached before publication, so an uncommitted node cannot be
+	/// mistaken for durable data.
 	///
 	/// The probe costs a point read and saves a write of bytes already there.
-	fn is_durable(&self, room_id: &[u8], hash: &StructuralHash) -> bool {
-		self.mtxdb
-			.get_nodes(room_id, &[*hash])
-			.is_ok_and(|nodes| nodes.into_iter().next().flatten().is_some())
+	fn is_durable(&self, room_id: &[u8], hash: &StructuralHash) -> Result<bool> {
+		let nodes = self.mtxdb.get_nodes(room_id, &[*hash]).map_err(|error| {
+			err!(Database(error!("Failed to check HAMT node durability in mtxdb: {error}")))
+		})?;
+		Ok(nodes.into_iter().next().flatten().is_some())
 	}
 
 	/// Resolves a node of `room_id`: from the memory cache, else from mtxdb,
@@ -111,14 +108,15 @@ impl Store {
 		structural_key: &[u8],
 		hash: &StructuralHash,
 	) -> Result<Arc<HamtNode<u64, u64>>> {
-		if let Some(node) = self.node_cache.get(hash) {
+		let cache_key = (room_id.to_vec(), *hash);
+		if let Some(node) = self.node_cache.get(&cache_key) {
 			return Ok(node);
 		}
 
 		let node = self
 			.read_node_verified(room_id, structural_key, hash)?
 			.ok_or_else(|| err!(Database(error!("State HAMT node not found in mtxdb."))))?;
-		self.node_cache.insert(*hash, node.clone());
+		self.node_cache.insert(cache_key, node.clone());
 		Ok(node)
 	}
 
@@ -198,8 +196,8 @@ impl Store {
 		Ok(node)
 	}
 
-	/// Stages a node for publication: caches it and returns its encoding, or
-	/// `None` when mtxdb already holds it.
+	/// Stages a node for publication, returning an empty vector when mtxdb
+	/// already holds it.
 	///
 	/// Content addressing makes this idempotent: a node reached here under an
 	/// already-stored hash is byte-identical to what mtxdb holds, so the write is
@@ -212,28 +210,26 @@ impl Store {
 		&self,
 		room_id: &[u8],
 		node: Arc<HamtNode<u64, u64>>,
-	) -> Option<PendingNode> {
+	) -> Result<Vec<PendingNode>> {
 		let hash = node.structural_hash;
-		if self.is_durable(room_id, &hash) {
+		if self.is_durable(room_id, &hash)? {
 			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
 			// Refresh the cache entry: the caller may hold a freshly parsed node
 			// that is worth keeping resident even though it needs no write.
-			self.node_cache.insert(hash, node);
-			return None;
+			self.node_cache.insert((room_id.to_vec(), hash), node);
+			return Ok(Vec::new());
 		}
 
 		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
 		let bytes = persisted.encode_v1();
 
-		self.node_cache.insert(hash, node);
 		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
-		Some((hash, bytes))
+		Ok(vec![(hash, bytes)])
 	}
 
 	/// Stores a node on its own, without a root.
 	pub fn put_node(&self, room_id: &[u8], node: Arc<HamtNode<u64, u64>>) -> Result<()> {
-		let pending: Vec<PendingNode> =
-			self.put_node_deferred(room_id, node).into_iter().collect();
+		let pending = self.put_node_deferred(room_id, node)?;
 		self.publish_nodes(room_id, &pending)
 	}
 
@@ -242,16 +238,16 @@ impl Store {
 		&self,
 		room_id: &[u8],
 		node: Arc<HamtNode<u64, u64>>,
-	) -> Vec<PendingNode> {
+	) -> Result<Vec<PendingNode>> {
 		let mut deferred = Vec::new();
 		for child in &node.children {
 			if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
 				deferred
-					.extend(self.persist_node_recursive_deferred(room_id, child_node.clone()));
+					.extend(self.persist_node_recursive_deferred(room_id, child_node.clone())?);
 			}
 		}
-		deferred.extend(self.put_node_deferred(room_id, node));
-		deferred
+		deferred.extend(self.put_node_deferred(room_id, node)?);
+		Ok(deferred)
 	}
 
 	/// Stores a node and all of its resolved children recursively, in one
@@ -261,28 +257,26 @@ impl Store {
 		room_id: &[u8],
 		node: Arc<HamtNode<u64, u64>>,
 	) -> Result<()> {
-		let pending = self.persist_node_recursive_deferred(room_id, node);
+		let pending = self.persist_node_recursive_deferred(room_id, node)?;
 		self.publish_nodes(room_id, &pending)
 	}
 
-	/// Stages an already-encoded node, populating the node cache like
-	/// [`Self::put_node_deferred`] so the node a caller just produced is visible
-	/// to readers before it is published.
+	/// Stages an already-encoded node. Returns an empty vector when mtxdb
+	/// already holds it.
 	pub fn put_encoded_node_deferred(
 		&self,
 		room_id: &[u8],
 		hash: StructuralHash,
 		bytes: &[u8],
-	) -> Result<Option<PendingNode>> {
-		if self.is_durable(room_id, &hash) {
+	) -> Result<Vec<PendingNode>> {
+		if self.is_durable(room_id, &hash)? {
 			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
-			return Ok(None);
+			return Ok(Vec::new());
 		}
 
-		let node = Self::decode_node(&hash, bytes)?;
-		self.node_cache.insert(hash, node);
+		let _node = Self::decode_node(&hash, bytes)?;
 		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
-		Ok(Some((hash, bytes.to_vec())))
+		Ok(vec![(hash, bytes.to_vec())])
 	}
 
 	/// Stores an already-encoded node on its own, without a root.
@@ -292,10 +286,7 @@ impl Store {
 		hash: StructuralHash,
 		bytes: &[u8],
 	) -> Result<()> {
-		let pending: Vec<PendingNode> = self
-			.put_encoded_node_deferred(room_id, hash, bytes)?
-			.into_iter()
-			.collect();
+		let pending = self.put_encoded_node_deferred(room_id, hash, bytes)?;
 		self.publish_nodes(room_id, &pending)
 	}
 

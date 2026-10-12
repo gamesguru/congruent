@@ -985,7 +985,7 @@ pub(super) async fn set_state_event(
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive_deferred(room_id.as_bytes(), root_node);
+		.persist_node_recursive_deferred(room_id.as_bytes(), root_node)?;
 
 	self.services
 		.rooms

@@ -230,9 +230,9 @@ where
 							warn!(
 								%error,
 								event_id = %pdu.event_id,
-								"state_res: failed to read stale rejection flag"
+								"state_res: failed to read rejection flag; treating event as unavailable"
 							);
-							false
+							return None;
 						},
 					};
 					if rejected && timeline.non_outlier_pdu_exists(&pdu.event_id).await {

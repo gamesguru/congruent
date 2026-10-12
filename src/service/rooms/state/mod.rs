@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Write, iter::once, sync::Arc};
 
 use async_trait::async_trait;
-use conduwuit::{RoomVersion, debug, matrix::StateKey};
+use conduwuit::{RoomVersion, debug, error, matrix::StateKey};
 use conduwuit_core::{
 	Event, PduEvent, Result, err, info,
 	state_res::StateMap,
@@ -534,13 +534,13 @@ impl Service {
 				}
 				let mut deferred_nodes = Vec::with_capacity(created.len());
 				for (hash, bytes) in created {
-					if let Some(node) = self.services.state_hamt.store.put_encoded_node_deferred(
-						room_id.as_bytes(),
-						hash,
-						&bytes,
-					)? {
-						deferred_nodes.push(node);
-					}
+					deferred_nodes.extend(
+						self.services.state_hamt.store.put_encoded_node_deferred(
+							room_id.as_bytes(),
+							hash,
+							&bytes,
+						)?,
+					);
 				}
 				let handle = self
 					.services
@@ -609,7 +609,7 @@ impl Service {
 			.services
 			.state_hamt
 			.store
-			.persist_node_recursive_deferred(room_id.as_bytes(), root_node.clone());
+			.persist_node_recursive_deferred(room_id.as_bytes(), root_node.clone())?;
 
 		Ok((root_handle, root_node, deferred_nodes))
 	}
@@ -645,13 +645,11 @@ impl Service {
 
 		let mut deferred_nodes = Vec::with_capacity(created.len());
 		for (hash, bytes) in created {
-			if let Some(node) = self.services.state_hamt.store.put_encoded_node_deferred(
+			deferred_nodes.extend(self.services.state_hamt.store.put_encoded_node_deferred(
 				room_id.as_bytes(),
 				hash,
 				&bytes,
-			)? {
-				deferred_nodes.push(node);
-			}
+			)?);
 		}
 
 		let handle = self
@@ -1075,12 +1073,15 @@ impl Service {
 				continue;
 			}
 
-			let Ok(metadata) = self.services.timeline.get_event_metadata(&event_id).await else {
-				debug!(
-				%room_id, %event_id,
-				"Refusing to persist forward extremity with unknown event metadata",
-				);
-				continue;
+			let metadata = match self.services.timeline.get_event_metadata(&event_id).await {
+				| Ok(metadata) => metadata,
+				| Err(error) => {
+					error!(
+						?error, %room_id, %event_id,
+						"Aborting forward-extremity update because event metadata is unreadable",
+					);
+					return;
+				},
 			};
 
 			// Only events actually accepted into the timeline may become citable
@@ -1090,18 +1091,30 @@ impl Service {
 			// (not `EventMetadata`), and a non-outlier event can carry such a
 			// marker (mirroring the checks `recalculate_extremities` performs).
 			// Admit it only if it is not an outlier, rejected, or soft-failed.
-			let admitted = !metadata.is_outlier
-				&& !self
-					.services
-					.pdu_metadata
-					.is_event_rejected(&event_id)
-					// An unreadable verdict is not admitted: fail closed.
-					.unwrap_or(true)
-				&& !self
-					.services
-					.pdu_metadata
-					.is_event_soft_failed(&event_id)
-					.unwrap_or(true);
+			let verdicts = self
+				.services
+				.pdu_metadata
+				.is_event_rejected(&event_id)
+				.and_then(|rejected| {
+					self.services
+						.pdu_metadata
+						.is_event_soft_failed(&event_id)
+						.map(|soft_failed| rejected || soft_failed)
+				});
+			let flagged = match verdicts {
+				| Ok(flagged) => flagged,
+				| Err(error) => {
+					// An unreadable verdict must not shrink the extremity set
+					// one tip at a time: keep the existing extremities.
+					error!(
+						%room_id, %event_id, %error,
+						"set_forward_extremities: could not read verdicts; leaving \
+						 existing forward extremities unchanged",
+					);
+					return;
+				},
+			};
+			let admitted = !metadata.is_outlier && !flagged;
 			if admitted {
 				eligible.push(event_id);
 			} else {
