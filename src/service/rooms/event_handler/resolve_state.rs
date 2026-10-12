@@ -66,7 +66,7 @@ pub async fn resolve_state(
 	room_id: &RoomId,
 	room_version_id: &RoomVersionId,
 	incomingstate: HashMap<u64, OwnedEventId>,
-) -> Result<rezzy::hamt::RootHandle> {
+) -> Result<(rezzy::hamt::RootHandle, Vec<crate::rooms::state_hamt::store::ShadowNode>)> {
 	trace!("Loading current room state ids");
 	let current_root_handle = self
 		.services

@@ -356,13 +356,25 @@ impl Store {
 	/// write is skipped. That matters because callers legitimately re-emit
 	/// unchanged nodes whenever they re-materialize a tree.
 	pub fn put_node(&self, room_id: &[u8], node: Arc<HamtNode<u64, u64>>) {
+		if let Some((hash, bytes)) = self.put_node_deferred(node) {
+			self.shadow_put_node(room_id, &hash, &bytes);
+		}
+	}
+
+	/// Persist a node to RocksDB without publishing it to the shadow store.
+	/// The returned bytes must be included with a root update in
+	/// [`Self::shadow_publish_roots`].
+	pub fn put_node_deferred(&self, node: Arc<HamtNode<u64, u64>>) -> Option<ShadowNode> {
 		let hash = node.structural_hash;
 		if self.is_durable(&hash) {
 			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
 			// Refresh the cache entry: the caller may hold a freshly parsed node
 			// that is worth keeping resident even though it needs no write.
 			self.node_cache.insert(hash, node);
-			return;
+			let persisted: PersistedInternalNode<u64, u64> =
+				self.node_cache.get(&hash)?.as_ref().into();
+			let bytes = persisted.encode_v1();
+			return Some((hash, bytes));
 		}
 
 		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
@@ -375,9 +387,7 @@ impl Store {
 		self.node_mtimes.insert(&hash, unix_millis().to_be_bytes());
 		self.node_cache.insert(hash, node);
 		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
-
-		// Shadow-write to mtxdb
-		self.shadow_put_node(room_id, &hash, &bytes);
+		Some((hash, bytes))
 	}
 
 	/// Persists a node to RocksDB in the provided WriteBatch and populates the
@@ -452,13 +462,31 @@ impl Store {
 		root_bytes: &[u8],
 		is_state_event: bool,
 	) {
+		let event_roots = [(event_id, root_bytes)];
+		self.shadow_publish_roots(
+			room_id,
+			nodes,
+			&event_roots,
+			is_state_event.then_some(root_bytes),
+		);
+	}
+
+	/// Shadow-publish nodes with one or more event roots and an optional current
+	/// room root in one mtxdb transaction.
+	pub fn shadow_publish_roots(
+		&self,
+		room_id: &[u8],
+		nodes: &[ShadowNode],
+		event_roots: &[(&[u8], &[u8])],
+		room_root: Option<&[u8]>,
+	) {
 		let nodes: Vec<([u8; 32], Vec<u8>)> = nodes
 			.iter()
 			.map(|(hash, bytes)| (*hash, bytes.clone()))
 			.collect();
 		match self
 			.mtxdb
-			.publish(room_id, event_id, &nodes, root_bytes, is_state_event)
+			.publish_roots(room_id, &nodes, event_roots, room_root)
 		{
 			| Ok(()) => {
 				let node_count = u64::try_from(nodes.len()).expect("node count fits in u64");
@@ -484,9 +512,22 @@ impl Store {
 		hash: StructuralHash,
 		bytes: &[u8],
 	) -> Result<()> {
+		if let Some((hash, bytes)) = self.put_encoded_node_deferred(hash, bytes)? {
+			self.shadow_put_node(room_id, &hash, &bytes);
+		}
+		Ok(())
+	}
+
+	/// Persist encoded node bytes to RocksDB and return them for atomic shadow
+	/// publication with their root.
+	pub fn put_encoded_node_deferred(
+		&self,
+		hash: StructuralHash,
+		bytes: &[u8],
+	) -> Result<Option<ShadowNode>> {
 		if self.is_durable(&hash) {
 			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
-			return Ok(());
+			return Ok(Some((hash, bytes.to_vec())));
 		}
 
 		let node = Self::decode_node(&hash, bytes)?;
@@ -495,9 +536,7 @@ impl Store {
 		self.node_mtimes.insert(&hash, unix_millis().to_be_bytes());
 		self.node_cache.insert(hash, node);
 		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
-		self.shadow_put_node(room_id, &hash, bytes);
-
-		Ok(())
+		Ok(Some((hash, bytes.to_vec())))
 	}
 
 	fn shadow_put_node(&self, room_id: &[u8], hash: &StructuralHash, bytes: &[u8]) {
@@ -519,6 +558,24 @@ impl Store {
 			}
 		}
 		self.put_node(room_id, node);
+	}
+
+	/// Persist a root and its resolved descendants to RocksDB while deferring
+	/// shadow writes until their root record is committed.
+	pub fn persist_node_recursive_deferred(
+		&self,
+		node: Arc<HamtNode<u64, u64>>,
+	) -> Vec<ShadowNode> {
+		let mut deferred = Vec::new();
+		for child in &node.children {
+			if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
+				deferred.extend(self.persist_node_recursive_deferred(child_node.clone()));
+			}
+		}
+		if let Some(persisted) = self.put_node_deferred(node) {
+			deferred.push(persisted);
+		}
+		deferred
 	}
 
 	/// Persists a node and all of its resolved children recursively into a

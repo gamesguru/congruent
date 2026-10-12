@@ -911,7 +911,7 @@ pub(crate) async fn force_set_state(
 	info!("Rejecting conflicting local state");
 	Box::pin(self.reject_conflicting_state(&room_id, &at_event_id, &remote_eids)).await;
 
-	let new_room_state = if absolute {
+	let (new_room_state, shadow_nodes) = if absolute {
 		info!("Resolving new room state (ABSOLUTE OVERRIDE)");
 		self.services
 			.rooms
@@ -959,10 +959,11 @@ pub(crate) async fn force_set_state(
 		info!("Forcing new room state (quiet mode)");
 	}
 
-	self.services
-		.rooms
-		.state
-		.set_room_state_hamt(room_id.as_ref(), &new_room_state, &state_lock);
+	self.services.rooms.state.set_room_state_hamt_with_nodes(
+		room_id.as_ref(),
+		&new_room_state,
+		&shadow_nodes,
+	);
 
 	// Update joined count from state snapshot
 	self.services
@@ -1001,7 +1002,12 @@ pub(crate) async fn force_set_state(
 		self.services
 			.rooms
 			.state
-			.set_event_roothandle(&room_id, tip_pdu.event_id(), &new_room_state)
+			.set_event_roothandle_with_nodes(
+				&room_id,
+				tip_pdu.event_id(),
+				&new_room_state,
+				&shadow_nodes,
+			)
 			.await?;
 		info!("Set tip {} as sole extremity", tip_pdu.event_id());
 	} else {

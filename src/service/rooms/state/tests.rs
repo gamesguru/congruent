@@ -491,7 +491,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 
 	let (written_before, elided_before) =
 		services.rooms.state_hamt.store.write_stats().snapshot();
-	let new_root = services
+	let (new_root, _deferred_nodes) = services
 		.rooms
 		.state
 		.persist_state_hamt_mutations(
@@ -534,7 +534,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 	// Re-applying the identical mutation produces an identical root and must not
 	// write anything: the content-addressed elision has nothing left to do.
 	let (rewritten_before, _) = services.rooms.state_hamt.store.write_stats().snapshot();
-	let repeat_root = services
+	let (repeat_root, _deferred_nodes) = services
 		.rooms
 		.state
 		.persist_state_hamt_mutations(

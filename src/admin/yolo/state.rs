@@ -901,7 +901,7 @@ pub(super) async fn set_state_event(
 		.pdu_metadata
 		.unmark_event_soft_failed(&event_id);
 
-	let state_lock = self.services.rooms.state.mutex.lock(&room_id).await;
+	let _state_lock = self.services.rooms.state.mutex.lock(&room_id).await;
 
 	// Current room state root (HAMT). The target event is overlaid onto the
 	// resolved state below and persisted via `set_event_state_with_root`.
@@ -981,24 +981,18 @@ pub(super) async fn set_state_event(
 	// `set_event_state` + `set_room_state` pair: the event is associated with
 	// the new snapshot, but the room's derived caches are not recomputed here
 	// (the membership cache is updated explicitly below for member events).
-	self.services.globals.with_cork_and_flush(|| {
-		self.services
-			.rooms
-			.state_hamt
-			.store
-			.persist_node_recursive(room_id.as_bytes(), root_node);
-	});
+	let shadow_nodes = self
+		.services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive_deferred(root_node);
 
 	self.services
 		.rooms
 		.state
-		.set_event_roothandle(&room_id, &event_id, &new_root)
+		.set_event_and_room_roothandles_with_nodes(&room_id, &event_id, &new_root, &shadow_nodes)
 		.await?;
-
-	self.services
-		.rooms
-		.state
-		.set_room_state_hamt(&room_id, &new_root, &state_lock);
 
 	// Rebuild membership cache if this is a member event
 	if event_type == StateEventType::RoomMember {

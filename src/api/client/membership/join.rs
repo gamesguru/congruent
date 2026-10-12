@@ -773,12 +773,11 @@ async fn join_room_by_id_helper_remote_process(
 	let (root_handle, root_node) =
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root for join: {e:?}")))?;
-
-	services
+	let shadow_nodes = services
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive(room_id.as_bytes(), root_node);
+		.persist_node_recursive_deferred(root_node);
 
 	// Sample the joining user's membership *before* the `/send_join` state root is
 	// installed. That state includes the joiner's own membership, so reading the
@@ -809,7 +808,7 @@ async fn join_room_by_id_helper_remote_process(
 	services
 		.rooms
 		.state
-		.set_room_state_hamt(room_id, &root_handle, &state_lock);
+		.set_room_state_hamt_with_nodes(room_id, &root_handle, &shadow_nodes);
 
 	// Promote auth chain + state outliers to the backfilled timeline.
 	// This makes the room's origin events (create, initial joins, power
@@ -888,16 +887,11 @@ async fn join_room_by_id_helper_remote_process(
 	// can indeed fail, in which case the local membership cache may be left in an
 	// inconsistent state (where the user appears joined in the cache but the join
 	// PDU is not persisted).
-	let (state_root_handle, state_node) = services
+	let (state_root_handle, _state_node, shadow_nodes) = services
 		.rooms
 		.state
 		.append_to_state(&parsed_join_pdu, room_id, &state_lock, None)
 		.await?;
-	services
-		.rooms
-		.state_hamt
-		.store
-		.persist_node_recursive(room_id.as_bytes(), state_node);
 
 	info!("Appending new room join event");
 	Box::pin(services.rooms.timeline.append_pdu(
@@ -909,6 +903,7 @@ async fn join_room_by_id_helper_remote_process(
 			state_lock: &state_lock,
 			room_id,
 			state_root_handle: Some(state_root_handle),
+			shadow_nodes,
 			prev_state_root_handle: previous_root_handle,
 			advance_current_state: false,
 			was_joined_before_state_install: Some((sender_user, was_joined_before_state_install)),

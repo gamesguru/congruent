@@ -135,7 +135,6 @@ struct Services {
 }
 
 struct Data {
-	mtxdb_state: conduwuit_mtxdb::state::StateAdapter,
 	roomid_pduleaves: Arc<Map>,
 	roomid_roothandle: Arc<Map>,
 	shorteventid_roothandle: Arc<Map>,
@@ -169,7 +168,6 @@ impl crate::Service for Service {
 				outlier: args.depend::<rooms::outlier::Service>("rooms::outlier"),
 			},
 			db: Data {
-				mtxdb_state: conduwuit_mtxdb::state::StateAdapter::new(args.mtxdb.clone()),
 				roomid_pduleaves: args.db["roomid_pduleaves"].clone(),
 				roomid_roothandle: args.db["roomid_roothandle"].clone(),
 				shorteventid_roothandle: args.db["shorteventid_roothandle"].clone(),
@@ -384,6 +382,7 @@ impl Service {
 			state_lock,
 			None,
 			previous_root.as_ref(),
+			&[],
 		))
 		.await
 	}
@@ -395,6 +394,7 @@ impl Service {
 		state_lock: &RoomMutexGuard,
 		state_root_handle: Option<&rezzy::hamt::RootHandle>,
 		prev_root_handle: Option<&rezzy::hamt::RootHandle>,
+		pre_persisted_nodes: &[rooms::state_hamt::store::ShadowNode],
 	) -> Result<rezzy::hamt::RootHandle> {
 		let shorteventid = self
 			.services
@@ -407,27 +407,20 @@ impl Service {
 		// already applied the event (and any state resolution) and persisted its
 		// nodes. Appending the event again would clobber a resolution winner, so
 		// only append when no post-event root was provided.
-		let (root_handle, new_node) = if is_state && state_root_handle.is_none() {
-			let (handle, node) = self
+		let (root_handle, mut deferred_nodes) = if is_state && state_root_handle.is_none() {
+			let (handle, _node, nodes) = self
 				.append_to_state(new_pdu, room_id, state_lock, None)
 				.await?;
-			(handle, Some(node))
+			(handle, nodes)
 		} else if let Some(root) = state_root_handle {
-			(root.clone(), None)
+			(root.clone(), Vec::new())
 		} else {
 			let root = self.get_room_state_hamt(room_id).await?;
-			(root, None)
+			(root, Vec::new())
 		};
 
 		let mut batch = conduwuit_database::Batch::new();
-
-		let mut shadow_nodes = Vec::new();
-		if let Some(node) = new_node {
-			self.services
-				.state_hamt
-				.store
-				.persist_node_recursive_batch_deferred(node, &mut batch, &mut shadow_nodes);
-		}
+		deferred_nodes.extend_from_slice(pre_persisted_nodes);
 
 		let serialized = root_handle_to_bytes(&root_handle);
 
@@ -452,7 +445,7 @@ impl Service {
 		self.services.state_hamt.store.shadow_publish(
 			room_id.as_bytes(),
 			new_pdu.event_id().as_bytes(),
-			&shadow_nodes,
+			&deferred_nodes,
 			&serialized,
 			is_state,
 		);
@@ -487,7 +480,11 @@ impl Service {
 		room_id: &RoomId,
 		_state_lock: &RoomMutexGuard,
 		state_root_handle: Option<&rezzy::hamt::RootHandle>,
-	) -> Result<(rezzy::hamt::RootHandle, Arc<rezzy::hamt::HamtNode<u64, u64>>)> {
+	) -> Result<(
+		rezzy::hamt::RootHandle,
+		Arc<rezzy::hamt::HamtNode<u64, u64>>,
+		Vec<rooms::state_hamt::store::ShadowNode>,
+	)> {
 		let Some(state_key) = new_pdu.state_key() else {
 			return Err(err!(Request(InvalidParam("append_to_state called on non-state event"))));
 		};
@@ -544,12 +541,16 @@ impl Service {
 				} else {
 					lattice.insert(event_type.as_ref(), state_key, new_pdu.event_id().as_str());
 				}
+				let mut deferred_nodes = Vec::with_capacity(created.len());
 				for (hash, bytes) in created {
-					self.services.state_hamt.store.put_encoded_node(
-						room_id.as_bytes(),
-						hash,
-						&bytes,
-					)?;
+					if let Some(node) = self
+						.services
+						.state_hamt
+						.store
+						.put_encoded_node_deferred(hash, &bytes)?
+					{
+						deferred_nodes.push(node);
+					}
 				}
 				let handle = self
 					.services
@@ -557,7 +558,7 @@ impl Service {
 					.store
 					.root_handle(new_node.structural_hash, &lattice);
 				self.persist_root_lattice(&handle, &lattice);
-				return Ok((handle, new_node));
+				return Ok((handle, new_node, deferred_nodes));
 			}
 		}
 
@@ -613,7 +614,13 @@ impl Service {
 				.map_err(|e| err!(error!("Failed to build HAMT in append_to_state: {e:?}")))?;
 		self.persist_root_lattice(&root_handle, &lattice);
 
-		Ok((root_handle, root_node))
+		let deferred_nodes = self
+			.services
+			.state_hamt
+			.store
+			.persist_node_recursive_deferred(root_node.clone());
+
+		Ok((root_handle, root_node, deferred_nodes))
 	}
 
 	/// Applies `mutations` on top of `prev` with copy-on-write path copying and
@@ -633,7 +640,7 @@ impl Service {
 		prev: &rezzy::hamt::RootHandle,
 		mutations: Vec<(ShortStateKey, Option<ShortEventId>)>,
 		lattice: &rezzy::incremental::LtHash,
-	) -> Result<rezzy::hamt::RootHandle> {
+	) -> Result<(rezzy::hamt::RootHandle, Vec<rooms::state_hamt::store::ShadowNode>)> {
 		let store = &self.services.state_hamt.store;
 		let old = store.get_node_verifying(
 			room_id.as_bytes(),
@@ -649,11 +656,16 @@ impl Service {
 			rezzy::hamt::persist_mutations(&old, structural_key, mutations, &mut resolver)
 				.map_err(|e| err!(error!("HAMT batch mutation failed: {e:?}")))?;
 
+		let mut deferred_nodes = Vec::with_capacity(created.len());
 		for (hash, bytes) in created {
-			self.services
+			if let Some(node) = self
+				.services
 				.state_hamt
 				.store
-				.put_encoded_node(room_id.as_bytes(), hash, &bytes)?;
+				.put_encoded_node_deferred(hash, &bytes)?
+			{
+				deferred_nodes.push(node);
+			}
 		}
 
 		let handle = self
@@ -663,7 +675,7 @@ impl Service {
 			.root_handle(new_node.structural_hash, lattice);
 		self.persist_root_lattice(&handle, lattice);
 
-		Ok(handle)
+		Ok((handle, deferred_nodes))
 	}
 
 	/// Persists the lattice for a root and populates the lattice cache.
@@ -786,13 +798,27 @@ impl Service {
 		// Take mutex guard to make sure users get the room state mutex
 		_mutex_lock: &RoomMutexGuard,
 	) {
+		self.set_room_state_hamt_with_nodes(room_id, root_handle, &[]);
+	}
+
+	/// Set the current room root and atomically shadow-publish any nodes created
+	/// while building it.
+	pub fn set_room_state_hamt_with_nodes(
+		&self,
+		room_id: &RoomId,
+		root_handle: &rezzy::hamt::RootHandle,
+		nodes: &[rooms::state_hamt::store::ShadowNode],
+	) {
 		let data = root_handle_to_bytes(root_handle);
 		self.db
 			.roomid_roothandle
 			.insert(room_id.as_str().as_bytes(), &data);
-		if let Err(error) = self.db.mtxdb_state.put_room_root(room_id.as_bytes(), &data) {
-			warn!(?error, %room_id, "Failed to shadow-write room HAMT root to mtxdb");
-		}
+		self.services.state_hamt.store.shadow_publish_roots(
+			room_id.as_bytes(),
+			nodes,
+			&[],
+			Some(&data),
+		);
 	}
 
 	/// Returns the room's current HAMT RootHandle.
@@ -863,6 +889,19 @@ impl Service {
 		event_id: &EventId,
 		root_handle: &rezzy::hamt::RootHandle,
 	) -> Result<()> {
+		self.set_event_roothandle_with_nodes(room_id, event_id, root_handle, &[])
+			.await
+	}
+
+	/// Record an event's root and atomically shadow-publish the nodes created
+	/// while building it.
+	pub async fn set_event_roothandle_with_nodes(
+		&self,
+		room_id: &RoomId,
+		event_id: &EventId,
+		root_handle: &rezzy::hamt::RootHandle,
+		nodes: &[rooms::state_hamt::store::ShadowNode],
+	) -> Result<()> {
 		let shorteventid = self
 			.services
 			.short
@@ -872,13 +911,44 @@ impl Service {
 		self.db
 			.shorteventid_roothandle
 			.insert(&shorteventid.to_be_bytes(), &data);
-		if let Err(error) =
-			self.db
-				.mtxdb_state
-				.put_event_root(room_id.as_bytes(), event_id.as_bytes(), &data)
-		{
-			warn!(?error, %event_id, "Failed to shadow-write event HAMT root to mtxdb");
-		}
+		self.services.state_hamt.store.shadow_publish_roots(
+			room_id.as_bytes(),
+			nodes,
+			&[(event_id.as_bytes(), data.as_slice())],
+			None,
+		);
+		Ok(())
+	}
+
+	/// Atomically publish one event root, the current room root, and their
+	/// deferred nodes to the shadow store.
+	pub async fn set_event_and_room_roothandles_with_nodes(
+		&self,
+		room_id: &RoomId,
+		event_id: &EventId,
+		root_handle: &rezzy::hamt::RootHandle,
+		nodes: &[rooms::state_hamt::store::ShadowNode],
+	) -> Result<()> {
+		let shorteventid = self
+			.services
+			.short
+			.get_or_create_shorteventid(event_id)
+			.await;
+		let data = root_handle_to_bytes(root_handle);
+		let mut batch = conduwuit_database::Batch::new();
+		self.db
+			.shorteventid_roothandle
+			.batch_put(&mut batch, &shorteventid.to_be_bytes(), &data);
+		self.db
+			.roomid_roothandle
+			.batch_put(&mut batch, room_id.as_bytes(), &data);
+		self.db.shorteventid_roothandle.apply_batch(batch);
+		self.services.state_hamt.store.shadow_publish_roots(
+			room_id.as_bytes(),
+			nodes,
+			&[(event_id.as_bytes(), data.as_slice())],
+			Some(&data),
+		);
 		Ok(())
 	}
 

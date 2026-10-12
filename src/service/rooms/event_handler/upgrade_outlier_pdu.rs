@@ -253,75 +253,72 @@ where
 		false
 	};
 
-	let (previous_root_handle, new_room_state) = if let Some(state_key) = incoming_pdu.state_key()
-	{
-		debug!("Event is a state-event. Deriving new room state");
+	let (previous_root_handle, new_room_state, shadow_nodes) =
+		if let Some(state_key) = incoming_pdu.state_key() {
+			debug!("Event is a state-event. Deriving new room state");
 
-		// We also add state after incoming event to the fork states.
-		let mut state_after = state_at_incoming_event.clone();
-		let shortstatekey = self
-			.services
-			.short
-			.get_or_create_shortstatekey(&incoming_pdu.kind().to_string().into(), state_key)
-			.await;
+			// We also add state after incoming event to the fork states.
+			let mut state_after = state_at_incoming_event.clone();
+			let shortstatekey = self
+				.services
+				.short
+				.get_or_create_shortstatekey(&incoming_pdu.kind().to_string().into(), state_key)
+				.await;
 
-		let event_id = incoming_pdu.event_id();
-		state_after.insert(shortstatekey, event_id.to_owned());
+			let event_id = incoming_pdu.event_id();
+			state_after.insert(shortstatekey, event_id.to_owned());
 
-		// `state_at_incoming_event` is, in the single-predecessor case,
-		// materialized from the predecessor's own root handle, so reuse that
-		// root instead of rebuilding and re-persisting an identical HAMT.
-		// Fall back to a full rebuild for fork/state-resolution inputs and for
-		// predecessors whose stored root predates their own state change.
-		let prev_root = Some(
-			match self
+			// `state_at_incoming_event` is, in the single-predecessor case,
+			// materialized from the predecessor's own root handle, so reuse that
+			// root instead of rebuilding and re-persisting an identical HAMT.
+			// Fall back to a full rebuild for fork/state-resolution inputs and for
+			// predecessors whose stored root predates their own state change.
+			let (prev_root, prev_nodes) = match self
 				.reusable_predecessor_root_handle(room_id, &incoming_pdu)
 				.await?
 			{
-				| Some(root) => root,
+				| Some(root) => (root, Vec::new()),
 				| None =>
 					self.state_map_to_root_handle(room_id, &state_at_incoming_event)
 						.await?,
-			},
-		);
-		let new_root = Some(
-			self.resolve_state(room_id, &room_version_id, state_after)
-				.await?,
-		);
+			};
+			let prev_root = Some(prev_root);
+			let (new_root, shadow_nodes) = self
+				.resolve_state(room_id, &room_version_id, state_after)
+				.await?;
 
-		(prev_root, new_root)
-	} else if is_timeline_event && (was_recovered || predecessors_were_recovered) {
-		let prev_root = self.services.state.get_room_state_hamt(room_id).await.ok();
-		let new_root = Some(
-			self.resolve_state(room_id, &room_version_id, state_at_incoming_event)
-				.await?,
-		);
+			let _ = prev_nodes; // The previous root is only used for cache diffing.
+			(prev_root, Some(new_root), shadow_nodes)
+		} else if is_timeline_event && (was_recovered || predecessors_were_recovered) {
+			let prev_root = self.services.state.get_room_state_hamt(room_id).await.ok();
+			let (new_root, shadow_nodes) = self
+				.resolve_state(room_id, &room_version_id, state_at_incoming_event)
+				.await?;
 
-		(prev_root, new_root)
-	} else if is_timeline_event {
-		// Non-state timeline events reuse the predecessor root for historical
-		// queries, but never advance the live room state.
-		let root = match self
-			.reusable_predecessor_root_handle(room_id, &incoming_pdu)
-			.await?
-		{
-			| Some(root) => root,
-			| None =>
-				self.state_map_to_root_handle(room_id, &state_at_incoming_event)
-					.await?,
+			(prev_root, Some(new_root), shadow_nodes)
+		} else if is_timeline_event {
+			// Non-state timeline events reuse the predecessor root for historical
+			// queries, but never advance the live room state.
+			let (root, root_nodes) = match self
+				.reusable_predecessor_root_handle(room_id, &incoming_pdu)
+				.await?
+			{
+				| Some(root) => (root, Vec::new()),
+				| None =>
+					self.state_map_to_root_handle(room_id, &state_at_incoming_event)
+						.await?,
+			};
+
+			(None, Some(root), root_nodes)
+		} else {
+			// Backfilled outliers only record their historical state root and do not
+			// alter current room state.
+			let (new_root, nodes) = self
+				.state_map_to_root_handle(room_id, &state_at_incoming_event)
+				.await?;
+
+			(None, Some(new_root), nodes)
 		};
-
-		(None, Some(root))
-	} else {
-		// Backfilled outliers only record their historical state root and do not
-		// alter current room state.
-		let new_root = Some(
-			self.state_map_to_root_handle(room_id, &state_at_incoming_event)
-				.await?,
-		);
-
-		(None, new_root)
-	};
 
 	info!(room_id = %room_id, "Applying the resolved state transition");
 	if !soft_fail {
@@ -388,6 +385,7 @@ where
 		state_lock: &state_lock,
 		room_id,
 		state_root_handle: new_room_state.clone(),
+		shadow_nodes,
 		prev_state_root_handle: previous_root_handle.clone(),
 		advance_current_state: is_timeline_event
 			&& (incoming_pdu.state_key().is_some()
@@ -583,7 +581,7 @@ pub async fn state_map_to_root_handle(
 	&self,
 	room_id: &RoomId,
 	short_state: &HashMap<u64, OwnedEventId>,
-) -> Result<rezzy::hamt::RootHandle> {
+) -> Result<(rezzy::hamt::RootHandle, Vec<crate::rooms::state_hamt::store::ShadowNode>)> {
 	let mut lattice = rezzy::incremental::LtHash::default();
 	let mut entries = Vec::with_capacity(short_state.len());
 	let mut short_state_keys = Vec::with_capacity(short_state.len());
@@ -629,12 +627,11 @@ pub async fn state_map_to_root_handle(
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
 
-	self.services.globals.with_cork_and_flush(|| {
-		self.services
-			.state_hamt
-			.store
-			.persist_node_recursive(room_id.as_bytes(), root_node);
-	});
+	let nodes = self
+		.services
+		.state_hamt
+		.store
+		.persist_node_recursive_deferred(root_node);
 
-	Ok(root_handle)
+	Ok((root_handle, nodes))
 }

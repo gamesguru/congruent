@@ -93,28 +93,21 @@ pub async fn build_and_append_pdu(
 	// time with the pdu without it's state. This is okay because append_pdu can't
 	// fail. Only state events mutate the room state; a non-state event must not be
 	// routed through append_to_state, which rejects non-state PDUs.
-	let (state_root_handle, state_node) = if pdu.state_key().is_some() {
+	let (state_root_handle, shadow_nodes) = if pdu.state_key().is_some() {
 		trace!("Appending {} state for room {room_id}", pdu.event_id());
 		self.services
 			.state
 			.append_to_state(&pdu, &room_id, state_lock, None)
 			.await
-			.map(|(handle, node)| (handle, Some(node)))?
+			.map(|(handle, _node, nodes)| (handle, nodes))?
 	} else {
 		// A non-state event does not change the room state, so reuse the current
 		// room root and do not persist any new HAMT node.
 		let root = previous_root_handle
 			.clone()
 			.ok_or_else(|| err!(Request(NotFound("Room has no state to append"))))?;
-		(root, None)
+		(root, Vec::new())
 	};
-
-	if let Some(node) = &state_node {
-		self.services
-			.state_hamt
-			.store
-			.persist_node_recursive(room_id.as_bytes(), node.clone());
-	}
 
 	trace!("Generating raw ID for PDU {}", pdu.event_id());
 	let pdu_id = self
@@ -129,6 +122,7 @@ pub async fn build_and_append_pdu(
 				state_lock,
 				room_id: &room_id,
 				state_root_handle: Some(state_root_handle.clone()),
+				shadow_nodes,
 				prev_state_root_handle: previous_root_handle,
 				advance_current_state: false,
 				was_joined_before_state_install: None,

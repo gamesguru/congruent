@@ -199,14 +199,53 @@ impl StateAdapter {
 		new_root_bytes: &[u8],
 		is_state_event: bool,
 	) -> Result<(), StorageError> {
+		let event_roots = [(event_id, new_root_bytes)];
+		self.publish_roots_update(
+			tx,
+			room_id,
+			new_nodes,
+			&event_roots,
+			is_state_event.then_some(new_root_bytes),
+		)
+	}
+
+	/// Atomically publish new HAMT nodes and any combination of event and room
+	/// roots in one transaction.
+	pub fn publish_roots(
+		&self,
+		room_id: &[u8],
+		new_nodes: &[([u8; 32], Vec<u8>)],
+		event_roots: &[(&[u8], &[u8])],
+		room_root: Option<&[u8]>,
+	) -> Result<(), StorageError> {
+		let refs: Vec<([u8; 32], &[u8])> = new_nodes
+			.iter()
+			.map(|(hash, bytes)| (*hash, bytes.as_slice()))
+			.collect();
+		let tx = self.store.begin_transaction();
+		self.publish_roots_update(&tx, room_id, &refs, event_roots, room_root)?;
+		tx.commit()
+	}
+
+	/// Stage node and root records together in a caller-owned transaction.
+	pub fn publish_roots_update(
+		&self,
+		tx: &MtxdbTransaction<'_>,
+		room_id: &[u8],
+		new_nodes: &[([u8; 32], &[u8])],
+		event_roots: &[(&[u8], &[u8])],
+		room_root: Option<&[u8]>,
+	) -> Result<(), StorageError> {
 		let stat_coll = Self::stat_collection(room_id);
 		let roots_coll = Self::roots_collection(room_id);
 		for (full_hash, data) in new_nodes {
 			tx.put(self.shard, stat_coll, hamt_node_id(full_hash), data)?;
 		}
-		tx.put(self.shard, roots_coll, event_root_node_id(event_id), new_root_bytes)?;
-		if is_state_event {
-			tx.put(self.shard, roots_coll, room_root_node_id(), new_root_bytes)?;
+		for (event_id, root_bytes) in event_roots {
+			tx.put(self.shard, roots_coll, event_root_node_id(event_id), root_bytes)?;
+		}
+		if let Some(root_bytes) = room_root {
+			tx.put(self.shard, roots_coll, room_root_node_id(), root_bytes)?;
 		}
 		Ok(())
 	}

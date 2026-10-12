@@ -426,16 +426,11 @@ async fn knock_room_helper_local(
 			.map_err(|e| err!(BadServerResponse("Invalid knock event PDU: {e:?}")))?;
 	let previous_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
-	let (current_root_handle, state_node) = services
+	let (current_root_handle, _state_node, shadow_nodes) = services
 		.rooms
 		.state
 		.append_to_state(&parsed_knock_pdu, room_id, &state_lock, None)
 		.await?;
-	services
-		.rooms
-		.state_hamt
-		.store
-		.persist_node_recursive(room_id.as_bytes(), state_node);
 
 	// update_membership is handled automatically by append_pdu
 	info!("Appending room knock event locally");
@@ -448,6 +443,7 @@ async fn knock_room_helper_local(
 			state_lock: &state_lock,
 			room_id,
 			state_root_handle: Some(current_root_handle),
+			shadow_nodes,
 			prev_state_root_handle: previous_root_handle,
 			advance_current_state: false,
 			was_joined_before_state_install: None,
@@ -611,30 +607,24 @@ async fn knock_room_helper_remote(
 	let (root_handle, root_node) =
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root for knock: {e:?}")))?;
-
-	services
+	let shadow_nodes = services
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive(room_id.as_bytes(), root_node);
+		.persist_node_recursive_deferred(root_node);
 
 	services
 		.rooms
 		.state
-		.set_room_state_hamt(room_id, &root_handle, &state_lock);
+		.set_room_state_hamt_with_nodes(room_id, &root_handle, &shadow_nodes);
 
 	// We append to state before appending the pdu, so we never have the pdu
 	// without its state.
-	let (state_root_handle, state_node) = services
+	let (state_root_handle, _state_node, shadow_nodes) = services
 		.rooms
 		.state
 		.append_to_state(&parsed_knock_pdu, room_id, &state_lock, Some(&root_handle))
 		.await?;
-	services
-		.rooms
-		.state_hamt
-		.store
-		.persist_node_recursive(room_id.as_bytes(), state_node);
 
 	// update_membership is handled automatically by append_pdu
 
@@ -648,6 +638,7 @@ async fn knock_room_helper_remote(
 			state_lock: &state_lock,
 			room_id,
 			state_root_handle: Some(state_root_handle),
+			shadow_nodes,
 			prev_state_root_handle: previous_root_handle,
 			advance_current_state: false,
 			was_joined_before_state_install: None,
