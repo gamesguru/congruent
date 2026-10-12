@@ -57,6 +57,13 @@ pub struct Services {
 }
 
 impl Services {
+	const INCOMPLETE_IMPORT_MESSAGE: &str = concat!(
+		"This database has mtxdb data but no valid import marker, so the offline import ",
+		"is incomplete or its marker was lost. Re-run `mtxdb import` with the complete ",
+		"export set, or wipe the database and repeat the full offline conversion. ",
+		"Refusing to start."
+	);
+
 	#[allow(clippy::cognitive_complexity)]
 	pub fn build(server: Arc<Server>) -> Result<Arc<Self>> {
 		let db = Database::open(&server)?;
@@ -247,12 +254,7 @@ impl Services {
 
 		if has_mtxdb_events || has_mtxdb_verdicts || has_mtxdb_signing_keys || has_mtxdb_short_ids
 		{
-			return Err(conduwuit::err!(Database(error!(
-				"This database has mtxdb data but no valid import marker, so the offline import \
-				 is incomplete or its marker was lost. Re-run `mtxdb import` with the complete \
-				 export set, or wipe the database and repeat the full offline conversion. \
-				 Refusing to start."
-			))));
+			return Err(conduwuit::err!(Database(error!("{}", Self::INCOMPLETE_IMPORT_MESSAGE))));
 		}
 
 		let tx = self.mtxdb.begin_transaction();
@@ -439,7 +441,14 @@ mod tests {
 		assert!(
 			error
 				.to_string()
-				.contains("mtxdb data but no valid import marker")
+				.contains(Services::INCOMPLETE_IMPORT_MESSAGE)
+		);
+		assert!(
+			conduwuit_mtxdb::marker::MarkerAdapter::new(services.mtxdb.clone())
+				.get()
+				.expect("failed to read import marker after startup refusal")
+				.is_none(),
+			"startup refusal must not mark incomplete data as imported"
 		);
 	}
 }
