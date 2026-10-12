@@ -349,13 +349,16 @@ pub(super) async fn import_pdus(
 					self.services
 						.rooms
 						.pdu_metadata
-						.mark_event_rejected_skip_visibility_check(&eid, "imported as rejected");
+						.mark_event_rejected_skip_visibility_check(
+							&eid,
+							"imported as rejected",
+						)?;
 				}
 				if is_soft_failed {
 					self.services.rooms.pdu_metadata.mark_event_soft_failed(
 						&eid,
 						conduwuit_service::rooms::pdu_metadata::SoftFailCode::Imported,
-					);
+					)?;
 				}
 			}
 			info!(

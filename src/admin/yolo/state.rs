@@ -221,14 +221,18 @@ pub(super) async fn compare_room_state(
 								.outlier
 								.add_pdu_outlier(&eid, &val, Some(&room_id))
 								.await;
-							self.services
+							if let Err(error) = self
+								.services
 								.rooms
 								.pdu_metadata
 								.mark_event_rejected(
 									&eid,
 									"signature verification failed in compare-room-state",
 								)
-								.await;
+								.await
+							{
+								conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
+							}
 							(eid, val, true)
 						},
 						| Err(e2) => {
@@ -895,11 +899,11 @@ pub(super) async fn set_state_event(
 	self.services
 		.rooms
 		.pdu_metadata
-		.unmark_event_rejected(&event_id);
+		.unmark_event_rejected(&event_id)?;
 	self.services
 		.rooms
 		.pdu_metadata
-		.unmark_event_soft_failed(&event_id);
+		.unmark_event_soft_failed(&event_id)?;
 
 	let _state_lock = self.services.rooms.state.mutex.lock(&room_id).await;
 
@@ -1697,14 +1701,18 @@ pub(super) async fn audit_membership(
 									.outlier
 									.add_pdu_outlier(&eid, &val, Some(&room_id))
 									.await;
-								self.services
+								if let Err(error) = self
+									.services
 									.rooms
 									.pdu_metadata
 									.mark_event_rejected(
 										&eid,
 										"signature verification failed in rescue-room",
 									)
-									.await;
+									.await
+								{
+									conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
+								}
 							}
 							continue;
 						},

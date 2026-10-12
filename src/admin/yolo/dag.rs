@@ -1479,13 +1479,15 @@ pub(super) async fn audit_auth_chain(
 				.rooms
 				.pdu_metadata
 				.is_event_rejected(&event_id)
-				.await;
+				.await
+				.unwrap_or(false);
 			let is_soft_failed = self
 				.services
 				.rooms
 				.pdu_metadata
 				.is_event_soft_failed(&event_id)
-				.await;
+				.await
+				.unwrap_or(false);
 
 			if let Ok(pdu) = self.services.rooms.timeline.get_pdu(&event_id).await {
 				conduwuit::utils::dag_walker::FetchResult::Timeline(

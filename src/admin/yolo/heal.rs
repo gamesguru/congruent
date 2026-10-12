@@ -410,7 +410,7 @@ pub(super) async fn check_rooms(&self, problems_only: bool, deep: bool, fix: boo
 					.rooms
 					.pdu_metadata
 					.is_event_soft_failed(create_id)
-					.await;
+					.await?;
 				if soft_failed {
 					issues.push("SOFT_FAILED_CREATE".to_owned());
 				}

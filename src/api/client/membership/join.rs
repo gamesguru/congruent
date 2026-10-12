@@ -627,7 +627,9 @@ async fn join_room_by_id_helper_remote_process(
 					.outlier
 					.add_pdu_outlier(&event_id, &value, Some(room_id))
 					.await;
-				services.rooms.pdu_metadata.clear_pdu_markers(&event_id);
+				if let Err(error) = services.rooms.pdu_metadata.clear_pdu_markers(&event_id) {
+					warn!(%error, %event_id, "failed to clear pdu markers");
+				}
 				eids.push(event_id.clone());
 				if let Some(state_key) = &pdu.state_key {
 					let shortstatekey = services
@@ -713,7 +715,9 @@ async fn join_room_by_id_helper_remote_process(
 				.outlier
 				.add_pdu_outlier(&event_id, &value, Some(room_id))
 				.await;
-			services.rooms.pdu_metadata.clear_pdu_markers(&event_id);
+			if let Err(error) = services.rooms.pdu_metadata.clear_pdu_markers(&event_id) {
+				warn!(%error, %event_id, "failed to clear pdu markers");
+			}
 			eids.push(event_id);
 			eids
 		})

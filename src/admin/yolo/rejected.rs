@@ -22,20 +22,20 @@ pub(super) async fn manage_rejected(
 			.rooms
 			.pdu_metadata
 			.is_event_rejected(event_id)
-			.await;
+			.await?;
 		let is_soft_failed = self
 			.services
 			.rooms
 			.pdu_metadata
 			.is_event_soft_failed(event_id)
-			.await;
+			.await?;
 
 		if unreject {
 			if is_rejected {
 				self.services
 					.rooms
 					.pdu_metadata
-					.unmark_event_rejected(event_id);
+					.unmark_event_rejected(event_id)?;
 				changed = changed.saturating_add(1);
 			} else {
 				already = already.saturating_add(1);
@@ -44,7 +44,7 @@ pub(super) async fn manage_rejected(
 				self.services
 					.rooms
 					.pdu_metadata
-					.unmark_event_soft_failed(event_id);
+					.unmark_event_soft_failed(event_id)?;
 			}
 		} else {
 			if !is_rejected {
@@ -55,7 +55,7 @@ pub(super) async fn manage_rejected(
 						event_id,
 						"manually rejected via admin command manage-rejected",
 					)
-					.await;
+					.await?;
 				changed = changed.saturating_add(1);
 			} else {
 				already = already.saturating_add(1);
@@ -64,7 +64,7 @@ pub(super) async fn manage_rejected(
 				self.services.rooms.pdu_metadata.mark_event_soft_failed(
 					event_id,
 					conduwuit_service::rooms::pdu_metadata::SoftFailCode::Manual,
-				);
+				)?;
 			}
 		}
 	}
@@ -155,14 +155,14 @@ pub(super) async fn unreject_room(
 				.rooms
 				.pdu_metadata
 				.is_event_rejected(event_id)
-				.await
+				.await?
 			{
 				total = total.saturating_add(1);
 				if !dry_run {
 					self.services
 						.rooms
 						.pdu_metadata
-						.unmark_event_rejected(event_id);
+						.unmark_event_rejected(event_id)?;
 					unmarked = unmarked.saturating_add(1);
 				}
 			}
@@ -172,13 +172,13 @@ pub(super) async fn unreject_room(
 					.rooms
 					.pdu_metadata
 					.is_event_soft_failed(event_id)
-					.await
+					.await?
 			{
 				if !dry_run {
 					self.services
 						.rooms
 						.pdu_metadata
-						.unmark_event_soft_failed(event_id);
+						.unmark_event_soft_failed(event_id)?;
 					soft_unmarked = soft_unmarked.saturating_add(1);
 				}
 			}
@@ -270,7 +270,7 @@ pub(super) async fn list_rejected(
 				.rooms
 				.pdu_metadata
 				.is_event_rejected(event_id)
-				.await
+				.await?
 			{
 				show = true;
 				is_rej = true;
@@ -282,7 +282,7 @@ pub(super) async fn list_rejected(
 			.rooms
 			.pdu_metadata
 			.is_event_soft_failed(event_id)
-			.await
+			.await?
 		{
 			show = true;
 			is_soft = true;
@@ -307,7 +307,7 @@ pub(super) async fn list_rejected(
 					.rooms
 					.pdu_metadata
 					.get_rejection_reason(event_id)
-					.await
+					.await?
 					.filter(|r| !r.is_empty())
 					.map_or(String::new(), |r| format!("\tReason: {r}"))
 			} else if is_soft {
@@ -315,7 +315,7 @@ pub(super) async fn list_rejected(
 					.rooms
 					.pdu_metadata
 					.get_soft_fail_reason(event_id)
-					.await
+					.await?
 					.filter(|r| !r.is_empty())
 					.map_or(String::new(), |r| format!("\tReason: {r}"))
 			} else {

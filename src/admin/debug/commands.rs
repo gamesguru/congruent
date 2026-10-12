@@ -140,7 +140,7 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 		.rooms
 		.pdu_metadata
 		.is_event_soft_failed(&event_id)
-		.await;
+		.await?;
 	if soft_failed {
 		status.push_str(" [SOFT-FAIL]");
 	}
@@ -150,7 +150,7 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 		.rooms
 		.pdu_metadata
 		.is_event_rejected(&event_id)
-		.await;
+		.await?;
 	if rejected {
 		status.push_str(" [REJECTED]");
 	}
@@ -542,6 +542,7 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 			.pdu_metadata
 			.is_event_soft_failed(&event_id),
 	);
+	let (is_rejected, is_soft_failed) = (is_rejected?, is_soft_failed?);
 	let is_outlier = self
 		.services
 		.rooms
@@ -653,7 +654,7 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 			.rooms
 			.pdu_metadata
 			.get_rejection_reason(&event_id)
-			.await
+			.await?
 			.unwrap_or_default();
 		if reason.is_empty() {
 			writeln!(out, "Rejection reason: <none stored (legacy)>")?;
@@ -667,7 +668,7 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 			.rooms
 			.pdu_metadata
 			.get_soft_fail_reason(&event_id)
-			.await
+			.await?
 			.unwrap_or_default();
 		if reason.is_empty() {
 			writeln!(out, "Soft-fail reason: <none stored (legacy)>")?;
@@ -904,7 +905,7 @@ pub(crate) async fn force_set_state(
 	// Un-reject/un-soft-fail the authoritative remote events so they
 	//    can participate in state resolution
 	for eid in &remote_eids {
-		self.services.rooms.pdu_metadata.clear_pdu_markers(eid);
+		self.services.rooms.pdu_metadata.clear_pdu_markers(eid)?;
 	}
 
 	// Neutralize DAG poison BEFORE state resolution evaluates them
@@ -1241,7 +1242,7 @@ async fn validate_and_extract_state(
 		self.services
 			.rooms
 			.pdu_metadata
-			.clear_pdu_markers(&event_id);
+			.clear_pdu_markers(&event_id)?;
 
 		let total = validated.saturating_add(dropped);
 		if total.is_multiple_of(100) {
@@ -1363,7 +1364,7 @@ async fn validate_and_add_auth_chain(
 			self.services
 				.rooms
 				.pdu_metadata
-				.clear_pdu_markers(&event_id);
+				.clear_pdu_markers(&event_id)?;
 			auth_existing = auth_existing.saturating_add(1);
 		} else {
 			// Only sig-verify events we actually need to store
@@ -1393,7 +1394,7 @@ async fn validate_and_add_auth_chain(
 			self.services
 				.rooms
 				.pdu_metadata
-				.clear_pdu_markers(&event_id);
+				.clear_pdu_markers(&event_id)?;
 
 			self.services
 				.rooms
@@ -1548,13 +1549,13 @@ async fn reject_conflicting_state(
 				.rooms
 				.pdu_metadata
 				.is_event_rejected(eid)
-				.await
+				.await?
 			{
 				self.services
 					.rooms
 					.pdu_metadata
 					.mark_event_rejected(eid, "conflicting state replaced by remote")
-					.await;
+					.await?;
 				rejected = rejected.saturating_add(1);
 			}
 		}
