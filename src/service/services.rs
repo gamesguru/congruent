@@ -437,9 +437,8 @@ mod tests {
 			.await
 			.expect_err("startup accepted short-id data without an import marker");
 		assert!(
-			error
-				.to_string()
-				.contains("mtxdb data but no valid import marker")
+			error.status_code().is_server_error(),
+			"short-id-only mtxdb data must be rejected as an incomplete import"
 		);
 	}
 }

@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 
-use conduwuit::{Err, Result, debug_error, debug_warn, err, implement, trace};
+use conduwuit::{Err, Result, debug_error, debug_warn, err, implement, trace, warn};
 use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, RoomVersionId, ServerName,
 	ServerSigningKeyId, api::federation::discovery::VerifyKey,
@@ -8,8 +8,8 @@ use slipstream::{
 
 use super::{PubKeyMap, PubKeys, extract_key};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Whether event signature verification enforces a key's `valid_until_ts`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ValidUntilPolicy {
 	/// Ignore `valid_until_ts`, as required by room versions 1 through 4.
 	Ignore,
@@ -108,10 +108,11 @@ where
 	keys
 }
 
-/// Like `get_pubkeys_for`, but filters out expired keys based on the event
-/// timestamp. Per MSC4499: an event signed at time T is valid iff T <
-/// expired_ts. Keys in `old_verify_keys` whose `expired_ts` <=
-/// `origin_server_ts` are excluded.
+/// Like `get_pubkeys_for`, but filters keys based on the event timestamp.
+/// Per MSC4499, keys in `old_verify_keys` whose `expired_ts` is at or before
+/// `origin_server_ts` are excluded. `valid_until_ts` is enforced according to
+/// `validity_policy`: when enforced, the event timestamp must be covered by
+/// the key's validity window.
 #[implement(super::Service)]
 pub(super) async fn get_pubkeys_for_event<'a, I>(
 	&self,
@@ -161,7 +162,8 @@ where
 /// `origin_server_ts` (room version 5 and later). A record that does not cover
 /// it may only be stale, so the origin is asked for a fresh one before the key
 /// is refused. A retired key is judged by its `expired_ts` instead, and an
-/// origin without a stored record has no validity window to enforce.
+/// origin without a stored record has no validity window to enforce. Other
+/// cache read errors fail closed and reject the key.
 #[implement(super::Service)]
 async fn is_key_valid_for_event(
 	&self,
@@ -173,7 +175,7 @@ async fn is_key_valid_for_event(
 		| Ok(cached) => cached,
 		| Err(error) if missing_key_record_is_allowed(&error) => return true,
 		| Err(error) => {
-			debug_error!(%origin, "Failed to read cached signing-key validity: {error}");
+			warn!(%origin, "Failed to read cached signing-key validity; refusing key: {error}");
 			return false;
 		},
 	};
