@@ -497,7 +497,6 @@ pub(crate) async fn logout_all_route(
 /// <https://spec.matrix.org/v1.3/client-server-api/#post_matrixclientv3refresh>
 pub(crate) async fn refresh_token_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<refresh_token::v3::Request>,
 ) -> Result<refresh_token::v3::Response> {
 	let (access_token, new_refresh_token, ttl) = services
