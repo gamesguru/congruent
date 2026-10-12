@@ -1,8 +1,7 @@
 //! Stable identifiers used at the mtxdb boundary.
 
 use mtxdb::{
-	MEMBER_NAMESPACE_AUTH, MEMBER_NAMESPACE_EVNT, MEMBER_NAMESPACE_PREV, MEMBER_NAMESPACE_STAT,
-	MEMBER_NAMESPACE_STGP, derive_group_full_id, derive_member_collection_id_from_group,
+	MEMBER_NAMESPACE_STAT, MEMBER_NAMESPACE_STGP, derive_group_full_id, derive_member_collection_id_from_group,
 };
 
 /// Derive an mtxdb identifier from a domain and logical identifier.
@@ -47,27 +46,6 @@ pub fn room_state_collection_id(room_id: &[u8]) -> [u8; 16] {
 	room_collection_id(MEMBER_NAMESPACE_STAT, &group_full)
 }
 
-/// Derive the Event (EVNT) collection ID for a room (PDU JSON).
-#[must_use]
-pub fn room_event_collection_id(room_id: &[u8]) -> [u8; 16] {
-	let group_full = room_group_full_id(room_id);
-	room_collection_id(MEMBER_NAMESPACE_EVNT, &group_full)
-}
-
-/// Derive the Prev-edges (PREV) collection ID for a room.
-#[must_use]
-pub fn room_prev_collection_id(room_id: &[u8]) -> [u8; 16] {
-	let group_full = room_group_full_id(room_id);
-	room_collection_id(MEMBER_NAMESPACE_PREV, &group_full)
-}
-
-/// Derive the Auth-edges (AUTH) collection ID for a room.
-#[must_use]
-pub fn room_auth_collection_id(room_id: &[u8]) -> [u8; 16] {
-	let group_full = room_group_full_id(room_id);
-	room_collection_id(MEMBER_NAMESPACE_AUTH, &group_full)
-}
-
 /// Derive the room roots collection ID (room-root + event-roots).
 ///
 /// Uses STGP namespace (state-group) for roots per sithnapse convention.
@@ -102,24 +80,10 @@ pub fn room_root_node_id() -> [u8; 16] { derive_id(b"root", b"current") }
 #[must_use]
 pub fn event_root_node_id(event_id: &[u8]) -> [u8; 16] { derive_id(b"event-root", event_id) }
 
-/// Number of event-locator collections. Fixed for the life of a database: the
-/// bucket is part of where a locator lives, so changing it orphans every
-/// existing entry and requires a rewrite.
-pub const EVENT_LOCATOR_BUCKETS: u32 = 256;
-
-/// Derive the event-locator collection ID (maps event_id -> room_id) holding
-/// `node`.
-///
-/// Global across rooms so events can be looked up by event_id alone, but split
-/// into [`EVENT_LOCATOR_BUCKETS`] collections chosen from the low bits of the
-/// event's own record id. mtxdb clones a collection's index on every write, so
-/// one shared collection would make each event write cost proportional to the
-/// server's total event count.
-#[must_use]
-pub fn event_locator_collection_id(node: &[u8; 16]) -> [u8; 16] {
-	let bucket = u32::from_le_bytes([node[0], node[1], node[2], node[3]]) % EVENT_LOCATOR_BUCKETS;
-	derive_id(b"sys", format!("event-locator:{bucket}").as_bytes())
-}
+pub use mtxdb::interop::{
+	EVENT_LOCATOR_BUCKETS, event_locator_collection_id, room_auth_collection_id,
+	room_event_collection_id, room_prev_collection_id,
+};
 
 /// Derive the per-event verdict collection ID (rejection, soft-fail and
 /// redaction) holding `node`.

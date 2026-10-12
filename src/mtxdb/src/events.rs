@@ -2,7 +2,13 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use mtxdb::{ShardType, interop::event_record_id};
+use mtxdb::{
+	ShardType,
+	interop::{
+		decode_edges, decode_event_locator, encode_edges, encode_event_locator,
+		event_record_id,
+	},
+};
 use rezzy::bitmap::Bitmap;
 
 use crate::{
@@ -13,9 +19,6 @@ use crate::{
 	},
 	store::{CollectionId, MtxdbStore, MtxdbTransaction, NodeId},
 };
-
-/// Version byte of the event-locator value encoding.
-const LOCATOR_VERSION: u8 = 1;
 
 #[derive(Clone)]
 pub struct EventAdapter {
@@ -51,33 +54,11 @@ impl EventAdapter {
 	}
 
 	fn encode_locator(event_id: &[u8], room_id: &[u8]) -> Result<Vec<u8>, StorageError> {
-		let length = u32::try_from(event_id.len())
-			.map_err(|_| StorageError::Corrupt("event id is too large".to_owned()))?;
-		let mut out = Vec::with_capacity(
-			1_usize
-				.saturating_add(4)
-				.saturating_add(event_id.len())
-				.saturating_add(room_id.len()),
-		);
-		out.push(LOCATOR_VERSION);
-		out.extend_from_slice(&length.to_le_bytes());
-		out.extend_from_slice(event_id);
-		out.extend_from_slice(room_id);
-		Ok(out)
+		encode_event_locator(event_id, room_id)
 	}
 
 	fn decode_locator(bytes: &[u8]) -> Result<(&[u8], &[u8]), StorageError> {
-		let malformed = || StorageError::Corrupt("malformed event locator".to_owned());
-		let (&version, rest) = bytes.split_first().ok_or_else(malformed)?;
-		if version != LOCATOR_VERSION {
-			return Err(StorageError::Corrupt("unknown event locator version".to_owned()));
-		}
-		let (length, rest) = rest.split_first_chunk::<4>().ok_or_else(malformed)?;
-		let length = usize::try_from(u32::from_le_bytes(*length)).map_err(|_| malformed())?;
-		if rest.len() < length {
-			return Err(malformed());
-		}
-		Ok(rest.split_at(length))
+		decode_event_locator(bytes)
 	}
 
 	/// Fetch an event from its room's EVNT collection (requires room_id).
@@ -384,59 +365,10 @@ impl EventAdapter {
 		}
 	}
 
-	fn serialize_edges(edges: &[&[u8]]) -> Result<Vec<u8>, StorageError> {
-		let mut total = 0_usize;
-		for edge in edges {
-			let length = u32::try_from(edge.len())
-				.map_err(|_| StorageError::Corrupt("event edge is too large".to_owned()))?;
-			let length = usize::try_from(length).expect("u32 fits usize on supported targets");
-			total = total
-				.checked_add(4)
-				.and_then(|size| size.checked_add(length))
-				.ok_or_else(|| {
-					StorageError::Corrupt("event edge list is too large".to_owned())
-				})?;
-		}
-
-		let mut output = Vec::with_capacity(total);
-		for edge in edges {
-			let length = u32::try_from(edge.len())
-				.map_err(|_| StorageError::Corrupt("event edge is too large".to_owned()))?;
-			output.extend_from_slice(&length.to_le_bytes());
-			output.extend_from_slice(edge);
-		}
-		Ok(output)
-	}
+	fn serialize_edges(edges: &[&[u8]]) -> Result<Vec<u8>, StorageError> { encode_edges(edges) }
 
 	fn deserialize_edges(bytes: &[u8]) -> Result<Vec<Vec<u8>>, StorageError> {
-		let mut edges = Vec::new();
-		let mut offset = 0;
-		while offset < bytes.len() {
-			let header_end = offset
-				.checked_add(4)
-				.ok_or_else(|| StorageError::Corrupt("malformed event edge record".to_owned()))?;
-			let length_bytes = bytes
-				.get(offset..header_end)
-				.ok_or_else(|| StorageError::Corrupt("malformed event edge record".to_owned()))?;
-			let length = usize::try_from(u32::from_le_bytes(
-				length_bytes.try_into().expect("four-byte slice"),
-			))
-			.expect("u32 fits usize on supported targets");
-			offset = header_end;
-			let end = offset
-				.checked_add(length)
-				.ok_or_else(|| StorageError::Corrupt("malformed event edge record".to_owned()))?;
-			edges.push(
-				bytes
-					.get(offset..end)
-					.ok_or_else(|| {
-						StorageError::Corrupt("malformed event edge record".to_owned())
-					})?
-					.to_vec(),
-			);
-			offset = end;
-		}
-		Ok(edges)
+		decode_edges(bytes)
 	}
 }
 
@@ -578,6 +510,8 @@ mod tests {
 #[cfg(test)]
 mod room_tests {
 	use std::{fs, path::PathBuf};
+
+	use mtxdb::interop::LOCATOR_VERSION;
 
 	use super::*;
 
@@ -767,6 +701,20 @@ mod room_tests {
 		// Legacy unversioned value: a bare room id starting with '!'.
 		EventAdapter::decode_locator(b"!room:example.com").unwrap_err();
 	}
+	/// The importer writes these ids through `mtxdb::interop`; the server must
+	/// read exactly them. The values are pinned in mtxdb's own tests too.
+	#[test]
+	fn record_ids_match_the_importer_layout() {
+		let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+		let room = b"!room:example.com";
+		let node = event_record_id(b"$event:example.com");
+		assert_eq!(hex(&node), "f4f315ab8b948ccb0355c85e9d609ccd");
+		assert_eq!(hex(&room_event_collection_id(room)), "9507be45c492c4382edb18fc074477cc");
+		assert_eq!(hex(&room_prev_collection_id(room)), "fea9a58f0ab869317d696093fd7c6173");
+		assert_eq!(hex(&room_auth_collection_id(room)), "4842a2eff3cf511f9e48406350253c77");
+		assert_eq!(hex(&event_locator_collection_id(&node)), "9d34360b21fa7f1ad961f46fb7b25857");
+	}
+
 	#[test]
 	fn auth_chain_is_the_deduplicated_transitive_closure() {
 		let path = test_path("auth-chain");
