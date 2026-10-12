@@ -36,6 +36,35 @@ impl MtxdbStore {
 			.map(|mut values| values.pop().flatten())
 	}
 
+	/// Every live record of a collection, in no particular order. A removed
+	/// record is not returned.
+	pub fn scan(
+		&self,
+		shard: ShardType,
+		collection: &CollectionId,
+	) -> Result<Vec<(NodeId, Vec<u8>)>, StorageError> {
+		self.db
+			.pool(shard)
+			.scan_collection(collection)?
+			.map(|entry| entry.map(|(node, data)| (node, data.bytes.to_vec())))
+			.collect()
+	}
+
+	/// The collection's logical version, advanced by every committed write to
+	/// it. Read it before the data it guards, then pass it to
+	/// [`MtxdbTransaction::expect_collection_version`] so the commit fails if
+	/// anything was written in between.
+	pub fn collection_version(
+		&self,
+		shard: ShardType,
+		collection: &CollectionId,
+	) -> Result<u64, StorageError> {
+		self.db
+			.pool(shard)
+			.get_with_collection_version(collection, &[[0; 16]])
+			.map(|(_, version)| version)
+	}
+
 	pub fn get_many(
 		&self,
 		shard: ShardType,
@@ -107,6 +136,19 @@ impl MtxdbTransaction<'_> {
 		nodes: &[NodeId],
 	) -> Result<(), StorageError> {
 		self.tx.remove_many(shard, collection, nodes)?;
+		Ok(())
+	}
+
+	/// Make the commit conditional on the collection not having been written
+	/// since `version` was read. A commit that loses the race fails with
+	/// [`StorageError::StaleRead`] and applies nothing.
+	pub fn expect_collection_version(
+		&self,
+		shard: ShardType,
+		collection: CollectionId,
+		version: u64,
+	) -> Result<(), StorageError> {
+		self.tx.expect_collection_version(shard, collection, version)?;
 		Ok(())
 	}
 

@@ -111,12 +111,38 @@ impl EventAdapter {
 		self.get_edges(Self::prev_collection(room_id), event_id)
 	}
 
-	pub fn get_auth_chain(
+	pub fn get_auth_events(
 		&self,
 		room_id: &[u8],
 		event_id: &[u8],
 	) -> Result<Vec<Vec<u8>>, StorageError> {
 		self.get_edges(Self::auth_collection(room_id), event_id)
+	}
+
+	/// The full auth chain of `event_id`: every event reachable through auth
+	/// edges, excluding `event_id` itself, each exactly once.
+	///
+	/// Walks the room's AUTH edges inside mtxdb, so a caller gets the closure
+	/// without reading events or consulting any other store. Order is
+	/// breadth-first from the event and is not a topological order.
+	pub fn get_auth_chain(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+	) -> Result<Vec<Vec<u8>>, StorageError> {
+		let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+		seen.insert(event_id.to_vec());
+		let mut chain = Vec::new();
+		let mut frontier = vec![event_id.to_vec()];
+		while let Some(current) = frontier.pop() {
+			for auth in self.get_auth_events(room_id, &current)? {
+				if seen.insert(auth.clone()) {
+					chain.push(auth.clone());
+					frontier.push(auth);
+				}
+			}
+		}
+		Ok(chain)
 	}
 
 	fn get_edges(
@@ -267,7 +293,7 @@ mod tests {
 				Some(&b"body"[..])
 			);
 			assert_eq!(adapter.get_prev_events(room_id, event_id).unwrap(), vec![prev.to_vec()]);
-			assert_eq!(adapter.get_auth_chain(room_id, event_id).unwrap(), vec![auth.to_vec()]);
+			assert_eq!(adapter.get_auth_events(room_id, event_id).unwrap(), vec![auth.to_vec()]);
 			store.sync(ShardType::EventDag).unwrap();
 			store.sync(ShardType::Edges).unwrap();
 		};
@@ -297,7 +323,7 @@ mod tests {
 			);
 			assert!(
 				adapter
-					.get_auth_chain(room_id, event_id)
+					.get_auth_events(room_id, event_id)
 					.unwrap()
 					.is_empty()
 			);
@@ -456,7 +482,7 @@ mod room_tests {
 		assert_eq!(adapter.locate_event(event).unwrap().as_deref(), Some(&room[..]));
 		assert_eq!(adapter.get_event(room, event).unwrap().as_deref(), Some(&b"body"[..]));
 		assert_eq!(adapter.get_prev_events(room, event).unwrap(), vec![prev.to_vec()]);
-		assert_eq!(adapter.get_auth_chain(room, event).unwrap(), vec![auth.to_vec()]);
+		assert_eq!(adapter.get_auth_events(room, event).unwrap(), vec![auth.to_vec()]);
 
 		drop(adapter);
 		let _ = fs::remove_dir_all(path);
@@ -529,5 +555,33 @@ mod room_tests {
 		EventAdapter::decode_locator(&[LOCATOR_VERSION, 255, 0, 0, 0, 1]).unwrap_err();
 		// Legacy unversioned value: a bare room id starting with '!'.
 		EventAdapter::decode_locator(b"!room:example.com").unwrap_err();
+	}
+	#[test]
+	fn auth_chain_is_the_deduplicated_transitive_closure() {
+		let path = test_path("auth-chain");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = EventAdapter::new(store);
+
+		// create <- power <- join <- message, and message also cites create
+		// directly, so create is reachable by two paths.
+		let (create, power, join, message) =
+			(&b"$create"[..], &b"$power"[..], &b"$join"[..], &b"$message"[..]);
+		adapter.write_event_with_edges(room, create, b"c", &[], &[]).unwrap();
+		adapter.write_event_with_edges(room, power, b"p", &[], &[create]).unwrap();
+		adapter.write_event_with_edges(room, join, b"j", &[], &[create, power]).unwrap();
+		adapter
+			.write_event_with_edges(room, message, b"m", &[], &[join, create])
+			.unwrap();
+
+		let mut chain = adapter.get_auth_chain(room, message).unwrap();
+		chain.sort();
+		assert_eq!(chain, vec![create.to_vec(), join.to_vec(), power.to_vec()]);
+		assert!(adapter.get_auth_chain(room, create).unwrap().is_empty());
+		assert!(adapter.get_auth_chain(room, b"$unknown").unwrap().is_empty());
+
+		drop(adapter);
+		let _ = fs::remove_dir_all(path);
 	}
 }
