@@ -19,13 +19,6 @@ use crate::{
 	sync, threepid, transactions, uiaa, users,
 };
 
-const INCOMPLETE_IMPORT_MESSAGE: &str = concat!(
-	"This database has mtxdb data but no valid import marker, so the offline import ",
-	"is incomplete or its marker was lost. Re-run `mtxdb import` with the complete ",
-	"export set, or wipe the database and repeat the full offline conversion. ",
-	"Refusing to start."
-);
-
 pub struct Services {
 	pub account_data: Arc<account_data::Service>,
 	pub admin: Arc<admin::Service>,
@@ -64,6 +57,13 @@ pub struct Services {
 }
 
 impl Services {
+	const INCOMPLETE_IMPORT_MESSAGE: &str = concat!(
+		"This database has mtxdb data but no valid import marker, so the offline import ",
+		"is incomplete or its marker was lost. Re-run `mtxdb import` with the complete ",
+		"export set, or wipe the database and repeat the full offline conversion. ",
+		"Refusing to start."
+	);
+
 	#[allow(clippy::cognitive_complexity)]
 	pub fn build(server: Arc<Server>) -> Result<Arc<Self>> {
 		let db = Database::open(&server)?;
@@ -254,7 +254,7 @@ impl Services {
 
 		if has_mtxdb_events || has_mtxdb_verdicts || has_mtxdb_signing_keys || has_mtxdb_short_ids
 		{
-			return Err(conduwuit::err!(Database(error!("{INCOMPLETE_IMPORT_MESSAGE}"))));
+			return Err(conduwuit::err!(Database(error!("{}", Self::INCOMPLETE_IMPORT_MESSAGE))));
 		}
 
 		let tx = self.mtxdb.begin_transaction();
@@ -391,7 +391,7 @@ mod tests {
 		log::{Log, LogLevelReloadHandles, capture},
 	};
 
-	use super::{INCOMPLETE_IMPORT_MESSAGE, Services};
+	use super::Services;
 
 	static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -438,12 +438,16 @@ mod tests {
 			.check_import_marker()
 			.await
 			.expect_err("startup accepted short-id data without an import marker");
-		assert!(error.to_string().contains(INCOMPLETE_IMPORT_MESSAGE));
-		assert_eq!(
+		assert!(
+			error
+				.to_string()
+				.contains(Services::INCOMPLETE_IMPORT_MESSAGE)
+		);
+		assert!(
 			conduwuit_mtxdb::marker::MarkerAdapter::new(services.mtxdb.clone())
 				.get()
-				.expect("failed to read import marker after startup refusal"),
-			None,
+				.expect("failed to read import marker after startup refusal")
+				.is_none(),
 			"startup refusal must not mark incomplete data as imported"
 		);
 	}
