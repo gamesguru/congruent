@@ -1074,19 +1074,6 @@ impl Service {
 				continue;
 			}
 
-			let metadata = match self.services.timeline.get_event_metadata(&event_id).await {
-				| Ok(metadata) => metadata,
-				| Err(error) => {
-					error!(
-						?error, %room_id, %event_id,
-						"Aborting forward-extremity update because event metadata is unreadable",
-					);
-					return Err(err!(Database(
-						"Failed to read metadata for forward extremity {event_id}: {error}"
-					)));
-				},
-			};
-
 			// Only events actually accepted into the timeline may become citable
 			// forward extremities. A non-outlier event is not automatically
 			// acceptable: its rejection/soft-fail verdict now lives in the
@@ -1116,15 +1103,40 @@ impl Service {
 					)));
 				},
 			};
-			let admitted = !metadata.is_outlier && !flagged;
-			if admitted {
-				eligible.push(event_id);
-			} else {
+			if flagged {
 				debug!(
-				%room_id, %event_id,
-				"Refusing to persist ineligible (outlier/rejected/soft-failed) \
-				 event as a forward extremity",
+					%room_id, %event_id,
+					"Refusing to persist rejected/soft-failed event as a forward extremity",
 				);
+				continue;
+			}
+
+			let metadata = match self.services.timeline.get_event_metadata(&event_id).await {
+				| Ok(metadata) => metadata,
+				| Err(error) if error.is_not_found() => {
+					debug!(
+						%room_id, %event_id,
+						"Refusing to persist forward extremity with unknown event metadata",
+					);
+					continue;
+				},
+				| Err(error) => {
+					error!(
+						?error, %room_id, %event_id,
+						"Aborting forward-extremity update because event metadata is unreadable",
+					);
+					return Err(err!(Database(
+						"Failed to read metadata for forward extremity {event_id}: {error}"
+					)));
+				},
+			};
+			if metadata.is_outlier {
+				debug!(
+					%room_id, %event_id,
+					"Refusing to persist outlier event as a forward extremity",
+				);
+			} else {
+				eligible.push(event_id);
 			}
 		}
 
