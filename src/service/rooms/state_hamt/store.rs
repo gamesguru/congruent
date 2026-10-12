@@ -326,9 +326,10 @@ impl Store {
 			.publish(room_id, event_id, &nodes, root_bytes, is_state_event)
 		{
 			| Ok(()) => {
+				let node_count = u64::try_from(nodes.len()).expect("node count fits in u64");
 				self.write_stats
 					.shadow_written
-					.fetch_add(nodes.len() as u64, Ordering::Relaxed);
+					.fetch_add(node_count, Ordering::Relaxed);
 			},
 			| Err(error) => {
 				conduwuit::warn!(?error, "Failed to shadow-publish HAMT state update to mtxdb");

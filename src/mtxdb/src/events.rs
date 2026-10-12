@@ -374,7 +374,11 @@ impl EventAdapter {
 				auth_events,
 			)?;
 			match tx.commit() {
-				| Err(StorageError::StaleRead { .. }) if attempts < 3 => attempts += 1,
+				| Err(StorageError::StaleRead { .. }) if attempts < 3 => {
+					attempts = attempts
+						.checked_add(1)
+						.expect("attempts is less than three");
+				},
 				| result => return result,
 			}
 		}
