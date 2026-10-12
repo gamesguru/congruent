@@ -202,24 +202,35 @@ mod tests {
 
 		let store = MtxdbStore::open(&directory).expect("open mtxdb");
 		let seed = store.begin_transaction();
-		seed.put(ShardType::State, nodes, orphan, b"old-node").unwrap();
-		seed.put(ShardType::State, nodes, kept, b"kept-node").unwrap();
-		seed.put(ShardType::EventDag, roots, root_key, b"root-1").unwrap();
+		seed.put(ShardType::State, nodes, orphan, b"old-node")
+			.unwrap();
+		seed.put(ShardType::State, nodes, kept, b"kept-node")
+			.unwrap();
+		seed.put(ShardType::EventDag, roots, root_key, b"root-1")
+			.unwrap();
 		seed.commit().unwrap();
 
 		// A sweep: publish the new root and drop the orphan in one commit.
 		let sweep = store.begin_transaction();
 		sweep.remove(ShardType::State, nodes, orphan).unwrap();
-		sweep.put(ShardType::EventDag, roots, root_key, b"root-2").unwrap();
+		sweep
+			.put(ShardType::EventDag, roots, root_key, b"root-2")
+			.unwrap();
 		assert!(
-			store.get(ShardType::State, &nodes, orphan).unwrap().is_some(),
+			store
+				.get(ShardType::State, &nodes, orphan)
+				.unwrap()
+				.is_some(),
 			"nothing is visible before commit"
 		);
 		sweep.commit().unwrap();
 
 		assert_eq!(store.get(ShardType::State, &nodes, orphan).unwrap(), None);
 		assert_eq!(
-			store.get(ShardType::State, &nodes, kept).unwrap().as_deref(),
+			store
+				.get(ShardType::State, &nodes, kept)
+				.unwrap()
+				.as_deref(),
 			Some(&b"kept-node"[..])
 		);
 		assert_eq!(
@@ -251,7 +262,9 @@ mod tests {
 		for _ in 0..2 {
 			// The second pass finds everything already gone and must succeed.
 			let sweep = store.begin_transaction();
-			sweep.remove_many(ShardType::State, nodes, &ids[..5]).unwrap();
+			sweep
+				.remove_many(ShardType::State, nodes, &ids[..5])
+				.unwrap();
 			sweep.commit().unwrap();
 		}
 		for id in &ids[..5] {
@@ -266,7 +279,10 @@ mod tests {
 		readd.put(ShardType::State, nodes, ids[0], b"node").unwrap();
 		readd.commit().unwrap();
 		assert_eq!(
-			store.get(ShardType::State, &nodes, ids[0]).unwrap().as_deref(),
+			store
+				.get(ShardType::State, &nodes, ids[0])
+				.unwrap()
+				.as_deref(),
 			Some(&b"node"[..])
 		);
 
@@ -274,7 +290,12 @@ mod tests {
 		drop(store);
 		let reopened = MtxdbStore::open(&directory).expect("reopen mtxdb");
 		assert_eq!(reopened.get(ShardType::State, &nodes, ids[1]).unwrap(), None);
-		assert!(reopened.get(ShardType::State, &nodes, ids[0]).unwrap().is_some());
+		assert!(
+			reopened
+				.get(ShardType::State, &nodes, ids[0])
+				.unwrap()
+				.is_some()
+		);
 		let _ = fs::remove_dir_all(directory);
 	}
 }

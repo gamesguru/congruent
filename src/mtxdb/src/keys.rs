@@ -102,11 +102,24 @@ pub fn room_root_node_id() -> [u8; 16] { derive_id(b"root", b"current") }
 #[must_use]
 pub fn event_root_node_id(event_id: &[u8]) -> [u8; 16] { derive_id(b"event-root", event_id) }
 
-/// Derive the event-locator collection ID (maps event_id -> room_id).
+/// Number of event-locator collections. Fixed for the life of a database: the
+/// bucket is part of where a locator lives, so changing it orphans every
+/// existing entry and requires a rewrite.
+pub const EVENT_LOCATOR_BUCKETS: u32 = 256;
+
+/// Derive the event-locator collection ID (maps event_id -> room_id) holding
+/// `node`.
 ///
-/// Global collection (not per-room) so events can be looked up by event_id alone.
+/// Global across rooms so events can be looked up by event_id alone, but split
+/// into [`EVENT_LOCATOR_BUCKETS`] collections chosen from the low bits of the
+/// event's own record id. mtxdb clones a collection's index on every write, so
+/// one shared collection would make each event write cost proportional to the
+/// server's total event count.
 #[must_use]
-pub fn event_locator_collection_id() -> [u8; 16] { derive_id(b"sys", b"event-locator") }
+pub fn event_locator_collection_id(node: &[u8; 16]) -> [u8; 16] {
+	let bucket = u32::from_le_bytes([node[0], node[1], node[2], node[3]]) % EVENT_LOCATOR_BUCKETS;
+	derive_id(b"sys", format!("event-locator:{bucket}").as_bytes())
+}
 
 /// Encode a Matrix state tuple without delimiter ambiguity.
 pub fn encode_state_key_v1(event_type: &str, state_key: &str) -> Result<Vec<u8>, &'static str> {
@@ -198,5 +211,20 @@ mod tests {
 	fn derive_id_separates_domains() {
 		assert_ne!(derive_id(b"event", b"x"), derive_id(b"root", b"x"));
 		assert_eq!(derive_id(b"event", b"x"), derive_id(b"event", b"x"));
+	}
+
+	#[test]
+	fn event_locator_buckets_are_stable_and_bounded() {
+		let node = event_record_id(b"$event:example.com");
+		assert_eq!(event_locator_collection_id(&node), event_locator_collection_id(&node));
+
+		let mut seen = std::collections::HashSet::new();
+		for i in 0_u32..4096 {
+			let node = event_record_id(format!("$event{i}:example.com").as_bytes());
+			seen.insert(event_locator_collection_id(&node));
+		}
+		let buckets = usize::try_from(EVENT_LOCATOR_BUCKETS).unwrap();
+		assert!(seen.len() <= buckets, "more locator collections than buckets");
+		assert!(seen.len() > buckets / 2, "locator ids should spread across buckets");
 	}
 }

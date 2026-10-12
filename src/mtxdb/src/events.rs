@@ -13,6 +13,9 @@ use crate::{
 	store::{CollectionId, MtxdbStore, MtxdbTransaction, NodeId},
 };
 
+/// Version byte of the event-locator value encoding.
+const LOCATOR_VERSION: u8 = 1;
+
 #[derive(Clone)]
 pub struct EventAdapter {
 	store: Arc<MtxdbStore>,
@@ -32,12 +35,48 @@ impl EventAdapter {
 	///
 	/// Returns the room_id bytes if found, so the caller can then fetch the
 	/// event from the room's EVNT collection.
+	///
+	/// The locator stores the full event id alongside the room, because the
+	/// record id is only 128 bits. A locator written for a different event with
+	/// the same record id is a miss, not a match.
 	pub fn locate_event(&self, event_id: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
-		self.store.get(
-			ShardType::EventDag,
-			&event_locator_collection_id(),
-			event_record_id(event_id),
-		)
+		let node = event_record_id(event_id);
+		self.store
+			.get(ShardType::EventDag, &event_locator_collection_id(&node), node)?
+			.map_or(Ok(None), |bytes| {
+				let (stored_event, room) = Self::decode_locator(&bytes)?;
+				Ok((stored_event == event_id).then(|| room.to_vec()))
+			})
+	}
+
+	fn encode_locator(event_id: &[u8], room_id: &[u8]) -> Result<Vec<u8>, StorageError> {
+		let length = u32::try_from(event_id.len())
+			.map_err(|_| StorageError::Corrupt("event id is too large".to_owned()))?;
+		let mut out = Vec::with_capacity(
+			1_usize
+				.saturating_add(4)
+				.saturating_add(event_id.len())
+				.saturating_add(room_id.len()),
+		);
+		out.push(LOCATOR_VERSION);
+		out.extend_from_slice(&length.to_le_bytes());
+		out.extend_from_slice(event_id);
+		out.extend_from_slice(room_id);
+		Ok(out)
+	}
+
+	fn decode_locator(bytes: &[u8]) -> Result<(&[u8], &[u8]), StorageError> {
+		let malformed = || StorageError::Corrupt("malformed event locator".to_owned());
+		let (&version, rest) = bytes.split_first().ok_or_else(malformed)?;
+		if version != LOCATOR_VERSION {
+			return Err(StorageError::Corrupt("unknown event locator version".to_owned()));
+		}
+		let (length, rest) = rest.split_first_chunk::<4>().ok_or_else(malformed)?;
+		let length = usize::try_from(u32::from_le_bytes(*length)).map_err(|_| malformed())?;
+		if rest.len() < length {
+			return Err(malformed());
+		}
+		Ok(rest.split_at(length))
 	}
 
 	/// Fetch an event from its room's EVNT collection (requires room_id).
@@ -101,8 +140,23 @@ impl EventAdapter {
 	) -> Result<(), StorageError> {
 		let node = event_record_id(event_id);
 		tx.put(ShardType::EventDag, Self::evnt_collection(room_id), node, event_body)?;
-		// Also index the event -> room mapping for lookups without room_id
-		tx.put(ShardType::EventDag, event_locator_collection_id(), node, room_id)?;
+		// Also index the event -> room mapping for lookups without room_id. A
+		// committed locator for a different event under the same 128-bit record
+		// id is a collision; fail the write rather than shadow that event.
+		let locator_collection = event_locator_collection_id(&node);
+		if let Some(existing) = self
+			.store
+			.get(ShardType::EventDag, &locator_collection, node)?
+		{
+			let (stored_event, _) = Self::decode_locator(&existing)?;
+			if stored_event != event_id {
+				return Err(StorageError::Corrupt(
+					"event record id collision in locator".to_owned(),
+				));
+			}
+		}
+		let locator = Self::encode_locator(event_id, room_id)?;
+		tx.put(ShardType::EventDag, locator_collection, node, &locator)?;
 		let prev = Self::serialize_edges(prev_events)?;
 		let auth = Self::serialize_edges(auth_events)?;
 		tx.put(ShardType::Edges, Self::prev_collection(room_id), node, &prev)?;
@@ -406,5 +460,74 @@ mod room_tests {
 
 		drop(adapter);
 		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn locator_collision_is_a_miss_on_read_and_an_error_on_write() {
+		let path = test_path("collision");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let event = b"$event:example.com";
+		let other = b"$other:example.com";
+
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = EventAdapter::new(store.clone());
+
+		// Forge a locator for a different event under this event's record id,
+		// as a 128-bit collision would produce.
+		let node = event_record_id(event);
+		let forged = EventAdapter::encode_locator(other, b"!elsewhere:example.com").unwrap();
+		let tx = store.begin_transaction();
+		tx.put(ShardType::EventDag, event_locator_collection_id(&node), node, &forged)
+			.unwrap();
+		tx.commit().unwrap();
+
+		assert!(adapter.locate_event(event).unwrap().is_none());
+		assert!(
+			adapter
+				.write_event_with_edges(room, event, b"body", &[], &[])
+				.is_err()
+		);
+		assert!(adapter.get_event(room, event).unwrap().is_none());
+
+		drop(adapter);
+		drop(store);
+		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn rewriting_the_same_event_is_not_a_collision() {
+		let path = test_path("rewrite");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let event = b"$event:example.com";
+
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = EventAdapter::new(store);
+		adapter
+			.write_event_with_edges(room, event, b"one", &[], &[])
+			.unwrap();
+		adapter
+			.write_event_with_edges(room, event, b"two", &[], &[])
+			.unwrap();
+		assert_eq!(adapter.locate_event(event).unwrap().as_deref(), Some(&room[..]));
+		assert_eq!(adapter.get_event(room, event).unwrap().as_deref(), Some(&b"two"[..]));
+
+		drop(adapter);
+		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn locator_value_round_trips_and_rejects_garbage() {
+		let value = EventAdapter::encode_locator(b"$e:x", b"!r:x").unwrap();
+		let (event, room) = EventAdapter::decode_locator(&value).unwrap();
+		assert_eq!(event, b"$e:x");
+		assert_eq!(room, b"!r:x");
+
+		assert!(EventAdapter::decode_locator(&[]).is_err());
+		assert!(EventAdapter::decode_locator(&[9, 0, 0, 0, 0]).is_err());
+		assert!(EventAdapter::decode_locator(&[LOCATOR_VERSION, 255, 0, 0, 0, 1]).is_err());
+		// Legacy unversioned value: a bare room id starting with '!'.
+		assert!(EventAdapter::decode_locator(b"!room:example.com").is_err());
 	}
 }
