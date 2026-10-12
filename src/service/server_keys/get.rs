@@ -36,10 +36,22 @@ pub async fn get_event_keys(
 		.map(MilliSecondsSinceUnixEpoch)
 		.ok_or_else(|| err!(BadServerResponse("Event missing or malformed origin_server_ts")))?;
 
+	// Room versions 5 and later require the signing key's valid_until_ts to
+	// cover the event's origin_server_ts; versions 1-4 ignore valid_until_ts.
+	let enforce_valid_until = !matches!(
+		version,
+		RoomVersionId::V1 | RoomVersionId::V2 | RoomVersionId::V3 | RoomVersionId::V4
+	);
+
 	let mut keys = PubKeyMap::new();
 	for (server, key_ids) in &required {
 		let pubkeys = self
-			.get_pubkeys_for_event(server, key_ids.iter().map(Borrow::borrow), origin_server_ts)
+			.get_pubkeys_for_event(
+				server,
+				key_ids.iter().map(Borrow::borrow),
+				origin_server_ts,
+				enforce_valid_until,
+			)
 			.await;
 		keys.insert(server.to_owned(), pubkeys);
 	}
@@ -87,6 +99,7 @@ pub async fn get_pubkeys_for_event<'a, I>(
 	origin: &ServerName,
 	key_ids: I,
 	origin_server_ts: MilliSecondsSinceUnixEpoch,
+	enforce_valid_until: bool,
 ) -> PubKeys
 where
 	I: Iterator<Item = &'a ServerSigningKeyId> + Send,
@@ -106,11 +119,63 @@ where
 				);
 				continue;
 			}
+			if enforce_valid_until
+				&& !self
+					.is_key_valid_for_event(origin, key_id, origin_server_ts)
+					.await
+			{
+				debug_warn!(
+					%origin, %key_id,
+					"Rejecting key for event verification (key valid_until_ts is before \
+					 event origin_server_ts)"
+				);
+				continue;
+			}
 			keys.insert(key_id.into(), verify_key.key);
 		}
 	}
 
 	keys
+}
+
+/// Whether the origin's key record is valid until at least the event's
+/// `origin_server_ts` (room version 5 and later). A record that does not cover
+/// it may only be stale, so the origin is asked for a fresh one before the key
+/// is refused. A retired key is judged by its `expired_ts` instead, and an
+/// origin without a stored record has no validity window to enforce.
+#[implement(super::Service)]
+async fn is_key_valid_for_event(
+	&self,
+	origin: &ServerName,
+	key_id: &ServerSigningKeyId,
+	event_ts: MilliSecondsSinceUnixEpoch,
+) -> bool {
+	let Ok(cached) = self.merged_signing_keys_for(origin).await else {
+		return true;
+	};
+	if cached.old_verify_keys.contains_key(key_id) || cached.valid_until_ts >= event_ts {
+		return true;
+	}
+
+	let Ok(raw) = self
+		.server_request_coalesced(origin, Some(event_ts), &[key_id])
+		.await
+	else {
+		return false;
+	};
+	if let Err(e) = self
+		.add_signing_keys(&raw, super::FetchSource::Direct)
+		.await
+	{
+		debug_error!("Failed to add refreshed signing keys: {e}");
+		return false;
+	}
+
+	self.merged_signing_keys_for(origin)
+		.await
+		.is_ok_and(|fresh| {
+			fresh.old_verify_keys.contains_key(key_id) || fresh.valid_until_ts >= event_ts
+		})
 }
 
 /// Checks if a key from old_verify_keys has an expired_ts that is at or before
