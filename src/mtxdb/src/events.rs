@@ -5,8 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 use mtxdb::{
 	ShardType,
 	interop::{
-		decode_edges, decode_event_locator, encode_edges, encode_event_locator,
-		event_record_id,
+		decode_edges, decode_event_locator, encode_edges, encode_event_locator, event_record_id,
 	},
 };
 use rezzy::bitmap::Bitmap;

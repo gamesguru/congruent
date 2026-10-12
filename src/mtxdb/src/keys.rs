@@ -1,7 +1,8 @@
 //! Stable identifiers used at the mtxdb boundary.
 
 use mtxdb::{
-	MEMBER_NAMESPACE_STAT, MEMBER_NAMESPACE_STGP, derive_group_full_id, derive_member_collection_id_from_group,
+	MEMBER_NAMESPACE_STAT, MEMBER_NAMESPACE_STGP, derive_group_full_id,
+	derive_member_collection_id_from_group,
 };
 
 /// Derive an mtxdb identifier from a domain and logical identifier.
