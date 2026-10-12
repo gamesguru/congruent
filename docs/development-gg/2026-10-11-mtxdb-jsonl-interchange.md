@@ -113,6 +113,33 @@ with the per-event roots the server reads. It also builds the auth closures from
 the imported `auth_events` graph. The importer must finish these writes before
 it writes the marker. It must not infer state from the order of `event` records.
 
+### Server-ready import checklist
+
+The importer may write the completion marker only after every item below is
+persisted. These are the records the server's current read paths need to serve a
+room without startup derivation or a background repair pass.
+
+| Data                           | Current server read path                                                                                           | Current backing store                                                                | Required import output                                                                                                                                                                                       |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| HAMT nodes                     | `rooms::state_hamt::Store::get_node` / `read_node_verified`                                                        | mtxdb `State` shard                                                                  | Every node reachable from each imported root, encoded with the server's rezzy HAMT codec and structural key.                                                                                                 |
+| Current room root              | `rooms::state::get_room_state_hamt`                                                                                | RocksDB `roomid_roothandle` (although writes also publish to mtxdb)                  | The final current-state `RootHandle` for the room in mtxdb's room-roots collection.                                                                                                                          |
+| Per-event state root           | `rooms::state::get_roothandle`, after resolving short event ID in `rooms::short`                                   | RocksDB `shorteventid_roothandle` (although writes also publish to mtxdb)            | A `RootHandle` for every imported event whose state snapshot the server may query, keyed so the server can find it from the event ID.                                                                        |
+| Short IDs used by state leaves | `rooms::short::get_shorteventid`, `get_shortstatekey`, and their reverse lookups                                   | RocksDB short-ID maps and counters                                                   | Stable event and state-key IDs plus the reverse mappings required to resolve every HAMT leaf.                                                                                                                |
+| Direct auth edges              | `rooms::auth_chain::get_auth_chain_inner` via `timeline::multi_get_shortauthevents`; also state-event auth lookups | RocksDB `shorteventid_shortauthevents`; mtxdb has shadow-written full event-ID edges | Auth-event IDs for every imported event, in the mtxdb edge layout.                                                                                                                                           |
+| Transitive auth closure        | `rooms::auth_chain::Data::get_cached_eventid_authchain`                                                            | RocksDB `shorteventid_authchain`, with an in-memory cache                            | The complete closure bitmap for every event in the representation used by the server, or a server change to read the imported mtxdb closure directly. A cache miss must not trigger a rebuild after startup. |
+
+`mtxdb::events::EventAdapter` already has persisted-closure reads, but the live
+`rooms::auth_chain` service does not call them. Its `get_auth_chain` path walks
+the RocksDB short-auth edge table on a cache miss. Therefore writing mtxdb
+closures alone does not currently make the server consume them; the server-side
+cutover must precede the importer work that targets those records.
+
+The root and closure rows above are derived from the complete event DAG and
+verdicts during the offline import. The marker is written only after they and
+the reachable HAMT nodes are committed. Round-trip validation must query the
+server adapters and compare the imported room's current state and per-event
+state against the source room before this checklist is considered satisfied.
+
 ## Auth closures
 
 Auth closures are not exported. They are a pure function of the `auth_events`
