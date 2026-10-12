@@ -9,29 +9,19 @@
 
 use std::sync::Arc;
 
-use mtxdb::ShardType;
+pub use mtxdb::interop::{DATA_FORMAT, ImportMarker};
+use mtxdb::{
+	ShardType,
+	interop::{
+		decode_import_marker, encode_import_marker, import_marker_collection_id,
+		import_marker_node_id,
+	},
+};
 
 use crate::{
 	StorageError,
-	keys::derive_id,
 	store::{CollectionId, MtxdbStore, MtxdbTransaction, NodeId},
 };
-
-/// Version byte of the marker value encoding.
-const MARKER_VERSION: u8 = 1;
-
-/// Version of the export/import data contract the marker vouches for. Bump it
-/// when the stored layout changes incompatibly, so an older database is
-/// refused instead of misread.
-pub const DATA_FORMAT: u8 = 1;
-
-/// What an import (or a fresh install) recorded.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ImportMarker {
-	pub data_format: u8,
-	/// Events imported. Zero for a fresh install.
-	pub events: u64,
-}
 
 #[derive(Clone)]
 pub struct MarkerAdapter {
@@ -42,14 +32,14 @@ impl MarkerAdapter {
 	#[must_use]
 	pub fn new(store: Arc<MtxdbStore>) -> Self { Self { store } }
 
-	fn collection() -> CollectionId { derive_id(b"sys", b"import-marker") }
+	fn collection() -> CollectionId { import_marker_collection_id() }
 
-	fn node() -> NodeId { derive_id(b"marker", b"import") }
+	fn node() -> NodeId { import_marker_node_id() }
 
 	pub fn get(&self) -> Result<Option<ImportMarker>, StorageError> {
 		self.store
 			.get(ShardType::ServerInfo, &Self::collection(), Self::node())?
-			.map_or(Ok(None), |bytes| Self::decode(&bytes).map(Some))
+			.map_or(Ok(None), |bytes| decode_import_marker(&bytes).map(Some))
 	}
 
 	/// Stage the marker in `tx`. The importer calls this last, so the marker
@@ -59,23 +49,12 @@ impl MarkerAdapter {
 		tx: &MtxdbTransaction<'_>,
 		marker: ImportMarker,
 	) -> Result<(), StorageError> {
-		let mut out = vec![MARKER_VERSION, marker.data_format];
-		out.extend_from_slice(&marker.events.to_le_bytes());
-		tx.put(ShardType::ServerInfo, Self::collection(), Self::node(), &out)
-	}
-
-	fn decode(bytes: &[u8]) -> Result<ImportMarker, StorageError> {
-		let malformed = || StorageError::Corrupt("malformed import marker".to_owned());
-		let (&version, rest) = bytes.split_first().ok_or_else(malformed)?;
-		if version != MARKER_VERSION {
-			return Err(StorageError::Corrupt("unknown import marker version".to_owned()));
-		}
-		let (&data_format, rest) = rest.split_first().ok_or_else(malformed)?;
-		let (events, _) = rest.split_first_chunk::<8>().ok_or_else(malformed)?;
-		Ok(ImportMarker {
-			data_format,
-			events: u64::from_le_bytes(*events),
-		})
+		tx.put(
+			ShardType::ServerInfo,
+			Self::collection(),
+			Self::node(),
+			&encode_import_marker(marker),
+		)
 	}
 }
 
@@ -112,9 +91,17 @@ mod tests {
 	}
 
 	#[test]
+	fn shared_layout_preserves_the_existing_marker_bytes() {
+		let marker = ImportMarker { data_format: DATA_FORMAT, events: 42 };
+		let existing_bytes = [1_u8, 1, 42, 0, 0, 0, 0, 0, 0, 0];
+		assert_eq!(encode_import_marker(marker).as_slice(), existing_bytes.as_slice());
+		assert_eq!(decode_import_marker(&existing_bytes).unwrap(), marker);
+	}
+
+	#[test]
 	fn decode_rejects_truncated_and_unknown_versions() {
-		let _error = MarkerAdapter::decode(&[]).unwrap_err();
-		let _error = MarkerAdapter::decode(&[MARKER_VERSION, 1, 0, 0]).unwrap_err();
-		let _error = MarkerAdapter::decode(&[9, 1, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap_err();
+		let _error = decode_import_marker(&[]).unwrap_err();
+		let _error = decode_import_marker(&[1, 1, 0, 0]).unwrap_err();
+		let _error = decode_import_marker(&[9, 1, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap_err();
 	}
 }

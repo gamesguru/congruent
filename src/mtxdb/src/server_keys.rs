@@ -8,46 +8,18 @@
 
 use std::sync::Arc;
 
-use mtxdb::ShardType;
-
-use crate::{
-	StorageError,
-	keys::{server_key_record_id, server_keys_collection_id},
-	store::MtxdbStore,
+pub use mtxdb::interop::KeyRecordKind;
+use mtxdb::{
+	ShardType,
+	interop::{
+		decode_server_key, encode_server_key, server_key_record_id, server_keys_collection_id,
+	},
 };
 
-/// Version byte of the key record value encoding.
-const KEY_RECORD_VERSION: u8 = 1;
-
-/// Which of an origin's records.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum KeyRecordKind {
-	/// Cumulative `verify_keys` and `old_verify_keys` ever seen.
-	Historical,
-	/// Key ids bound only through a notary so far.
-	Provisional,
-	/// Key ids observed as currently active by a direct fetch.
-	Corroborated,
-	/// The last verbatim self-signed payload, re-served by the notary.
-	Notary,
-}
+use crate::{StorageError, store::MtxdbStore};
 
 /// A key record's kind, origin bytes, and serialized payload.
 pub type KeyRecord = (KeyRecordKind, Vec<u8>, Vec<u8>);
-
-impl KeyRecordKind {
-	const ALL: [Self; 4] =
-		[Self::Historical, Self::Provisional, Self::Corroborated, Self::Notary];
-
-	const fn tag(self) -> &'static [u8] {
-		match self {
-			| Self::Historical => b"historical",
-			| Self::Provisional => b"provisional",
-			| Self::Corroborated => b"corroborated",
-			| Self::Notary => b"notary",
-		}
-	}
-}
 
 #[derive(Clone)]
 pub struct ServerKeysAdapter {
@@ -65,11 +37,11 @@ impl ServerKeysAdapter {
 		kind: KeyRecordKind,
 		origin: &[u8],
 	) -> Result<Option<Vec<u8>>, StorageError> {
-		let node = server_key_record_id(kind.tag(), origin);
+		let node = server_key_record_id(kind, origin);
 		self.store
 			.get(ShardType::ServerInfo, &server_keys_collection_id(), node)?
 			.map_or(Ok(None), |bytes| {
-				let (stored_origin, payload) = Self::decode(&bytes)?;
+				let (stored_origin, payload) = decode_server_key(&bytes)?;
 				Ok((stored_origin == origin).then(|| payload.to_vec()))
 			})
 	}
@@ -81,10 +53,10 @@ impl ServerKeysAdapter {
 		let records = self.store.scan(ShardType::ServerInfo, &collection)?;
 		let mut out = Vec::with_capacity(records.len());
 		for (node, bytes) in records {
-			let (origin, payload) = Self::decode(&bytes)?;
+			let (origin, payload) = decode_server_key(&bytes)?;
 			let kind = KeyRecordKind::ALL
 				.into_iter()
-				.find(|kind| server_key_record_id(kind.tag(), origin) == node);
+				.find(|kind| server_key_record_id(*kind, origin) == node);
 			let Some(kind) = kind else {
 				return Err(StorageError::Corrupt(
 					"signing-key record id does not match origin".to_owned(),
@@ -108,14 +80,14 @@ impl ServerKeysAdapter {
 		if payload.is_empty() {
 			return Err(StorageError::Corrupt("empty signing-key payload".to_owned()));
 		}
-		let node = server_key_record_id(kind.tag(), origin);
+		let node = server_key_record_id(kind, origin);
 		let collection = server_keys_collection_id();
 		if let Some(existing) = self.store.get(ShardType::ServerInfo, &collection, node)? {
-			if Self::decode(&existing)?.0 != origin {
+			if decode_server_key(&existing)?.0 != origin {
 				return Err(StorageError::Corrupt("signing-key record id collision".to_owned()));
 			}
 		}
-		tx.put(ShardType::ServerInfo, collection, node, &Self::encode(origin, payload)?)
+		tx.put(ShardType::ServerInfo, collection, node, &encode_server_key(origin, payload)?)
 	}
 
 	/// Stage deletion of one optional record.
@@ -125,43 +97,14 @@ impl ServerKeysAdapter {
 		kind: KeyRecordKind,
 		origin: &[u8],
 	) -> Result<(), StorageError> {
-		let node = server_key_record_id(kind.tag(), origin);
+		let node = server_key_record_id(kind, origin);
 		let collection = server_keys_collection_id();
 		if let Some(existing) = self.store.get(ShardType::ServerInfo, &collection, node)? {
-			if Self::decode(&existing)?.0 != origin {
+			if decode_server_key(&existing)?.0 != origin {
 				return Err(StorageError::Corrupt("signing-key record id collision".to_owned()));
 			}
 		}
 		tx.remove(ShardType::ServerInfo, collection, node)
-	}
-
-	fn encode(origin: &[u8], payload: &[u8]) -> Result<Vec<u8>, StorageError> {
-		let length = u32::try_from(origin.len())
-			.map_err(|_| StorageError::Corrupt("origin is too large".to_owned()))?;
-		let mut out = Vec::with_capacity(
-			5_usize
-				.saturating_add(origin.len())
-				.saturating_add(payload.len()),
-		);
-		out.push(KEY_RECORD_VERSION);
-		out.extend_from_slice(&length.to_le_bytes());
-		out.extend_from_slice(origin);
-		out.extend_from_slice(payload);
-		Ok(out)
-	}
-
-	fn decode(bytes: &[u8]) -> Result<(&[u8], &[u8]), StorageError> {
-		let malformed = || StorageError::Corrupt("malformed signing-key record".to_owned());
-		let (&version, rest) = bytes.split_first().ok_or_else(malformed)?;
-		if version != KEY_RECORD_VERSION {
-			return Err(StorageError::Corrupt("unknown signing-key record version".to_owned()));
-		}
-		let (length, rest) = rest.split_first_chunk::<4>().ok_or_else(malformed)?;
-		let length = usize::try_from(u32::from_le_bytes(*length)).map_err(|_| malformed())?;
-		if rest.len() < length {
-			return Err(malformed());
-		}
-		Ok(rest.split_at(length))
 	}
 }
 
@@ -170,6 +113,20 @@ mod tests {
 	use std::fs;
 
 	use super::*;
+
+	#[test]
+	fn shared_layout_preserves_existing_key_record_bytes() {
+		let bytes = encode_server_key(b"a.example", b"payload").unwrap();
+		let old_bytes = [
+			1, 9, 0, 0, 0, b'a', b'.', b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'p', b'a',
+			b'y', b'l', b'o', b'a', b'd',
+		];
+		assert_eq!(bytes.as_slice(), old_bytes.as_slice());
+		assert_eq!(
+			decode_server_key(&old_bytes).unwrap(),
+			(b"a.example".as_slice(), b"payload".as_slice())
+		);
+	}
 
 	#[test]
 	fn records_are_independent_per_kind_and_origin_and_survive_restart() {

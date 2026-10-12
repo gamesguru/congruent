@@ -6,35 +6,16 @@
 
 use std::sync::Arc;
 
-use mtxdb::ShardType;
+pub use mtxdb::interop::Verdict;
+use mtxdb::{
+	ShardType,
+	interop::{decode_verdict, encode_verdict, event_record_id, event_verdict_collection_id},
+};
 
 use crate::{
 	StorageError,
-	keys::{event_record_id, event_verdict_collection_id},
 	store::{CollectionId, MtxdbStore, NodeId},
 };
-
-/// Version byte of the verdict value encoding.
-const VERDICT_VERSION: u8 = 1;
-const HAS_REJECTION: u8 = 1;
-const HAS_SOFT_FAIL: u8 = 1 << 1;
-const HAS_REDACTION: u8 = 1 << 2;
-
-/// Everything recorded about an event beyond its body and edges.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Verdict {
-	pub rejection: Option<u8>,
-	pub soft_fail: Option<u8>,
-	/// Event id of the redaction that redacted this event.
-	pub redacted_by: Option<Vec<u8>>,
-}
-
-impl Verdict {
-	#[must_use]
-	pub fn is_empty(&self) -> bool {
-		self.rejection.is_none() && self.soft_fail.is_none() && self.redacted_by.is_none()
-	}
-}
 
 #[derive(Clone)]
 pub struct VerdictAdapter {
@@ -52,7 +33,7 @@ impl VerdictAdapter {
 		self.store
 			.get(ShardType::EventDag, &event_verdict_collection_id(&node), node)?
 			.map_or(Ok(None), |bytes| {
-				let (stored_event, verdict) = Self::decode(&bytes)?;
+				let (stored_event, verdict) = decode_verdict(&bytes)?;
 				Ok((stored_event == event_id).then_some(verdict))
 			})
 	}
@@ -83,10 +64,13 @@ impl VerdictAdapter {
 				.get_many(ShardType::EventDag, &collection, &nodes)?;
 
 			for ((idx, _node, event_id), value) in entries.into_iter().zip(values) {
-				let verdict = value.and_then(|bytes| {
-					let (stored_event, verdict) = Self::decode(&bytes).ok()?;
-					(stored_event == event_id.as_slice()).then_some(verdict)
-				});
+				let verdict = match value {
+					| Some(bytes) => {
+						let (stored_event, verdict) = decode_verdict(&bytes)?;
+						(stored_event == event_id.as_slice()).then_some(verdict)
+					},
+					| None => None,
+				};
 				results[idx] = verdict;
 			}
 		}
@@ -110,7 +94,7 @@ impl VerdictAdapter {
 				.collection_version(ShardType::EventDag, &collection)?;
 			let mut verdict = match self.store.get(ShardType::EventDag, &collection, node)? {
 				| Some(bytes) => {
-					let (stored_event, verdict) = Self::decode(&bytes)?;
+					let (stored_event, verdict) = decode_verdict(&bytes)?;
 					if stored_event != event_id {
 						return Err(StorageError::Corrupt(
 							"event record id collision in verdicts".to_owned(),
@@ -124,16 +108,7 @@ impl VerdictAdapter {
 
 			let tx = self.store.begin_transaction();
 			tx.expect_collection_version(ShardType::EventDag, collection, version)?;
-			if verdict.is_empty() {
-				tx.remove(ShardType::EventDag, collection, node)?;
-			} else {
-				tx.put(
-					ShardType::EventDag,
-					collection,
-					node,
-					&Self::encode(event_id, &verdict)?,
-				)?;
-			}
+			self.stage(&tx, event_id, &verdict)?;
 			match tx.commit() {
 				| Err(StorageError::StaleRead { .. }) if attempts < 3 => {
 					attempts = attempts
@@ -145,75 +120,32 @@ impl VerdictAdapter {
 		}
 	}
 
-	fn encode(event_id: &[u8], verdict: &Verdict) -> Result<Vec<u8>, StorageError> {
-		let too_large = || StorageError::Corrupt("verdict field is too large".to_owned());
-		let mut flags = 0_u8;
-		if verdict.rejection.is_some() {
-			flags |= HAS_REJECTION;
+	/// Stage the event's whole verdict in `tx`, replacing any stored one, so an
+	/// importer can commit verdicts together with other records (and the import
+	/// marker) in one transaction. An empty verdict stages a removal. Staging
+	/// the same verdict again is idempotent, so an interrupted import can be
+	/// re-run.
+	pub fn stage(
+		&self,
+		tx: &crate::store::MtxdbTransaction<'_>,
+		event_id: &[u8],
+		verdict: &Verdict,
+	) -> Result<(), StorageError> {
+		let node = event_record_id(event_id);
+		let collection = event_verdict_collection_id(&node);
+		if let Some(existing) = self.store.get(ShardType::EventDag, &collection, node)? {
+			let (stored_event, _) = decode_verdict(&existing)?;
+			if stored_event != event_id {
+				return Err(StorageError::Corrupt(
+					"event record id collision in verdicts".to_owned(),
+				));
+			}
 		}
-		if verdict.soft_fail.is_some() {
-			flags |= HAS_SOFT_FAIL;
+		if verdict.is_empty() {
+			tx.remove(ShardType::EventDag, collection, node)
+		} else {
+			tx.put(ShardType::EventDag, collection, node, &encode_verdict(event_id, verdict)?)
 		}
-		if verdict.redacted_by.is_some() {
-			flags |= HAS_REDACTION;
-		}
-
-		let mut out = vec![VERDICT_VERSION, flags];
-		out.extend_from_slice(
-			&u32::try_from(event_id.len())
-				.map_err(|_| too_large())?
-				.to_le_bytes(),
-		);
-		out.extend_from_slice(event_id);
-		out.extend(verdict.rejection);
-		out.extend(verdict.soft_fail);
-		if let Some(redactor) = &verdict.redacted_by {
-			out.extend_from_slice(
-				&u32::try_from(redactor.len())
-					.map_err(|_| too_large())?
-					.to_le_bytes(),
-			);
-			out.extend_from_slice(redactor);
-		}
-		Ok(out)
-	}
-
-	fn decode(bytes: &[u8]) -> Result<(&[u8], Verdict), StorageError> {
-		let malformed = || StorageError::Corrupt("malformed event verdict".to_owned());
-		let take_len = |rest: &[u8]| -> Result<(usize, usize), StorageError> {
-			let (length, _) = rest.split_first_chunk::<4>().ok_or_else(malformed)?;
-			Ok((usize::try_from(u32::from_le_bytes(*length)).map_err(|_| malformed())?, 4))
-		};
-
-		let (&version, rest) = bytes.split_first().ok_or_else(malformed)?;
-		if version != VERDICT_VERSION {
-			return Err(StorageError::Corrupt("unknown event verdict version".to_owned()));
-		}
-		let (&flags, rest) = rest.split_first().ok_or_else(malformed)?;
-		let (length, header) = take_len(rest)?;
-		let rest = rest.get(header..).ok_or_else(malformed)?;
-		if rest.len() < length {
-			return Err(malformed());
-		}
-		let (event_id, mut rest) = rest.split_at(length);
-
-		let mut verdict = Verdict::default();
-		if flags & HAS_REJECTION != 0 {
-			let (&code, tail) = rest.split_first().ok_or_else(malformed)?;
-			verdict.rejection = Some(code);
-			rest = tail;
-		}
-		if flags & HAS_SOFT_FAIL != 0 {
-			let (&code, tail) = rest.split_first().ok_or_else(malformed)?;
-			verdict.soft_fail = Some(code);
-			rest = tail;
-		}
-		if flags & HAS_REDACTION != 0 {
-			let (length, header) = take_len(rest)?;
-			let tail = rest.get(header..).ok_or_else(malformed)?;
-			verdict.redacted_by = Some(tail.get(..length).ok_or_else(malformed)?.to_vec());
-		}
-		Ok((event_id, verdict))
 	}
 }
 
@@ -279,10 +211,55 @@ mod tests {
 			soft_fail: None,
 			redacted_by: Some(b"$r:x".to_vec()),
 		};
-		let bytes = VerdictAdapter::encode(b"$e:x", &verdict).unwrap();
-		assert_eq!(VerdictAdapter::decode(&bytes).unwrap().1, verdict);
+		let bytes = encode_verdict(b"$e:x", &verdict).unwrap();
+		let old_bytes: &[u8] =
+			&[1, 5, 4, 0, 0, 0, b'$', b'e', b':', b'x', 1, 4, 0, 0, 0, b'$', b'r', b':', b'x'];
+		assert_eq!(bytes.as_slice(), old_bytes);
+		assert_eq!(decode_verdict(old_bytes).unwrap().1, verdict);
+		assert_eq!(decode_verdict(&bytes).unwrap().1, verdict);
 		for cut in 0..bytes.len() {
-			assert!(VerdictAdapter::decode(&bytes[..cut]).is_err(), "cut at {cut}");
+			assert!(decode_verdict(&bytes[..cut]).is_err(), "cut at {cut}");
 		}
+	}
+
+	#[test]
+	fn staged_verdicts_commit_replace_and_are_idempotent() {
+		let path = test_path("stage");
+		let _ = fs::remove_dir_all(&path);
+		let event = b"$event:example.com";
+		let cleared = b"$cleared:example.com";
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = VerdictAdapter::new(store.clone());
+		adapter.update(cleared, |v| v.rejection = Some(1)).unwrap();
+
+		let verdict = Verdict {
+			rejection: Some(7),
+			soft_fail: None,
+			redacted_by: Some(b"$redact:example.com".to_vec()),
+		};
+		let tx = store.begin_transaction();
+		adapter.stage(&tx, event, &verdict).unwrap();
+		adapter.stage(&tx, cleared, &Verdict::default()).unwrap();
+		assert!(adapter.get(event).unwrap().is_none(), "staged verdicts are not visible");
+		tx.commit().unwrap();
+		assert_eq!(adapter.get(event).unwrap(), Some(verdict));
+		assert!(adapter.get(cleared).unwrap().is_none(), "an empty verdict removes the record");
+
+		// Re-staging replaces rather than merges.
+		let replacement = Verdict {
+			rejection: None,
+			soft_fail: Some(2),
+			redacted_by: None,
+		};
+		for _ in 0..2 {
+			let tx = store.begin_transaction();
+			adapter.stage(&tx, event, &replacement).unwrap();
+			tx.commit().unwrap();
+			assert_eq!(adapter.get(event).unwrap(), Some(replacement.clone()));
+		}
+
+		drop(adapter);
+		drop(store);
+		let _ = fs::remove_dir_all(&path);
 	}
 }

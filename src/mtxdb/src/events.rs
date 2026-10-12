@@ -2,13 +2,13 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use mtxdb::ShardType;
+use mtxdb::{ShardType, interop::event_record_id};
 use rezzy::bitmap::Bitmap;
 
 use crate::{
 	StorageError,
 	keys::{
-		derive_id, event_locator_collection_id, event_record_id, room_auth_collection_id,
+		derive_id, event_locator_collection_id, room_auth_collection_id,
 		room_event_collection_id, room_prev_collection_id,
 	},
 	store::{CollectionId, MtxdbStore, MtxdbTransaction, NodeId},
