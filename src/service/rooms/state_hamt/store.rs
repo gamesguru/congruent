@@ -147,6 +147,25 @@ impl Store {
 		Ok(node)
 	}
 
+	/// The durable encoded bytes of a node, exactly as stored, or `None` when no
+	/// row exists. Bypasses the node cache: an export must reflect what is on
+	/// disk, not what a staged batch has published into memory.
+	pub fn get_node_bytes(&self, hash: &StructuralHash) -> Result<Option<Vec<u8>>> {
+		match self.db.get_blocking(hash) {
+			| Ok(bytes) if bytes.is_empty() => Ok(None),
+			| Ok(bytes) => Ok(Some(bytes.to_vec())),
+			| Err(error) if error.is_not_found() => Ok(None),
+			| Err(error) => Err(error),
+		}
+	}
+
+	/// The child node hashes recorded in an encoded node.
+	pub fn child_hashes(bytes: &[u8]) -> Result<Vec<StructuralHash>> {
+		PersistedInternalNode::<u64, u64>::decode_v1_unverified(bytes)
+			.map(|node| node.child_hashes)
+			.map_err(|e| err!(Database(error!("{e}"))))
+	}
+
 	/// Read a shadow-written node from mtxdb and verify the full structural
 	/// hash before exposing it. mtxdb keys use only the first 16 hash bytes, so
 	/// the stored value must be checked against the caller's full hash.

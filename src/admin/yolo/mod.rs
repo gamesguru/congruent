@@ -5,6 +5,7 @@ mod federation;
 mod heal;
 mod imports;
 mod misc;
+mod mtxdb_export;
 pub(crate) mod outlier_utils;
 mod outliers;
 mod rejected;
@@ -450,6 +451,20 @@ pub enum YoloCommand {
 		/// Skip signature verification (prevents DB write contention)
 		#[arg(long)]
 		skip_sig_verify: bool,
+	},
+
+	/// Export a room's HAMT nodes, state roots and events to a JSONL file for
+	/// the mtxdb CLI to import.
+	///
+	/// Read-only; reads RocksDB and never touches mtxdb. The file starts with a
+	/// `header` line and ends with an `end` line carrying the counts; a file
+	/// without the `end` line is truncated.
+	ExportMtxdb {
+		/// Room ID
+		room_id: OwnedRoomId,
+		/// Output path. Defaults to `/tmp/mtxdb-export-<room>.jsonl`.
+		#[arg(long)]
+		path: Option<String>,
 	},
 
 	/// Emergency command to re-import outliers from a JSONL file.

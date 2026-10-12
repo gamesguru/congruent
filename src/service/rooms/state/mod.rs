@@ -131,6 +131,7 @@ struct Services {
 	state_hamt: Dep<rooms::state_hamt::Service>,
 	timeline: Dep<rooms::timeline::Service>,
 	pdu_metadata: Dep<rooms::pdu_metadata::Service>,
+	outlier: Dep<rooms::outlier::Service>,
 }
 
 struct Data {
@@ -165,6 +166,7 @@ impl crate::Service for Service {
 				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 				pdu_metadata: args.depend::<rooms::pdu_metadata::Service>("rooms::pdu_metadata"),
+				outlier: args.depend::<rooms::outlier::Service>("rooms::outlier"),
 			},
 			db: Data {
 				mtxdb_state: conduwuit_mtxdb::state::StateAdapter::new(args.mtxdb.clone()),
@@ -1134,6 +1136,9 @@ impl Service {
 			.await
 	}
 }
+
+mod export;
+pub use export::{EXPORT_FORMAT, ExportCounts};
 
 #[cfg(test)]
 mod tests;
