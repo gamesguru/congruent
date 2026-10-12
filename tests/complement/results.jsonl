@@ -177,7 +177,7 @@
 {"Action":"pass","Test":"TestFetchHistoricalJoinedEventDenied"}
 {"Action":"pass","Test":"TestFetchHistoricalSharedEvent"}
 {"Action":"pass","Test":"TestFetchMessagesFromNonExistentRoom"}
-{"Action":"fail","Test":"TestFilter"}
+{"Action":"pass","Test":"TestFilter"}
 {"Action":"pass","Test":"TestFilter/{\"account_data\":\"not_an_object\"}"}
 {"Action":"pass","Test":"TestFilter/{\"account_data\":{\"limit\":\"not_an_int\"}}"}
 {"Action":"pass","Test":"TestFilter/{\"event_fields\":\"not_a_list\"}"}
@@ -192,7 +192,7 @@
 {"Action":"pass","Test":"TestFilter/{\"room\":{\"not_rooms\":\"not_a_list\"}}"}
 {"Action":"pass","Test":"TestFilter/{\"room\":{\"rooms\":\"not_a_list\"}}"}
 {"Action":"pass","Test":"TestFilter/{\"room\":{\"state\":\"not_an_object\"}}"}
-{"Action":"fail","Test":"TestFilter/{\"room\":{\"state\":{\"include_redundant_members\":\"not_a_bool\"}}}"}
+{"Action":"pass","Test":"TestFilter/{\"room\":{\"state\":{\"include_redundant_members\":\"not_a_bool\"}}}"}
 {"Action":"pass","Test":"TestFilter/{\"room\":{\"state\":{\"lazy_load_members\":\"not_a_bool\"}}}"}
 {"Action":"pass","Test":"TestFilter/{\"room\":{\"timeline\":\"not_an_object\"}}"}
 {"Action":"pass","Test":"TestFilter/{\"room\":{\"timeline\":{\"contains_url\":\"not_a_bool\"}}}"}
