@@ -67,12 +67,14 @@ pub(super) async fn export_mtxdb(
 	}
 
 	if rooms.len() > 1 {
+		let output_dir = path
+			.clone()
+			.unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into_owned());
 		self.write_str(&format!(
 			"Exported {} rooms, {} total events to {}",
 			rooms.len(),
 			total_events,
-			path.as_deref()
-				.unwrap_or_else(|| std::env::temp_dir().to_str().unwrap())
+			output_dir
 		))
 		.await?;
 	}
