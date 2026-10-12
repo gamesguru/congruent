@@ -122,6 +122,15 @@ impl StateAdapter {
 		Ok(RoomRoots { version, roots })
 	}
 
+	/// The room's roots collection version, advanced by every committed write
+	/// to it. [`Self::room_roots`] returns the version it read before its scan;
+	/// reading this again afterwards shows whether any root was published in
+	/// between.
+	pub fn roots_version(&self, room_id: &[u8]) -> Result<u64, StorageError> {
+		self.store
+			.collection_version(self.shard, &Self::roots_collection(room_id))
+	}
+
 	/// The truncated ids of every HAMT node stored for a room.
 	pub fn room_node_ids(&self, room_id: &[u8]) -> Result<Vec<NodeId>, StorageError> {
 		Ok(self
@@ -422,6 +431,34 @@ mod tests {
 				.roots
 				.is_empty()
 		);
+
+		drop(adapter);
+		drop(store);
+		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn the_roots_version_advances_when_a_root_is_published() {
+		let path = test_path("roots-version");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = StateAdapter::new(store.clone());
+
+		adapter
+			.publish(room, b"$a:example.com", &[(hash(1), b"n1".to_vec())], b"r1", true)
+			.unwrap();
+		let scanned = adapter.room_roots(room).unwrap();
+		assert_eq!(adapter.roots_version(room).unwrap(), scanned.version);
+
+		// A node-only write does not touch the roots collection.
+		adapter.put_node(room, &hash(2), b"n2").unwrap();
+		assert_eq!(adapter.roots_version(room).unwrap(), scanned.version);
+
+		adapter
+			.publish(room, b"$b:example.com", &[], b"r2", true)
+			.unwrap();
+		assert!(adapter.roots_version(room).unwrap() > scanned.version);
 
 		drop(adapter);
 		drop(store);
