@@ -119,14 +119,14 @@ The importer may write the completion marker only after every item below is
 persisted. These are the records the server's current read paths need to serve a
 room without startup derivation or a background repair pass.
 
-| Data                           | Current server read path                                                                                           | Current backing store                                                                | Required import output                                                                                                                                                                                       |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| HAMT nodes                     | `rooms::state_hamt::Store::get_node` / `read_node_verified`                                                        | mtxdb `State` shard                                                                  | Every node reachable from each imported root, encoded with the server's rezzy HAMT codec and structural key.                                                                                                 |
-| Current room root              | `rooms::state::get_room_state_hamt`                                                                                | RocksDB `roomid_roothandle` (although writes also publish to mtxdb)                  | The final current-state `RootHandle` for the room in mtxdb's room-roots collection.                                                                                                                          |
-| Per-event state root           | `rooms::state::get_roothandle`, after resolving short event ID in `rooms::short`                                   | RocksDB `shorteventid_roothandle` (although writes also publish to mtxdb)            | A `RootHandle` for every imported event whose state snapshot the server may query, keyed so the server can find it from the event ID.                                                                        |
-| Short IDs used by state leaves | `rooms::short::get_shorteventid`, `get_shortstatekey`, and their reverse lookups                                   | RocksDB short-ID maps and counters                                                   | Stable event and state-key IDs plus the reverse mappings required to resolve every HAMT leaf.                                                                                                                |
-| Direct auth edges              | `rooms::auth_chain::get_auth_chain_inner` via `timeline::multi_get_shortauthevents`; also state-event auth lookups | RocksDB `shorteventid_shortauthevents`; mtxdb has shadow-written full event-ID edges | Auth-event IDs for every imported event, in the mtxdb edge layout.                                                                                                                                           |
-| Transitive auth closure        | `rooms::auth_chain::Data::get_cached_eventid_authchain`                                                            | RocksDB `shorteventid_authchain`, with an in-memory cache                            | The complete closure bitmap for every event in the representation used by the server, or a server change to read the imported mtxdb closure directly. A cache miss must not trigger a rebuild after startup. |
+| Data                           | Current server read path                                                                                           | Current backing store                                                                               | Required import output                                                                                                                                                                                       |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| HAMT nodes                     | `rooms::state_hamt::Store::get_node` / `read_node_verified`                                                        | mtxdb `State` shard                                                                                 | Every node reachable from each imported root, encoded with the server's rezzy HAMT codec and structural key.                                                                                                 |
+| Current room root              | `rooms::state::get_room_state_hamt`                                                                                | RocksDB `roomid_roothandle` (although writes also publish to mtxdb)                                 | The final current-state `RootHandle` for the room in mtxdb's room-roots collection.                                                                                                                          |
+| Per-event state root           | `rooms::state::get_roothandle`, after resolving short event ID in `rooms::short`                                   | RocksDB `shorteventid_roothandle` (although writes also publish to mtxdb)                           | A `RootHandle` for every imported event whose state snapshot the server may query, keyed so the server can find it from the event ID.                                                                        |
+| Short IDs used by state leaves | `rooms::short::get_shorteventid`, `get_shortstatekey`, and their reverse lookups                                   | RocksDB short-ID maps; allocation uses the single shared `globals::next_count()` counter in RocksDB | Stable event and state-key IDs plus both reverse mappings required to resolve every HAMT leaf.                                                                                                               |
+| Direct auth edges              | `rooms::auth_chain::get_auth_chain_inner` via `timeline::multi_get_shortauthevents`; also state-event auth lookups | RocksDB `shorteventid_shortauthevents`; mtxdb has shadow-written full event-ID edges                | Auth-event IDs for every imported event, in the mtxdb edge layout.                                                                                                                                           |
+| Transitive auth closure        | `rooms::auth_chain::Data::get_cached_eventid_authchain`                                                            | RocksDB `shorteventid_authchain`, with an in-memory cache                                           | The complete closure bitmap for every event in the representation used by the server, or a server change to read the imported mtxdb closure directly. A cache miss must not trigger a rebuild after startup. |
 
 `mtxdb::events::EventAdapter` already has persisted-closure reads, but the live
 `rooms::auth_chain` service does not call them. Its `get_auth_chain` path walks
@@ -143,16 +143,28 @@ cannot allocate those ids, and a server that still resolves them from RocksDB
 cannot read a leaf the importer wrote. The importer must not write RocksDB, so
 this is a server change that precedes every state write:
 
-1. Back `rooms::short` with an mtxdb adapter: the four maps plus the two
-   counters. The server stays the allocator, and its caches stay in front.
+1. Back the four event/state-key maps in `rooms::short` with an mtxdb adapter:
+   `eventid_shorteventid`, `shorteventid_eventid`, `statekey_shortstatekey`, and
+   `shortstatekey_statekey`. Keep the server's existing API and caches in front
+   of the adapter. Replace the shared global counter for these allocations with
+   mtxdb counter records; today there is one RocksDB counter shared by event,
+   state-key, and room short IDs, not separate event and state-key counters.
 2. Allocation is atomic with the mapping write (one batch), so a crash cannot
-   leave a counter ahead of or behind its maps.
+   leave an event/state-key counter ahead of or behind its mappings. Reverse
+   mappings and forward mappings must commit in the same transaction.
 3. The importer allocates through the same adapter and layouts (shared via
    `mtxdb::interop`), in a deterministic order (events sorted by event ID, state
    keys by first use in that order), so a repeated import yields identical ids
    and therefore identical roots.
-4. The marker records the final counter values; startup refuses a store whose
-   counters are behind the highest mapped id.
+4. The marker records the final event and state-key counter values; startup
+   refuses a store whose counters are behind the highest mapped id.
+
+`roomid_shortroomid` and `roomid_roomversion` are separate RocksDB maps. The
+room short ID is still used by legacy timeline indexes and the current auth
+chain cache key. The root/closure cutover must either remove those uses or
+include the room mapping in the mtxdb adapter; it must not make the importer
+write the legacy RocksDB store. Room-version storage is outside this state
+contract and remains a separate migration decision.
 
 Hash-derived 64-bit ids are rejected: collisions become plausible at scale
 (about 2.7e-4 at 1e8 events) and a wider leaf would change the HAMT codec and
