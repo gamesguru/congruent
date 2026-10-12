@@ -1373,7 +1373,11 @@ async fn test_room_export_fails_when_writer_errors_mid_stream() {
 		.export_room_jsonl(&room_id, &mut writer)
 		.await;
 	assert!(result.is_err(), "a mid-stream write failure must fail the export");
-	assert!(writer.bytes.starts_with(b"{\"t\":\"header\""));
+	// Keys are serialized in sorted order, so `t` is not the first field.
+	assert!(
+		String::from_utf8_lossy(&writer.bytes).contains("\"t\":\"header\""),
+		"the header must have been written before the failure"
+	);
 	assert!(
 		!String::from_utf8_lossy(&writer.bytes).contains("\"t\":\"end\""),
 		"a failed export must not emit a valid end record"
