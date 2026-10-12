@@ -491,7 +491,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 
 	let (written_before, elided_before) =
 		services.rooms.state_hamt.store.write_stats().snapshot();
-	let (new_root, _deferred_nodes) = services
+	let (new_root, deferred_nodes) = services
 		.rooms
 		.state
 		.persist_state_hamt_mutations(
@@ -502,6 +502,14 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 			&lattice,
 		)
 		.expect("bulk mutation failed");
+	// Deferred nodes are not cached before publication, so they must be
+	// published before the new root can be read back.
+	services
+		.rooms
+		.state_hamt
+		.store
+		.publish_nodes(room_id.as_bytes(), &deferred_nodes)
+		.expect("failed to publish deferred nodes");
 	let (written_after, elided_after) = services.rooms.state_hamt.store.write_stats().snapshot();
 
 	let written = written_after
@@ -1091,6 +1099,12 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 		.short
 		.get_or_create_shortroomid(&room_id)
 		.await;
+	// The room has no create event: seed the room version directly so
+	// `redact_pdu` can apply redaction rules.
+	services
+		.rooms
+		.short
+		.set_room_version(&room_id, &slipstream::RoomVersionId::V11);
 	let reason = create_dummy_pdu(&room_id, &redaction, "m.room.redaction", "");
 	services
 		.rooms

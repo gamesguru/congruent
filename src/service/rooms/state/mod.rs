@@ -11,7 +11,7 @@ use conduwuit_core::{
 	},
 	warn,
 };
-use conduwuit_database::{Ignore, Interfix, Map};
+use conduwuit_database::{Batch, Ignore, Interfix, Map, serialize_to_vec};
 
 /// A (add, rem) pair of `(shortstatekey, shorteventid)` from a HAMT delta.
 type HamtDelta = (Vec<(u64, u64)>, Vec<(u64, u64)>);
@@ -425,7 +425,7 @@ impl Service {
 			is_state,
 		)?;
 
-		let mut batch = conduwuit_database::Batch::new();
+		let mut batch = Batch::new();
 
 		// Atomically map the new PDU's shortevent ID to its RootHandle,
 		// and for state events, advance the room's current-state pointer.
@@ -927,7 +927,7 @@ impl Service {
 			&[(event_id.as_bytes(), data.as_slice())],
 			Some(&data),
 		)?;
-		let mut batch = conduwuit_database::Batch::new();
+		let mut batch = Batch::new();
 		self.db
 			.shorteventid_roothandle
 			.batch_put(&mut batch, &shorteventid.to_be_bytes(), &data);
@@ -1076,11 +1076,12 @@ impl Service {
 
 			// Only events actually accepted into the timeline may become citable
 			// forward extremities. A non-outlier event is not automatically
-			// acceptable: its rejection/soft-fail verdict now lives in the
-			// independent `eventid_rejections` / `eventid_softfailed` stores
-			// (not `EventMetadata`), and a non-outlier event can carry such a
-			// marker (mirroring the checks `recalculate_extremities` performs).
-			// Admit it only if it is not an outlier, rejected, or soft-failed.
+			// acceptable: its rejection/soft-fail verdict lives in mtxdb
+			// (`pdu_metadata`), not in `EventMetadata`, and a non-outlier event
+			// can carry one (mirroring the checks `recalculate_extremities`
+			// performs). Admit it only if it is not an outlier, rejected, or
+			// soft-failed. A read error aborts the update; a missing metadata
+			// row means the event is unknown and is skipped.
 			let verdicts = self
 				.services
 				.pdu_metadata
@@ -1114,7 +1115,7 @@ impl Service {
 			let metadata = match self.services.timeline.get_event_metadata(&event_id).await {
 				| Ok(metadata) => metadata,
 				| Err(error) if error.is_not_found() => {
-					debug!(
+					warn!(
 						%room_id, %event_id,
 						"Refusing to persist forward extremity with unknown event metadata",
 					);
@@ -1150,12 +1151,15 @@ impl Service {
 			return Ok(());
 		}
 
+		// Replace the stored set in one batch so a crash cannot leave the room
+		// with no forward extremities between the delete and the puts.
+		let leaves = &self.db.roomid_pduleaves;
+		let mut batch = Batch::new();
 		let prefix = (room_id, Interfix);
-		self.db
-			.roomid_pduleaves
+		leaves
 			.keys_prefix_raw(&prefix)
 			.ignore_err()
-			.ready_for_each(|key| self.db.roomid_pduleaves.remove(key))
+			.ready_for_each(|key| leaves.batch_delete(&mut batch, key))
 			.await;
 
 		// Enforce a hard cap at the DB writer level. Callers may pass more
@@ -1165,9 +1169,10 @@ impl Service {
 		let max_extremities = self.services.globals.max_forward_extremities();
 		let start = eligible.len().saturating_sub(max_extremities);
 		for event_id in &eligible[start..] {
-			let key = (room_id, event_id);
-			self.db.roomid_pduleaves.put_raw(key, event_id);
+			let key = serialize_to_vec((room_id, event_id))?;
+			leaves.batch_put(&mut batch, &key, event_id.as_bytes());
 		}
+		leaves.apply_batch(batch);
 
 		Ok(())
 	}
