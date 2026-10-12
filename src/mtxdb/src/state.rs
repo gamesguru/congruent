@@ -120,3 +120,163 @@ impl StateAdapter {
 		Ok(())
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use std::{fs, path::PathBuf};
+
+	use super::*;
+
+	fn test_path(name: &str) -> PathBuf {
+		std::env::temp_dir().join(format!("conduwuit-mtxdb-state-{name}-{}", std::process::id()))
+	}
+
+	fn hash(seed: u8) -> [u8; 32] { [seed; 32] }
+
+	#[test]
+	fn publish_is_atomic_and_advances_both_roots() {
+		let path = test_path("publish");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let event = b"$event:example.com";
+
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = StateAdapter::new(store.clone());
+		let nodes = [(hash(1), &b"node-one"[..]), (hash(2), &b"node-two"[..])];
+
+		let tx = store.begin_transaction();
+		adapter
+			.publish_state_update(&tx, room, event, &nodes, b"root-bytes", true)
+			.unwrap();
+
+		// Nothing is visible before commit: no root without its nodes.
+		assert!(adapter.root_for_room(room).unwrap().is_none());
+		assert!(adapter.root_for_event(room, event).unwrap().is_none());
+		assert!(
+			adapter
+				.get_nodes(room, &[hash(1), hash(2)])
+				.unwrap()
+				.iter()
+				.all(Option::is_none)
+		);
+
+		tx.commit().unwrap();
+
+		assert_eq!(adapter.root_for_room(room).unwrap().as_deref(), Some(&b"root-bytes"[..]));
+		assert_eq!(
+			adapter.root_for_event(room, event).unwrap().as_deref(),
+			Some(&b"root-bytes"[..])
+		);
+		let got = adapter
+			.get_nodes(room, &[hash(1), hash(3), hash(2)])
+			.unwrap();
+		assert_eq!(got[0].as_deref(), Some(&b"node-one"[..]));
+		assert_eq!(got[1], None);
+		assert_eq!(got[2].as_deref(), Some(&b"node-two"[..]));
+
+		drop(adapter);
+		drop(store);
+		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn non_state_event_does_not_advance_room_root() {
+		let path = test_path("non-state");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = StateAdapter::new(store.clone());
+
+		let tx = store.begin_transaction();
+		adapter
+			.publish_state_update(&tx, room, b"$state:example.com", &[], b"current", true)
+			.unwrap();
+		tx.commit().unwrap();
+
+		let tx = store.begin_transaction();
+		adapter
+			.publish_state_update(&tx, room, b"$message:example.com", &[], b"historical", false)
+			.unwrap();
+		tx.commit().unwrap();
+
+		assert_eq!(adapter.root_for_room(room).unwrap().as_deref(), Some(&b"current"[..]));
+		assert_eq!(
+			adapter
+				.root_for_event(room, b"$message:example.com")
+				.unwrap()
+				.as_deref(),
+			Some(&b"historical"[..])
+		);
+
+		drop(adapter);
+		drop(store);
+		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn rooms_are_isolated() {
+		let path = test_path("isolation");
+		let _ = fs::remove_dir_all(&path);
+		let room_a = b"!a:example.com";
+		let room_b = b"!b:example.com";
+
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = StateAdapter::new(store.clone());
+
+		adapter.put_node(room_a, &hash(7), b"a-node").unwrap();
+		adapter.put_room_root(room_a, b"a-root").unwrap();
+		adapter
+			.put_event_root(room_a, b"$e:example.com", b"a-event-root")
+			.unwrap();
+
+		assert!(adapter.get_nodes(room_b, &[hash(7)]).unwrap()[0].is_none());
+		assert!(adapter.root_for_room(room_b).unwrap().is_none());
+		assert!(
+			adapter
+				.root_for_event(room_b, b"$e:example.com")
+				.unwrap()
+				.is_none()
+		);
+
+		assert_eq!(
+			adapter.get_nodes(room_a, &[hash(7)]).unwrap()[0].as_deref(),
+			Some(&b"a-node"[..])
+		);
+
+		drop(adapter);
+		drop(store);
+		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn state_survives_restart() {
+		let path = test_path("restart");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let event = b"$event:example.com";
+
+		let () = {
+			let store = Arc::new(MtxdbStore::open(&path).unwrap());
+			let adapter = StateAdapter::new(store.clone());
+			let tx = store.begin_transaction();
+			adapter
+				.publish_state_update(&tx, room, event, &[(hash(9), &b"node"[..])], b"root", true)
+				.unwrap();
+			tx.commit().unwrap();
+			store.sync(ShardType::State).unwrap();
+		};
+
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = StateAdapter::new(store);
+		assert_eq!(adapter.root_for_room(room).unwrap().as_deref(), Some(&b"root"[..]));
+		assert_eq!(adapter.root_for_event(room, event).unwrap().as_deref(), Some(&b"root"[..]));
+		assert_eq!(
+			adapter.get_nodes(room, &[hash(9)]).unwrap()[0].as_deref(),
+			Some(&b"node"[..])
+		);
+
+		drop(adapter);
+		let _ = fs::remove_dir_all(path);
+	}
+}

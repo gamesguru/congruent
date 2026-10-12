@@ -128,3 +128,75 @@ pub fn encode_state_key_v1(event_type: &str, state_key: &str) -> Result<Vec<u8>,
 	encoded.extend_from_slice(state_key.as_bytes());
 	Ok(encoded)
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn room_collection_ids_are_deterministic() {
+		let room = b"!room:example.com";
+		assert_eq!(room_state_collection_id(room), room_state_collection_id(room));
+		assert_eq!(room_roots_collection_id(room), room_roots_collection_id(room));
+		assert_eq!(room_event_collection_id(room), room_event_collection_id(room));
+		assert_eq!(room_prev_collection_id(room), room_prev_collection_id(room));
+		assert_eq!(room_auth_collection_id(room), room_auth_collection_id(room));
+	}
+
+	#[test]
+	fn room_collection_kinds_do_not_alias() {
+		let room = b"!room:example.com";
+		let ids = [
+			room_state_collection_id(room),
+			room_roots_collection_id(room),
+			room_event_collection_id(room),
+			room_prev_collection_id(room),
+			room_auth_collection_id(room),
+		];
+		for (i, a) in ids.iter().enumerate() {
+			for b in ids.iter().skip(i + 1) {
+				assert_ne!(a, b, "two collection kinds for one room share an id");
+			}
+		}
+	}
+
+	#[test]
+	fn room_collection_ids_differ_across_rooms() {
+		let a = b"!a:example.com";
+		let b = b"!b:example.com";
+		assert_ne!(room_state_collection_id(a), room_state_collection_id(b));
+		assert_ne!(room_roots_collection_id(a), room_roots_collection_id(b));
+		assert_ne!(room_event_collection_id(a), room_event_collection_id(b));
+		assert_ne!(room_prev_collection_id(a), room_prev_collection_id(b));
+		assert_ne!(room_auth_collection_id(a), room_auth_collection_id(b));
+	}
+
+	#[test]
+	fn hamt_node_id_is_the_structural_hash_prefix() {
+		let mut hash = [0_u8; 32];
+		for (i, byte) in hash.iter_mut().enumerate() {
+			*byte = u8::try_from(i).unwrap();
+		}
+		assert_eq!(hamt_node_id(&hash), hash[..16]);
+
+		// Hashes that share a 16-byte prefix collide; the read path must
+		// verify the full hash, so make the aliasing explicit here.
+		let mut other = hash;
+		other[31] ^= 0xFF;
+		assert_eq!(hamt_node_id(&hash), hamt_node_id(&other));
+	}
+
+	#[test]
+	fn root_node_ids_are_distinct() {
+		let event = b"$event:example.com";
+		assert_ne!(room_root_node_id(), event_root_node_id(event));
+		assert_ne!(event_root_node_id(event), event_root_node_id(b"$other:example.com"));
+		assert_ne!(event_record_id(event), event_root_node_id(event));
+	}
+
+	#[test]
+	fn derive_id_separates_domains() {
+		assert_ne!(derive_id(b"event", b"x"), derive_id(b"root", b"x"));
+		assert_eq!(derive_id(b"event", b"x"), derive_id(b"event", b"x"));
+	}
+}

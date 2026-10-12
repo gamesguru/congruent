@@ -283,3 +283,128 @@ mod tests {
 		let _ = fs::remove_dir_all(path);
 	}
 }
+
+#[cfg(test)]
+mod room_tests {
+	use std::{fs, path::PathBuf};
+
+	use super::*;
+
+	fn test_path(name: &str) -> PathBuf {
+		std::env::temp_dir()
+			.join(format!("conduwuit-mtxdb-events-rooms-{name}-{}", std::process::id()))
+	}
+
+	#[test]
+	fn locator_maps_event_to_room() {
+		let path = test_path("locator");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let event = b"$event:example.com";
+
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = EventAdapter::new(store);
+
+		assert!(adapter.locate_event(event).unwrap().is_none());
+		adapter
+			.write_event_with_edges(room, event, b"body", &[], &[])
+			.unwrap();
+		assert_eq!(adapter.locate_event(event).unwrap().as_deref(), Some(&room[..]));
+		assert!(
+			adapter
+				.locate_event(b"$unknown:example.com")
+				.unwrap()
+				.is_none()
+		);
+
+		drop(adapter);
+		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn same_event_id_in_two_rooms_does_not_clobber() {
+		let path = test_path("two-rooms");
+		let _ = fs::remove_dir_all(&path);
+		let room_a = b"!a:example.com";
+		let room_b = b"!b:example.com";
+		let event = b"$shared:example.com";
+		let prev_a = b"$prev-a:example.com";
+		let prev_b = b"$prev-b:example.com";
+
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = EventAdapter::new(store);
+		adapter
+			.write_event_with_edges(room_a, event, b"in-a", &[prev_a], &[])
+			.unwrap();
+		adapter
+			.write_event_with_edges(room_b, event, b"in-b", &[prev_b], &[])
+			.unwrap();
+
+		assert_eq!(adapter.get_event(room_a, event).unwrap().as_deref(), Some(&b"in-a"[..]));
+		assert_eq!(adapter.get_event(room_b, event).unwrap().as_deref(), Some(&b"in-b"[..]));
+		assert_eq!(adapter.get_prev_events(room_a, event).unwrap(), vec![prev_a.to_vec()]);
+		assert_eq!(adapter.get_prev_events(room_b, event).unwrap(), vec![prev_b.to_vec()]);
+
+		drop(adapter);
+		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn event_in_one_room_is_invisible_to_another() {
+		let path = test_path("invisible");
+		let _ = fs::remove_dir_all(&path);
+		let event = b"$event:example.com";
+
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = EventAdapter::new(store);
+		adapter
+			.write_event_with_edges(b"!a:example.com", event, b"body", &[b"$p:example.com"], &[])
+			.unwrap();
+
+		assert!(
+			adapter
+				.get_event(b"!b:example.com", event)
+				.unwrap()
+				.is_none()
+		);
+		assert!(
+			adapter
+				.get_prev_events(b"!b:example.com", event)
+				.unwrap()
+				.is_empty()
+		);
+
+		drop(adapter);
+		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn edges_and_locator_survive_restart() {
+		let path = test_path("restart");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let event = b"$event:example.com";
+		let prev = b"$prev:example.com";
+		let auth = b"$auth:example.com";
+
+		let () = {
+			let store = Arc::new(MtxdbStore::open(&path).unwrap());
+			let adapter = EventAdapter::new(store.clone());
+			adapter
+				.write_event_with_edges(room, event, b"body", &[prev], &[auth])
+				.unwrap();
+			store.sync(ShardType::EventDag).unwrap();
+			store.sync(ShardType::Edges).unwrap();
+		};
+
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = EventAdapter::new(store);
+		assert_eq!(adapter.locate_event(event).unwrap().as_deref(), Some(&room[..]));
+		assert_eq!(adapter.get_event(room, event).unwrap().as_deref(), Some(&b"body"[..]));
+		assert_eq!(adapter.get_prev_events(room, event).unwrap(), vec![prev.to_vec()]);
+		assert_eq!(adapter.get_auth_chain(room, event).unwrap(), vec![auth.to_vec()]);
+
+		drop(adapter);
+		let _ = fs::remove_dir_all(path);
+	}
+}
