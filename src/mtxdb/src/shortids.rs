@@ -78,9 +78,8 @@ fn split_prefix(bytes: &[u8]) -> Result<(u64, &[u8]), StorageError> {
 
 fn decode_state_key(encoded: &[u8]) -> Result<(String, String), StorageError> {
 	let corrupt = || StorageError::Corrupt("state key record is malformed".to_owned());
-	let rest = match encoded.split_first() {
-		| Some((1, rest)) => rest,
-		| _ => return Err(corrupt()),
+	let Some((1, rest)) = encoded.split_first() else {
+		return Err(corrupt());
 	};
 	let (type_len, rest) = rest.split_first_chunk::<4>().ok_or_else(corrupt)?;
 	let type_len = usize::try_from(u32::from_le_bytes(*type_len)).map_err(|_| corrupt())?;
@@ -200,8 +199,8 @@ impl ShortIdAdapter {
 				next = next.checked_add(1).ok_or_else(|| {
 					StorageError::Corrupt("short id counter overflow".to_owned())
 				})?;
-				self.put(&tx, Map::EventForward, node, &with_prefix(next, event_id))?;
-				self.put(&tx, Map::EventReverse, reverse_node(b"short-eid-rev", next), event_id)?;
+				Self::put(&tx, Map::EventForward, node, &with_prefix(next, event_id))?;
+				Self::put(&tx, Map::EventReverse, reverse_node(b"short-eid-rev", next), event_id)?;
 				allocated = true;
 				next
 			};
@@ -209,7 +208,7 @@ impl ShortIdAdapter {
 		}
 
 		if allocated {
-			self.put_counter(&tx, next)?;
+			Self::put_counter(&tx, next)?;
 			tx.commit()?;
 			*counter = next;
 		}
@@ -240,16 +239,15 @@ impl ShortIdAdapter {
 			.checked_add(1)
 			.ok_or_else(|| StorageError::Corrupt("short id counter overflow".to_owned()))?;
 		let tx = self.store.begin_transaction();
-		self.put(&tx, Map::StateKeyForward, node, &with_prefix(next, &encoded))?;
-		self.put(&tx, Map::StateKeyReverse, reverse_node(b"short-sk-rev", next), &encoded)?;
-		self.put_counter(&tx, next)?;
+		Self::put(&tx, Map::StateKeyForward, node, &with_prefix(next, &encoded))?;
+		Self::put(&tx, Map::StateKeyReverse, reverse_node(b"short-sk-rev", next), &encoded)?;
+		Self::put_counter(&tx, next)?;
 		tx.commit()?;
 		*counter = next;
 		Ok(next)
 	}
 
 	fn put(
-		&self,
 		tx: &MtxdbTransaction<'_>,
 		map: Map,
 		node: NodeId,
@@ -258,7 +256,7 @@ impl ShortIdAdapter {
 		tx.put(ShardType::ServerInfo, map.collection(&node), node, data)
 	}
 
-	fn put_counter(&self, tx: &MtxdbTransaction<'_>, value: u64) -> Result<(), StorageError> {
+	fn put_counter(tx: &MtxdbTransaction<'_>, value: u64) -> Result<(), StorageError> {
 		tx.put(
 			ShardType::ServerInfo,
 			counter_collection(),
