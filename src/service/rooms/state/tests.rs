@@ -1202,6 +1202,18 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 		.pdu_metadata
 		.mark_event_rejected(&rejected, RejectionCode::AuthCheckFailed.tag())
 		.unwrap();
+	// A real export always starts with the room's create event, and the
+	// mtxdb importer refuses a room without one.
+	let create = event_id!("$create:test.conduwuit.local").to_owned();
+	let mut create_json =
+		create_dummy_pdu(&room_id, &create, "m.room.create", "").to_canonical_object();
+	let mut create_content = CanonicalJsonObject::new();
+	create_content
+		.insert("room_version".into(), slipstream::CanonicalJsonValue::String("11".to_owned()));
+	create_json.insert("content".into(), slipstream::CanonicalJsonValue::Object(create_content));
+	let create_pdu = PduEvent::from_id_val(&create, create_json, Some(&room_id)).unwrap();
+	persist_dummy_pdu(&services, &room_id, &create_pdu).await;
+
 	let shortroomid = services
 		.rooms
 		.short
@@ -1228,7 +1240,7 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 		.export_room_jsonl(&room_id, &mut out)
 		.await
 		.unwrap();
-	assert_eq!(counts.events, 4);
+	assert_eq!(counts.events, 5);
 
 	let text = String::from_utf8(out).unwrap();
 	let mut events = std::collections::HashMap::new();
@@ -1352,13 +1364,44 @@ async fn test_keys_export_carries_every_kind_and_payload() {
 		slipstream::codec::from_slice(&by_kind[kind]).expect("key id array")
 	};
 	assert_eq!(ids("provisional"), ["ed25519:B"]);
-	assert_eq!(ids("corroborated"), ["ed25519:A"]);
+	// Every key accepted as active in any response is corroborated, whatever
+	// its source, so the notary-learned B is here too.
+	assert_eq!(ids("corroborated"), ["ed25519:A", "ed25519:B"]);
 	let historical: ServerSigningKeys =
 		slipstream::codec::from_slice(&by_kind["historical"]).unwrap();
 	assert_eq!(historical.verify_keys.len(), 2, "A and B are both in the cumulative record");
 	assert_eq!(by_kind["notary"], notary_body.get().as_bytes(), "notary body is verbatim");
 
-	assert_matches_fixture("tests/fixtures/mtxdb-export/server-keys-v1.jsonl", &text);
+	// A never-seen origin's historical record starts at `valid_until_ts = now`,
+	// the one field that differs between runs. Pin it, then compare the
+	// otherwise exact export with the fixture the CLI importer also reads.
+	let pinned: Vec<String> = text
+		.lines()
+		.map(|line| {
+			let slipstream::json::Value::Object(mut object) =
+				slipstream::codec::from_str(line).unwrap()
+			else {
+				unreachable!()
+			};
+			if object["kind"].as_str() == Some("historical") {
+				let mut keys: ServerSigningKeys =
+					slipstream::codec::from_slice(&by_kind["historical"]).unwrap();
+				keys.valid_until_ts =
+					MilliSecondsSinceUnixEpoch(4_102_444_800_000_u64.try_into().unwrap());
+				object.insert(
+					"payload".to_owned(),
+					slipstream::json::Value::String(
+						STANDARD.encode(slipstream::codec::to_vec(&keys)),
+					),
+				);
+			}
+			slipstream::codec::to_string(&slipstream::json::Value::Object(object))
+		})
+		.collect();
+	assert_matches_fixture(
+		"tests/fixtures/mtxdb-export/server-keys-v1.jsonl",
+		&(pinned.join("\n") + "\n"),
+	);
 }
 
 /// Outliers are exported with `outlier: true`, an event stored as both a
