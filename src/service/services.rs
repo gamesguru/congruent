@@ -213,13 +213,38 @@ impl Services {
 			.next()
 			.await
 			.is_some();
+		let has_mtxdb_events = conduwuit_mtxdb::events::EventAdapter::new(self.mtxdb.clone())
+			.has_any_events()
+			.map_err(|error| {
+				conduwuit::err!(Database(error!("Checking mtxdb event data: {error}")))
+			})?;
+		let has_mtxdb_verdicts =
+			conduwuit_mtxdb::verdicts::VerdictAdapter::new(self.mtxdb.clone())
+				.has_any_records()
+				.map_err(|error| {
+					conduwuit::err!(Database(error!("Checking mtxdb verdict data: {error}")))
+				})?;
+		let has_mtxdb_signing_keys =
+			conduwuit_mtxdb::server_keys::ServerKeysAdapter::new(self.mtxdb.clone())
+				.has_any_records()
+				.map_err(|error| {
+					conduwuit::err!(Database(error!("Checking mtxdb signing-key data: {error}")))
+				})?;
 		if has_legacy_events || has_legacy_signing_keys {
 			return Err(conduwuit::err!(Database(error!(
-				"This database holds events in RocksDB but has not been imported into mtxdb, \
-				 which now stores events, verdicts, state and signing keys exclusively. Make a \
-				 full room export (`!admin yolo export-mtxdb --all`) and global signing-key \
-				 export (`!admin yolo export-mtxdb-keys`), import both with `mtxdb import`, and \
-				 restart. Refusing to start."
+				"This legacy database has no mtxdb import marker and still contains event or \
+				 signing-key data in RocksDB. Export all rooms (`!admin yolo export-mtxdb \
+				 --all`) and global signing keys (`!admin yolo export-mtxdb-keys`), import both \
+				 with `mtxdb import`, then restart. Refusing to start."
+			))));
+		}
+
+		if has_mtxdb_events || has_mtxdb_verdicts || has_mtxdb_signing_keys {
+			return Err(conduwuit::err!(Database(error!(
+				"This database has mtxdb data but no valid import marker, so the offline import \
+				 is incomplete or its marker was lost. Re-run `mtxdb import` with the complete \
+				 export set, or wipe the database and repeat the full offline conversion. \
+				 Refusing to start."
 			))));
 		}
 

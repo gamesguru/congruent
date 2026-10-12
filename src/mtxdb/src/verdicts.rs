@@ -14,6 +14,7 @@ use mtxdb::{
 
 use crate::{
 	StorageError,
+	keys::EVENT_LOCATOR_BUCKETS,
 	store::{CollectionId, MtxdbStore, NodeId},
 };
 
@@ -25,6 +26,20 @@ pub struct VerdictAdapter {
 impl VerdictAdapter {
 	#[must_use]
 	pub fn new(store: Arc<MtxdbStore>) -> Self { Self { store } }
+
+	/// Whether any verdict record exists, for startup's incomplete-import
+	/// check.
+	pub fn has_any_records(&self) -> Result<bool, StorageError> {
+		for bucket in 0..EVENT_LOCATOR_BUCKETS {
+			let mut node = [0_u8; 16];
+			node[..4].copy_from_slice(&bucket.to_le_bytes());
+			let collection = crate::keys::event_verdict_collection_id(&node);
+			if self.store.has_records(ShardType::EventDag, &collection)? {
+				return Ok(true);
+			}
+		}
+		Ok(false)
+	}
 
 	/// The event's verdict, or `None` when it has none. A record written for a
 	/// different event with the same 128-bit record id is a miss.
@@ -158,6 +173,25 @@ mod tests {
 	fn test_path(name: &str) -> PathBuf {
 		std::env::temp_dir()
 			.join(format!("conduwuit-mtxdb-verdicts-{name}-{}", std::process::id()))
+	}
+
+	#[test]
+	fn has_any_records_observes_only_committed_verdicts() {
+		let path = test_path("has-any-records");
+		let _ = fs::remove_dir_all(&path);
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = VerdictAdapter::new(store.clone());
+		let event = b"$event:example.com";
+
+		assert!(!adapter.has_any_records().unwrap());
+		let tx = store.begin_transaction();
+		adapter
+			.stage(&tx, event, &Verdict { rejection: Some(1), ..Verdict::default() })
+			.unwrap();
+		assert!(!adapter.has_any_records().unwrap());
+		tx.commit().unwrap();
+		assert!(adapter.has_any_records().unwrap());
+		fs::remove_dir_all(&path).unwrap();
 	}
 
 	#[test]

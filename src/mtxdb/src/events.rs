@@ -13,7 +13,7 @@ use rezzy::bitmap::Bitmap;
 use crate::{
 	StorageError,
 	keys::{
-		derive_id, event_locator_collection_id, room_auth_collection_id,
+		EVENT_LOCATOR_BUCKETS, derive_id, event_locator_collection_id, room_auth_collection_id,
 		room_event_collection_id, room_prev_collection_id,
 	},
 	store::{CollectionId, MtxdbStore, MtxdbTransaction, NodeId},
@@ -33,6 +33,23 @@ impl EventAdapter {
 	fn prev_collection(room_id: &[u8]) -> CollectionId { room_prev_collection_id(room_id) }
 
 	fn auth_collection(room_id: &[u8]) -> CollectionId { room_auth_collection_id(room_id) }
+
+	/// Whether any event locator exists. Used by startup to distinguish a fresh
+	/// mtxdb from an interrupted import whose completion marker was not written.
+	pub fn has_any_events(&self) -> Result<bool, StorageError> {
+		for bucket in 0..EVENT_LOCATOR_BUCKETS {
+			let mut node = [0_u8; 16];
+			node[..4].copy_from_slice(&bucket.to_le_bytes());
+			if self
+				.store
+				.has_records(ShardType::EventDag, &event_locator_collection_id(&node))?
+			{
+				return Ok(true);
+			}
+		}
+
+		Ok(false)
+	}
 
 	/// Look up an event by event_id alone using the global event locator.
 	///
@@ -424,12 +441,15 @@ mod tests {
 		let () = {
 			let store = Arc::new(MtxdbStore::open(&path).unwrap());
 			let adapter = EventAdapter::new(store.clone());
+			assert!(!adapter.has_any_events().unwrap());
 			let tx = store.begin_transaction();
 			adapter
 				.put_event_with_edges(&tx, room_id, event_id, b"body", &[prev], &[auth])
 				.unwrap();
 			assert!(adapter.get_event(room_id, event_id).unwrap().is_none());
+			assert!(!adapter.has_any_events().unwrap());
 			tx.commit().unwrap();
+			assert!(adapter.has_any_events().unwrap());
 			assert_eq!(
 				adapter.get_event(room_id, event_id).unwrap().as_deref(),
 				Some(&b"body"[..])

@@ -30,6 +30,13 @@ impl ServerKeysAdapter {
 	#[must_use]
 	pub fn new(store: Arc<MtxdbStore>) -> Self { Self { store } }
 
+	/// Whether any signing-key record exists, for startup's incomplete-import
+	/// check.
+	pub fn has_any_records(&self) -> Result<bool, StorageError> {
+		self.store
+			.has_records(ShardType::ServerInfo, &server_keys_collection_id())
+	}
+
 	/// The record's payload. The origin is stored beside it, because the record
 	/// id is only 128 bits; a record for a different origin is a miss.
 	pub fn get(
@@ -110,7 +117,7 @@ impl ServerKeysAdapter {
 
 #[cfg(test)]
 mod tests {
-	use std::fs;
+	use std::{fs, sync::Arc};
 
 	use super::*;
 
@@ -126,6 +133,25 @@ mod tests {
 			decode_server_key(&old_bytes).unwrap(),
 			(b"a.example".as_slice(), b"payload".as_slice())
 		);
+	}
+
+	#[test]
+	fn has_any_records_observes_only_committed_keys() {
+		let path = std::env::temp_dir()
+			.join(format!("conduwuit-mtxdb-server-keys-has-any-{}", std::process::id()));
+		let _ = fs::remove_dir_all(&path);
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = ServerKeysAdapter::new(store.clone());
+
+		assert!(!adapter.has_any_records().unwrap());
+		let tx = store.begin_transaction();
+		adapter
+			.put(&tx, KeyRecordKind::Historical, b"example.org", b"payload")
+			.unwrap();
+		assert!(!adapter.has_any_records().unwrap());
+		tx.commit().unwrap();
+		assert!(adapter.has_any_records().unwrap());
+		fs::remove_dir_all(&path).unwrap();
 	}
 
 	#[test]

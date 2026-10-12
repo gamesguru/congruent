@@ -1,13 +1,14 @@
 # mtxdb JSONL interchange
 
 The server export is the interchange contract. A full migration consists of one
-room export for every room, plus the global signing-key export. mtxdb rebuilds
-event locators, edges, state roots, HAMT nodes, and auth closures from the
-imported events; those derived structures are not serialized.
+room export for every room, plus the global signing-key export. The offline
+importer rebuilds event locators, edges, state roots, HAMT nodes, and auth
+closures from the imported events; those derived structures are not serialized.
 
-The importer must finish the complete import and write the import marker as the
-final transaction. The server refuses to start against an existing RocksDB event
-or signing-key store without a compatible marker.
+The importer must finish the complete import, including all derived state, and
+write the import marker as the final transaction. The server refuses to start
+without a compatible marker when it detects legacy or imported event data.
+Startup does not derive or backfill imported state.
 
 ## Room export
 
@@ -61,7 +62,8 @@ The `end` record carries the event count:
 Importers validate that every event belongs to the room in the header, that the
 PDU identity agrees with `event_id`, and that edge fields agree with the PDU.
 They persist verdict codes and redaction metadata alongside the original PDU,
-then rebuild derived state through mtxdb's native APIs.
+then rebuild all derived state through mtxdb's native APIs before committing the
+marker.
 
 ### Verdicts and the outlier flag
 
@@ -91,9 +93,9 @@ so, the event is rejected, or the importer forces a rejection because of a
 missing or rejected auth event. A verdict record is written for every outlier,
 even one with no other verdict, because the flag is part of the verdict record.
 
-Whatever the storage choice, soft-failed outliers must still be inputs to state
-derivation. The importer does not write state, so whatever derives it later must
-not skip an event only because it is an outlier with a soft-fail verdict.
+Soft-failed outliers remain inputs to offline state derivation. The importer
+must not skip an event only because it is stored as an outlier or carries a
+soft-fail verdict. Rejected events are excluded from resolved state.
 
 Hiding rejected and soft-failed events from clients is a read-time filter on the
 verdicts.
@@ -105,19 +107,11 @@ entries, short ids, locators, or auth closures. They are derived from the
 events, and the on-disk layout belongs to mtxdb, so the format does not
 serialize it.
 
-How an importer reproduces the server's state from `event` records is
-deliberately deferred. Open questions for a later revision:
-
-- Whether the importer re-runs state resolution over the imported DAG, or the
-  export gains an explicit per-room state record (type, state key, event ID
-  entries for each current-state tip) that the importer only has to load.
-- How the importer checks that its derived state agrees with the exporting
-  server's, for example by comparing a per-room digest.
-- How events whose verdicts affect resolution (`rejected`, `soft_failed`,
-  `outlier`) are treated while deriving state.
-
-Until that is specified, `v1` consumers must not assume any state is present,
-and must not infer one from the order of `event` records.
+For each room, the offline importer computes state resolution from the complete
+event DAG and verdicts, then writes the resulting roots and HAMT nodes together
+with the per-event roots the server reads. It also builds the auth closures from
+the imported `auth_events` graph. The importer must finish these writes before
+it writes the marker. It must not infer state from the order of `event` records.
 
 ## Auth closures
 
@@ -126,9 +120,9 @@ edges already carried by every `event` record, so the importer rebuilds them.
 Shipping them would add a second source of truth that has to be validated
 against the edges, and their size grows with chain length for every event.
 
-The importer builds closures in one pass in the order the events arrive, which
-is dependency order: an event's closure is the union of each auth event's
-closure plus that auth event itself. This is the same construction as rezzy's
+The importer builds closures from the complete auth graph, independent of input
+record order: an event's closure is the union of each auth event's closure plus
+that auth event itself. This is the same construction as rezzy's
 `AuthGraph::build`, which keeps a transitive-ancestor bitmap per event over a
 dense index.
 
@@ -149,9 +143,9 @@ way the server records an event it could not authorize:
   event's verdict. It is reported as a gap, like rezzy's backward extremities.
 - An event that already carries a stronger verdict in the export keeps it. The
   importer only adds a verdict to an event that has none.
-- Such an event is excluded from forward extremities and from derived state,
-  like any other outlier or rejected event. Its closure, if stored, covers only
-  the auth events that were present; no consumer may treat it as complete.
+- Such an event is excluded from forward extremities and resolved state. Its
+  closure covers only auth events present in the export; no consumer may treat
+  it as complete.
 
 If the `m.room.create` event is the one that is missing or rejected, nothing in
 the room can be authorized, so the importer fails that room as a whole. Other

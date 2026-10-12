@@ -50,6 +50,19 @@ impl MtxdbStore {
 			.collect()
 	}
 
+	/// Whether a collection has any live records, without materializing them.
+	pub fn has_records(
+		&self,
+		shard: ShardType,
+		collection: &CollectionId,
+	) -> Result<bool, StorageError> {
+		let mut records = self.db.pool(shard).scan_collection(collection)?;
+		match records.next() {
+			| Some(record) => record.map(|_| true),
+			| None => Ok(false),
+		}
+	}
+
 	/// The collection's logical version, advanced by every committed write to
 	/// it. Read it before the data it guards, then pass it to
 	/// [`MtxdbTransaction::expect_collection_version`] so the commit fails if
