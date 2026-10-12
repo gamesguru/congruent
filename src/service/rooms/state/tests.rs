@@ -1305,10 +1305,8 @@ async fn test_keys_export_carries_every_kind_and_payload() {
 	let (_guard, _server, services) = setup_test_services().await;
 	let origin: slipstream::OwnedServerName = "keys.example.org".try_into().unwrap();
 	let payload = |ids: &[(&str, u8)]| {
-		let mut keys = ServerSigningKeys::new(
-			origin.to_owned(),
-			MilliSecondsSinceUnixEpoch(4_102_444_800_000_u64.try_into().unwrap()),
-		);
+		let mut keys =
+			ServerSigningKeys::new(origin.clone(), MilliSecondsSinceUnixEpoch(4_102_444_800_000));
 		for (id, byte) in ids {
 			keys.verify_keys.insert(
 				format!("ed25519:{id}").try_into().unwrap(),
@@ -1386,8 +1384,7 @@ async fn test_keys_export_carries_every_kind_and_payload() {
 			if object["kind"].as_str() == Some("historical") {
 				let mut keys: ServerSigningKeys =
 					slipstream::codec::from_slice(&by_kind["historical"]).unwrap();
-				keys.valid_until_ts =
-					MilliSecondsSinceUnixEpoch(4_102_444_800_000_u64.try_into().unwrap());
+				keys.valid_until_ts = MilliSecondsSinceUnixEpoch(4_102_444_800_000);
 				object.insert(
 					"payload".to_owned(),
 					slipstream::json::Value::String(
