@@ -76,13 +76,20 @@ the event is the server's choice.
   extremities. This server (like Tuwunel) stores it as an outlier: it keeps its
   state at the event but is never given a timeline position. Synapse instead
   persists it as a normal event with a `soft_failed` flag. The exporter sends
-  `outlier: true` for such an event because that is where it is stored, and the
-  importer sets `outlier` for it too.
+  `outlier: true` for such an event because that is where it is stored. The
+  importer does not derive `outlier` from `soft_failed`; it keeps the exported
+  flag.
 - A rejected event never updates state, is not relayed to clients, and is not
   used as a `prev_event` by new events. It may still be part of the DAG. The
-  importer stores it as an outlier and records the rejection verdict.
+  importer stores it as an outlier (`outlier` is set whenever `rejected` is) and
+  records the rejection verdict.
 - An event with a missing auth event cannot pass the auth-events check, so it is
   rejected (see "Auth closures") and stored as an outlier.
+
+The importer therefore sets `outlier` in exactly three cases: the export says
+so, the event is rejected, or the importer forces a rejection because of a
+missing or rejected auth event. A verdict record is written for every outlier,
+even one with no other verdict, because the flag is part of the verdict record.
 
 Whatever the storage choice, soft-failed outliers must still be inputs to state
 derivation. The importer does not write state, so whatever derives it later must
