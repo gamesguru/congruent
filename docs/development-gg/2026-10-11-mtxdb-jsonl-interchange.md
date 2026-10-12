@@ -44,6 +44,28 @@ The `end` record carries the event count:
 {"t":"end","events":20}
 ```
 
+### Verdicts and the outlier flag
+
+`outlier` is an implementation concept, not a spec one: an event stored without
+known state at that event. It is independent of the verdicts and the importer
+must not derive one from the other wholesale. The Matrix server-server spec
+(checks on receipt of a PDU, "Soft failure", "Rejection") decides it:
+
+- A soft-failed event is a valid member of the DAG. It participates in state
+  resolution, can appear in the current state, and is served over federation.
+  It is only withheld from clients and kept out of forward extremities. The
+  importer must preserve its `outlier` flag as exported and must never set
+  `outlier` because of `soft_failed`.
+- A rejected event never updates state, is not relayed to clients, and is not
+  used as a `prev_event` by new events. It may still be part of the DAG. The
+  importer may store a rejected event as an outlier, but in either case it
+  must record the rejection verdict.
+- An event with a missing auth event cannot pass the auth-events check, so it
+  is rejected (see "Auth closures"). It is stored as an outlier.
+
+Hiding rejected and soft-failed events from clients is a read-time filter on
+the verdicts. It does not require changing where the event is stored.
+
 Importers validate that every event belongs to the room in the header, that
 the PDU identity agrees with `event_id`, and that edge fields agree with the
 PDU. They persist verdict codes and redaction metadata alongside the original
@@ -69,6 +91,49 @@ deliberately deferred. Open questions for a later revision:
 
 Until that is specified, `v1` consumers must not assume any state is present,
 and must not infer one from the order of `event` records.
+
+## Auth closures
+
+Auth closures are not exported. They are a pure function of the `auth_events`
+edges already carried by every `event` record, so the importer rebuilds them.
+Shipping them would add a second source of truth that has to be validated
+against the edges, and their size grows with chain length for every event.
+
+The importer builds closures in one pass in the order the events arrive,
+which is dependency order: an event's closure is the union of each auth
+event's closure plus that auth event itself. This is the same construction as
+rezzy's `AuthGraph::build`, which keeps a transitive-ancestor bitmap per event
+over a dense index.
+
+A missing auth event never fails the whole import, and the affected event is
+not dropped. The importer stores it as an outlier with a rejection verdict, the
+same way the server records an event it could not authorize:
+
+- An event with an `auth_events` id that is not in the room's export is stored
+  with `outlier: true` and rejection code `MissingAuthEvent` (4). That code is
+  retryable: the event is unjudged, not known bad, and a later backfill that
+  supplies the auth event can clear it.
+- An event that cites an auth event the importer has itself rejected is stored
+  with `outlier: true` and `DependsOnRejectedAuthEvent` (2), which is permanent.
+  The importer applies this in dependency order, so the rejection cascades to
+  every descendant through `auth_events`. This mirrors rezzy's
+  `check_auth_chain`, which rejects events that cite a rejected auth event.
+- A missing `prev_events` id is not an auth problem and does not change the
+  event's verdict. It is reported as a gap, like rezzy's backward extremities.
+- An event that already carries a stronger verdict in the export keeps it. The
+  importer only adds a verdict to an event that has none.
+- Such an event is excluded from forward extremities and from derived state,
+  like any other outlier or rejected event. Its closure, if stored, covers only
+  the auth events that were present; no consumer may treat it as complete.
+
+If the `m.room.create` event is the one that is missing or rejected, nothing in
+the room can be authorized, so the importer fails that room as a whole. Other
+rooms are unaffected.
+
+The import returns a warning list and does not abort. Each entry names the
+event, the class, and the cause: missing prev, missing auth, or cascaded from a
+rejected auth event, so a lossy import is distinguishable from a clean one. The
+final marker transaction records the per-class counts.
 
 ## Global signing-key export
 
