@@ -872,7 +872,8 @@ async fn test_yolo_reorder_timeline() {
 			None,
 			&state_lock,
 		)
-		.await;
+		.await
+		.unwrap();
 
 	// 4. Append Event B
 	let event_b = services
@@ -1329,7 +1330,8 @@ async fn test_set_forward_extremities_excludes_ineligible_candidates() {
 			None,
 			&state_lock,
 		)
-		.await;
+		.await
+		.unwrap();
 	drop(state_lock);
 
 	let extremities: Vec<OwnedEventId> = services
@@ -1387,7 +1389,8 @@ async fn test_set_forward_extremities_all_ineligible_is_noop() {
 		.rooms
 		.state
 		.set_forward_extremities(&room_id, vec![rejected_event_id].into_iter(), None, &state_lock)
-		.await;
+		.await
+		.unwrap();
 	drop(state_lock);
 
 	let extremities: Vec<OwnedEventId> = services
@@ -2562,7 +2565,8 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 			None,
 			&state_lock,
 		)
-		.await;
+		.await
+		.unwrap();
 
 	// 4. Branch 1: Set Room Name to "Name B" (state event)
 	let name_b_event = services
@@ -2598,7 +2602,8 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 			None,
 			&state_lock,
 		)
-		.await;
+		.await
+		.unwrap();
 
 	// 5. Branch 2: Message "Hello C" (non-state event)
 	let message_c_event = services
@@ -2623,7 +2628,8 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 			None,
 			&state_lock,
 		)
-		.await;
+		.await
+		.unwrap();
 
 	// 6. Append Merge Event M: "Hello M" (non-state event)
 	let merge_event = services

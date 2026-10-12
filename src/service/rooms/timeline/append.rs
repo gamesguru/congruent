@@ -274,7 +274,7 @@ where
 			Some(pdu.event_id()),
 			state_lock,
 		)
-		.await;
+		.await?;
 
 	let insert_lock = self.mutex_insert.lock(room_id).await;
 	info!(

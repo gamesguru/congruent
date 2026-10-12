@@ -1048,7 +1048,8 @@ impl Service {
 		event_ids: I,
 		trusted_new_event: Option<&'a EventId>,
 		_state_lock: &'a RoomMutexGuard,
-	) where
+	) -> Result<()>
+	where
 		I: Iterator<Item = OwnedEventId> + Send + 'a,
 	{
 		// Only events that are actually accepted into the timeline may become
@@ -1080,7 +1081,9 @@ impl Service {
 						?error, %room_id, %event_id,
 						"Aborting forward-extremity update because event metadata is unreadable",
 					);
-					return;
+					return Err(err!(Database(
+						"Failed to read metadata for forward extremity {event_id}: {error}"
+					)));
 				},
 			};
 
@@ -1104,14 +1107,13 @@ impl Service {
 			let flagged = match verdicts {
 				| Ok(flagged) => flagged,
 				| Err(error) => {
-					// An unreadable verdict must not shrink the extremity set
-					// one tip at a time: keep the existing extremities.
 					error!(
 						%room_id, %event_id, %error,
-						"set_forward_extremities: could not read verdicts; leaving \
-						 existing forward extremities unchanged",
+						"set_forward_extremities: could not read verdicts",
 					);
-					return;
+					return Err(err!(Database(
+						"Failed to read verdicts for forward extremity {event_id}: {error}"
+					)));
 				},
 			};
 			let admitted = !metadata.is_outlier && !flagged;
@@ -1133,7 +1135,7 @@ impl Service {
 				 (outlier/rejected/soft-failed/unknown); leaving existing forward \
 				 extremities unchanged",
 			);
-			return;
+			return Ok(());
 		}
 
 		let prefix = (room_id, Interfix);
@@ -1154,6 +1156,8 @@ impl Service {
 			let key = (room_id, event_id);
 			self.db.roomid_pduleaves.put_raw(key, event_id);
 		}
+
+		Ok(())
 	}
 
 	/// This fetches auth events from the current state.

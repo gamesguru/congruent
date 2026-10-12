@@ -988,7 +988,7 @@ pub(crate) async fn force_set_state(
 				None,
 				&state_lock,
 			)
-			.await;
+			.await?;
 
 		// Associate the tip event with the forced state root so that
 		// state_at_incoming inherits the forced state when the next event
@@ -1009,7 +1009,7 @@ pub(crate) async fn force_set_state(
 	} else {
 		// No timeline events — /sync won't deliver this room.
 		// Promote the most recent state event as a timeline anchor.
-		Box::pin(self.promote_sync_anchor(&room_id, &new_room_state, &state_lock)).await;
+		Box::pin(self.promote_sync_anchor(&room_id, &new_room_state, &state_lock)).await?;
 	}
 
 	drop(state_lock);
@@ -1586,7 +1586,7 @@ async fn promote_sync_anchor(
 	room_id: &slipstream::RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	state_lock: &conduwuit_service::rooms::state::RoomMutexGuard,
-) {
+) -> Result<()> {
 	use conduwuit::matrix::Event;
 	use futures::StreamExt;
 
@@ -1646,7 +1646,7 @@ async fn promote_sync_anchor(
 					.rooms
 					.state
 					.set_forward_extremities(room_id, once(anchor_id.clone()), None, state_lock)
-					.await;
+					.await?;
 				info!("Promoted {anchor_id} as timeline anchor for /sync");
 			},
 			| Err(e) => {
@@ -1656,6 +1656,8 @@ async fn promote_sync_anchor(
 	} else {
 		warn!("No state events found to promote as timeline anchor");
 	}
+
+	Ok(())
 }
 
 #[admin_command]

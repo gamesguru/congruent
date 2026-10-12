@@ -475,7 +475,7 @@ impl Service {
 					None,
 					&state_lock,
 				)
-				.await;
+				.await?;
 		}
 
 		Ok((true, num_true_extremities))
