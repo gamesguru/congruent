@@ -1074,7 +1074,12 @@ async fn build_heroes(
 /// Collect updates to users' device lists for E2EE.
 async fn build_device_list_updates(
 	services: &Services,
-	SyncContext { syncing_user, last_sync_end_count, .. }: SyncContext<'_>,
+	SyncContext {
+		syncing_user,
+		last_sync_end_count,
+		redelivered_since,
+		..
+	}: SyncContext<'_>,
 	room_id: &RoomId,
 	RootHandles { .. }: RootHandles,
 	timeline: &TimelinePdus,
@@ -1082,9 +1087,11 @@ async fn build_device_list_updates(
 	joined_since_last_sync: bool,
 ) -> Result<DeviceListUpdates> {
 	// initial syncs don't include device updates, so return early
-	if last_sync_end_count.is_none() {
+	if last_sync_end_count.is_none() && redelivered_since.is_none() {
 		return Ok(DeviceListUpdates::new());
 	}
+	let joined_since_last_sync = joined_since_last_sync || redelivered_since.is_some();
+	let last_sync_end_count = last_sync_end_count.or(redelivered_since);
 
 	let mut device_list_updates = DeviceListUpdates::new();
 

@@ -240,6 +240,9 @@ struct SyncContext<'a> {
 	filter: &'a FilterDefinition,
 	/// Whether MSC4222 state_after was requested by the client.
 	use_state_after: bool,
+	/// For a room delivered late (after a partial-state resync) as if newly
+	/// joined: the client's real `since`, so device list changes are still sent.
+	redelivered_since: Option<u64>,
 }
 
 impl<'a> SyncContext<'a> {
@@ -589,6 +592,7 @@ pub(crate) async fn build_sync_events(
 		full_state,
 		filter: &filter,
 		use_state_after,
+		redelivered_since: None,
 	};
 
 	let is_initial_sync = last_sync_end_count.is_none();
@@ -620,6 +624,7 @@ pub(crate) async fn build_sync_events(
 					services.rooms.state_partial.resolved_at(&room_id),
 				) {
 					if since < resolved_at {
+						room_context.redelivered_since = Some(since);
 						room_context.last_sync_end_count = None;
 					}
 				}
