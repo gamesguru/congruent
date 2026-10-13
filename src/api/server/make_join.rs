@@ -109,6 +109,14 @@ pub(crate) async fn create_join_event_template_route(
 			None
 		}
 	};
+	info!(
+		user_id = %body.user_id,
+		room_id = %body.room_id,
+		is_joined,
+		is_invited,
+		authoriser = ?join_authorized_via_users_server,
+		"make_join: authorising user decision"
+	);
 	if services.antispam.check_all_joins() && join_authorized_via_users_server.is_none() {
 		if services
 			.antispam
