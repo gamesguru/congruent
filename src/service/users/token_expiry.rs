@@ -38,22 +38,26 @@ mod tests {
 		expires_at, has_expired, superseded_on_refresh, superseded_tokens, without_token,
 	};
 
+	/// Verifies that expiry is the issue time plus the requested lifetime.
 	#[test]
 	fn expiry_is_issue_time_plus_lifetime() {
 		assert_eq!(expires_at(1_000, 300_000), 301_000);
 	}
 
+	/// Verifies that expiry saturates at the maximum timestamp on overflow.
 	#[test]
 	fn expiry_saturates_instead_of_overflowing() {
 		assert_eq!(expires_at(u64::MAX - 1, 10), u64::MAX);
 	}
 
+	/// Verifies that a token without an expiry remains valid at any timestamp.
 	#[test]
 	fn a_token_without_an_expiry_never_expires() {
 		assert!(!has_expired(None, 0));
 		assert!(!has_expired(None, u64::MAX));
 	}
 
+	/// Verifies that expiry begins exactly at the recorded deadline.
 	#[test]
 	fn a_token_expires_at_its_deadline_and_not_before() {
 		assert!(!has_expired(Some(1_000), 999));
@@ -61,40 +65,47 @@ mod tests {
 		assert!(has_expired(Some(1_000), 1_001));
 	}
 
+	/// Verifies that refresh supersedes only tokens with a recorded expiry.
 	#[test]
 	fn refresh_supersedes_only_expiring_tokens() {
 		assert!(superseded_on_refresh(Some(1_000)));
 		assert!(!superseded_on_refresh(None));
 	}
 
+	/// Builds an owned token and optional expiry pair for refresh tests.
 	fn owned(token: &str, expires_at: Option<u64>) -> (String, Option<u64>) {
 		(token.to_owned(), expires_at)
 	}
 
+	/// Verifies that refresh selects expiring tokens in their original order.
 	#[test]
 	fn a_refresh_replaces_expiring_tokens_and_keeps_the_rest() {
 		let tokens = vec![owned("old", Some(1)), owned("legacy", None), owned("older", Some(2))];
 		assert_eq!(superseded_tokens(tokens), ["old", "older"]);
 	}
 
+	/// Verifies that refresh preserves legacy tokens and accepts an empty token list.
 	#[test]
 	fn a_refresh_with_no_expiring_tokens_replaces_nothing() {
 		assert!(superseded_tokens(vec![owned("legacy", None)]).is_empty());
 		assert!(superseded_tokens(Vec::new()).is_empty());
 	}
 
+	/// Verifies that refresh also supersedes tokens whose expiry has already passed.
 	#[test]
 	fn an_already_lapsed_token_is_still_replaced_on_refresh() {
 		// The refresh arrives after expiry; that is the whole point of it.
 		assert_eq!(superseded_tokens(vec![owned("lapsed", Some(0))]), ["lapsed"]);
 	}
 
+	/// Verifies that revocation preserves other device tokens in their original order.
 	#[test]
 	fn revoking_a_token_leaves_the_devices_others() {
 		let tokens = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
 		assert_eq!(without_token(tokens, "b"), ["a", "c"]);
 	}
 
+	/// Verifies that revoking an absent token leaves the token list unchanged.
 	#[test]
 	fn revoking_an_unknown_token_changes_nothing() {
 		let tokens = vec!["a".to_owned()];

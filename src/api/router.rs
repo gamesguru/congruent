@@ -20,6 +20,7 @@ pub(super) use self::{
 };
 use crate::{admin, client, server};
 
+/// Registers the Matrix API routes, including enabled experimental endpoints.
 pub fn build(
 	router: crate::hyper_router::MinimalRouter,
 	server: &Server,
