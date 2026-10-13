@@ -98,8 +98,7 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		server_name: &ServerName,
-	) -> Result<(ruma::api::federation::event::get_room_state::v1::Response, OwnedServerName)>
-	{
+	) -> Result<(ruma::api::federation::event::get_room_state::v1::Response, OwnedServerName)> {
 		use ruma::api::federation::event::get_room_state;
 
 		// Discovery fallback: collect servers to try
