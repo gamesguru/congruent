@@ -18,39 +18,70 @@ use slipstream::{
 use crate::rooms::{short::ShortStateKey, state_partial::Service};
 
 impl Service {
-	/// A background worker to fully load member lists of partially joined rooms
+	/// Background worker: resyncs partial-state rooms as soon as they are
+	/// joined (signalled via `mark_as_partial`), and resumes any rooms left
+	/// partial across a restart.
 	pub async fn spawn_resync_worker(self: Arc<Self>) {
 		info!("Starting MSC3902 partial state resync worker");
 
-		loop {
-			let self_copy = self.clone();
-			self.db
-				.state_partial_rooms
-				.stream()
-				.ignore_err()
-				.broadn_then(4, move |(room_id, server_name): (OwnedRoomId, OwnedServerName)| {
-					self_copy.clone().resync_one_room(room_id, server_name)
-				})
-				.collect::<Vec<()>>()
-				.await;
+		let pending: Vec<OwnedRoomId> = self
+			.db
+			.state_partial_rooms
+			.stream()
+			.ignore_err()
+			.map(|(room_id, _): (OwnedRoomId, OwnedServerName)| room_id)
+			.collect()
+			.await;
+		for room_id in pending {
+			_ = self.resync_tx.send(room_id);
+		}
 
-			async_io::Timer::after(Duration::from_secs(1)).await;
+		while let Ok(room_id) = self.resync_rx.recv_async().await {
+			self.clone().start_resync(room_id);
 		}
 	}
 
-	async fn resync_one_room(
-		self: Arc<Self>,
-		room_id: OwnedRoomId,
-		server_name: OwnedServerName,
-	) {
-		debug!("Resyncing partial state for room {} from server {}", room_id, server_name);
-		if let Err(e) = self.clone().resync_room(&room_id, &server_name).await {
-			warn!("Failed to resync partial state for room {}: {}", room_id, e);
+	/// Spawn a resync task for the room unless one is already running.
+	fn start_resync(self: Arc<Self>, room_id: OwnedRoomId) {
+		if !self
+			.active
+			.lock()
+			.expect("locked")
+			.insert(room_id.clone())
+		{
 			return;
 		}
 
-		info!("Successfully resynced partial state for room {}", room_id);
-		self.db.state_partial_rooms.remove(room_id.as_bytes());
+		let runtime = self.services.server.runtime().clone();
+		drop(runtime.spawn(async move {
+			self.clone().resync_with_backoff(&room_id).await;
+			self.active.lock().expect("locked").remove(&room_id);
+		}));
+	}
+
+	/// Retry the resync with exponential backoff until it succeeds or the
+	/// room is no longer partial.
+	async fn resync_with_backoff(self: Arc<Self>, room_id: &RoomId) {
+		let mut delay = Duration::from_secs(1);
+		loop {
+			let Ok(Some(server_name)) = self.partial_server(room_id).await else {
+				return;
+			};
+
+			debug!("Resyncing partial state for room {} from server {}", room_id, server_name);
+			match self.clone().resync_room(room_id, &server_name).await {
+				| Ok(()) => {
+					info!("Successfully resynced partial state for room {}", room_id);
+					self.db.state_partial_rooms.remove(room_id.as_bytes());
+					return;
+				},
+				| Err(e) => {
+					warn!("Failed to resync partial state for room {}: {}", room_id, e);
+					async_io::Timer::after(delay).await;
+					delay = (delay * 2).min(Duration::from_secs(60));
+				},
+			}
+		}
 	}
 
 	async fn resync_room(
