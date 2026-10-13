@@ -108,7 +108,8 @@ impl crate::Service for Service {
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
-				state_partial: args.depend::<rooms::state_partial::Service>("rooms::state_partial"),
+				state_partial: args
+					.depend::<rooms::state_partial::Service>("rooms::state_partial"),
 				user: args.depend::<rooms::user::Service>("rooms::user"),
 				users: args.depend::<users::Service>("users"),
 				presence: args.depend::<presence::Service>("presence"),
