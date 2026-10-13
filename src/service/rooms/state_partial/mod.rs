@@ -41,6 +41,7 @@ struct Services {
 	state: Dep<rooms::state::Service>,
 	event_handler: Dep<rooms::event_handler::Service>,
 	short: Dep<rooms::short::Service>,
+	timeline: Dep<rooms::timeline::Service>,
 }
 
 #[async_trait]
@@ -68,6 +69,7 @@ impl crate::Service for Service {
 				event_handler: args
 					.depend::<rooms::event_handler::Service>("rooms::event_handler"),
 				short: args.depend::<rooms::short::Service>("rooms::short"),
+				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 			},
 		}))
 	}

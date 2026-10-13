@@ -1,5 +1,6 @@
 use std::{
 	collections::{BTreeMap, HashMap},
+	ops::Bound,
 	sync::Arc,
 	time::Duration,
 };
@@ -124,7 +125,17 @@ impl Service {
 			.await;
 
 		// Update room state graph (amend the partial state)
-		self.update_state_graph(&room_id, new_state_ids).await?;
+		self.update_state_graph(&room_id, new_state_ids.clone())
+			.await?;
+
+		// Events received while the state was partial carry snapshots without the
+		// omitted members; give them the full state too (Synapse un-partial-states
+		// each event), then bring the membership caches up to date.
+		self.repair_event_states(&room_id, &new_state_ids).await;
+		self.services
+			.state_cache
+			.reconcile_membership(&room_id)
+			.await;
 
 		Ok(())
 	}
@@ -288,6 +299,66 @@ impl Service {
 			})
 			.collect()
 			.await
+	}
+
+	async fn repair_event_states(
+		&self,
+		room_id: &RoomId,
+		resync: &BTreeMap<ShortStateKey, OwnedEventId>,
+	) {
+		let from = match self.resync_event_id(room_id).await {
+			| Some(event_id) => self.services.timeline.get_pdu_count(&event_id).await.ok(),
+			| None => None,
+		};
+		let bound = from.map_or(Bound::Unbounded, Bound::Included);
+
+		let mut repaired = 0_usize;
+		let mut pdus = std::pin::pin!(self.services.timeline.pdus(room_id, bound));
+		while let Some(Ok((_, pdu))) = pdus.next().await {
+			let shorteventid = self
+				.services
+				.short
+				.get_or_create_shorteventid(&pdu.event_id)
+				.await;
+			let Ok(root) = self.services.state.get_roothandle(shorteventid).await else {
+				continue;
+			};
+			let Ok(existing) = self
+				.services
+				.state_accessor
+				.state_full_ids_hamt(room_id, &root)
+				.try_collect::<HashMap<ShortStateKey, OwnedEventId>>()
+				.await
+			else {
+				continue;
+			};
+
+			let mut merged: HashMap<ShortStateKey, OwnedEventId> =
+				resync.iter().map(|(k, v)| (*k, v.clone())).collect();
+			merged.extend(existing.iter().map(|(k, v)| (*k, v.clone())));
+			if merged.len() == existing.len() {
+				continue;
+			}
+
+			let Ok((new_root, nodes)) = self
+				.services
+				.event_handler
+				.state_map_to_root_handle(room_id, &merged)
+				.await
+			else {
+				continue;
+			};
+			if self
+				.services
+				.state
+				.set_event_roothandle_with_nodes(room_id, &pdu.event_id, &new_root, &nodes)
+				.await
+				.is_ok()
+			{
+				repaired = repaired.saturating_add(1);
+			}
+		}
+		info!("Repaired state snapshots of {repaired} events in {room_id} after resync");
 	}
 
 	async fn update_state_graph(
