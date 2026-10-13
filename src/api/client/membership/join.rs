@@ -1223,13 +1223,23 @@ async fn join_restricted_via_remote(
 	let servers = if has_remote_servers {
 		servers
 	} else {
-		discovered_servers = services
+		let mut found = services
 			.rooms
 			.state_cache
 			.room_servers(room_id)
 			.ready_filter(|server| !services.globals.server_is_ours(server))
 			.collect::<Vec<_>>()
 			.await;
+
+		// A partial-state room has an incomplete member list; the server we
+		// joined through is still a valid remote to ask.
+		if let Ok(Some(partial_server)) = services.rooms.state_partial.partial_server(room_id).await
+		{
+			if !found.contains(&partial_server) {
+				found.push(partial_server);
+			}
+		}
+		discovered_servers = found;
 
 		if discovered_servers.is_empty() {
 			return Err!(Request(Forbidden(
