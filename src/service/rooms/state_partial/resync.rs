@@ -12,7 +12,7 @@ use conduwuit_core::{
 use futures::{StreamExt, TryStreamExt};
 use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, RoomVersionId, ServerName,
-	api::federation::event::get_room_state, events::StateEventType, sswire::RawJsonValue,
+	api::federation::event::{get_room_state, get_room_state_ids}, events::StateEventType, sswire::RawJsonValue,
 };
 
 use crate::rooms::{short::ShortStateKey, state_partial::Service};
@@ -161,6 +161,23 @@ impl Service {
 						.expect("room has forward extremities"),
 				},
 			};
+
+			// Like Synapse, ask for /state_ids first and only then pull the full
+			// state: the ids response is the signal that the remote server is ready
+			// to serve this state.
+			let ids_request = get_room_state_ids::v1::Request::new(
+				request.event_id.clone(),
+				request.room_id.clone(),
+			);
+			if let Err(e) = self
+				.services
+				.sending
+				.send_federation_request(&server, ids_request)
+				.await
+			{
+				warn!("Failed to fetch state ids from {}: {}", server, e);
+				continue;
+			}
 
 			match self
 				.services
