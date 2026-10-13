@@ -2,7 +2,7 @@
 
 use std::{cell::Cell, fmt::Debug, path::PathBuf, sync::LazyLock};
 
-use crate::{Result, is_equal_to};
+use crate::{Result, expected, is_equal_to};
 
 type Id = usize;
 
@@ -30,25 +30,16 @@ thread_local! {
 
 /// Set the core affinity for this thread. The ID should be listed in
 /// CORES_AVAILABLE. Empty input is a no-op; prior affinity unchanged.
-pub fn set_affinity<I>(mut ids: I)
+pub fn set_affinity<I>(ids: I)
 where
-	I: Iterator<Item = Id> + Clone + Debug,
+	I: Iterator<Item = Id> + Debug,
 {
-	use core_affinity::{CoreId, set_each_for_current, set_for_current};
-
-	let n = ids.clone().count();
-	let mask: Mask = ids.clone().fold(0, |mask, id| {
+	let mask: Mask = ids.fold(0, |mask, id| {
 		debug_assert!(is_core_available(id), "setting affinity to unavailable core");
 		mask | (1 << id)
 	});
 
-	if n > 1 {
-		set_each_for_current(ids.map(|id| CoreId { id }));
-	} else if n > 0 {
-		set_for_current(CoreId { id: ids.next().expect("n > 0") });
-	}
-
-	if mask.count_ones() > 0 {
+	if mask != 0 && set_thread_affinity(mask) {
 		CORE_AFFINITY.replace(mask);
 	}
 }
@@ -133,12 +124,54 @@ pub fn getcpu() -> Result<usize> {
 #[inline]
 pub fn getcpu() -> Result<usize> { Err(crate::Error::Io(std::io::ErrorKind::Unsupported.into())) }
 
+/// Query the cores this process may run on. Only the first MASK_BITS ids are
+/// reported; higher ids cannot be represented in our masks.
+#[cfg(target_os = "linux")]
 fn query_cores_available() -> impl Iterator<Item = Id> {
-	core_affinity::get_core_ids()
-		.unwrap_or_default()
-		.into_iter()
-		.map(|core_id| core_id.id)
+	// SAFETY: An all-zero cpu_set_t is a valid (empty) set.
+	let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+
+	// SAFETY: pid 0 is the calling thread; the pointer and size describe `set`.
+	let ret = unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &raw mut set) };
+
+	let bytes = size_of::<libc::cpu_set_t>();
+	let bits = if ret == 0 {
+		expected!(bytes * 8).min(MASK_BITS)
+	} else {
+		0
+	};
+
+	// SAFETY: id is below the bit capacity of the set.
+	(0..bits).filter(move |&id| unsafe { libc::CPU_ISSET(id, &set) })
 }
+
+/// Pinning is only implemented on linux. Elsewhere the cores are reported so
+/// parallelism queries remain correct, but set_affinity() is a no-op.
+#[cfg(not(target_os = "linux"))]
+fn query_cores_available() -> impl Iterator<Item = Id> {
+	let n = std::thread::available_parallelism().map_or(1, usize::from);
+	0..n.min(MASK_BITS)
+}
+
+/// Apply the mask to the calling thread. Returns false on failure, in which
+/// case the prior affinity is unchanged.
+#[cfg(target_os = "linux")]
+fn set_thread_affinity(mask: Mask) -> bool {
+	// SAFETY: An all-zero cpu_set_t is a valid (empty) set.
+	let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+	for id in from_mask(mask) {
+		// SAFETY: id < MASK_BITS (128) which is within the capacity of the set.
+		unsafe { libc::CPU_SET(id, &mut set) };
+	}
+
+	// SAFETY: pid 0 is the calling thread; the pointer and size describe `set`.
+	let ret = unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &raw const set) };
+
+	ret == 0
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_thread_affinity(_: Mask) -> bool { false }
 
 fn init_smt_topology() -> [Mask; MASK_BITS] { [Mask::default(); MASK_BITS] }
 
