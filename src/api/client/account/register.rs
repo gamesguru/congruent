@@ -245,26 +245,27 @@ pub(crate) async fn register_route(
 		// Generate new token for the device
 		let new_token = utils::random_string(TOKEN_LENGTH);
 
+		// MSC2918: clients which opt in get an expiring token and a refresh token
+		let ttl = body
+			.refresh_token
+			.then_some(services.server.config.access_token_ttl);
+
 		// Create device for this account
 		services
 			.users
-			.create_device(
+			.create_device_with_ttl(
 				&user_id,
 				&device_id,
 				&new_token,
+				ttl,
 				body.initial_device_display_name.clone(),
 				Some(client.to_string()),
 			)
 			.await?;
 		debug_info!(%user_id, %device_id, "User account was created");
 
-		// MSC2918: clients which opt in get an expiring token and a refresh token
-		if body.refresh_token {
-			expires_in = Some(
-				services
-					.users
-					.set_token_expiry(&new_token, services.server.config.access_token_ttl),
-			);
+		if let Some(ttl) = ttl {
+			expires_in = Some(ttl);
 			refresh_token = Some(
 				services
 					.users

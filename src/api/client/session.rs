@@ -320,29 +320,31 @@ pub(crate) async fn login_route(
 		false
 	};
 
+	// MSC2918: clients which opt in get an expiring token and a refresh token
+	let ttl = body
+		.refresh_token
+		.then_some(services.server.config.access_token_ttl);
+
 	if device_exists {
 		services
 			.users
-			.set_token(&user_id, &device_id, &token)
+			.set_token_with_ttl(&user_id, &device_id, &token, ttl)
 			.await?;
 	} else {
 		services
 			.users
-			.create_device(
+			.create_device_with_ttl(
 				&user_id,
 				&device_id,
 				&token,
+				ttl,
 				body.initial_device_display_name.clone(),
 				Some(client.to_string()),
 			)
 			.await?;
 	}
 
-	// MSC2918: clients which opt in get an expiring token and a refresh token
-	let (expires_in, refresh_token) = if body.refresh_token {
-		let ttl = services
-			.users
-			.set_token_expiry(&token, services.server.config.access_token_ttl);
+	let (expires_in, refresh_token) = if let Some(ttl) = ttl {
 		let refresh = services
 			.users
 			.issue_refresh_token(&user_id, &device_id)

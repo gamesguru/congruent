@@ -706,6 +706,29 @@ impl Service {
 		initial_device_display_name: Option<String>,
 		client_ip: Option<String>,
 	) -> Result<()> {
+		self.create_device_with_ttl(
+			user_id,
+			device_id,
+			token,
+			None,
+			initial_device_display_name,
+			client_ip,
+		)
+		.await
+	}
+
+	/// Adds a new device to a user, with an access token which expires `ttl`
+	/// milliseconds from now when given. The token and its expiry are stored
+	/// together.
+	pub async fn create_device_with_ttl(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		token: &str,
+		ttl: Option<u64>,
+		initial_device_display_name: Option<String>,
+		client_ip: Option<String>,
+	) -> Result<()> {
 		if !self.exists(user_id).await {
 			return Err!(Request(InvalidParam(error!(
 				"Called create_device for non-existent user {user_id}"
@@ -722,7 +745,8 @@ impl Service {
 
 		increment(&self.db.userid_devicelistversion, user_id.as_bytes());
 		self.db.userdeviceid_metadata.put(key, Json(val));
-		self.set_token(user_id, device_id, token).await
+		self.set_token_with_ttl(user_id, device_id, token, ttl)
+			.await
 	}
 
 	/// Removes a device from a user.
@@ -841,24 +865,27 @@ impl Service {
 		device_id: &DeviceId,
 		token: &str,
 	) -> Result<()> {
-		let lock_key = Self::device_lock_key(user_id, device_id);
-		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
-		self.set_token_locked(user_id, device_id, token).await
+		self.set_token_with_ttl(user_id, device_id, token, None)
+			.await
 	}
 
-	fn device_lock_key(user_id: &UserId, device_id: &DeviceId) -> String {
-		format!("{user_id}\0{device_id}")
-	}
-
-	/// `set_token` for callers already holding the device's credentials lock.
-	async fn set_token_locked(
+	/// `set_token` with a lifetime of `ttl` milliseconds when given, stored
+	/// atomically with the token.
+	pub async fn set_token_with_ttl(
 		&self,
 		user_id: &UserId,
 		device_id: &DeviceId,
 		token: &str,
+		ttl: Option<u64>,
 	) -> Result<()> {
-		self.store_access_token(user_id, device_id, token, None)
+		let lock_key = Self::device_lock_key(user_id, device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+		self.store_access_token(user_id, device_id, token, ttl)
 			.await
+	}
+
+	fn device_lock_key(user_id: &UserId, device_id: &DeviceId) -> String {
+		format!("{user_id}\0{device_id}")
 	}
 
 	/// Records an access token for a device, and its lifetime when `ttl` is
@@ -918,14 +945,6 @@ impl Service {
 		}
 
 		Ok(())
-	}
-
-	/// Marks an access token as expiring `ttl` milliseconds from now.
-	/// Tokens without an entry never expire.
-	pub fn set_token_expiry(&self, token: &str, ttl: u64) -> u64 {
-		let expires_at = token_expiry::expires_at(utils::millis_since_unix_epoch(), ttl);
-		self.db.token_expiresat.raw_put(token, expires_at);
-		ttl
 	}
 
 	/// Whether an access token has a lifetime which has elapsed. A failed
