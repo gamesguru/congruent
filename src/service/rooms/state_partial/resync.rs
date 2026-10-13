@@ -439,7 +439,12 @@ impl Service {
 
 		let mut via = Vec::new();
 		for room_id in rooms {
-			if self.partial_servers(&room_id).await.iter().any(|s| s == server) {
+			if self
+				.partial_servers(&room_id)
+				.await
+				.iter()
+				.any(|s| s == server)
+			{
 				via.push(room_id);
 			}
 		}

@@ -17,8 +17,8 @@ use service::{
 	rooms::{state::RoomMutexGuard, timeline::pdu_fits},
 };
 use slipstream::{
-	CanonicalJsonObject, CanonicalJsonValue, OwnedRoomAliasId, OwnedRoomId, OwnedServerName, ServerName,
-	OwnedUserId, RoomId, RoomVersionId, UserId,
+	CanonicalJsonObject, CanonicalJsonValue, OwnedRoomAliasId, OwnedRoomId, OwnedServerName,
+	OwnedUserId, RoomId, RoomVersionId, ServerName, UserId,
 	api::{
 		client::{
 			error::ErrorKind,
