@@ -140,6 +140,7 @@ struct Services {
 	globals: Dep<globals::Service>,
 	sending: Dep<crate::sending::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
+	state_partial: Dep<rooms::state_partial::Service>,
 }
 
 struct Data {
@@ -190,6 +191,8 @@ impl crate::Service for Service {
 				globals: args.depend::<globals::Service>("globals"),
 				sending: args.depend::<crate::sending::Service>("sending"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
+				state_partial: args
+					.depend::<rooms::state_partial::Service>("rooms::state_partial"),
 			},
 			db: Data {
 				deviceleftid_userid: args.db["deviceleftid_userid"].clone(),
@@ -1554,6 +1557,21 @@ impl Service {
 					rooms = joined_rooms.len(),
 					"Recovered remote device-key update rooms via server-room fallback"
 				);
+			}
+		}
+
+		// Members of a partial-state room are not all known yet; a remote user
+		// whose server we joined through may well be in it.
+		if !self.services.globals.user_is_local(user_id) {
+			for room_id in self
+				.services
+				.state_partial
+				.partial_rooms_via(user_id.server_name())
+				.await
+			{
+				if !joined_rooms.contains(&room_id) {
+					joined_rooms.push(room_id);
+				}
 			}
 		}
 

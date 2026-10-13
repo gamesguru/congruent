@@ -176,10 +176,31 @@ impl Service {
 		// omitted members; give them the full state too (Synapse un-partial-states
 		// each event), then bring the membership caches up to date.
 		self.repair_event_states(&room_id, &new_state_ids).await;
+		let known: std::collections::HashSet<slipstream::OwnedUserId> = self
+			.services
+			.state_cache
+			.room_members(&room_id)
+			.collect()
+			.await;
 		self.services
 			.state_cache
 			.reconcile_membership(&room_id)
 			.await;
+
+		// Members discovered by the resync joined silently; tell the device list
+		// tracking about the remote ones.
+		let discovered: Vec<slipstream::OwnedUserId> = self
+			.services
+			.state_cache
+			.room_members(&room_id)
+			.map(ToOwned::to_owned)
+			.collect()
+			.await;
+		for user_id in discovered {
+			if !known.contains(&user_id) && !self.services.globals.user_is_local(&user_id) {
+				self.services.users.mark_device_key_update(&user_id).await;
+			}
+		}
 
 		Ok(())
 	}
