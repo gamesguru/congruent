@@ -1563,10 +1563,11 @@ impl Service {
 		// Members of a partial-state room are not all known yet; a remote user
 		// whose server we joined through may well be in it.
 		if !self.services.globals.user_is_local(user_id) {
+			let server_name = user_id.server_name();
 			for room_id in self
 				.services
 				.state_partial
-				.partial_rooms_via(user_id.server_name())
+				.partial_rooms_via(&server_name)
 				.await
 			{
 				if !joined_rooms.contains(&room_id) {

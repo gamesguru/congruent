@@ -193,7 +193,6 @@ impl Service {
 			.services
 			.state_cache
 			.room_members(&room_id)
-			.map(ToOwned::to_owned)
 			.collect()
 			.await;
 		for user_id in discovered {
