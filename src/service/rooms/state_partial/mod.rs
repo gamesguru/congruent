@@ -20,6 +20,8 @@ pub struct Service {
 	/// Wakes the resync worker when a room is newly marked partial.
 	/// Woken whenever a room's partial state is resolved.
 	resolved: tokio::sync::Notify,
+	/// Global count at which each room's partial state was resolved.
+	resolved_at: Mutex<std::collections::HashMap<OwnedRoomId, u64>>,
 	resync_tx: loole::Sender<OwnedRoomId>,
 	resync_rx: loole::Receiver<OwnedRoomId>,
 }
@@ -47,6 +49,7 @@ impl crate::Service for Service {
 		Ok(Arc::new(Self {
 			active: Mutex::new(HashSet::new()),
 			resolved: tokio::sync::Notify::new(),
+			resolved_at: Mutex::new(std::collections::HashMap::new()),
 			resync_tx,
 			resync_rx,
 			db: Data {
@@ -113,6 +116,29 @@ impl Service {
 			}
 			notified.await;
 		}
+	}
+
+	/// Record that a room's partial state is now resolved and wake waiters.
+	pub(super) fn notify_resolved(&self, room_id: &RoomId) {
+		let count = self.services.globals.next_count().unwrap_or(0);
+		self.resolved_at
+			.lock()
+			.expect("locked")
+			.insert(room_id.to_owned(), count);
+		self.resolved.notify_waiters();
+	}
+
+	/// The global count at which this room finished resyncing, if it did so
+	/// since startup.
+	pub fn resolved_at(&self, room_id: &RoomId) -> Option<u64> {
+		self.resolved_at.lock().expect("locked").get(room_id).copied()
+	}
+
+	/// A future completing when any partial-state room is resolved. Armed on
+	/// creation.
+	pub fn resolved_notified(&self) -> impl std::future::Future<Output = ()> + Send + '_ {
+		let notified = self.resolved.notified();
+		async move { notified.await }
 	}
 
 	pub async fn resync_event_id(&self, room_id: &RoomId) -> Option<OwnedEventId> {

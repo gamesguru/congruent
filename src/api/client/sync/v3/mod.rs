@@ -610,7 +610,22 @@ pub(crate) async fn build_sync_events(
 				return None;
 			}
 
-			let joined_room = load_joined_room(services, context, room_id.clone()).await;
+			// A room that finished its partial-state resync after the client's last
+			// sync was hidden from it (eager syncs omit partial rooms), so deliver
+			// it now as if newly joined.
+			let mut room_context = context;
+			if !context.lazy_loading_enabled() {
+				if let (Some(since), Some(resolved_at)) = (
+					context.last_sync_end_count,
+					services.rooms.state_partial.resolved_at(&room_id),
+				) {
+					if since < resolved_at {
+						room_context.last_sync_end_count = None;
+					}
+				}
+			}
+
+			let joined_room = load_joined_room(services, room_context, room_id.clone()).await;
 
 			match joined_room {
 				| Ok((room, state_after, updates)) => Some((room_id, room, state_after, updates)),

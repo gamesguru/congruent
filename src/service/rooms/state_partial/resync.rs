@@ -69,7 +69,7 @@ impl Service {
 					info!("Successfully resynced partial state for room {}", room_id);
 					self.db.state_partial_rooms.remove(room_id.as_bytes());
 					self.db.state_partial_events.remove(room_id.as_bytes());
-					self.resolved.notify_waiters();
+					self.notify_resolved(room_id);
 					return;
 				},
 				| Err(e) => {
