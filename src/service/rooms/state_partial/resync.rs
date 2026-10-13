@@ -1,18 +1,14 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use conduwuit::{PduEvent, Result, debug, info, warn};
 use conduwuit_core::{
 	err,
 	utils::stream::{BroadbandExt, IterStream, TryIgnore},
 };
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use ruma::{OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, ServerName};
 
-use crate::rooms::{
-	short::ShortStateKey,
-	state_compressor::{CompressedState, HashSetCompressStateEvent},
-	state_partial::Service,
-};
+use crate::rooms::{short::ShortStateKey, state_partial::Service};
 
 impl Service {
 	/// A background worker to fully load member lists of partially joined rooms
@@ -102,7 +98,8 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		server_name: &ServerName,
-	) -> Result<(ruma::api::federation::event::get_room_state::v1::Response, OwnedServerName)> {
+	) -> Result<(ruma::api::federation::event::get_room_state::v1::Response, OwnedServerName)>
+	{
 		use ruma::api::federation::event::get_room_state;
 
 		// Discovery fallback: collect servers to try
@@ -261,44 +258,28 @@ impl Service {
 		room_id: &RoomId,
 		new_state_ids: BTreeMap<ShortStateKey, OwnedEventId>,
 	) -> Result<()> {
-		use std::borrow::Borrow;
-
 		info!("Updating state graph for partial room {}", room_id);
 		let state_lock = self.services.state.mutex.lock(room_id).await;
 
-		let shortstatehash = self.services.state.get_room_shortstatehash(room_id).await?;
+		let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 		let mut new_state = self
 			.services
 			.state_accessor
-			.state_full_ids::<OwnedEventId>(shortstatehash)
-			.collect::<BTreeMap<_, _>>()
-			.await;
+			.state_full_ids_hamt(&root_handle)
+			.try_collect::<HashMap<ShortStateKey, OwnedEventId>>()
+			.await?;
 
 		new_state.extend(new_state_ids);
 
-		// Amend the partial state
-		let compressed = self
+		let new_root = self
 			.services
-			.state_compressor
-			.compress_state_events(new_state.iter().map(|(ssk, eid)| (ssk, eid.borrow())))
-			.collect::<CompressedState>()
-			.await;
-
-		// TODO: add unit test for this functionality
-		let HashSetCompressStateEvent {
-			shortstatehash: new_shortstatehash,
-			added,
-			removed,
-		} = self
-			.services
-			.state_compressor
-			.save_state(room_id, Arc::new(compressed))
+			.event_handler
+			.state_map_to_root_handle(room_id, &new_state)
 			.await?;
-
 		self.services
 			.state
-			.force_state(room_id, new_shortstatehash, added, removed, &state_lock)
-			.await
+			.set_room_state_hamt(room_id, &new_root, &state_lock);
+		Ok(())
 	}
 }
 

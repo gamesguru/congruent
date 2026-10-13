@@ -801,12 +801,18 @@ pub async fn process_timeline_upgrade(
 			%event_id,
 			"prev_events fetch contained structurally invalid data; storing as outlier and rejecting"
 		);
-		self.services.outlier.add_pdu_outlier(&event_id, &val, Some(room_id)).await;
-		self.services.pdu_metadata.mark_event_rejected(
-			&event_id,
-			&crate::rooms::pdu_metadata::RejectionCode::StructurallyInvalidInGetMissingEvents
-				.with_detail("prev_event contained structurally invalid data"),
-		).await;
+		self.services
+			.outlier
+			.add_pdu_outlier(&event_id, &val, Some(room_id))
+			.await;
+		self.services
+			.pdu_metadata
+			.mark_event_rejected(
+				&event_id,
+				&crate::rooms::pdu_metadata::RejectionCode::StructurallyInvalidInGetMissingEvents
+					.with_detail("prev_event contained structurally invalid data"),
+			)
+			.await;
 		return Err(err!(Request(InvalidParam(
 			"prev_event contained structurally invalid data"
 		))));

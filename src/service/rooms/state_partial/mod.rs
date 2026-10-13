@@ -24,7 +24,6 @@ struct Services {
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
 	state: Dep<rooms::state::Service>,
-	state_compressor: Dep<rooms::state_compressor::Service>,
 	event_handler: Dep<rooms::event_handler::Service>,
 	short: Dep<rooms::short::Service>,
 }
@@ -43,8 +42,6 @@ impl crate::Service for Service {
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 				state: args.depend::<rooms::state::Service>("rooms::state"),
-				state_compressor: args
-					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
 				event_handler: args
 					.depend::<rooms::event_handler::Service>("rooms::event_handler"),
 				short: args.depend::<rooms::short::Service>("rooms::short"),

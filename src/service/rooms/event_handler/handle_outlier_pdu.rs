@@ -138,11 +138,16 @@ where
 		| Some(create_event) => get_room_version_id(create_event)?,
 		| None => match room_version_override {
 			| Some(version) => version.clone(),
-			| None => self.services.state.get_room_version(room_id).await.map_err(|e| {
-				err!(Request(InvalidParam(
-					"Room version is unknown locally and no override was provided: {e}"
-				)))
-			})?,
+			| None => self
+				.services
+				.state
+				.get_room_version(room_id)
+				.await
+				.map_err(|e| {
+					err!(Request(InvalidParam(
+						"Room version is unknown locally and no override was provided: {e}"
+					)))
+				})?,
 		},
 	};
 	let room_version = &room_version_id;

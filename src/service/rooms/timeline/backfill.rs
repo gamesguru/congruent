@@ -734,7 +734,14 @@ async fn get_remote_pdu_limited(
 				// materialize their predecessor chain into the backfilled
 				// timeline so they keep their historical position instead of
 				// becoming new forward timeline/extremity events.
-				.handle_incoming_pdu(backfill_server, room_id, event_id, value, false, Some(&room_version_id))
+				.handle_incoming_pdu(
+					backfill_server,
+					room_id,
+					event_id,
+					value,
+					false,
+					Some(&room_version_id),
+				)
 				.boxed()
 				.await
 			{
