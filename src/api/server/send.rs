@@ -226,7 +226,12 @@ async fn process_inbound_transaction(
 		.edus
 		.into_iter()
 		.map(|edu| edu.get().to_owned())
-		.map(|json| codec::from_str::<Edu>(&json))
+		.map(|json| {
+			codec::from_str::<Edu>(&json).map_err(|e| {
+				warn!(%origin, "Failed to parse incoming EDU, dropping: {e}: {json}");
+				e
+			})
+		})
 		.filter_map(Result::ok)
 		.collect::<Vec<_>>()
 		.into_iter()

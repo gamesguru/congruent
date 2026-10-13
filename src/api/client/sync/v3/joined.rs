@@ -529,11 +529,29 @@ async fn build_timeline(
 		.and_then(|limit| limit.try_into().ok())
 		.unwrap_or(DEFAULT_TIMELINE_LIMIT);
 
-	let starting_count = if joined_since_last_sync {
+	let mut starting_count = if joined_since_last_sync {
 		None
 	} else {
 		last_sync_end_count.map(PduCount::Normal)
 	};
+
+	// A partial-state join promotes the remote room's state events into the
+	// timeline; once the resync is done the user should see those as state and
+	// the timeline should begin at their own join.
+	if starting_count.is_none() && services.rooms.state_partial.resolved_at(room_id).is_some() {
+		if let Ok(join) = services
+			.rooms
+			.state_accessor
+			.room_state_get(room_id, &StateEventType::RoomMember, syncing_user.as_str())
+			.await
+		{
+			if let Ok(PduCount::Normal(count)) =
+				services.rooms.timeline.get_pdu_count(&join.event_id).await
+			{
+				starting_count = Some(PduCount::Normal(count.saturating_sub(1)));
+			}
+		}
+	}
 
 	load_timeline(
 		services,
