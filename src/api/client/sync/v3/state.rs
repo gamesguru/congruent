@@ -256,7 +256,7 @@ pub(super) async fn build_state_incremental<'a>(
 		.ignore_err();
 
 	// finally, fetch the PDU contents and collect them into a vec
-	let state_diff_pdus = state_diff
+	let mut state_diff_pdus = state_diff
 		.broad_filter_map(|event_id| async move {
 			services
 				.rooms
@@ -267,6 +267,47 @@ pub(super) async fn build_state_incremental<'a>(
 		})
 		.collect::<Vec<_>>()
 		.await;
+
+	// With lazy-loading the client never received most memberships, so the diff
+	// against the previous sync's state cannot be trusted to contain the
+	// memberships of the timeline's senders. `lazily_loaded_members` has already
+	// been narrowed to the ones this device hasn't been sent yet (and is now
+	// marked as sent), so they must be included here too.
+	if let Some(lazily_loaded_members) = lazily_loaded_members {
+		let already_included: std::collections::HashSet<OwnedEventId> = state_diff_pdus
+			.iter()
+			.map(|pdu| pdu.event_id.clone())
+			.collect();
+
+		let lazy_membership_events: Vec<PduEvent> = lazily_loaded_members
+			.iter()
+			.stream()
+			.broad_filter_map(|user_id| async move {
+				if user_id == sender_user {
+					return None;
+				}
+
+				services
+					.rooms
+					.state_accessor
+					.state_get_in_room_hamt(
+						room_id,
+						timeline_start_root_handle,
+						&StateEventType::RoomMember,
+						user_id.as_str(),
+					)
+					.ok()
+					.await
+			})
+			.collect()
+			.await;
+
+		state_diff_pdus.extend(
+			lazy_membership_events
+				.into_iter()
+				.filter(|pdu| !already_included.contains(&pdu.event_id)),
+		);
+	}
 
 	trace!(
 		target: "conduwuit::api::client::sync",
