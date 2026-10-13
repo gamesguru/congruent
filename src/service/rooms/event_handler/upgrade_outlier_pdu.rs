@@ -253,17 +253,12 @@ where
 
 		let state_fetch = |k: &StateEventType, s: &str| {
 			let key = k.with_state_key(s);
-			ready(
-				auth_events
-					.get(&key)
-					.map(ToOwned::to_owned)
-					.or_else(|| {
-						partial_auth_events
-							.iter()
-							.find(|p| *p.kind() == k.clone().into() && p.state_key() == Some(s))
-							.cloned()
-					}),
-			)
+			ready(auth_events.get(&key).map(ToOwned::to_owned).or_else(|| {
+				partial_auth_events
+					.iter()
+					.find(|p| *p.kind() == k.clone().into() && p.state_key() == Some(s))
+					.cloned()
+			}))
 		};
 
 		debug!(

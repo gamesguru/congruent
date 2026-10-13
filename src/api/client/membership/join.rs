@@ -1233,7 +1233,8 @@ async fn join_restricted_via_remote(
 
 		// A partial-state room has an incomplete member list; the server we
 		// joined through is still a valid remote to ask.
-		if let Ok(Some(partial_server)) = services.rooms.state_partial.partial_server(room_id).await
+		if let Ok(Some(partial_server)) =
+			services.rooms.state_partial.partial_server(room_id).await
 		{
 			if !found.contains(&partial_server) {
 				found.push(partial_server);
