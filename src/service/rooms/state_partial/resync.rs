@@ -34,7 +34,7 @@ impl Service {
 				.collect::<Vec<()>>()
 				.await;
 
-			tokio::time::sleep(Duration::from_secs(60)).await;
+			async_io::Timer::after(Duration::from_secs(60)).await;
 		}
 	}
 
