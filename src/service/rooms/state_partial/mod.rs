@@ -2,6 +2,7 @@ pub mod resync;
 
 use std::{
 	collections::HashSet,
+	future::Future,
 	sync::{Arc, Mutex},
 };
 
@@ -136,7 +137,7 @@ impl Service {
 
 	/// A future completing when any partial-state room is resolved. Armed on
 	/// creation.
-	pub fn resolved_notified(&self) -> impl std::future::Future<Output = ()> + Send + '_ {
+	pub fn resolved_notified(&self) -> impl Future<Output = ()> + Send + '_ {
 		let notified = self.resolved.notified();
 		async move { notified.await }
 	}
