@@ -17,7 +17,7 @@ use service::{
 	rooms::{state::RoomMutexGuard, timeline::pdu_fits},
 };
 use slipstream::{
-	CanonicalJsonObject, CanonicalJsonValue, OwnedRoomAliasId, OwnedRoomId, OwnedServerName,
+	CanonicalJsonObject, CanonicalJsonValue, OwnedRoomAliasId, OwnedRoomId, OwnedServerName, ServerName,
 	OwnedUserId, RoomId, RoomVersionId, UserId,
 	api::{
 		client::{
@@ -939,6 +939,15 @@ async fn join_room_by_id_helper_remote_process(
 			&remote_server,
 			resync_event_id.as_ref(),
 		);
+		if let Some(servers) = &send_join_response.room_state.servers_in_room {
+			services.rooms.state_partial.set_extra_servers(
+				room_id,
+				servers
+					.iter()
+					.filter_map(|server| ServerName::parse(server).ok())
+					.collect(),
+			);
+		}
 	}
 
 	Ok(())

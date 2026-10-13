@@ -227,14 +227,6 @@ impl Service {
 	pub async fn send_pdu_room(&self, room_id: &RoomId, pdu_id: &RawPduId) -> Result {
 		// In a partial-state room the member list is incomplete, so the server we
 		// joined through may be absent from `room_servers`; always include it.
-		let partial_server = self
-			.services
-			.state_partial
-			.partial_server(room_id)
-			.await
-			.ok()
-			.flatten();
-
 		let mut servers = self
 			.services
 			.state_cache
@@ -242,8 +234,10 @@ impl Service {
 			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name))
 			.collect::<Vec<_>>()
 			.await;
-		if let Some(partial_server) = partial_server {
-			if !servers.contains(&partial_server) {
+		for partial_server in self.services.state_partial.partial_servers(room_id).await {
+			if !self.services.globals.server_is_ours(&partial_server)
+				&& !servers.contains(&partial_server)
+			{
 				servers.push(partial_server);
 			}
 		}
@@ -317,10 +311,10 @@ impl Service {
 			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name))
 			.collect::<Vec<_>>()
 			.await;
-		if let Ok(Some(partial_server)) =
-			self.services.state_partial.partial_server(room_id).await
-		{
-			if !servers.contains(&partial_server) {
+		for partial_server in self.services.state_partial.partial_servers(room_id).await {
+			if !self.services.globals.server_is_ours(&partial_server)
+				&& !servers.contains(&partial_server)
+			{
 				servers.push(partial_server);
 			}
 		}
@@ -364,9 +358,10 @@ impl Service {
 			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name))
 			.collect::<Vec<_>>()
 			.await;
-		if let Ok(Some(partial_server)) = self.services.state_partial.partial_server(room_id).await
-		{
-			if !servers.contains(&partial_server) {
+		for partial_server in self.services.state_partial.partial_servers(room_id).await {
+			if !self.services.globals.server_is_ours(&partial_server)
+				&& !servers.contains(&partial_server)
+			{
 				servers.push(partial_server);
 			}
 		}

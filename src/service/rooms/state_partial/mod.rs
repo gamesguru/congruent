@@ -34,6 +34,8 @@ pub struct Service {
 	resolved_at: Mutex<std::collections::HashMap<OwnedRoomId, u64>>,
 	/// Global count at which each room was partially joined since startup.
 	partial_since: Mutex<std::collections::HashMap<OwnedRoomId, u64>>,
+	/// `servers_in_room` from the send_join response of each partial room.
+	extra_servers: Mutex<std::collections::HashMap<OwnedRoomId, Vec<OwnedServerName>>>,
 	resync_tx: loole::Sender<OwnedRoomId>,
 	resync_rx: loole::Receiver<OwnedRoomId>,
 }
@@ -65,6 +67,7 @@ impl crate::Service for Service {
 			resolved: tokio::sync::Notify::new(),
 			resolved_at: Mutex::new(std::collections::HashMap::new()),
 			partial_since: Mutex::new(std::collections::HashMap::new()),
+			extra_servers: Mutex::new(std::collections::HashMap::new()),
 			resync_tx,
 			resync_rx,
 			db: Data {
@@ -198,6 +201,27 @@ impl Service {
 			.await
 			.ok()
 			.and_then(|h| h.deserialized().ok())
+	}
+
+	/// Remember the servers the send_join response said are in the room.
+	pub fn set_extra_servers(&self, room_id: &RoomId, servers: Vec<OwnedServerName>) {
+		self.extra_servers
+			.lock()
+			.expect("locked")
+			.insert(room_id.to_owned(), servers);
+	}
+
+	/// Every server we know of for a room whose state is partial: the one we
+	/// joined through plus those it listed. Empty once the room is resolved.
+	pub async fn partial_servers(&self, room_id: &RoomId) -> Vec<OwnedServerName> {
+		let Ok(Some(server)) = self.partial_server(room_id).await else {
+			return Vec::new();
+		};
+		let mut servers = vec![server];
+		if let Some(extra) = self.extra_servers.lock().expect("locked").get(room_id) {
+			servers.extend(extra.iter().cloned());
+		}
+		servers
 	}
 
 	pub async fn partial_server(&self, room_id: &RoomId) -> Result<Option<OwnedServerName>> {
