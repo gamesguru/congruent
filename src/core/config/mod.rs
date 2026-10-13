@@ -3429,7 +3429,10 @@ mod tests {
 
 	#[test]
 	fn an_omitted_access_token_ttl_is_five_minutes() {
-		let raw = RawConfig::from_toml("server_name = \"test.local\"").unwrap();
+		let raw = RawConfig::from_toml(
+			"server_name = \"test.local\"\ndatabase_path = \"/nonexistent/conduwuit-test\"",
+		)
+		.unwrap();
 		let config = Config::new(&raw).unwrap();
 		assert_eq!(config.access_token_ttl, 300_000);
 	}
