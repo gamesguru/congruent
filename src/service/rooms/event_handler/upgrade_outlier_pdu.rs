@@ -157,12 +157,41 @@ where
 		"Performing auth check to upgrade"
 	);
 	// 11. Check the auth of the event passes based on the state of the event
+	// A partial-state room omits member events from its state, so the sender's
+	// membership is absent. The event's own auth_events carry it; fall back to
+	// those (only for partial rooms) instead of failing auth.
+	let partial_auth_events: Vec<PduEvent> = if self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|s| s.is_some())
+	{
+		let mut v = Vec::new();
+		for id in incoming_pdu.auth_events() {
+			if let Ok(pdu) = self.services.timeline.get_pdu(id).await {
+				v.push(pdu);
+			}
+		}
+		v
+	} else {
+		Vec::new()
+	};
+	let partial_auth_events = &partial_auth_events;
 	let state_fetch_state = &state_at_incoming_event;
 	let state_fetch = |k: StateEventType, s: StateKey| async move {
-		let shortstatekey = self.services.short.get_shortstatekey(&k, &s).await.ok()?;
-
-		let event_id = state_fetch_state.get(&shortstatekey)?;
-		self.services.timeline.get_pdu(event_id).await.ok()
+		let from_state = async {
+			let shortstatekey = self.services.short.get_shortstatekey(&k, &s).await.ok()?;
+			let event_id = state_fetch_state.get(&shortstatekey)?;
+			self.services.timeline.get_pdu(event_id).await.ok()
+		}
+		.await;
+		from_state.or_else(|| {
+			partial_auth_events
+				.iter()
+				.find(|p| *p.kind() == k.clone().into() && p.state_key() == Some(s.as_str()))
+				.cloned()
+		})
 	};
 
 	debug!(
@@ -224,7 +253,17 @@ where
 
 		let state_fetch = |k: &StateEventType, s: &str| {
 			let key = k.with_state_key(s);
-			ready(auth_events.get(&key).map(ToOwned::to_owned))
+			ready(
+				auth_events
+					.get(&key)
+					.map(ToOwned::to_owned)
+					.or_else(|| {
+						partial_auth_events
+							.iter()
+							.find(|p| *p.kind() == k.clone().into() && p.state_key() == Some(s))
+							.cloned()
+					}),
+			)
 		};
 
 		debug!(
