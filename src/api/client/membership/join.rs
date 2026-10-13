@@ -571,7 +571,7 @@ async fn join_room_by_id_helper_remote_process(
 	remote_server: OwnedServerName,
 	join_event: CanonicalJsonObject,
 	event_id: slipstream::OwnedEventId,
-	mut state_lock: RoomMutexGuard,
+	state_lock: RoomMutexGuard,
 	send_join_response: federation::membership::create_join_event::v2::Response,
 	remote_latest_events: Vec<slipstream::OwnedEventId>,
 ) -> Result {
@@ -854,30 +854,19 @@ async fn join_room_by_id_helper_remote_process(
 	// on this exact room, with no state mutation in between -- a second
 	// explicit call here would just re-read the same numbers it just wrote.
 
-	// To prevent our join event from getting assigned a lower PduCount than the
-	// preceding historical extremities (which causes a chronologically
-	// out-of-order room timeline in client syncs), we normally drop the state
-	// lock temporarily, fetch and handle those extremities synchronously, and
-	// then re-acquire the lock before appending our join event.
-	//
-	// Partial-state joins are the exception: the room will be resynced by the
-	// MSC3902 worker, so we must not block the `/join` response on forward-filling
-	// missing extremities from the remote server.
-	drop(state_lock);
-
-	if !send_join_response.room_state.members_omitted && !remote_latest_events.is_empty() {
-		handle_missing_join_extremities(
-			services,
-			room_id,
-			&room_version_id,
-			&remote_server,
-			remote_latest_events,
-		)
-		.await?;
+	let mut missing_latest = Vec::new();
+	if !send_join_response.room_state.members_omitted {
+		for event_id in remote_latest_events {
+			if !services
+				.rooms
+				.timeline
+				.non_outlier_pdu_exists(&event_id)
+				.await
+			{
+				missing_latest.push(event_id);
+			}
+		}
 	}
-
-	// Re-acquire the state lock before appending our join event
-	state_lock = services.rooms.state.mutex.lock(room_id).await;
 
 	// First joins do not eagerly fetch missing extremities here. The client-driven
 	// relationship/backfill request must remain the source of that history; eager
@@ -913,6 +902,21 @@ async fn join_room_by_id_helper_remote_process(
 	))
 	.await?;
 
+	// Match the established bootstrap behavior: only re-joins need extremities
+	// fetched here, and fetch them after our join event makes us a participant.
+	// First-join history is obtained by the client's normal backfill flow.
+	if had_timeline_before_join && !missing_latest.is_empty() {
+		drop(state_lock);
+		handle_missing_join_extremities(
+			services,
+			room_id,
+			&room_version_id,
+			&remote_server,
+			missing_latest,
+		)
+		.await?;
+	}
+
 	// Deal with partial joins
 	if send_join_response.room_state.members_omitted {
 		info!("Room {room_id} joined with omitted members (MSC3902). Marking as partial state.");
@@ -934,7 +938,12 @@ async fn handle_missing_join_extremities(
 ) -> Result<()> {
 	let mut missing_latest = Vec::new();
 	for event_id in &remote_latest_events {
-		if !services.rooms.timeline.pdu_exists(event_id).await {
+		if !services
+			.rooms
+			.timeline
+			.non_outlier_pdu_exists(event_id)
+			.await
+		{
 			missing_latest.push(event_id.clone());
 		}
 	}

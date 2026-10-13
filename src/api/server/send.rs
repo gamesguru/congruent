@@ -1,6 +1,7 @@
 use std::{
 	collections::{BTreeMap, HashMap, HashSet},
 	net::IpAddr,
+	str::FromStr,
 	sync::Arc,
 	time::{Duration, Instant},
 };
@@ -678,13 +679,6 @@ async fn handle_room(
 		.lock(&room_id)
 		.await;
 
-	let room_version_id = services
-		.rooms
-		.state
-		.get_room_version(&room_id)
-		.await
-		.map_err(|e| TransactionError::Transient(e.to_string()))?;
-
 	let room_id = &room_id;
 	let pdu_map: HashMap<OwnedEventId, CanonicalJsonObject> = pdus
 		.into_iter()
@@ -708,6 +702,28 @@ async fn handle_room(
 			.get(&event_id)
 			.expect("sorted event IDs must be from the original map")
 			.clone();
+		let room_version_id = match services.rooms.state.get_room_version(room_id).await {
+			| Ok(version) => version,
+			| Err(state_error) => {
+				let is_create = value
+					.get("type")
+					.and_then(slipstream::CanonicalJsonValue::as_str)
+					== Some("m.room.create");
+				if !is_create {
+					return Err(TransactionError::Transient(state_error.to_string()));
+				}
+
+				let version = value
+					.get("content")
+					.and_then(slipstream::CanonicalJsonValue::as_object)
+					.and_then(|content| content.get("room_version"))
+					.and_then(slipstream::CanonicalJsonValue::as_str)
+					.map_or(Ok(slipstream::RoomVersionId::V1), |version| {
+						slipstream::RoomVersionId::from_str(version)
+					});
+				version.map_err(|e| TransactionError::Transient(e.to_string()))?
+			},
+		};
 		services
 			.server
 			.check_running()
