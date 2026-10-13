@@ -122,7 +122,7 @@ impl Service {
 				| Err(e) => {
 					warn!("Failed to resync partial state for room {}: {}", room_id, e);
 					async_io::Timer::after(delay).await;
-					delay = (delay * 2).min(Duration::from_secs(60));
+					delay = delay.saturating_mul(2).min(Duration::from_secs(60));
 				},
 			}
 		}

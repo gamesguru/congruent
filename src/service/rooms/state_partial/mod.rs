@@ -13,6 +13,12 @@ use slipstream::{EventId, OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, Se
 
 use crate::{Dep, rooms};
 
+/// PDUs awaiting delivery to servers discovered by a resync, per room.
+type PendingSends = std::collections::HashMap<
+	OwnedRoomId,
+	Vec<(rooms::timeline::RawPduId, HashSet<OwnedServerName>)>,
+>;
+
 pub struct Service {
 	pub db: Data,
 	services: Services,
@@ -21,12 +27,7 @@ pub struct Service {
 	/// Wakes the resync worker when a room is newly marked partial.
 	/// PDUs sent while a room was partial, with the servers already sent to; once
 	/// the full member list is known they are also sent to the remaining servers.
-	pending_sends: Mutex<
-		std::collections::HashMap<
-			OwnedRoomId,
-			Vec<(rooms::timeline::RawPduId, HashSet<OwnedServerName>)>,
-		>,
-	>,
+	pending_sends: Mutex<PendingSends>,
 	/// Woken whenever a room's partial state is resolved.
 	resolved: tokio::sync::Notify,
 	/// Global count at which each room's partial state was resolved.
@@ -169,8 +170,7 @@ impl Service {
 	/// A future completing when any partial-state room is resolved. Armed on
 	/// creation.
 	pub fn resolved_notified(&self) -> impl Future<Output = ()> + Send + '_ {
-		let notified = self.resolved.notified();
-		async move { notified.await }
+		self.resolved.notified()
 	}
 
 	pub async fn resync_event_id(&self, room_id: &RoomId) -> Option<OwnedEventId> {

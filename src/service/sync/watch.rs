@@ -70,10 +70,8 @@ pub async fn setup_watch<'a>(
 
 	// Wake when a partial-state room finishes resyncing (MSC3902), so eager
 	// syncs that skipped it can now return it.
-	{
-		let resolved = self.services.state_partial.resolved_notified();
-		futures.push(resolved.boxed());
-	}
+	let resolved = self.services.state_partial.resolved_notified();
+	futures.push(resolved.boxed());
 
 	// Iterate over the set for database prefix watchers ONLY
 	for room_id in &joined_rooms {
