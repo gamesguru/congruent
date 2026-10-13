@@ -69,7 +69,11 @@ mod tests {
 		let path =
 			std::env::temp_dir().join(format!("conduwuit-mtxdb-marker-{}", std::process::id()));
 		let _ = fs::remove_dir_all(&path);
-		let marker = ImportMarker { data_format: DATA_FORMAT, events: 42, closures: 40 };
+		let marker = ImportMarker {
+			data_format: DATA_FORMAT,
+			events: 42,
+			closures: 40,
+		};
 
 		let () = {
 			let store = Arc::new(MtxdbStore::open(&path).unwrap());
@@ -92,7 +96,11 @@ mod tests {
 
 	#[test]
 	fn shared_layout_matches_the_marker_bytes_with_closures() {
-		let marker = ImportMarker { data_format: DATA_FORMAT, events: 42, closures: 40 };
+		let marker = ImportMarker {
+			data_format: DATA_FORMAT,
+			events: 42,
+			closures: 40,
+		};
 		let bytes = [1_u8, 1, 42, 0, 0, 0, 0, 0, 0, 0, 40, 0, 0, 0, 0, 0, 0, 0];
 		assert_eq!(encode_import_marker(marker).as_slice(), bytes.as_slice());
 		assert_eq!(decode_import_marker(&bytes).unwrap(), marker);
