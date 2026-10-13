@@ -750,6 +750,19 @@ async fn join_room_by_id_helper_remote_process(
 		}
 	}
 
+	// With omitted members (MSC3902) the response `state` lacks member events,
+	// but the join event's own auth events (e.g. the authorising user's
+	// membership for a restricted join) arrive in the auth chain.
+	for auth_event_id in &parsed_join_pdu.auth_events {
+		if let Ok(pdu) = services.rooms.timeline.get_pdu(auth_event_id).await {
+			if let Some(sk) = pdu.state_key.clone() {
+				auth_events
+					.entry((StateEventType::from(pdu.kind.to_string()), sk.into()))
+					.or_insert(pdu);
+			}
+		}
+	}
+
 	let state_provider =
 		conduwuit_service::rooms::auth_adapter::PduStateProvider::from_ruma_map(&auth_events);
 	let auth_check = conduwuit_service::rooms::auth_adapter::rezzy_auth_check(
