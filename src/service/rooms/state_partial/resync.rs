@@ -344,7 +344,7 @@ mod tests {
 		let (event_id, value) =
 			conduwuit::matrix::event::gen_event_id_canonical_json(&raw, &room_version).unwrap();
 		let pdu = PduEvent::from_id_val(&event_id, value, Some(&room_id));
-		assert!(pdu.is_ok());
+		pdu.unwrap();
 	}
 
 	#[test]
@@ -356,7 +356,7 @@ mod tests {
 		let eid2 = OwnedEventId::parse("$2:example.com").unwrap();
 		let eid3 = OwnedEventId::parse("$3:example.com").unwrap();
 
-		current_state.insert(ssk1, eid1.clone());
+		current_state.insert(ssk1, eid1);
 		current_state.insert(ssk2, eid2.clone());
 
 		let mut new_state_ids = BTreeMap::new();
