@@ -166,26 +166,19 @@ impl Service {
 					let (calculated_event_id, value) =
 						gen_event_id_canonical_json(&pdu_json, &room_version).ok()?;
 
-					if !self_copy
+					let _ = self_copy
 						.services
 						.event_handler
-						.processed_pdu_cache
-						.contains_key(&calculated_event_id)
-					{
-						let _ = self_copy
-							.services
-							.event_handler
-							.handle_incoming_pdu(
-								&remote_server,
-								&room_id,
-								&calculated_event_id,
-								value,
-								// minimize work, store as outliers
-								false,
-								&room_version,
-							)
-							.await;
-					}
+						.handle_incoming_pdu(
+							&remote_server,
+							&room_id,
+							&calculated_event_id,
+							value,
+							// minimize work, store as outliers
+							false,
+							&room_version,
+						)
+						.await;
 
 					Some(())
 				}
@@ -215,27 +208,20 @@ impl Service {
 						gen_event_id_canonical_json(&pdu_json, &room_version).ok()?;
 
 					// Validate and save
-					if !self_copy
+					self_copy
 						.services
 						.event_handler
-						.processed_pdu_cache
-						.contains_key(&calculated_event_id)
-					{
-						self_copy
-							.services
-							.event_handler
-							.handle_incoming_pdu(
-								&remote_server,
-								&room_id,
-								&calculated_event_id,
-								value.clone(),
-								// minimize work, store as outliers
-								false,
-								&room_version,
-							)
-							.await
-							.ok()?;
-					}
+						.handle_incoming_pdu(
+							&remote_server,
+							&room_id,
+							&calculated_event_id,
+							value.clone(),
+							// minimize work, store as outliers
+							false,
+							&room_version,
+						)
+						.await
+						.ok()?;
 
 					// Collect newly received state events into Map (shortstatekey -> event_id)
 					let pdu = PduEvent::from_id_val(&calculated_event_id, value, Some(&room_id))

@@ -710,7 +710,28 @@ async fn handle_room(
 					.and_then(slipstream::CanonicalJsonValue::as_str)
 					== Some("m.room.create");
 				if !is_create {
-					return Err(TransactionError::Transient(state_error.to_string()));
+					// Room unknown locally: not a transient failure. Mirror the event
+					// handler's non-participation handling per PDU instead of failing
+					// the whole transaction (which also carries EDUs and other rooms).
+					debug_warn!(%room_id, %event_id, "room version unavailable: {state_error}");
+					let is_member = value
+						.get("type")
+						.and_then(slipstream::CanonicalJsonValue::as_str)
+						== Some("m.room.member");
+					let result = if is_member {
+						services
+							.rooms
+							.outlier
+							.add_pdu_outlier(&event_id, &value, Some(room_id))
+							.await;
+						Ok(())
+					} else {
+						Err(err!(Request(NotFound(
+							"This server is not participating in that room."
+						))))
+					};
+					results.push((event_id, result));
+					continue;
 				}
 
 				let version = value

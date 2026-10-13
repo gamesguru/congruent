@@ -6,7 +6,7 @@ use slipstream::{
 	events::{StateEventType, TimelineEventType},
 };
 
-use super::{check_room_id, to_room_version};
+use super::{check_room_id, get_room_version_id, to_room_version};
 use crate::rooms::{pdu_metadata::RejectionCode, timeline::pdu_fits};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,7 +129,11 @@ where
 
 	// TODO: For RoomVersion6 we must check that Raw<..> is canonical do we anywhere?: https://matrix.org/docs/spec/rooms/v6#canonical-json
 
-	let room_version_id = room_version.clone();
+	// The create event, when we have it, is authoritative for the room version.
+	let room_version_id = match create_event {
+		| Some(ce) => get_room_version_id(ce)?,
+		| None => room_version.clone(),
+	};
 
 	let mut incoming_pdu = if skip_sig_verify {
 		// Caller already verified signatures (e.g. import_pdus via

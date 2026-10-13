@@ -25,7 +25,6 @@ log = "info,presence_debug=debug"
 # log = "trace,h2=debug,hyper=debug,conduwuit_database=warn,conduwuit_service::manager=info,conduwuit_api::router=error,conduwuit_router=error,tower_http=error"
 port = [8008, 8448]
 default_room_version = "12"
-fast_joins = true
 trusted_servers = []
 only_query_trusted_key_servers = false
 query_trusted_key_servers_first = false

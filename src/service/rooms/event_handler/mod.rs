@@ -40,7 +40,6 @@ use crate::{Dep, globals, rooms, sending, server_keys};
 pub struct Service {
 	pub mutex_federation: RoomMutexMap,
 	pub federation_handletime: SyncRwLock<HandleTimeMap>,
-	pub(crate) processed_pdu_cache: moka::sync::Cache<OwnedEventId, ()>,
 	pub bad_room_ratelimiter: SyncRwLock<HashMap<OwnedRoomId, (u32, Instant)>>,
 	pub peer_scorer: dashmap::DashMap<OwnedServerName, PeerStats>,
 	services: Services,
@@ -100,7 +99,6 @@ impl crate::Service for Service {
 		Ok(Arc::new(Self {
 			mutex_federation: RoomMutexMap::new(),
 			federation_handletime: HandleTimeMap::new().into(),
-			processed_pdu_cache: moka::sync::Cache::builder().max_capacity(100_000).build(),
 			bad_room_ratelimiter: HashMap::new().into(),
 			peer_scorer: dashmap::DashMap::new(),
 			services: Services {

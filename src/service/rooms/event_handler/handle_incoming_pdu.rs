@@ -275,9 +275,6 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	} else if is_timeline_event {
 		info!("Native retry interception SKIPPED: outlier not found for {event_id}");
 	}
-	if self.processed_pdu_cache.contains_key(event_id) {
-		return Ok(None);
-	}
 	if !pdu_fits(&mut value.clone()) {
 		warn!(
 			"dropping incoming PDU {event_id} in room {room_id} from {origin} because it \
@@ -837,8 +834,7 @@ pub async fn process_timeline_upgrade(
 	// repairs and the incoming event become visible together.
 	let final_prev_id = sorted_prev_events.last().cloned();
 	let final_prev_anchor = prev_fetch_deeper_anchor.clone();
-	let result = self
-		.services
+	self.services
 		.timeline
 		.with_cork_and_flush(|| async move {
 			// Typed parameter so `prev_id` below is inferred as `&EventId`.
@@ -925,9 +921,5 @@ pub async fn process_timeline_upgrade(
 			.await
 			.map(|(pdu_id, _)| pdu_id)
 		})
-		.await;
-	if result.is_ok() {
-		self.processed_pdu_cache.insert(event_id.clone(), ());
-	}
-	result
+		.await
 }
