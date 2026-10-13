@@ -177,6 +177,13 @@ where
 	} else {
 		Vec::new()
 	};
+	info!(
+		target: "state_at_event_debug",
+		event_id = %incoming_pdu.event_id,
+		auth_events = incoming_pdu.auth_events().count(),
+		resolved = partial_auth_events.len(),
+		"partial auth fallback: resolved event auth_events"
+	);
 	let partial_auth_events = &partial_auth_events;
 	let state_fetch_state = &state_at_incoming_event;
 	let state_fetch = |k: StateEventType, s: StateKey| async move {
