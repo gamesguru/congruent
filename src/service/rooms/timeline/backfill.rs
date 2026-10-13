@@ -96,12 +96,19 @@ pub async fn backfill_if_required(
 		.await
 		.unwrap_or(0);
 
+	// A partial-state join omits remote members, so room_servers lacks the join
+	// server until resync completes; it can still serve backfill.
 	let has_remote_servers = self
 		.services
 		.state_cache
 		.room_servers(room_id)
 		.ready_any(|server| !self.services.globals.server_is_ours(&server))
-		.await;
+		.await || self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|s| s.is_some());
 
 	info!(
 		%room_id, %from, %limit, %joined_count, %has_remote_servers,
@@ -660,7 +667,12 @@ async fn get_remote_pdu_limited(
 		.state_cache
 		.room_servers(room_id)
 		.ready_any(|server| !self.services.globals.server_is_ours(&server))
-		.await;
+		.await || self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|s| s.is_some());
 
 	if !has_remote_servers
 		&& !self
@@ -1602,6 +1614,15 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 	.map(|alias| alias.server_name())
 	.stream();
 
+	// The partial-state join server isn't in room_servers until resync finishes.
+	let partial_server = self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.ok()
+		.flatten();
+
 	room_mods
 		.map(ToOwned::to_owned)
 		.stream()
@@ -1616,6 +1637,7 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 				.stream(),
 		)
 		.chain(self.services.state_cache.room_servers(room_id))
+		.chain(once(partial_server.clone()).filter_map(|s| s).stream())
 		.ready_filter(|server_name| {
 			!self.services.globals.server_is_ours(server_name)
 				&& !self
@@ -1626,10 +1648,12 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 					.is_match(server_name.host())
 		})
 		.wide_filter_map(move |server_name| async move {
-			self.services
-				.state_cache
-				.server_in_room(&server_name, room_id)
-				.await
+			(partial_server.as_deref() == Some(&*server_name)
+				|| self
+					.services
+					.state_cache
+					.server_in_room(&server_name, room_id)
+					.await)
 				.then_some(server_name)
 		})
 }
