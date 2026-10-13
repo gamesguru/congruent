@@ -669,7 +669,7 @@
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/works_after_a_second_partial_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/MembersRequestBlocksDuringPartialStateJoin"}
 {"Action":"fail","Test":"TestPartialStateJoin/Outgoing_device_list_updates"}
-{"Action":"fail","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_no_longer_reach_departed_servers_after_partial_state_join_completes"}
+{"Action":"pass","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_no_longer_reach_departed_servers_after_partial_state_join_completes"}
 {"Action":"pass","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_reach_all_servers_in_partial_state_rooms"}
 {"Action":"fail","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_reach_incorrectly_absent_servers_once_partial_state_join_completes"}
 {"Action":"fail","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_reach_incorrectly_absent_servers_once_partial_state_join_completes_even_though_remote_server_left_room"}

@@ -441,7 +441,11 @@ impl Service {
 			.try_collect::<HashMap<ShortStateKey, OwnedEventId>>()
 			.await?;
 
-		new_state.extend(new_state_ids);
+		// The resync state is the room at the join point; whatever we already hold
+		// (including events accepted since the join, e.g. a later leave) is newer.
+		for (key, event_id) in new_state_ids {
+			new_state.entry(key).or_insert(event_id);
+		}
 
 		let (new_root, pending_nodes) = self
 			.services
