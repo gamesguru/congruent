@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+	collections::{BTreeMap, HashMap},
+	sync::Arc,
+	time::Duration,
+};
 
 use conduwuit::{PduEvent, Result, debug, info, warn};
 use conduwuit_core::{
@@ -6,7 +10,12 @@ use conduwuit_core::{
 	utils::stream::{BroadbandExt, IterStream, TryIgnore},
 };
 use futures::{StreamExt, TryStreamExt};
-use ruma::{OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, ServerName};
+use slipstream::{
+	OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, RoomVersionId, ServerName,
+	api::federation::event::get_room_state,
+	events::StateEventType,
+	sswire::RawJsonValue,
+};
 
 use crate::rooms::{short::ShortStateKey, state_partial::Service};
 
@@ -69,7 +78,7 @@ impl Service {
 		let create_pdu = self
 			.services
 			.state_accessor
-			.room_state_get(room_id, &ruma::events::StateEventType::RoomCreate, "")
+			.room_state_get(room_id, &StateEventType::RoomCreate, "")
 			.await?;
 		let room_version = crate::rooms::event_handler::get_room_version_id(&create_pdu)?;
 
@@ -98,9 +107,7 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		server_name: &ServerName,
-	) -> Result<(ruma::api::federation::event::get_room_state::v1::Response, OwnedServerName)> {
-		use ruma::api::federation::event::get_room_state;
-
+	) -> Result<(get_room_state::v1::Response, OwnedServerName)> {
 		// Discovery fallback: collect servers to try
 		let others = self
 			.services
@@ -146,16 +153,16 @@ impl Service {
 	async fn process_auth_chain(
 		self: Arc<Self>,
 		room_id: &RoomId,
-		room_version: &ruma::RoomVersionId,
+		room_version: &RoomVersionId,
 		remote_server: &ServerName,
-		auth_chain: Vec<Box<serde_json::value::RawValue>>,
+		auth_chain: Vec<RawJsonValue>,
 	) {
 		use conduwuit::matrix::event::gen_event_id_canonical_json;
 
 		auth_chain
 			.into_iter()
 			.stream()
-			.broad_filter_map(move |pdu_json: Box<serde_json::value::RawValue>| {
+			.broad_filter_map(move |pdu_json: RawJsonValue| {
 				let room_version = room_version.clone();
 				let remote_server = remote_server.to_owned();
 				let room_id = room_id.to_owned();
@@ -195,15 +202,15 @@ impl Service {
 	async fn process_state_events(
 		self: Arc<Self>,
 		room_id: &RoomId,
-		room_version: &ruma::RoomVersionId,
+		room_version: &RoomVersionId,
 		remote_server: &ServerName,
-		pdus: Vec<Box<serde_json::value::RawValue>>,
+		pdus: Vec<RawJsonValue>,
 	) -> BTreeMap<ShortStateKey, OwnedEventId> {
 		use conduwuit::matrix::event::gen_event_id_canonical_json;
 
 		pdus.into_iter()
 			.stream()
-			.broad_filter_map(move |pdu_json: Box<serde_json::value::RawValue>| {
+			.broad_filter_map(move |pdu_json: RawJsonValue| {
 				let room_version = room_version.clone();
 				let remote_server = remote_server.to_owned();
 				let room_id = room_id.to_owned();
@@ -264,20 +271,20 @@ impl Service {
 		let mut new_state = self
 			.services
 			.state_accessor
-			.state_full_ids_hamt(&root_handle)
+			.state_full_ids_hamt(room_id, &root_handle)
 			.try_collect::<HashMap<ShortStateKey, OwnedEventId>>()
 			.await?;
 
 		new_state.extend(new_state_ids);
 
-		let new_root = self
+		let (new_root, pending_nodes) = self
 			.services
 			.event_handler
 			.state_map_to_root_handle(room_id, &new_state)
 			.await?;
 		self.services
 			.state
-			.set_room_state_hamt(room_id, &new_root, &state_lock);
+			.set_room_state_hamt_with_nodes(room_id, &new_root, &pending_nodes, &state_lock)?;
 		Ok(())
 	}
 }
@@ -298,7 +305,7 @@ fn sort_servers(suggested: &ServerName, others: Vec<OwnedServerName>) -> Vec<Own
 
 #[cfg(test)]
 mod tests {
-	use ruma::{owned_server_name, server_name};
+	use slipstream::{owned_server_name, server_name};
 
 	use super::*;
 
@@ -332,26 +339,15 @@ mod tests {
 
 	#[test]
 	fn test_pdu_parsing() {
-		let event_id = conduwuit::ruma::owned_event_id!("$event:example.com");
-		let room_id = conduwuit::ruma::owned_room_id!("!room:example.com");
-		let json = serde_json::json!({
-			"content": { "body": "test" },
-			"type": "m.room.message",
-			"room_id": "!room:example.com",
-			"sender": "@user:example.com",
-			"origin_server_ts": 123456789,
-			"auth_events": [],
-			"prev_events": [],
-			"depth": 1,
-			"hashes": { "sha256": "hash" },
-			"signatures": { "example.com": { "ed25519:key": "sig" } }
-		});
-
-		let pdu = PduEvent::from_id_val(
-			&event_id,
-			serde_json::from_value(json).unwrap(),
-			Some(&room_id),
-		);
+		let room_id = RoomId::parse("!room:example.com").unwrap();
+		let raw = RawJsonValue::from_json_string(
+			r#"{"content":{"body":"test"},"type":"m.room.message","room_id":"!room:example.com","sender":"@user:example.com","origin_server_ts":123456789,"auth_events":[],"prev_events":[],"depth":1,"hashes":{"sha256":"hash"},"signatures":{"example.com":{"ed25519:key":"sig"}}}"#,
+		)
+		.unwrap();
+		let room_version = RoomVersionId::V1;
+		let (event_id, value) =
+			conduwuit::matrix::event::gen_event_id_canonical_json(&raw, &room_version).unwrap();
+		let pdu = PduEvent::from_id_val(&event_id, value, Some(&room_id));
 		assert!(pdu.is_ok());
 	}
 
@@ -360,9 +356,9 @@ mod tests {
 		let mut current_state = BTreeMap::new();
 		let ssk1 = 1;
 		let ssk2 = 2;
-		let eid1 = conduwuit::ruma::owned_event_id!("$1:example.com");
-		let eid2 = conduwuit::ruma::owned_event_id!("$2:example.com");
-		let eid3 = conduwuit::ruma::owned_event_id!("$3:example.com");
+		let eid1 = OwnedEventId::parse("$1:example.com").unwrap();
+		let eid2 = OwnedEventId::parse("$2:example.com").unwrap();
+		let eid3 = OwnedEventId::parse("$3:example.com").unwrap();
 
 		current_state.insert(ssk1, eid1.clone());
 		current_state.insert(ssk2, eid2.clone());

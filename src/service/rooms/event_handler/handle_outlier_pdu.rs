@@ -495,7 +495,7 @@ where
 			&pdu_event,
 			&incoming_pdu,
 			&room_version_id,
-			room_version,
+			room_version_override,
 			&missing_auth_events,
 			&mut auth_events,
 			auth_recovery_stage,
@@ -876,7 +876,7 @@ where
 						auth_val,
 						true,
 						false,
-						room_version,
+						room_version_override,
 						auth_recovery_stage,
 					))
 					.await

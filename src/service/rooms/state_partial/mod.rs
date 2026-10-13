@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use conduwuit::Result;
 use database::{Deserialized, Map};
-use ruma::{OwnedServerName, RoomId, ServerName};
+use slipstream::{OwnedServerName, RoomId, ServerName};
 
 use crate::{Dep, rooms};
 
@@ -53,14 +53,12 @@ impl crate::Service for Service {
 }
 
 impl Service {
-	#[tracing::instrument(skip(self))]
 	pub fn mark_as_partial(&self, room_id: &RoomId, remote_server: &ServerName) {
 		self.db
 			.state_partial_rooms
 			.insert(room_id.as_bytes(), remote_server.as_bytes());
 	}
 
-	#[tracing::instrument(skip(self), level = "trace")]
 	pub async fn partial_server(&self, room_id: &RoomId) -> Result<Option<OwnedServerName>> {
 		match self.db.state_partial_rooms.qry(room_id).await {
 			| Ok(handle) => Ok(Some(handle.deserialized()?)),
@@ -68,7 +66,6 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(skip(self), level = "trace")]
 	pub async fn is_partial_from_server(
 		&self,
 		room_id: &RoomId,
