@@ -637,6 +637,7 @@ async fn build_state_events(
 				syncing_user,
 				&timeline_start_root_handle,
 				lazily_loaded_members.as_ref(),
+				Some(timeline),
 			)
 			.boxed()
 			.await,
@@ -669,6 +670,7 @@ async fn build_state_after(
 		syncing_user,
 		&current_root_handle,
 		lazily_loaded_members.as_ref(),
+		Some(timeline),
 	)
 	.boxed()
 	.await
