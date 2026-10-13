@@ -383,7 +383,7 @@ run_one_pattern() {
 	fi
 
 	local -a flags=(
-		-tags "conduwuit_blacklist"
+		-tags "continuwuity_blacklist"
 		-skip "$SKIPPED_COMPLEMENT_TESTS"
 		-run "$pattern"
 		-p "$COMPLEMENT_PACKAGE_PARALLEL"
