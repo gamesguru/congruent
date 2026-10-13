@@ -757,7 +757,7 @@ async fn join_room_by_id_helper_remote_process(
 		if let Ok(pdu) = services.rooms.timeline.get_pdu(auth_event_id).await {
 			if let Some(sk) = pdu.state_key.clone() {
 				auth_events
-					.entry((StateEventType::from(pdu.kind.to_string()), sk.into()))
+					.entry((StateEventType::from(pdu.kind.to_string()), sk))
 					.or_insert(pdu);
 			}
 		}

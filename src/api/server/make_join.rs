@@ -314,8 +314,7 @@ pub(crate) async fn user_can_perform_restricted_join(
 					.state_accessor
 					.get_member(&membership.room_id, user_id)
 					.await
-					.map(|m| format!("{:?}", m.membership))
-					.unwrap_or_else(|e| format!("<{e}>"));
+					.map_or_else(|e| format!("<{e}>"), |m| format!("{:?}", m.membership));
 				info!(
 					%user_id,
 					%room_id,
