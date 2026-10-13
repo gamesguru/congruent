@@ -412,7 +412,9 @@ impl Service {
 			.stream()
 			.ignore_err()
 			.filter_map(|(room_id, via): (OwnedRoomId, OwnedServerName)| {
-				futures::future::ready((via.as_ref() == server).then_some(room_id))
+				futures::future::ready(
+					(AsRef::<str>::as_ref(&via) == server.as_str()).then_some(room_id),
+				)
 			})
 			.collect()
 			.await
