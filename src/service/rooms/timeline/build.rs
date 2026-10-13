@@ -167,6 +167,13 @@ pub async fn build_and_append_pdu(
 		.collect()
 		.await;
 
+	// A partial-state room has an incomplete member list, so the server we
+	// joined through may be missing from `room_servers`.
+	if let Ok(Some(partial_server)) = self.services.state_partial.partial_server(&room_id).await
+	{
+		servers.insert(partial_server);
+	}
+
 	// In case we are kicking or banning a user, we need to inform their server of
 	// the change
 	//
