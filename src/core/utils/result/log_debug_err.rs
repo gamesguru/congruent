@@ -1,9 +1,7 @@
 use std::fmt::Debug;
 
-use tracing::Level;
-
 use super::{DebugInspect, Result};
-use crate::error;
+use crate::{error, log::Level};
 
 pub trait LogDebugErr<T, E: Debug> {
 	#[must_use]

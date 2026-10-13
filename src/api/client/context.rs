@@ -1,4 +1,3 @@
-use axum::extract::State;
 use conduwuit::{
 	Err, Event, PduEvent, Result, at, debug_warn, err, info, ref_at,
 	utils::{
@@ -24,6 +23,7 @@ use crate::{
 		message::{event_filter, ignored_filter, lazy_loading_witness, visibility_filter},
 		sync::add_membership_to_unsigned,
 	},
+	router::extract::State,
 };
 
 const LIMIT_MAX: usize = 100;
@@ -199,7 +199,7 @@ pub(crate) async fn get_context_route(
 		let ids: Vec<(ShortStateKey, OwnedEventId)> = services
 			.rooms
 			.state_accessor
-			.state_full_ids_hamt(&root_handle)
+			.state_full_ids_hamt(room_id, &root_handle)
 			.try_collect()
 			.await?;
 

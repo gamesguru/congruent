@@ -19,12 +19,10 @@ crate-type = [
 ]
 
 # `ctor` is used only via the `::ctor::ctor` paths emitted by
-# `conduwuit_macros::introspect_crate!`. `reqwest` and `conduwuit-api` are only
+# `conduwuit_macros::introspect_crate!`. `conduwuit-api` is only
 # referenced from `[features]` (feature forwarding / the dynamic mod loader).
-# `aws-lc-rs` is a `dep:`-gated pin that forces the rustls crypto provider to be
-# built and linked, as required by the provider init in `mod.rs`.
 [package.metadata.cargo-machete]
-ignored = ["aws-lc-rs", "conduwuit-api", "const-str", "ctor", "reqwest"]
+ignored = ["conduwuit-api", "const-str", "ctor"]
 
 [package.metadata.deb]
 name = "continuwuity"
@@ -50,16 +48,13 @@ assets = [
 [features]
 default = [
     "release_max_log_level",
+    "mimalloc",
     "ring",
-    "bindgen-runtime", # replace with bindgen-static on alpine
 ]
 standard = [
     "blurhashing",
-    "brotli_compression",
-    "gzip_compression",
-    "io_uring",
-    "jemalloc",
-    "jemalloc_conf",
+    "mimalloc",
+    "mimalloc_conf",
     "media_thumbnail",
     "zstd_compression",
 ]
@@ -67,76 +62,46 @@ full = [
     "standard",
     "console",
     "element_hacks",
-    "journald",
-    "ldap",
-    "otlp_telemetry",
-    "sentry_telemetry",
     "systemd",
     "url_preview",
-    # "hardened_malloc", # Conflicts with jemalloc
+    # "hardened_malloc", # Conflicts with mimalloc
 ]
 
 local_profiling = [
-    "jemalloc_prof",
-    "perf_measurements",
-    "tokio_console",
-    "tokio_metrics",
+    "mimalloc_prof",
 ]
 
 blurhashing = [
 	"conduwuit-service/blurhashing",
 ]
-brotli_compression = [
-	"conduwuit-api/brotli_compression",
-	"conduwuit-core/brotli_compression",
-	"conduwuit-router/brotli_compression",
-	"conduwuit-service/brotli_compression",
-]
 console = [
 	"conduwuit-service/console",
-	"dep:rustyline-async",
-]
-direct_tls = [
-    "conduwuit-router/direct_tls"
 ]
 element_hacks = [
 	"conduwuit-api/element_hacks",
 	"conduwuit-service/element_hacks",
 ]
-gzip_compression = [
-	"conduwuit-api/gzip_compression",
-	"conduwuit-core/gzip_compression",
-	"conduwuit-router/gzip_compression",
-	"conduwuit-service/gzip_compression",
+direct_tls = [
+	"conduwuit-router/direct_tls",
 ]
 hardened_malloc = [
 	"conduwuit-core/hardened_malloc",
 ]
-http3 = [
-    "reqwest/http3"
-]
 ring = [
     "rustls/ring"
 ]
-aws_lc_rs = [
-    "rustls/aws_lc_rs",
-    "dep:aws-lc-rs"
+mimalloc = [
+	"conduwuit-core/mimalloc",
+	"conduwuit-database/mimalloc",
 ]
-io_uring = [
-	"conduwuit-database/io_uring",
+mimalloc_prof = [
+	"conduwuit-core/mimalloc_prof",
 ]
-jemalloc = [
-	"conduwuit-core/jemalloc",
-	"conduwuit-database/jemalloc",
+mimalloc_stats = [
+	"conduwuit-core/mimalloc_stats",
 ]
-jemalloc_prof = [
-	"conduwuit-core/jemalloc_prof",
-]
-jemalloc_stats = [
-	"conduwuit-core/jemalloc_stats",
-]
-jemalloc_conf = [
-	"conduwuit-core/jemalloc_conf",
+mimalloc_conf = [
+	"conduwuit-core/mimalloc_conf",
 ]
 ldap = [
 	"conduwuit-api/ldap",
@@ -144,23 +109,9 @@ ldap = [
 media_thumbnail = [
 	"conduwuit-service/media_thumbnail",
 ]
-otlp_telemetry = [
-	"dep:opentelemetry",
-	"dep:tracing-opentelemetry",
-	"dep:opentelemetry_sdk",
-	"dep:opentelemetry-otlp",
-]
-perf_measurements = [
-	"dep:tracing-flame",
-	"otlp_telemetry",
-	"conduwuit-core/perf_measurements",
-	"conduwuit-core/sentry_telemetry",
-]
 # increases performance, reduces build times, and reduces binary size by not compiling or
 # genreating code for log level filters that users will generally not use (debug and trace)
 release_max_log_level = [
-	"tracing/max_level_trace",
-	"tracing/release_max_level_info",
 	"log/max_level_trace",
 	"log/release_max_level_info",
 	"conduwuit-admin/release_max_log_level",
@@ -170,30 +121,12 @@ release_max_log_level = [
 	"conduwuit-router/release_max_log_level",
 	"conduwuit-service/release_max_log_level",
 ]
-sentry_telemetry = [
-	"dep:sentry",
-	"dep:sentry-tracing",
-	"conduwuit-core/sentry_telemetry",
-	"conduwuit-router/sentry_telemetry",
-]
 systemd = [
 	"conduwuit-router/systemd",
 	"conduwuit-service/systemd"
 ]
-journald = [ # This is a stub on non-unix platforms
-	"dep:tracing-journald",
-]
 
 
-# enable the tokio_console server ncompatible with release_max_log_level
-tokio_console = [
-	"dep:console-subscriber",
-	"tokio/tracing",
-]
-tokio_metrics = [
-    "conduwuit-core/tokio_metrics",
-    "conduwuit-admin/tokio_metrics",
-]
 url_preview = [
 	"conduwuit-service/url_preview",
 ]
@@ -206,12 +139,6 @@ zstd_compression = [
 ]
 conduwuit_mods = [
     "conduwuit-core/conduwuit_mods",
-]
-bindgen-static = [
-    "conduwuit-database/bindgen-static"
-]
-bindgen-runtime = [
-    "conduwuit-database/bindgen-runtime"
 ]
 
 [build-dependencies]
@@ -229,35 +156,14 @@ conduwuit-git-info.workspace = true
 conduwuit-macros.workspace = true
 
 clap.workspace = true
+clap_complete.workspace = true
 const-str.workspace = true
 ctor.workspace = true
-console-subscriber.optional = true
-console-subscriber.workspace = true
+futures.workspace = true
 log.workspace = true
-opentelemetry.optional = true
-opentelemetry.workspace = true
-opentelemetry-otlp.optional = true
-opentelemetry-otlp.workspace = true
-opentelemetry_sdk.optional = true
-opentelemetry_sdk.workspace = true
-sentry-tracing.optional = true
-sentry-tracing.workspace = true
-sentry.optional = true
-sentry.workspace = true
-tokio.workspace = true
-rustyline-async.optional = true
-rustyline-async.workspace = true
-tracing-flame.optional = true
-tracing-flame.workspace = true
-tracing-opentelemetry.optional = true
-tracing-opentelemetry.workspace = true
-tracing-subscriber.workspace = true
-tracing.workspace = true
-tracing-journald = { workspace = true, optional = true }
-parking_lot.workspace = true
-reqwest = { workspace = true, default-features = false }
+# TODO: replace reqwest with something??
 rustls = { workspace = true, default-features = false }
-aws-lc-rs = { version = "1.16.3", default-features = false, optional = true }
+tokio.workspace = true
 
 
 [target.'cfg(all(not(target_env = "msvc"), target_os = "linux"))'.dependencies]

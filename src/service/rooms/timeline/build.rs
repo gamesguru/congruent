@@ -21,7 +21,6 @@ use super::{ExtractBody, RoomMutexGuard};
 /// takes a roomid_mutex_state, meaning that only this function is able to
 /// mutate the room state.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self, state_lock, pdu_builder), level = "trace")]
 pub async fn build_and_append_pdu(
 	&self,
 	pdu_builder: PduBuilder,
@@ -94,28 +93,21 @@ pub async fn build_and_append_pdu(
 	// time with the pdu without it's state. This is okay because append_pdu can't
 	// fail. Only state events mutate the room state; a non-state event must not be
 	// routed through append_to_state, which rejects non-state PDUs.
-	let (state_root_handle, state_node) = if pdu.state_key().is_some() {
+	let (state_root_handle, pending_nodes) = if pdu.state_key().is_some() {
 		trace!("Appending {} state for room {room_id}", pdu.event_id());
 		self.services
 			.state
 			.append_to_state(&pdu, &room_id, state_lock, None)
 			.await
-			.map(|(handle, node)| (handle, Some(node)))?
+			.map(|(handle, _node, nodes)| (handle, nodes))?
 	} else {
 		// A non-state event does not change the room state, so reuse the current
 		// room root and do not persist any new HAMT node.
 		let root = previous_root_handle
 			.clone()
 			.ok_or_else(|| err!(Request(NotFound("Room has no state to append"))))?;
-		(root, None)
+		(root, Vec::new())
 	};
-
-	if let Some(node) = &state_node {
-		self.services
-			.state_hamt
-			.store
-			.persist_node_recursive(node.clone());
-	}
 
 	trace!("Generating raw ID for PDU {}", pdu.event_id());
 	let pdu_id = self
@@ -130,6 +122,7 @@ pub async fn build_and_append_pdu(
 				state_lock,
 				room_id: &room_id,
 				state_root_handle: Some(state_root_handle.clone()),
+				pending_nodes,
 				prev_state_root_handle: previous_root_handle,
 				advance_current_state: false,
 				was_joined_before_state_install: None,
@@ -162,11 +155,9 @@ pub async fn build_and_append_pdu(
 	// events, together with the timeline write, so a flush can never expose the
 	// PDU without its state root. Only a non-state event still needs it set here.
 	if !crate::rooms::state::is_state_event(&pdu) {
-		self.services.globals.with_cork_and_flush(|| {
-			self.services
-				.state
-				.set_room_state_hamt(&room_id, &state_root_handle, state_lock);
-		});
+		self.services
+			.state
+			.set_room_state_hamt(&room_id, &state_root_handle, state_lock)?;
 	}
 
 	let mut servers: HashSet<OwnedServerName> = self
@@ -179,7 +170,7 @@ pub async fn build_and_append_pdu(
 	// In case we are kicking or banning a user, we need to inform their server of
 	// the change
 	//
-	// This block's tracing is `debug!`, not `info!`: it runs unconditionally on
+	// This block's logging is `debug!`, not `info!`: it runs unconditionally on
 	// every locally-created PDU (not just RoomMember ones), and `?servers`
 	// formats the whole destination set. At `info!` it would run at full cost
 	// on every send in the default log config (`info,memory_serve=warn` in
@@ -231,13 +222,6 @@ pub async fn build_and_append_pdu(
 		.await?;
 
 	if num_sent > 0 {
-		let _span = tracing::info_span!(
-			"broadcast",
-			event_id = %pdu.event_id(),
-			%room_id,
-			servers = num_sent,
-		)
-		.entered();
 		info!("Sending to federation");
 	}
 
@@ -248,7 +232,6 @@ pub async fn build_and_append_pdu(
 /// Assert invariants about the admin room, to prevent (for example) all admins
 /// from leaving or being banned from the room
 #[implement(super::Service)]
-#[tracing::instrument(skip_all, level = "debug")]
 async fn check_pdu_for_admin_room<Pdu>(&self, pdu: &Pdu, sender: &UserId) -> Result
 where
 	Pdu: Event + Send + Sync,

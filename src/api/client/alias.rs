@@ -1,11 +1,10 @@
-use axum::extract::State;
 use conduwuit::{Err, Result, matrix::pdu::PduBuilder};
 use slipstream::{
 	api::client::alias::{create_alias, delete_alias, get_alias},
 	events::{StateEventType, room::canonical_alias::RoomCanonicalAliasEventContent},
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `PUT /_matrix/client/v3/directory/room/{roomAlias}`
 ///

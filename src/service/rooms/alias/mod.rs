@@ -69,7 +69,6 @@ impl crate::Service for Service {
 }
 
 impl Service {
-	#[tracing::instrument(skip(self))]
 	pub fn set_alias(
 		&self,
 		alias: &RoomAliasId,
@@ -175,7 +174,6 @@ impl Service {
 		Ok(create_event.sender() == user_id)
 	}
 
-	#[tracing::instrument(skip(self))]
 	pub async fn remove_alias(&self, alias: &RoomAliasId, user_id: &UserId) -> Result<()> {
 		self.ensure_user_can_remove_alias(alias, user_id).await?;
 
@@ -234,7 +232,6 @@ impl Service {
 
 	/// Resolves the given room alias, returning the resolved room ID and any
 	/// servers that might be in the room.
-	#[tracing::instrument(skip(self), name = "resolve")]
 	pub async fn resolve_alias(
 		&self,
 		room_alias: &RoomAliasId,
@@ -268,7 +265,6 @@ impl Service {
 		Err!(Request(NotFound("Alias does not exist.")))
 	}
 
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn resolve_local_alias(&self, alias: &RoomAliasId) -> Result<OwnedRoomId> {
 		self.db
 			.alias_roomid
@@ -277,7 +273,6 @@ impl Service {
 			.deserialized()
 	}
 
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn local_aliases_for_room<'a>(
 		&'a self,
 		room_id: &'a RoomId,
@@ -290,7 +285,6 @@ impl Service {
 			.map(|(_, alias): (Ignore, OwnedRoomAliasId)| alias)
 	}
 
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn all_local_aliases(&self) -> impl Stream<Item = (OwnedRoomId, String)> + Send + '_ {
 		self.db
 			.alias_roomid

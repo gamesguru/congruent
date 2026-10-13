@@ -1,8 +1,7 @@
-use axum::extract::State;
 use conduwuit::{Error, Result};
 use slipstream::api::{client::error::ErrorKind, federation::discovery::discover_homeserver};
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /.well-known/matrix/server`
 ///

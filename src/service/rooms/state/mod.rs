@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Write, iter::once, sync::Arc};
 
 use async_trait::async_trait;
-use conduwuit::{RoomVersion, debug, matrix::StateKey};
+use conduwuit::{RoomVersion, debug, error, matrix::StateKey};
 use conduwuit_core::{
 	Event, PduEvent, Result, err, info,
 	state_res::StateMap,
@@ -11,7 +11,7 @@ use conduwuit_core::{
 	},
 	warn,
 };
-use conduwuit_database::{Ignore, Interfix, Map};
+use conduwuit_database::{Batch, Ignore, Interfix, Map, serialize_to_vec};
 
 /// A (add, rem) pair of `(shortstatekey, shorteventid)` from a HAMT delta.
 type HamtDelta = (Vec<(u64, u64)>, Vec<(u64, u64)>);
@@ -131,6 +131,7 @@ struct Services {
 	state_hamt: Dep<rooms::state_hamt::Service>,
 	timeline: Dep<rooms::timeline::Service>,
 	pdu_metadata: Dep<rooms::pdu_metadata::Service>,
+	outlier: Dep<rooms::outlier::Service>,
 }
 
 struct Data {
@@ -164,6 +165,7 @@ impl crate::Service for Service {
 				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 				pdu_metadata: args.depend::<rooms::pdu_metadata::Service>("rooms::pdu_metadata"),
+				outlier: args.depend::<rooms::outlier::Service>("rooms::outlier"),
 			},
 			db: Data {
 				roomid_pduleaves: args.db["roomid_pduleaves"].clone(),
@@ -208,9 +210,7 @@ impl Service {
 		))
 		.await?;
 
-		self.set_room_state_hamt(room_id, new_root_handle, state_lock);
-
-		Ok(())
+		self.set_room_state_hamt(room_id, new_root_handle, state_lock)
 	}
 
 	/// Computes the HAMT delta between `from_root` (default: empty state) and
@@ -223,19 +223,18 @@ impl Service {
 	/// fan-out. The caller is responsible for committing the new root to the
 	/// room's current-state pointer (via `set_room_state_hamt` /
 	/// `set_event_state_with_root`).
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn update_caches_for_state_delta_between(
 		&self,
 		room_id: &RoomId,
 		from_root: Option<&rezzy::hamt::RootHandle>,
 		to_root: &rezzy::hamt::RootHandle,
 	) -> Result<()> {
+		let structural_key =
+			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
+		let store = &self.services.state_hamt.store;
 		let old_node = match from_root {
-			| Some(root) => self
-				.services
-				.state_hamt
-				.store
-				.get_node(&root.structural_hash)?,
+			| Some(root) =>
+				store.get_node(room_id.as_bytes(), &structural_key, &root.structural_hash)?,
 			| None => Arc::new(rezzy::hamt::HamtNode {
 				datamap: 0,
 				nodemap: 0,
@@ -252,17 +251,17 @@ impl Service {
 				children: vec![],
 				structural_hash: rezzy::hamt::StructuralHash::default(),
 			});
-			self.services.state_hamt.store.put_node(empty_node.clone());
-			empty_node
-		} else {
 			self.services
 				.state_hamt
 				.store
-				.get_node(&to_root.structural_hash)?
+				.put_node(room_id.as_bytes(), empty_node.clone())?;
+			empty_node
+		} else {
+			store.get_node(room_id.as_bytes(), &structural_key, &to_root.structural_hash)?
 		};
 
-		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
-		let lattice = rezzy::state::LtHash::default();
+		let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
+		let lattice = rezzy::incremental::LtHash::default();
 		let (added, removed): HamtDelta =
 			rezzy::hamt::delta::isolate_delta::<u64, u64, _, conduwuit::Error>(
 				&old_node,
@@ -285,13 +284,12 @@ impl Service {
 				.services
 				.short
 				.get_statekey_from_short(shortstatekey)
-				.await
-				&& !matches!(
-					event_type,
-					StateEventType::RoomMember
-						| StateEventType::RoomEncryption
-						| StateEventType::SpaceChild
-				) {
+				.await && !matches!(
+				event_type,
+				StateEventType::RoomMember
+					| StateEventType::RoomEncryption
+					| StateEventType::SpaceChild
+			) {
 				continue;
 			}
 			let Ok(event_id_obj) = self
@@ -319,13 +317,12 @@ impl Service {
 				.services
 				.short
 				.get_statekey_from_short(shortstatekey)
-				.await
-				&& !matches!(
-					event_type,
-					StateEventType::RoomMember
-						| StateEventType::RoomEncryption
-						| StateEventType::SpaceChild
-				) {
+				.await && !matches!(
+				event_type,
+				StateEventType::RoomMember
+					| StateEventType::RoomEncryption
+					| StateEventType::SpaceChild
+			) {
 				continue;
 			}
 			let Ok(event_id_obj) = self
@@ -359,7 +356,6 @@ impl Service {
 	///
 	/// Appends the incoming event to the room's current HAMT state (if it is a
 	/// state event) and returns the resulting root handle.
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn set_event_state(
 		&self,
 		room_id: &RoomId,
@@ -377,11 +373,11 @@ impl Service {
 			state_lock,
 			None,
 			previous_root.as_ref(),
+			&[],
 		))
 		.await
 	}
 
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn set_event_state_with_root(
 		&self,
 		room_id: &RoomId,
@@ -389,6 +385,7 @@ impl Service {
 		state_lock: &RoomMutexGuard,
 		state_root_handle: Option<&rezzy::hamt::RootHandle>,
 		prev_root_handle: Option<&rezzy::hamt::RootHandle>,
+		pre_persisted_nodes: &[rooms::state_hamt::store::PendingNode],
 	) -> Result<rezzy::hamt::RootHandle> {
 		let shorteventid = self
 			.services
@@ -401,28 +398,34 @@ impl Service {
 		// already applied the event (and any state resolution) and persisted its
 		// nodes. Appending the event again would clobber a resolution winner, so
 		// only append when no post-event root was provided.
-		let (root_handle, new_node) = if is_state && state_root_handle.is_none() {
-			let (handle, node) = self
+		let (root_handle, mut deferred_nodes) = if is_state && state_root_handle.is_none() {
+			let (handle, _node, nodes) = self
 				.append_to_state(new_pdu, room_id, state_lock, None)
 				.await?;
-			(handle, Some(node))
+			(handle, nodes)
 		} else if let Some(root) = state_root_handle {
-			(root.clone(), None)
+			(root.clone(), Vec::new())
 		} else {
 			let root = self.get_room_state_hamt(room_id).await?;
-			(root, None)
+			(root, Vec::new())
 		};
 
-		let mut batch = conduwuit_database::Batch::new();
-
-		if let Some(node) = new_node {
-			self.services
-				.state_hamt
-				.store
-				.persist_node_recursive_batch(node, &mut batch);
-		}
+		deferred_nodes.extend_from_slice(pre_persisted_nodes);
 
 		let serialized = root_handle_to_bytes(&root_handle);
+
+		// One mtxdb transaction for the new nodes and both roots, committed
+		// before the RocksDB index batch below, so a failure leaves at worst
+		// unreferenced nodes and never an index entry pointing at nothing.
+		self.services.state_hamt.store.publish(
+			room_id.as_bytes(),
+			new_pdu.event_id().as_bytes(),
+			&deferred_nodes,
+			&serialized,
+			is_state,
+		)?;
+
+		let mut batch = Batch::new();
 
 		// Atomically map the new PDU's shortevent ID to its RootHandle,
 		// and for state events, advance the room's current-state pointer.
@@ -465,14 +468,17 @@ impl Service {
 	/// Builds a new HAMT root handle (and its root node) representing the
 	/// room's current state plus the incoming state event. Only state events
 	/// may be appended; non-state events are rejected.
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn append_to_state(
 		&self,
 		new_pdu: &PduEvent,
 		room_id: &RoomId,
 		_state_lock: &RoomMutexGuard,
 		state_root_handle: Option<&rezzy::hamt::RootHandle>,
-	) -> Result<(rezzy::hamt::RootHandle, Arc<rezzy::hamt::HamtNode<u64, u64>>)> {
+	) -> Result<(
+		rezzy::hamt::RootHandle,
+		Arc<rezzy::hamt::HamtNode<u64, u64>>,
+		Vec<rooms::state_hamt::store::PendingNode>,
+	)> {
 		let Some(state_key) = new_pdu.state_key() else {
 			return Err(err!(Request(InvalidParam("append_to_state called on non-state event"))));
 		};
@@ -490,12 +496,14 @@ impl Service {
 		};
 		if let Some(base) = base {
 			if let Some(mut lattice) = self.get_root_lattice(&base).await {
-				let old = self
-					.services
-					.state_hamt
-					.store
-					.get_node(&base.structural_hash)?;
-				let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+				let structural_key = rooms::state_hamt::room_structural_key(
+					&self.services.globals.server_secret,
+					room_id,
+				);
+				let store = &self.services.state_hamt.store;
+				let old =
+					store.get_node(room_id.as_bytes(), &structural_key, &base.structural_hash)?;
+				let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
 				let value = self
 					.services
 					.short
@@ -503,10 +511,7 @@ impl Service {
 					.await;
 				let (new_node, displaced, created) = rezzy::hamt::persist_mutation(
 					&old,
-					&rooms::state_hamt::room_structural_key(
-						&self.services.globals.server_secret,
-						room_id,
-					),
+					&structural_key,
 					new_shortstatekey,
 					Some(value),
 					&mut resolver,
@@ -527,11 +532,15 @@ impl Service {
 				} else {
 					lattice.insert(event_type.as_ref(), state_key, new_pdu.event_id().as_str());
 				}
+				let mut deferred_nodes = Vec::with_capacity(created.len());
 				for (hash, bytes) in created {
-					self.services
-						.state_hamt
-						.store
-						.put_encoded_node(hash, &bytes)?;
+					deferred_nodes.extend(
+						self.services.state_hamt.store.put_encoded_node_deferred(
+							room_id.as_bytes(),
+							hash,
+							&bytes,
+						)?,
+					);
 				}
 				let handle = self
 					.services
@@ -539,23 +548,24 @@ impl Service {
 					.store
 					.root_handle(new_node.structural_hash, &lattice);
 				self.persist_root_lattice(&handle, &lattice);
-				return Ok((handle, new_node));
+				return Ok((handle, new_node, deferred_nodes));
 			}
 		}
 
-		let mut current: HashMap<ShortStateKey, OwnedEventId> =
-			if let Some(root_handle) = state_root_handle {
-				self.load_state_map_from_root_handle(root_handle, new_shortstatekey)
-					.await?
-			} else {
-				match self.get_room_state_hamt(room_id).await {
-					| Ok(root_handle) =>
-						self.load_state_map_from_root_handle(&root_handle, new_shortstatekey)
-							.await?,
-					| Err(e) if e.is_not_found() => HashMap::new(),
-					| Err(e) => return Err(e),
-				}
-			};
+		let mut current: HashMap<ShortStateKey, OwnedEventId> = if let Some(root_handle) =
+			state_root_handle
+		{
+			self.load_state_map_from_root_handle(room_id, root_handle, new_shortstatekey)
+				.await?
+		} else {
+			match self.get_room_state_hamt(room_id).await {
+				| Ok(root_handle) =>
+					self.load_state_map_from_root_handle(room_id, &root_handle, new_shortstatekey)
+						.await?,
+				| Err(e) if e.is_not_found() => HashMap::new(),
+				| Err(e) => return Err(e),
+			}
+		};
 
 		current.insert(new_shortstatekey, new_pdu.event_id().to_owned());
 
@@ -569,14 +579,12 @@ impl Service {
 			.collect()
 			.await;
 
-		let mut lattice = rezzy::state::LtHash::default();
+		let mut lattice = rezzy::incremental::LtHash::default();
 		let mut entries: Vec<(ShortStateKey, ShortEventId)> =
 			Vec::with_capacity(short_state_keys.len());
 
-		for ((ssk, event_id), key_result) in short_state_keys
-			.into_iter()
-			.zip(event_ids.into_iter())
-			.zip(string_keys.into_iter())
+		for ((ssk, event_id), key_result) in
+			short_state_keys.into_iter().zip(event_ids).zip(string_keys)
 		{
 			let shorteventid = self
 				.services
@@ -597,7 +605,13 @@ impl Service {
 				.map_err(|e| err!(error!("Failed to build HAMT in append_to_state: {e:?}")))?;
 		self.persist_root_lattice(&root_handle, &lattice);
 
-		Ok((root_handle, root_node))
+		let deferred_nodes = self
+			.services
+			.state_hamt
+			.store
+			.persist_node_recursive_deferred(room_id.as_bytes(), root_node.clone())?;
+
+		Ok((root_handle, root_node, deferred_nodes))
 	}
 
 	/// Applies `mutations` on top of `prev` with copy-on-write path copying and
@@ -612,17 +626,15 @@ impl Service {
 	/// is not durable yet.
 	pub fn persist_state_hamt_mutations(
 		&self,
+		room_id: &RoomId,
 		structural_key: &[u8],
 		prev: &rezzy::hamt::RootHandle,
 		mutations: Vec<(ShortStateKey, Option<ShortEventId>)>,
-		lattice: &rezzy::state::LtHash,
-	) -> Result<rezzy::hamt::RootHandle> {
-		let old = self
-			.services
-			.state_hamt
-			.store
-			.get_node(&prev.structural_hash)?;
-		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+		lattice: &rezzy::incremental::LtHash,
+	) -> Result<(rezzy::hamt::RootHandle, Vec<rooms::state_hamt::store::PendingNode>)> {
+		let store = &self.services.state_hamt.store;
+		let old = store.get_node(room_id.as_bytes(), structural_key, &prev.structural_hash)?;
+		let mut resolver = store.get_room_resolver(room_id.as_bytes(), structural_key);
 
 		// Displaced values are unused: callers pass a lattice already computed
 		// from the resolved post-mutation state, so there is no need to replay
@@ -631,11 +643,13 @@ impl Service {
 			rezzy::hamt::persist_mutations(&old, structural_key, mutations, &mut resolver)
 				.map_err(|e| err!(error!("HAMT batch mutation failed: {e:?}")))?;
 
+		let mut deferred_nodes = Vec::with_capacity(created.len());
 		for (hash, bytes) in created {
-			self.services
-				.state_hamt
-				.store
-				.put_encoded_node(hash, &bytes)?;
+			deferred_nodes.extend(self.services.state_hamt.store.put_encoded_node_deferred(
+				room_id.as_bytes(),
+				hash,
+				&bytes,
+			)?);
 		}
 
 		let handle = self
@@ -645,14 +659,14 @@ impl Service {
 			.root_handle(new_node.structural_hash, lattice);
 		self.persist_root_lattice(&handle, lattice);
 
-		Ok(handle)
+		Ok((handle, deferred_nodes))
 	}
 
 	/// Persists the lattice for a root and populates the lattice cache.
 	pub fn persist_root_lattice(
 		&self,
 		root_handle: &rezzy::hamt::RootHandle,
-		lattice: &rezzy::state::LtHash,
+		lattice: &rezzy::incremental::LtHash,
 	) {
 		let encoded = lattice.to_bytes();
 		self.db
@@ -668,9 +682,9 @@ impl Service {
 	pub async fn get_root_lattice(
 		&self,
 		root_handle: &rezzy::hamt::RootHandle,
-	) -> Option<rezzy::state::LtHash> {
+	) -> Option<rezzy::incremental::LtHash> {
 		if let Some(raw) = self.db.lattice_cache.get(&root_handle.structural_hash) {
-			return rezzy::state::LtHash::from_bytes(&raw);
+			return rezzy::incremental::LtHash::from_bytes(&raw);
 		}
 
 		let raw = self
@@ -683,7 +697,7 @@ impl Service {
 			return None;
 		}
 
-		let lattice = rezzy::state::LtHash::from_bytes(&raw)?;
+		let lattice = rezzy::incremental::LtHash::from_bytes(&raw)?;
 		self.db
 			.lattice_cache
 			.insert(root_handle.structural_hash, Arc::from(&*raw));
@@ -692,18 +706,19 @@ impl Service {
 
 	async fn load_state_map_from_root_handle(
 		&self,
+		room_id: &RoomId,
 		root_handle: &rezzy::hamt::RootHandle,
 		skip_shortstatekey: ShortStateKey,
 	) -> Result<HashMap<ShortStateKey, OwnedEventId>> {
-		let node = self
-			.services
-			.state_hamt
-			.store
-			.get_node(&root_handle.structural_hash)?;
+		let structural_key =
+			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
+		let store = &self.services.state_hamt.store;
+		let node =
+			store.get_node(room_id.as_bytes(), &structural_key, &root_handle.structural_hash)?;
 
 		let mut short_events = Vec::new();
 		node.visit_entries(
-			&mut self.services.state_hamt.store.get_blocking_resolver(),
+			&mut store.get_room_resolver(room_id.as_bytes(), &structural_key),
 			&mut |k, v| {
 				short_events.push((*k, *v));
 				Ok::<(), conduwuit::Error>(())
@@ -725,7 +740,6 @@ impl Service {
 		Ok(map)
 	}
 
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn summary_stripped<'a, E>(
 		&self,
 		event: &'a E,
@@ -762,29 +776,44 @@ impl Service {
 	}
 
 	/// Set the state HAMT RootHandle to a new version.
-	#[tracing::instrument(skip(self, root_handle, _mutex_lock), level = "debug")]
 	pub fn set_room_state_hamt(
 		&self,
 		room_id: &RoomId,
 		root_handle: &rezzy::hamt::RootHandle,
 		// Take mutex guard to make sure users get the room state mutex
 		_mutex_lock: &RoomMutexGuard,
-	) {
+	) -> Result<()> {
+		self.set_room_state_hamt_with_nodes(room_id, root_handle, &[])
+	}
+
+	/// Set the current room root, publishing any nodes created while building it
+	/// in the same mtxdb transaction.
+	pub fn set_room_state_hamt_with_nodes(
+		&self,
+		room_id: &RoomId,
+		root_handle: &rezzy::hamt::RootHandle,
+		nodes: &[rooms::state_hamt::store::PendingNode],
+	) -> Result<()> {
 		let data = root_handle_to_bytes(root_handle);
+		self.services.state_hamt.store.publish_roots(
+			room_id.as_bytes(),
+			nodes,
+			&[],
+			Some(&data),
+		)?;
 		self.db
 			.roomid_roothandle
 			.insert(room_id.as_str().as_bytes(), &data);
+		Ok(())
 	}
 
 	/// Returns the room's current HAMT RootHandle.
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn get_room_state_hamt(&self, room_id: &RoomId) -> Result<rezzy::hamt::RootHandle> {
 		let data = self.db.roomid_roothandle.get(room_id).await?;
 		root_handle_from_bytes(&data)
 	}
 
 	/// Returns the room's version.
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> {
 		if let Ok(version) = self.services.short.get_room_version(room_id).await {
 			return Ok(version);
@@ -842,8 +871,22 @@ impl Service {
 	/// but the room's live current state must not be touched.
 	pub async fn set_event_roothandle(
 		&self,
+		room_id: &RoomId,
 		event_id: &EventId,
 		root_handle: &rezzy::hamt::RootHandle,
+	) -> Result<()> {
+		self.set_event_roothandle_with_nodes(room_id, event_id, root_handle, &[])
+			.await
+	}
+
+	/// Record an event's root, publishing the nodes created while building it in
+	/// the same mtxdb transaction.
+	pub async fn set_event_roothandle_with_nodes(
+		&self,
+		room_id: &RoomId,
+		event_id: &EventId,
+		root_handle: &rezzy::hamt::RootHandle,
+		nodes: &[rooms::state_hamt::store::PendingNode],
 	) -> Result<()> {
 		let shorteventid = self
 			.services
@@ -851,19 +894,55 @@ impl Service {
 			.get_or_create_shorteventid(event_id)
 			.await;
 		let data = root_handle_to_bytes(root_handle);
+		self.services.state_hamt.store.publish_roots(
+			room_id.as_bytes(),
+			nodes,
+			&[(event_id.as_bytes(), data.as_slice())],
+			None,
+		)?;
 		self.db
 			.shorteventid_roothandle
 			.insert(&shorteventid.to_be_bytes(), &data);
 		Ok(())
 	}
 
+	/// Atomically publish one event root, the current room root, and their
+	/// deferred nodes to mtxdb.
+	pub async fn set_event_and_room_roothandles_with_nodes(
+		&self,
+		room_id: &RoomId,
+		event_id: &EventId,
+		root_handle: &rezzy::hamt::RootHandle,
+		nodes: &[rooms::state_hamt::store::PendingNode],
+	) -> Result<()> {
+		let shorteventid = self
+			.services
+			.short
+			.get_or_create_shorteventid(event_id)
+			.await;
+		let data = root_handle_to_bytes(root_handle);
+		self.services.state_hamt.store.publish_roots(
+			room_id.as_bytes(),
+			nodes,
+			&[(event_id.as_bytes(), data.as_slice())],
+			Some(&data),
+		)?;
+		let mut batch = Batch::new();
+		self.db
+			.shorteventid_roothandle
+			.batch_put(&mut batch, &shorteventid.to_be_bytes(), &data);
+		self.db
+			.roomid_roothandle
+			.batch_put(&mut batch, room_id.as_bytes(), &data);
+		self.db.shorteventid_roothandle.apply_batch(batch);
+		Ok(())
+	}
+
 	/// Returns every recorded root handle in the database.
 	///
-	/// This is the *complete* live-root set [`crate::rooms::state_hamt::Store::sweep`]
-	/// requires: both the current per-room `roomid_roothandle` pointers and every
-	/// per-event `shorteventid_roothandle` snapshot. Sweep treats anything outside
-	/// this set as unreachable, so a partial enumeration here would have it delete
-	/// live state.
+	/// This is the complete set of roots recorded in the RocksDB index: both the
+	/// current per-room `roomid_roothandle` pointers and every per-event
+	/// `shorteventid_roothandle` snapshot.
 	///
 	/// Reads both maps through `raw_stream` rather than any prefix scan, because
 	/// the two maps are keyed differently (room ID bytes and a big-endian
@@ -890,28 +969,56 @@ impl Service {
 		Ok(handles)
 	}
 
-	/// Reclaims HAMT nodes no recorded root can reach.
-	///
-	/// `live_roots` is gathered by [`Self::live_root_handles`] rather than taken
-	/// from the caller, because supplying an incomplete set silently deletes live
-	/// state -- see [`crate::rooms::state_hamt::Store::sweep`].
-	///
-	/// `grace` bounds how recently a node may have been written and still be
-	/// spared, so a node persisted moments before being linked into a root is not
-	/// mistaken for an orphan.
-	pub async fn sweep_hamt_nodes(
-		&self,
-		grace: std::time::Duration,
-		dry_run: bool,
-	) -> Result<rooms::state_hamt::store::SweepReport> {
-		let live_roots = self.live_root_handles().await?;
-		let roots: Vec<&rezzy::hamt::RootHandle> = live_roots.iter().collect();
+	/// Returns rooms with a persisted current-state root.
+	pub async fn rooms_with_roots(&self) -> Result<Vec<OwnedRoomId>> {
+		let mut rooms = Vec::new();
+		let mut stream = self.db.roomid_roothandle.raw_stream();
+		while let Some(kv) = stream.next().await {
+			let (key, _): database::KeyVal<'_> = kv?;
+			if let Ok(text) = std::str::from_utf8(key) {
+				if let Ok(room_id) = OwnedRoomId::parse(text) {
+					rooms.push(room_id);
+				}
+			}
+		}
+		Ok(rooms)
+	}
 
-		self.services
+	/// Dry run of an orphan sweep over mtxdb: lists, per room, the HAMT nodes no
+	/// root of that room reaches. Reads and reports only; nothing is deleted
+	/// because standalone node writes can still land before their roots.
+	///
+	/// Rooms come from `roomid_roothandle`, whose key is the room id mtxdb is
+	/// also keyed by.
+	pub async fn scan_hamt_orphans(
+		&self,
+	) -> Result<rooms::state_hamt::orphan_scan::OrphanReport> {
+		let mut rooms = Vec::new();
+		let mut bad_room_ids = 0_usize;
+		let mut stream = self.db.roomid_roothandle.raw_stream();
+		while let Some(kv) = stream.next().await {
+			let (key, _): database::KeyVal<'_> = kv?;
+			let Some(room_id) = std::str::from_utf8(key)
+				.ok()
+				.and_then(|text| OwnedRoomId::parse(text).ok())
+			else {
+				bad_room_ids = bad_room_ids.saturating_add(1);
+				continue;
+			};
+			rooms.push(rooms::state_hamt::orphan_scan::RoomInput {
+				room_id: key.to_vec(),
+				structural_key: rooms::state_hamt::room_structural_key(
+					&self.services.globals.server_secret,
+					&room_id,
+				),
+			});
+		}
+
+		Ok(self
+			.services
 			.state_hamt
 			.store
-			.sweep(&roots, grace, dry_run)
-			.await
+			.orphan_scan_dry_run(&rooms, bad_room_ids))
 	}
 
 	pub fn get_forward_extremities<'a>(
@@ -941,7 +1048,8 @@ impl Service {
 		event_ids: I,
 		trusted_new_event: Option<&'a EventId>,
 		_state_lock: &'a RoomMutexGuard,
-	) where
+	) -> Result<()>
+	where
 		I: Iterator<Item = OwnedEventId> + Send + 'a,
 	{
 		// Only events that are actually accepted into the timeline may become
@@ -966,40 +1074,70 @@ impl Service {
 				continue;
 			}
 
-			let Ok(metadata) = self.services.timeline.get_event_metadata(&event_id).await else {
-				debug!(
-				%room_id, %event_id,
-				"Refusing to persist forward extremity with unknown event metadata",
-				);
-				continue;
-			};
-
 			// Only events actually accepted into the timeline may become citable
 			// forward extremities. A non-outlier event is not automatically
-			// acceptable: its rejection/soft-fail verdict now lives in the
-			// independent `eventid_rejections` / `eventid_softfailed` stores
-			// (not `EventMetadata`), and a non-outlier event can carry such a
-			// marker (mirroring the checks `recalculate_extremities` performs).
-			// Admit it only if it is not an outlier, rejected, or soft-failed.
-			let admitted = !metadata.is_outlier
-				&& !self
-					.services
-					.pdu_metadata
-					.is_event_rejected(&event_id)
-					.await
-				&& !self
-					.services
-					.pdu_metadata
-					.is_event_soft_failed(&event_id)
-					.await;
-			if admitted {
-				eligible.push(event_id);
-			} else {
+			// acceptable: its rejection/soft-fail verdict lives in mtxdb
+			// (`pdu_metadata`), not in `EventMetadata`, and a non-outlier event
+			// can carry one (mirroring the checks `recalculate_extremities`
+			// performs). Admit it only if it is not an outlier, rejected, or
+			// soft-failed. A read error aborts the update; a missing metadata
+			// row means the event is unknown and is skipped.
+			let verdicts = self
+				.services
+				.pdu_metadata
+				.is_event_rejected(&event_id)
+				.and_then(|rejected| {
+					self.services
+						.pdu_metadata
+						.is_event_soft_failed(&event_id)
+						.map(|soft_failed| rejected || soft_failed)
+				});
+			let flagged = match verdicts {
+				| Ok(flagged) => flagged,
+				| Err(error) => {
+					error!(
+						%room_id, %event_id, %error,
+						"set_forward_extremities: could not read verdicts",
+					);
+					return Err(err!(Database(
+						"Failed to read verdicts for forward extremity {event_id}: {error}"
+					)));
+				},
+			};
+			if flagged {
 				debug!(
-				%room_id, %event_id,
-				"Refusing to persist ineligible (outlier/rejected/soft-failed) \
-				 event as a forward extremity",
+					%room_id, %event_id,
+					"Refusing to persist rejected/soft-failed event as a forward extremity",
 				);
+				continue;
+			}
+
+			let metadata = match self.services.timeline.get_event_metadata(&event_id).await {
+				| Ok(metadata) => metadata,
+				| Err(error) if error.is_not_found() => {
+					warn!(
+						%room_id, %event_id,
+						"Refusing to persist forward extremity with unknown event metadata",
+					);
+					continue;
+				},
+				| Err(error) => {
+					error!(
+						?error, %room_id, %event_id,
+						"Aborting forward-extremity update because event metadata is unreadable",
+					);
+					return Err(err!(Database(
+						"Failed to read metadata for forward extremity {event_id}: {error}"
+					)));
+				},
+			};
+			if metadata.is_outlier {
+				debug!(
+					%room_id, %event_id,
+					"Refusing to persist outlier event as a forward extremity",
+				);
+			} else {
+				eligible.push(event_id);
 			}
 		}
 
@@ -1010,15 +1148,18 @@ impl Service {
 				 (outlier/rejected/soft-failed/unknown); leaving existing forward \
 				 extremities unchanged",
 			);
-			return;
+			return Ok(());
 		}
 
+		// Replace the stored set in one batch so a crash cannot leave the room
+		// with no forward extremities between the delete and the puts.
+		let leaves = &self.db.roomid_pduleaves;
+		let mut batch = Batch::new();
 		let prefix = (room_id, Interfix);
-		self.db
-			.roomid_pduleaves
+		leaves
 			.keys_prefix_raw(&prefix)
 			.ignore_err()
-			.ready_for_each(|key| self.db.roomid_pduleaves.remove(key))
+			.ready_for_each(|key| leaves.batch_delete(&mut batch, key))
 			.await;
 
 		// Enforce a hard cap at the DB writer level. Callers may pass more
@@ -1028,14 +1169,16 @@ impl Service {
 		let max_extremities = self.services.globals.max_forward_extremities();
 		let start = eligible.len().saturating_sub(max_extremities);
 		for event_id in &eligible[start..] {
-			let key = (room_id, event_id);
-			self.db.roomid_pduleaves.put_raw(key, event_id);
+			let key = serialize_to_vec((room_id, event_id))?;
+			leaves.batch_put(&mut batch, &key, event_id.as_bytes());
 		}
+		leaves.apply_batch(batch);
+
+		Ok(())
 	}
 
 	/// This fetches auth events from the current state.
 	#[allow(clippy::too_many_arguments)]
-	#[tracing::instrument(skip(self, content, room_version), level = "trace")]
 	pub async fn get_auth_events(
 		&self,
 		room_id: &RoomId,
@@ -1091,7 +1234,7 @@ impl Service {
 		let (state_keys, event_ids): (Vec<_>, Vec<_>) = self
 			.services
 			.state_accessor
-			.state_full_shortids_hamt(root_handle)
+			.state_full_shortids_hamt(room_id, root_handle)
 			.ready_filter_map(Result::ok)
 			.ready_filter_map(|(shortstatekey, shorteventid)| {
 				sauthevents
@@ -1120,6 +1263,9 @@ impl Service {
 			.await
 	}
 }
+
+mod export;
+pub use export::{EXPORT_FORMAT, ExportCounts};
 
 #[cfg(test)]
 mod tests;

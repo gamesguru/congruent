@@ -1,28 +1,52 @@
 use std::collections::BTreeMap;
 
-use axum::{extract::State, response::IntoResponse};
 use conduwuit::Result;
 use futures::StreamExt;
-use slipstream::api::client::discovery::get_supported_versions;
 
-use crate::Ruma;
+use crate::router::{ApiError, extract::State, response::IntoResponse};
 
-/// # `GET /_matrix/client/versions`
-///
-/// Get the versions of the specification and unstable features supported by
-/// this server.
-///
-/// - Versions take the form MAJOR.MINOR.PATCH
-/// - Only the latest PATCH release will be reported for each MAJOR.MINOR value
-/// - Unstable features are namespaced and may include version information in
-///   their name
-///
-/// Note: Unstable features are used while developing new features. Clients
-/// should avoid using unstable features in their stable releases
-pub(crate) async fn get_supported_versions_route(
-	State(services): State<crate::State>,
-	_body: Ruma<get_supported_versions::Request>,
-) -> Result<get_supported_versions::Response> {
+pub(crate) fn supported_versions_value(
+	msc3030_enabled: bool,
+	msc3266_enabled: bool,
+	msc4222_enabled: bool,
+) -> slipstream::json::Value {
+	let mut value = slipstream::ObjectBuilder::new();
+	value.field("versions", &supported_versions());
+	value.field(
+		"unstable_features",
+		&supported_unstable_features(msc3030_enabled, msc3266_enabled, msc4222_enabled),
+	);
+	value.finish()
+}
+
+fn supported_versions() -> Vec<String> {
+	vec![
+		"r0.0.1".to_owned(),
+		"r0.1.0".to_owned(),
+		"r0.2.0".to_owned(),
+		"r0.3.0".to_owned(),
+		"r0.4.0".to_owned(),
+		"r0.5.0".to_owned(),
+		"r0.6.0".to_owned(),
+		"r0.6.1".to_owned(),
+		"v1.1".to_owned(),
+		"v1.2".to_owned(),
+		"v1.3".to_owned(),
+		"v1.4".to_owned(),
+		"v1.5".to_owned(),
+		"v1.8".to_owned(),
+		"v1.11".to_owned(),
+		"v1.12".to_owned(),
+		"v1.13".to_owned(),
+		"v1.14".to_owned(),
+	]
+}
+
+fn supported_unstable_features(
+	msc3030_enabled: bool,
+	msc3266_enabled: bool,
+	msc4222_enabled: bool,
+) -> BTreeMap<String, bool> {
 	let mut unstable_features = BTreeMap::from_iter([
 		("org.matrix.e2e_cross_signing".to_owned(), true),
 		("org.matrix.msc2285.stable".to_owned(), true), /* private read receipts (https://github.com/matrix-org/matrix-spec-proposals/pull/2285) */
@@ -45,50 +69,26 @@ pub(crate) async fn get_supported_versions_route(
 		("org.matrix.msc4140".to_owned(), true), /* delayed events (https://github.com/matrix-org/matrix-spec-proposals/pull/4140) */
 	]);
 
-	if services.config.experimental_features.msc3030_enabled {
+	if msc3030_enabled {
 		unstable_features.insert("org.matrix.msc3030".to_owned(), true); /* timestamp to event (https://github.com/matrix-org/matrix-spec-proposals/pull/3030) */
 	}
 
-	if services.config.experimental_features.msc3266_enabled {
+	if msc3266_enabled {
 		unstable_features.insert("org.matrix.msc3266".to_owned(), true); /* room previews (https://github.com/matrix-org/matrix-spec-proposals/pull/3266) */
 	}
 
-	if services.config.experimental_features.msc4222_enabled {
+	if msc4222_enabled {
 		unstable_features.insert("org.matrix.msc4222".to_owned(), true); /* state_after in sync v2 (https://github.com/matrix-org/matrix-spec-proposals/pull/4222) */
 	}
 
-	let resp = get_supported_versions::Response {
-		versions: vec![
-			"r0.0.1".to_owned(),
-			"r0.1.0".to_owned(),
-			"r0.2.0".to_owned(),
-			"r0.3.0".to_owned(),
-			"r0.4.0".to_owned(),
-			"r0.5.0".to_owned(),
-			"r0.6.0".to_owned(),
-			"r0.6.1".to_owned(),
-			"v1.1".to_owned(),
-			"v1.2".to_owned(),
-			"v1.3".to_owned(),
-			"v1.4".to_owned(),
-			"v1.5".to_owned(),
-			"v1.8".to_owned(),
-			"v1.11".to_owned(),
-			"v1.12".to_owned(),
-			"v1.13".to_owned(),
-			"v1.14".to_owned(),
-		],
-		unstable_features: Some(unstable_features),
-	};
-
-	Ok(resp)
+	unstable_features
 }
 
 /// # `GET /_conduwuit/server_version`
 ///
 /// Conduwuit-specific API to get the server version, results akin to
 /// `/_matrix/federation/v1/version`
-pub(crate) async fn conduwuit_server_version() -> Result<impl IntoResponse> {
+pub(crate) async fn conduwuit_server_version() -> Result<impl IntoResponse, ApiError> {
 	let mut object = slipstream::ObjectBuilder::new();
 	object.field("name", &conduwuit::version::name());
 	object.field("version", &conduwuit::version::version());
@@ -102,7 +102,7 @@ pub(crate) async fn conduwuit_server_version() -> Result<impl IntoResponse> {
 /// only includes active users (not deactivated, no guests, etc)
 pub(crate) async fn conduwuit_local_user_count(
 	State(services): State<crate::State>,
-) -> Result<impl IntoResponse> {
+) -> Result<impl IntoResponse, ApiError> {
 	let user_count = services.users.list_local_users().count().await;
 
 	let mut object = slipstream::ObjectBuilder::new();

@@ -7,9 +7,9 @@ use std::{
 };
 
 use slipstream::OwnedServerName;
-use tokio::{runtime, sync::broadcast};
+use tokio::sync::broadcast::{self, Sender};
 
-use crate::{Err, Result, config, config::Config, log::Log, metrics::Metrics};
+use crate::{Err, Result, config, config::Config, log::Log, metrics::Metrics, rt::RuntimeHandle};
 
 /// Server runtime state; public portion
 pub struct Server {
@@ -35,10 +35,10 @@ pub struct Server {
 	pub restarting: AtomicBool,
 
 	/// Handle to the runtime
-	pub runtime: Option<runtime::Handle>,
+	pub runtime: RuntimeHandle,
 
 	/// Reload/shutdown signal
-	pub signal: broadcast::Sender<&'static str>,
+	pub signal: Sender<&'static str>,
 
 	/// Logging subsystem state
 	pub log: Log,
@@ -49,7 +49,8 @@ pub struct Server {
 
 impl Server {
 	#[must_use]
-	pub fn new(config: Config, runtime: Option<&runtime::Handle>, log: Log) -> Self {
+	pub fn new<T>(config: Config, runtime: Option<&T>, log: Log) -> Self {
+		let (signal, _) = broadcast::channel(16);
 		Self {
 			name: config.server_name.clone(),
 			config: config::Manager::new(config),
@@ -57,8 +58,8 @@ impl Server {
 			stopping: AtomicBool::new(false),
 			reloading: AtomicBool::new(false),
 			restarting: AtomicBool::new(false),
-			runtime: runtime.cloned(),
-			signal: broadcast::channel::<&'static str>(1).0,
+			runtime: RuntimeHandle::new(),
+			signal,
 			log,
 			metrics: Metrics::new(runtime),
 		}
@@ -104,8 +105,8 @@ impl Server {
 	}
 
 	pub fn signal(&self, sig: &'static str) -> Result<()> {
-		if let Err(e) = self.signal.send(sig) {
-			return Err!("Failed to send signal: {e}");
+		if let Err(error) = self.signal.send(sig) {
+			return Err!("Failed to send signal: {error}");
 		}
 
 		Ok(())
@@ -113,17 +114,14 @@ impl Server {
 
 	#[inline]
 	pub async fn until_shutdown(self: &Arc<Self>) {
+		let mut signal = self.signal.subscribe();
 		while self.running() {
-			self.signal.subscribe().recv().await.ok();
+			signal.recv().await.ok();
 		}
 	}
 
 	#[inline]
-	pub fn runtime(&self) -> &runtime::Handle {
-		self.runtime
-			.as_ref()
-			.expect("runtime handle available in Server")
-	}
+	pub fn runtime(&self) -> &RuntimeHandle { &self.runtime }
 
 	#[inline]
 	pub fn check_running(&self) -> Result {

@@ -1,5 +1,4 @@
 use RoomVersionId::*;
-use axum::extract::State;
 use conduwuit::{Err, Error, Result, debug_warn};
 use slipstream::{
 	RoomVersionId,
@@ -7,7 +6,7 @@ use slipstream::{
 	events::room::member::{MembershipState, RoomMemberEventContent},
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/federation/v1/make_knock/{roomId}/{userId}`
 ///

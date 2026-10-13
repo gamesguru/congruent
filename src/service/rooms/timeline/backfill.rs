@@ -8,6 +8,7 @@ use std::{
 	},
 };
 
+use async_lock::Mutex;
 use conduwuit::{Err, Error, PduEvent, RoomVersion, matrix::pdu::RawJson as RawJsonValue};
 use conduwuit_core::{
 	Result, debug, debug_warn, err, error, implement, info,
@@ -41,7 +42,7 @@ const MAX_REMOTE_HISTORY_DEPTH: usize = 64;
 
 struct RemoteHistoryBudget {
 	remaining: AtomicUsize,
-	visited: tokio::sync::Mutex<HashSet<OwnedEventId>>,
+	visited: Mutex<HashSet<OwnedEventId>>,
 }
 
 impl RemoteHistoryBudget {
@@ -51,7 +52,7 @@ impl RemoteHistoryBudget {
 
 		Self {
 			remaining: AtomicUsize::new(limit),
-			visited: tokio::sync::Mutex::new(visited),
+			visited: Mutex::new(visited),
 		}
 	}
 
@@ -82,7 +83,6 @@ impl RemoteHistoryBudget {
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "backfill", level = "trace", skip(self))]
 pub async fn backfill_if_required(
 	&self,
 	room_id: &RoomId,
@@ -491,8 +491,7 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 				if !self
 					.services
 					.pdu_metadata
-					.take_retry_if_rejection_retryable_for_promotion(&event_id)
-					.await
+					.take_retry_if_rejection_retryable_for_promotion(&event_id)?
 				{
 					continue;
 				}
@@ -505,7 +504,7 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 		};
 
 		// Outlier-ness comes from `EventMetadata`; rejection now lives in the
-		// authoritative `eventid_rejections` store. Retryable rejections are
+		// authoritative mtxdb verdict collection. Retryable rejections are
 		// recovery markers, not permanent evidence that the event is invalid.
 		// Route the decision through
 		// `take_retry_if_rejection_retryable_for_promotion`, which does a
@@ -539,8 +538,7 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 		if self
 			.services
 			.pdu_metadata
-			.take_retry_if_rejection_retryable_for_promotion(&event_id)
-			.await
+			.take_retry_if_rejection_retryable_for_promotion(&event_id)?
 		{
 			outlier_state_event_ids.push(event_id);
 		}
@@ -625,7 +623,6 @@ fn topo_sort_backfill_batch(pdus: Vec<RawJsonValue>) -> Vec<RawJsonValue> {
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "get_remote_pdu", level = "debug", skip(self))]
 pub async fn get_remote_pdu(&self, room_id: &RoomId, event_id: &EventId) -> Result<PduEvent> {
 	let budget =
 		Arc::new(RemoteHistoryBudget::new(MAX_REMOTE_HISTORY_DEPTH, event_id.to_owned()));
@@ -818,7 +815,6 @@ async fn materialize_remote_history_limited(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(skip(self, pdu), level = "debug")]
 pub async fn backfill_pdu(
 	&self,
 	origin: &ServerName,
@@ -966,7 +962,7 @@ pub async fn promote_outlier(
 		.await?;
 	if matches!(outcome, PromoteOutlierOutcome::Queued) {
 		self.db_apply_batch(batch);
-		self.finish_promote_outlier(room_id, event_id).await;
+		self.finish_promote_outlier(room_id, event_id);
 	}
 	Ok(outcome)
 }
@@ -1071,7 +1067,7 @@ pub async fn promote_outlier_batch<'a>(
 	// A concurrent retry may have rejected this event after the caller's
 	// earlier metadata check but before we acquired the insertion lock.
 	// Do not promote an event that is now explicitly rejected.
-	if self.services.pdu_metadata.is_event_rejected(event_id).await {
+	if self.services.pdu_metadata.is_event_rejected(event_id)? {
 		warn!(
 			target: "backfill_debug",
 			%event_id,
@@ -1085,12 +1081,7 @@ pub async fn promote_outlier_batch<'a>(
 	// Likewise never promote a soft-failed event: it failed auth against the
 	// current room state and must stay out of the visible timeline. Admin
 	// rescue clears the marker explicitly before promoting.
-	if self
-		.services
-		.pdu_metadata
-		.is_event_soft_failed(event_id)
-		.await
-	{
+	if self.services.pdu_metadata.is_event_soft_failed(event_id)? {
 		warn!(
 			target: "backfill_debug",
 			%event_id,
@@ -1146,10 +1137,18 @@ pub async fn promote_outlier_batch<'a>(
 /// rather than a silent `warn!`: if it ever fires, it should page someone
 /// rather than scroll past in a debug-level log.
 #[implement(super::Service)]
-pub async fn finish_promote_outlier(&self, room_id: &RoomId, event_id: &EventId) {
+pub fn finish_promote_outlier(&self, room_id: &RoomId, event_id: &EventId) {
 	self.pending_promotions.release_promotion_claim(event_id);
 
-	if !self.services.pdu_metadata.finish_promotion(event_id).await {
+	let finished = self
+		.services
+		.pdu_metadata
+		.finish_promotion(event_id)
+		.unwrap_or_else(|error| {
+			error!(target: "backfill_debug", %event_id, %room_id, ?error, "promote_outlier: could not read the rejection verdict");
+			true
+		});
+	if !finished {
 		error!(
 			target: "backfill_debug",
 			%event_id,
@@ -1241,7 +1240,7 @@ async fn associate_resolved_state(
 		state_at_event.insert(shortstatekey, pdu.event_id().to_owned());
 	}
 
-	let root_handle = self
+	let (root_handle, pending_nodes) = self
 		.services
 		.event_handler
 		.state_map_to_root_handle(room_id, &state_at_event)
@@ -1249,7 +1248,7 @@ async fn associate_resolved_state(
 
 	self.services
 		.state
-		.set_event_roothandle(pdu.event_id(), &root_handle)
+		.set_event_roothandle_with_nodes(room_id, pdu.event_id(), &root_handle, &pending_nodes)
 		.await?;
 	Ok(())
 }
@@ -1259,7 +1258,7 @@ async fn associate_current_state(&self, room_id: &RoomId, event_id: &EventId) ->
 	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 	self.services
 		.state
-		.set_event_roothandle(event_id, &root_handle)
+		.set_event_roothandle(room_id, event_id, &root_handle)
 		.await?;
 	Ok(())
 }

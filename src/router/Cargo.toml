@@ -21,64 +21,38 @@ crate-type = [
 ignored = ["const-str", "ctor"]
 
 [features]
-brotli_compression = [
-	"conduwuit-admin/brotli_compression",
-	"conduwuit-api/brotli_compression",
-	"conduwuit-core/brotli_compression",
-	"conduwuit-service/brotli_compression",
-	"tower-http/compression-br",
-]
 direct_tls = [
-	"axum-server/tls-rustls-no-provider",
-	"dep:axum-server-dual-protocol",
+	"dep:conduwuit_direct_tls",
 ]
-gzip_compression = [
-	"conduwuit-admin/gzip_compression",
-	"conduwuit-api/gzip_compression",
-	"conduwuit-core/gzip_compression",
-	"conduwuit-service/gzip_compression",
-	"tower-http/compression-gzip",
+mimalloc = [
+	"conduwuit-admin/mimalloc",
+	"conduwuit-api/mimalloc",
+	"conduwuit-core/mimalloc",
+	"conduwuit-service/mimalloc",
 ]
-io_uring = [
-	"conduwuit-admin/io_uring",
-	"conduwuit-api/io_uring",
-	"conduwuit-service/io_uring",
+mimalloc_conf = [
+	"conduwuit-admin/mimalloc_conf",
+	"conduwuit-api/mimalloc_conf",
+	"conduwuit-core/mimalloc_conf",
+	"conduwuit-service/mimalloc_conf",
 ]
-jemalloc = [
-	"conduwuit-admin/jemalloc",
-	"conduwuit-api/jemalloc",
-	"conduwuit-core/jemalloc",
-	"conduwuit-service/jemalloc",
+mimalloc_prof = [
+	"conduwuit-admin/mimalloc_prof",
+	"conduwuit-api/mimalloc_prof",
+	"conduwuit-core/mimalloc_prof",
+	"conduwuit-service/mimalloc_prof",
 ]
-jemalloc_conf = [
-	"conduwuit-admin/jemalloc_conf",
-	"conduwuit-api/jemalloc_conf",
-	"conduwuit-core/jemalloc_conf",
-	"conduwuit-service/jemalloc_conf",
-]
-jemalloc_prof = [
-	"conduwuit-admin/jemalloc_prof",
-	"conduwuit-api/jemalloc_prof",
-	"conduwuit-core/jemalloc_prof",
-	"conduwuit-service/jemalloc_prof",
-]
-jemalloc_stats = [
-	"conduwuit-admin/jemalloc_stats",
-	"conduwuit-api/jemalloc_stats",
-	"conduwuit-core/jemalloc_stats",
-	"conduwuit-service/jemalloc_stats",
+mimalloc_stats = [
+	"conduwuit-admin/mimalloc_stats",
+	"conduwuit-api/mimalloc_stats",
+	"conduwuit-core/mimalloc_stats",
+	"conduwuit-service/mimalloc_stats",
 ]
 release_max_log_level = [
 	"conduwuit-admin/release_max_log_level",
 	"conduwuit-api/release_max_log_level",
 	"conduwuit-core/release_max_log_level",
 	"conduwuit-service/release_max_log_level",
-	"tracing/max_level_trace",
-	"tracing/release_max_level_info",
-]
-sentry_telemetry = [
-	"conduwuit-core/sentry_telemetry",
-	"dep:sentry-tower",
 ]
 systemd = [
 	"dep:sd-notify",
@@ -87,19 +61,16 @@ zstd_compression = [
 	"conduwuit-api/zstd_compression",
 	"conduwuit-core/zstd_compression",
 	"conduwuit-service/zstd_compression",
-	"tower-http/compression-zstd",
 ]
 
 [dependencies]
-axum-client-ip.workspace = true
-axum-server-dual-protocol.workspace = true
-axum-server-dual-protocol.optional = true
-axum-server.workspace = true
-axum.workspace = true
 bytes.workspace = true
+async-net.workspace = true
+async-io.workspace = true
 conduwuit-admin.workspace = true
 conduwuit-api.workspace = true
 conduwuit-core.workspace = true
+conduwuit_direct_tls = { path = "../direct_tls", optional = true }
 conduwuit-macros.workspace = true
 conduwuit-service.workspace = true
 conduwuit-web.workspace = true
@@ -110,18 +81,9 @@ futures.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
-hyper-util.workspace = true
 log.workspace = true
-rustls.workspace = true
-rustls.optional = true
-sentry.optional = true
-sentry.workspace = true
-sentry-tower.optional = true
-sentry-tower.workspace = true
-tokio.workspace = true
+smol.workspace = true
 tower.workspace = true
-tower-http.workspace = true
-tracing.workspace = true
 
 [target.'cfg(all(unix, target_os = "linux"))'.dependencies]
 sd-notify.workspace = true

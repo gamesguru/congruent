@@ -6,7 +6,6 @@ use crate::rooms::short::ShortRoomId;
 
 /// Replace a PDU with the redacted form.
 #[implement(super::Service)]
-#[tracing::instrument(name = "redact", level = "debug", skip(self))]
 pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 	&self,
 	event_id: &EventId,
@@ -41,10 +40,13 @@ pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 
 	let room_version = self.services.state.get_room_version(&room_id).await?;
 
+	let reason_event_id = reason.event_id();
 	let reason = slipstream::codec::to_value(reason.as_pdu());
 	pdu.redact(&room_version, &reason)?;
 
 	let obj = pdu.to_canonical_object();
 
-	self.replace_pdu(&pdu_id, &obj, event_id).await
+	self.replace_pdu(&pdu_id, &obj, event_id).await?;
+	self.db.persist_redaction(event_id, reason_event_id)?;
+	Ok(())
 }

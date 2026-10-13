@@ -2,7 +2,6 @@
 
 use std::{borrow::Borrow, time::Instant, vec};
 
-use axum::extract::State;
 use conduwuit::{
 	Err, Event, Result, at, debug, err, info, trace,
 	utils::stream::{BroadbandExt, IterStream, TryBroadbandExt},
@@ -17,10 +16,9 @@ use slipstream::{
 	sswire::Raw,
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// helper method for /send_join v1 and v2
-#[tracing::instrument(skip(services, pdu, omit_members), fields(room_id = room_id.as_str(), origin = origin.as_str()), level = "info")]
 async fn create_join_event(
 	services: &Services,
 	origin: &ServerName,
@@ -132,7 +130,7 @@ async fn create_join_event(
 	let short_event_ids: Vec<_> = services
 		.rooms
 		.state_accessor
-		.state_full_shortids_hamt(root_handle.clone())
+		.state_full_shortids_hamt(room_id, root_handle.clone())
 		.map_ok(at!(1))
 		.try_collect()
 		.await?;
@@ -150,7 +148,7 @@ async fn create_join_event(
 	// `m.room.name` nor `m.room.canonical_alias` — otherwise the client uses
 	// those instead and doesn't need heroes at all.
 	let heroes = if omit_members {
-		let (has_name, has_canonical_alias) = tokio::join!(
+		let (has_name, has_canonical_alias) = futures::join!(
 			services.rooms.state_accessor.state_contains_type_hamt(
 				room_id,
 				&root_handle,

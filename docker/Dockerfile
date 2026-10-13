@@ -17,14 +17,12 @@ ARG LLVM_VERSION=21
 # Line one: compiler tools
 # Line two: curl, for downloading binaries and wget because llvm.sh is broken with curl
 # Line three: for xx-verify
-# golang, cmake: For aws-lc-rs bindgen
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y \
     pkg-config make jq \
     wget curl git software-properties-common \
     file
-    # golang cmake
 
 # LLVM packages
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -174,13 +172,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     set -o allexport
     set -o xtrace
     . /etc/environment
-
-    # Check if http3 feature is enabled and set appropriate RUSTFLAGS
-    if echo "${CARGO_FEATURES}" | grep -q "http3"; then
-        export RUSTFLAGS="${RUSTFLAGS} --cfg reqwest_unstable"
-    else
-        export RUSTFLAGS="${RUSTFLAGS}"
-    fi
 
     RUST_PROFILE_DIR="${RUST_PROFILE}"
     if [[ "${RUST_PROFILE}" == "dev" ]]; then

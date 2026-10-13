@@ -28,6 +28,7 @@ pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
 	room_id: &RoomId,
 	is_timeline_event: bool,
 	predecessors_were_recovered: bool,
+	state_ids_anchor: Option<OwnedEventId>,
 ) -> Result<(Option<RawPduId>, bool)>
 where
 	Pdu: Event + Send + Sync,
@@ -45,8 +46,7 @@ where
 	if self
 		.services
 		.pdu_metadata
-		.is_event_soft_failed(incoming_pdu.event_id())
-		.await
+		.is_event_soft_failed(incoming_pdu.event_id())?
 	{
 		return Err!(Request(InvalidParam("Event has been soft failed")));
 	}
@@ -82,10 +82,39 @@ where
 			};
 
 			if state.is_none() {
-				let state = self
-					.fetch_state(origin, create_event, room_id, incoming_pdu.event_id(), false)
-					.await?;
-				Ok::<_, conduwuit::Error>((state, true))
+				// A deeper anchor (the point before a gap) can fill in missing
+				// events and auth-chain data. Its snapshot can also serve directly
+				// when it is this event's sole predecessor; otherwise it predates
+				// the gap and we need a snapshot for this event itself.
+				let mut state_at_event = None;
+				if let Some(anchor) = state_ids_anchor.as_ref() {
+					let anchor_is_only_prev = incoming_pdu.prev_events().count() == 1
+						&& incoming_pdu.prev_events().next() == Some(anchor);
+					match self
+						.fetch_state(origin, create_event, room_id, anchor, false)
+						.await
+					{
+						| Ok(state) if anchor_is_only_prev => state_at_event = state,
+						| Ok(_) => {},
+						| Err(e) => debug!(%anchor, "deeper /state_ids anchor fetch failed: {e}"),
+					}
+				}
+				// State after the sole predecessor is exactly the state before this
+				// event. Reuse it when the anchor is that predecessor; otherwise the
+				// deeper anchor only warmed the event/auth stores and we still need a
+				// snapshot for this event itself.
+				if state_at_event.is_none() {
+					state_at_event = self
+						.fetch_state(
+							origin,
+							create_event,
+							room_id,
+							incoming_pdu.event_id(),
+							false,
+						)
+						.await?;
+				}
+				Ok::<_, conduwuit::Error>((state_at_event, true))
 			} else {
 				Ok::<_, conduwuit::Error>((state, false))
 			}
@@ -95,6 +124,32 @@ where
 	let (state_at_incoming_event, was_recovered) = state_at_incoming_event;
 	let state_at_incoming_event =
 		state_at_incoming_event.expect("we always set this to some above");
+
+	// Diagnostic: record which state the auth check below will see. The sender's
+	// membership is looked up by its canonical short key; a state map that holds
+	// the sender under some other short key reports `sender_member_present=false`.
+	{
+		let sender_ssk = self
+			.services
+			.short
+			.get_shortstatekey(&StateEventType::RoomMember, incoming_pdu.sender().as_str())
+			.await
+			.ok();
+		let sender_member_present = sender_ssk
+			.as_ref()
+			.is_some_and(|ssk| state_at_incoming_event.contains_key(ssk));
+		info!(
+			target: "state_at_event_debug",
+			event_id = %incoming_pdu.event_id,
+			%room_id,
+			prev_events = incoming_pdu.prev_events().count(),
+			was_recovered = was_recovered,
+			state_size = state_at_incoming_event.len(),
+			?sender_ssk,
+			sender_member_present = sender_member_present,
+			"upgrade_outlier: state at event"
+		);
+	};
 
 	let room_version = to_room_version(&room_version_id);
 	debug!(
@@ -213,75 +268,72 @@ where
 		false
 	};
 
-	let (previous_root_handle, new_room_state) = if let Some(state_key) = incoming_pdu.state_key()
-	{
-		debug!("Event is a state-event. Deriving new room state");
+	let (previous_root_handle, new_room_state, mut pending_nodes) =
+		if let Some(state_key) = incoming_pdu.state_key() {
+			debug!("Event is a state-event. Deriving new room state");
 
-		// We also add state after incoming event to the fork states.
-		let mut state_after = state_at_incoming_event.clone();
-		let shortstatekey = self
-			.services
-			.short
-			.get_or_create_shortstatekey(&incoming_pdu.kind().to_string().into(), state_key)
-			.await;
+			// We also add state after incoming event to the fork states.
+			let mut state_after = state_at_incoming_event.clone();
+			let shortstatekey = self
+				.services
+				.short
+				.get_or_create_shortstatekey(&incoming_pdu.kind().to_string().into(), state_key)
+				.await;
 
-		let event_id = incoming_pdu.event_id();
-		state_after.insert(shortstatekey, event_id.to_owned());
+			let event_id = incoming_pdu.event_id();
+			state_after.insert(shortstatekey, event_id.to_owned());
 
-		// `state_at_incoming_event` is, in the single-predecessor case,
-		// materialized from the predecessor's own root handle, so reuse that
-		// root instead of rebuilding and re-persisting an identical HAMT.
-		// Fall back to a full rebuild for fork/state-resolution inputs and for
-		// predecessors whose stored root predates their own state change.
-		let prev_root = Some(
-			match self
+			// `state_at_incoming_event` is, in the single-predecessor case,
+			// materialized from the predecessor's own root handle, so reuse that
+			// root instead of rebuilding and re-persisting an identical HAMT.
+			// Fall back to a full rebuild for fork/state-resolution inputs and for
+			// predecessors whose stored root predates their own state change.
+			let (prev_root, mut prev_nodes) = match self
 				.reusable_predecessor_root_handle(room_id, &incoming_pdu)
 				.await?
 			{
-				| Some(root) => root,
+				| Some(root) => (root, Vec::new()),
 				| None =>
 					self.state_map_to_root_handle(room_id, &state_at_incoming_event)
 						.await?,
-			},
-		);
-		let new_root = Some(
-			self.resolve_state(room_id, &room_version_id, state_after)
-				.await?,
-		);
+			};
+			let prev_root = Some(prev_root);
+			let (new_root, pending_nodes) = self
+				.resolve_state(room_id, &room_version_id, state_after)
+				.await?;
 
-		(prev_root, new_root)
-	} else if is_timeline_event && (was_recovered || predecessors_were_recovered) {
-		let prev_root = self.services.state.get_room_state_hamt(room_id).await.ok();
-		let new_root = Some(
-			self.resolve_state(room_id, &room_version_id, state_at_incoming_event)
-				.await?,
-		);
+			prev_nodes.extend(pending_nodes);
+			(prev_root, Some(new_root), prev_nodes)
+		} else if is_timeline_event && (was_recovered || predecessors_were_recovered) {
+			let prev_root = self.services.state.get_room_state_hamt(room_id).await.ok();
+			let (new_root, pending_nodes) = self
+				.resolve_state(room_id, &room_version_id, state_at_incoming_event)
+				.await?;
 
-		(prev_root, new_root)
-	} else if is_timeline_event {
-		// Non-state timeline events reuse the predecessor root for historical
-		// queries, but never advance the live room state.
-		let root = match self
-			.reusable_predecessor_root_handle(room_id, &incoming_pdu)
-			.await?
-		{
-			| Some(root) => root,
-			| None =>
-				self.state_map_to_root_handle(room_id, &state_at_incoming_event)
-					.await?,
+			(prev_root, Some(new_root), pending_nodes)
+		} else if is_timeline_event {
+			// Non-state timeline events reuse the predecessor root for historical
+			// queries, but never advance the live room state.
+			let (root, root_nodes) = match self
+				.reusable_predecessor_root_handle(room_id, &incoming_pdu)
+				.await?
+			{
+				| Some(root) => (root, Vec::new()),
+				| None =>
+					self.state_map_to_root_handle(room_id, &state_at_incoming_event)
+						.await?,
+			};
+
+			(None, Some(root), root_nodes)
+		} else {
+			// Backfilled outliers only record their historical state root and do not
+			// alter current room state.
+			let (new_root, nodes) = self
+				.state_map_to_root_handle(room_id, &state_at_incoming_event)
+				.await?;
+
+			(None, Some(new_root), nodes)
 		};
-
-		(None, Some(root))
-	} else {
-		// Backfilled outliers only record their historical state root and do not
-		// alter current room state.
-		let new_root = Some(
-			self.state_map_to_root_handle(room_id, &state_at_incoming_event)
-				.await?,
-		);
-
-		(None, new_root)
-	};
 
 	info!(room_id = %room_id, "Applying the resolved state transition");
 	if !soft_fail {
@@ -330,8 +382,7 @@ where
 			if self
 				.services
 				.pdu_metadata
-				.is_event_soft_failed(&redact_id)
-				.await
+				.is_event_soft_failed(&redact_id)?
 			{
 				warn!(
 					redact_id = %redact_id,
@@ -341,21 +392,6 @@ where
 			}
 		}
 	}
-
-	// 14. Check if the event passes auth based on the "current state" of the room,
-	//     if not soft fail it
-	let append_ctx = crate::rooms::timeline::AppendPduContext {
-		state_lock: &state_lock,
-		room_id,
-		state_root_handle: new_room_state.clone(),
-		prev_state_root_handle: previous_root_handle.clone(),
-		advance_current_state: is_timeline_event
-			&& (incoming_pdu.state_key().is_some()
-				|| was_recovered
-				|| predecessors_were_recovered)
-			&& new_room_state.is_some(),
-		was_joined_before_state_install: None,
-	};
 
 	// Now we calculate the set of extremities this room has after the incoming
 	// event has been applied, using the final soft-fail decision. Soft-failed
@@ -397,6 +433,19 @@ where
 		);
 		let extremities = extremities.iter().map(Borrow::borrow);
 		debug_assert!(extremities.clone().count() > 0, "extremities not empty");
+		let append_ctx = crate::rooms::timeline::AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: new_room_state.clone(),
+			pending_nodes,
+			prev_state_root_handle: previous_root_handle.clone(),
+			advance_current_state: is_timeline_event
+				&& (incoming_pdu.state_key().is_some()
+					|| was_recovered
+					|| predecessors_were_recovered)
+				&& new_room_state.is_some(),
+			was_joined_before_state_install: None,
+		};
 
 		Box::pin(self.services.timeline.append_incoming_pdu(
 			&incoming_pdu,
@@ -412,7 +461,7 @@ where
 		self.services.pdu_metadata.mark_event_soft_failed(
 			incoming_pdu.event_id(),
 			crate::rooms::pdu_metadata::SoftFailCode::AuthCheckFailed,
-		);
+		)?;
 
 		warn!(
 			event_id = %incoming_pdu.event_id,
@@ -435,6 +484,16 @@ where
 		&& let (Some(prev_root), Some(new_root)) =
 			(previous_root_handle.as_ref(), new_room_state.as_ref())
 	{
+		// The cache delta resolves both roots through mtxdb. Make any deferred
+		// roots traversable before diffing; append_pdu later publishes the root
+		// pointers together with the event, while these nodes may safely remain
+		// unrooted if cache reconciliation fails.
+		self.services
+			.state_hamt
+			.store
+			.publish_nodes(room_id.as_bytes(), &pending_nodes)?;
+		pending_nodes.clear();
+
 		Box::pin(self.services.state.update_caches_for_state_delta_between(
 			room_id,
 			Some(prev_root),
@@ -449,6 +508,19 @@ where
 	trace!("Appending pdu to timeline");
 	let extremities = extremities.iter().map(Borrow::borrow);
 	debug_assert!(extremities.clone().count() > 0, "extremities not empty");
+	let append_ctx = crate::rooms::timeline::AppendPduContext {
+		state_lock: &state_lock,
+		room_id,
+		state_root_handle: new_room_state.clone(),
+		pending_nodes,
+		prev_state_root_handle: previous_root_handle.clone(),
+		advance_current_state: is_timeline_event
+			&& (incoming_pdu.state_key().is_some()
+				|| was_recovered
+				|| predecessors_were_recovered)
+			&& new_room_state.is_some(),
+		was_joined_before_state_install: None,
+	};
 
 	let pdu_id = Box::pin(self.services.timeline.append_incoming_pdu(
 		&incoming_pdu,
@@ -481,7 +553,6 @@ where
 /// the caller materialize the map. Because the predecessor's root has already
 /// been persisted, this also avoids re-writing nodes on the hot path.
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip_all)]
 async fn reusable_predecessor_root_handle(
 	&self,
 	room_id: &RoomId,
@@ -540,13 +611,12 @@ async fn reusable_predecessor_root_handle(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip_all)]
 pub async fn state_map_to_root_handle(
 	&self,
 	room_id: &RoomId,
 	short_state: &HashMap<u64, OwnedEventId>,
-) -> Result<rezzy::hamt::RootHandle> {
-	let mut lattice = rezzy::state::LtHash::default();
+) -> Result<(rezzy::hamt::RootHandle, Vec<crate::rooms::state_hamt::store::PendingNode>)> {
+	let mut lattice = rezzy::incremental::LtHash::default();
 	let mut entries = Vec::with_capacity(short_state.len());
 	let mut short_state_keys = Vec::with_capacity(short_state.len());
 	let mut event_ids = Vec::with_capacity(short_state.len());
@@ -563,10 +633,8 @@ pub async fn state_map_to_root_handle(
 		.collect()
 		.await;
 
-	for ((shortstatekey, event_id), key_result) in short_state_keys
-		.into_iter()
-		.zip(event_ids.into_iter())
-		.zip(string_keys.into_iter())
+	for ((shortstatekey, event_id), key_result) in
+		short_state_keys.into_iter().zip(event_ids).zip(string_keys)
 	{
 		let event_id = event_id.as_ref();
 		let shorteventid = self
@@ -593,12 +661,11 @@ pub async fn state_map_to_root_handle(
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
 
-	self.services.globals.with_cork_and_flush(|| {
-		self.services
-			.state_hamt
-			.store
-			.persist_node_recursive(root_node);
-	});
+	let nodes = self
+		.services
+		.state_hamt
+		.store
+		.persist_node_recursive_deferred(room_id.as_bytes(), root_node)?;
 
-	Ok(root_handle)
+	Ok((root_handle, nodes))
 }

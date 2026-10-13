@@ -4,8 +4,8 @@ use std::{any::Any, env, panic, sync::LazyLock};
 
 // Export debug proc_macros
 pub use conduwuit_macros::recursion_depth;
-use tracing::Level;
 
+use crate::log::Level;
 // Export all of the ancillary tools from here as well.
 pub use crate::{result::DebugInspect, utils::debug::*};
 
@@ -16,9 +16,9 @@ pub use crate::{result::DebugInspect, utils::debug::*};
 macro_rules! debug_event {
 	( $level:expr_2021, $($x:tt)+ ) => {
 		if $crate::debug::logging() {
-			::tracing::event!( $level, _debug = true, $($x)+ )
+			$crate::debug!($($x)+)
 		} else {
-			::tracing::debug!( $($x)+ )
+			$crate::debug!($($x)+)
 		}
 	}
 }
@@ -29,7 +29,7 @@ macro_rules! debug_event {
 #[macro_export]
 macro_rules! debug_error {
 	( $($x:tt)+ ) => {
-		$crate::debug_event!(::tracing::Level::ERROR, $($x)+ )
+		$crate::debug_event!($crate::log::Level::ERROR, $($x)+ )
 	}
 }
 
@@ -39,7 +39,7 @@ macro_rules! debug_error {
 #[macro_export]
 macro_rules! debug_warn {
 	( $($x:tt)+ ) => {
-		$crate::debug_event!(::tracing::Level::WARN, $($x)+ )
+		$crate::debug_event!($crate::log::Level::WARN, $($x)+ )
 	}
 }
 
@@ -49,7 +49,7 @@ macro_rules! debug_warn {
 #[macro_export]
 macro_rules! debug_info {
 	( $($x:tt)+ ) => {
-		$crate::debug_event!(::tracing::Level::INFO, $($x)+ )
+		$crate::debug_event!($crate::log::Level::INFO, $($x)+ )
 	}
 }
 

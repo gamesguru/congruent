@@ -12,9 +12,11 @@ Follow whatever instructions are given by the appservice. This usually includes
 downloading, changing its config (setting domain, homeserver url, port etc.) and
 later starting it.
 
-At some point the appservice guide should ask you to add a registration yaml
-file to the homeserver. In Synapse you would do this by adding the path to the
-homeserver.yaml, but in Continuwuity you can do this from within Matrix:
+At some point the appservice guide should ask you to add a registration file to
+the homeserver. Continuwuity accepts JSON registrations; convert a YAML file
+with `yq -o=json registration.yaml > registration.json`. In Synapse you would
+add the path to `homeserver.yaml`, but in Continuwuity you can do this from
+within Matrix:
 
 First, go into the `#admins` room of your homeserver. The first person that
 registered on the homeserver automatically joins it. Then send a message into
@@ -27,7 +29,7 @@ the room like this:
     contents
     of
     the
-    yaml
+    json
     registration
     here
     ```

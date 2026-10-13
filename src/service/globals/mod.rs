@@ -5,6 +5,7 @@ use std::{collections::HashMap, fmt::Write, sync::Arc, time::Instant};
 use async_trait::async_trait;
 use conduwuit::{Result, Server, SyncRwLock, error, utils::bytes::pretty};
 use data::Data;
+use futures::{FutureExt, StreamExt, pin_mut};
 use regex::RegexSet;
 use slipstream::{
 	OwnedEventId, OwnedRoomAliasId, OwnedServerName, OwnedUserId, ServerName, UserId,
@@ -21,6 +22,17 @@ pub struct Service {
 	pub admin_alias: OwnedRoomAliasId,
 	pub turn_secret: String,
 	pub server_secret: [u8; 32],
+
+	/// Orders count allocation + write against EDU window selection.
+	///
+	/// A writer allocates a stream count (`next_count`) and only afterwards
+	/// makes the row visible. The sender picks `current_count()` as the upper
+	/// bound of its EDU window and then advances its cursor to it; a row whose
+	/// count was allocated but not yet written would be skipped forever.
+	/// Writers hold this for reading across allocate-and-write; the sender
+	/// takes it for writing just long enough to read the bound, which waits
+	/// out every in-flight writer.
+	pub edu_barrier: async_lock::RwLock<()>,
 }
 
 type RateLimitState = (Instant, u32); // Time if last failed try, number of failed tries
@@ -75,6 +87,7 @@ impl crate::Service for Service {
 			.expect("@conduit:server_name is valid"),
 			turn_secret,
 			server_secret,
+			edu_barrier: async_lock::RwLock::new(()),
 		}))
 	}
 
@@ -97,7 +110,7 @@ impl crate::Service for Service {
 	async fn clear_cache(&self) { self.bad_event_ratelimiter.write().clear(); }
 
 	async fn worker(self: Arc<Self>) -> Result<()> {
-		let mut interval = tokio::time::interval(std::time::Duration::from_mins(1)); // 1 min
+		let mut interval = async_io::Timer::interval(std::time::Duration::from_mins(1)); // 1 min
 
 		let mut last_http_success = 0;
 		let mut last_http_fail = 0;
@@ -116,9 +129,12 @@ impl crate::Service for Service {
 		let mut shutdown = self.server.signal.subscribe();
 
 		loop {
-			tokio::select! {
-				_ = interval.tick() => {},
-				_ = shutdown.recv() => {},
+			let tick = interval.next();
+			let signal = shutdown.recv();
+			pin_mut!(tick, signal);
+			futures::select_biased! {
+				_ = tick.fuse() => {},
+				_ = signal.fuse() => {},
 			}
 			if !self.server.running() {
 				break;

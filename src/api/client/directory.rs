@@ -1,7 +1,5 @@
 use std::iter::once;
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Event, Result, RoomVersion, err, info,
 	utils::{
@@ -38,21 +36,23 @@ use slipstream::{
 	},
 	uint,
 };
-use tokio::join;
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `POST /_matrix/client/v3/publicRooms`
 ///
 /// Lists the public rooms on this server.
 ///
 /// - Rooms are ordered by the number of joined members
-#[tracing::instrument(skip_all, fields(%client), name = "publicrooms", level = "info")]
 pub(crate) async fn get_public_rooms_filtered_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_public_rooms_filtered::v3::Request>,
 ) -> Result<get_public_rooms_filtered::v3::Response> {
+	info!(%client, "filtered public rooms request");
 	if let Some(server) = &body.server {
 		if services
 			.moderation
@@ -83,12 +83,12 @@ pub(crate) async fn get_public_rooms_filtered_route(
 /// Lists the public rooms on this server.
 ///
 /// - Rooms are ordered by the number of joined members
-#[tracing::instrument(skip_all, fields(%client), name = "publicrooms", level = "info")]
 pub(crate) async fn get_public_rooms_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_public_rooms::v3::Request>,
 ) -> Result<get_public_rooms::v3::Response> {
+	info!(%client, "public rooms request");
 	if let Some(server) = &body.server {
 		if services.moderation.is_remote_server_forbidden(server) {
 			return Err!(Request(Forbidden("Server is banned on this homeserver.")));
@@ -119,12 +119,12 @@ pub(crate) async fn get_public_rooms_route(
 /// # `PUT /_matrix/client/r0/directory/list/room/{roomId}`
 ///
 /// Sets the visibility of a given room in the room directory.
-#[tracing::instrument(skip_all, fields(%client), name = "room_directory", level = "info")]
 pub(crate) async fn set_room_visibility_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<set_room_visibility::v3::Request>,
 ) -> Result<set_room_visibility::v3::Response> {
+	info!(%client, "set room visibility request");
 	let sender_user = body.sender_user();
 
 	if !services.rooms.metadata.exists(&body.room_id).await {
@@ -359,7 +359,7 @@ async fn user_can_publish_room(
 		// Server admins can always publish to their own room directory.
 		return Ok(true);
 	}
-	let (create_event, room_version, power_levels_content) = join!(
+	let (create_event, room_version, power_levels_content) = futures::join!(
 		services
 			.rooms
 			.state_accessor

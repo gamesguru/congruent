@@ -1,43 +1,40 @@
-use axum::{
-	Router,
-	extract::{Query, State, rejection::QueryRejection},
-	response::IntoResponse,
-	routing::get,
-};
-use serde::Deserialize;
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::{Request, Response, body::Incoming};
 use slipstream::OwnedSessionId;
 
-use crate::{WebError, template};
+use crate::WebError;
 
-template! {
-	struct ThreepidValidation use "threepid_validation.html.j2" {}
+fn query_value(raw_query: Option<&str>, wanted: &str) -> Option<String> {
+	raw_query?.split('&').find_map(|pair| {
+		let (name, value) = pair.split_once('=')?;
+		(name == wanted).then_some(value.to_owned())
+	})
 }
 
-pub(crate) fn build() -> Router<crate::State> {
-	Router::new().route("/3pid/email/validate", get(threepid_validation))
-}
+pub(crate) async fn threepid_validation(
+	request: Request<Incoming>,
+	services: crate::State,
+) -> Result<Response<Full<Bytes>>, WebError> {
+	let session = query_value(request.uri().query(), "session")
+		.ok_or_else(|| WebError::BadRequest("missing session".to_owned()))?;
+	let token = query_value(request.uri().query(), "token")
+		.ok_or_else(|| WebError::BadRequest("missing token".to_owned()))?;
 
-#[derive(Deserialize)]
-struct ThreepidValidationQuery {
-	// slipstream IDs have no serde impl, so take the raw string.
-	session: String,
-	token: String,
-}
-
-async fn threepid_validation(
-	State(services): State<crate::State>,
-	query: Result<Query<ThreepidValidationQuery>, QueryRejection>,
-) -> Result<impl IntoResponse, WebError> {
-	let Query(query) = query?;
-
-	let session = OwnedSessionId::parse(&query.session)
+	let session = OwnedSessionId::parse(&session)
 		.map_err(|_| WebError::BadRequest("invalid session".to_owned()))?;
 
 	services
 		.threepid
-		.try_validate_session(&session, &query.token)
+		.try_validate_session(&session, &token)
 		.await
 		.map_err(|message| WebError::BadRequest(message.into_owned()))?;
 
-	Ok(ThreepidValidation::new(&services))
+	Ok(Response::builder()
+		.header(http::header::CONTENT_TYPE, "text/html; charset=utf-8")
+		.body(Full::from(Bytes::from_static(
+			b"<!doctype html><title>Email verified</title><h1>Email verified</h1><p>Your email \
+			 address has been verified. Return to your Matrix client.</p>",
+		)))
+		.expect("static response headers are valid"))
 }

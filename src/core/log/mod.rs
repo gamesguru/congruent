@@ -1,64 +1,206 @@
-#![allow(clippy::disallowed_macros)]
+use std::sync::Arc;
 
 pub mod capture;
 pub mod color;
-pub mod console;
-pub mod fmt;
-pub mod fmt_span;
-mod reload;
 mod suppress;
 
 pub use capture::Capture;
-pub use console::{ConsoleFormat, ConsoleWriter, is_systemd_mode};
-pub use reload::{LogLevelReloadHandles, ReloadHandle};
 pub use suppress::Suppress;
-pub use tracing::Level;
-pub use tracing_core::{Event, Metadata};
-pub use tracing_subscriber::EnvFilter;
 
-/// Logging subsystem. This is a singleton member of super::Server which holds
-/// all logging and tracing related state rather than shoving it all in
-/// super::Server directly.
-pub struct Log {
-	/// General log level reload handles.
-	pub reload: LogLevelReloadHandles,
+#[must_use]
+pub const fn is_systemd_mode() -> bool { false }
 
-	/// Tracing capture state for ephemeral/oneshot uses.
-	pub capture: std::sync::Arc<capture::State>,
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum Level {
+	ERROR,
+	WARN,
+	INFO,
+	DEBUG,
+	TRACE,
 }
 
-// Wraps for logging macros. Use these macros rather than extern tracing:: or
-// log:: crates in project code. ::log and ::tracing can still be used if
-// necessary but discouraged. Remember debug_ log macros are also exported to
-// the crate namespace like these.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EnvFilter;
 
-#[macro_export]
-#[collapse_debuginfo(yes)]
-macro_rules! event {
-	( $level:expr_2021, $($x:tt)+ ) => { ::tracing::event!( $level, $($x)+ ) }
+impl EnvFilter {
+	pub fn try_new<T: AsRef<str>>(value: T) -> Result<Self, String> {
+		let _ = value;
+		Ok(Self)
+	}
+}
+
+#[derive(Default)]
+pub struct LogLevelReloadHandles;
+
+impl LogLevelReloadHandles {
+	pub fn add(&self, _name: &str, _handle: Box<dyn Send + Sync>) {}
+
+	pub fn reload(&self, _filter: &EnvFilter, _names: Option<&[&str]>) -> crate::Result<()> {
+		Ok(())
+	}
+
+	#[must_use]
+	pub fn current(&self, _name: &str) -> Option<EnvFilter> { None }
+}
+
+pub struct Log {
+	pub reload: LogLevelReloadHandles,
+	pub capture: Arc<capture::State>,
 }
 
 #[macro_export]
 macro_rules! error {
-    ( $($x:tt)+ ) => { ::tracing::error!( $($x)+ ) }
+	($($x:tt)+) => { $crate::__conduwuit_log!(error, $($x)+) };
 }
-
 #[macro_export]
 macro_rules! warn {
-    ( $($x:tt)+ ) => { ::tracing::warn!( $($x)+ ) }
+	($($x:tt)+) => { $crate::__conduwuit_log!(warn, $($x)+) };
 }
-
 #[macro_export]
 macro_rules! info {
-    ( $($x:tt)+ ) => { ::tracing::info!( $($x)+ ) }
+	($($x:tt)+) => { $crate::__conduwuit_log!(info, $($x)+) };
 }
-
 #[macro_export]
 macro_rules! debug {
-    ( $($x:tt)+ ) => { ::tracing::debug!( $($x)+ ) }
+	($($x:tt)+) => { $crate::__conduwuit_log!(debug, $($x)+) };
+}
+#[macro_export]
+macro_rules! trace {
+	($($x:tt)+) => { $crate::__conduwuit_log!(trace, $($x)+) };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __conduwuit_level {
+	(error) => {
+		::log::Level::Error
+	};
+	(warn) => {
+		::log::Level::Warn
+	};
+	(info) => {
+		::log::Level::Info
+	};
+	(debug) => {
+		::log::Level::Debug
+	};
+	(trace) => {
+		::log::Level::Trace
+	};
+}
+
+#[doc(hidden)]
+#[macro_export]
+/// Compatibility implementation for the former tracing-style call syntax.
+///
+/// It preserves structured fields while dispatching through the `log` crate:
+/// `%field` uses `Display`, `?field` uses `Debug`, and unqualified fields use
+/// `Debug`, matching tracing's default field behavior. Message format strings
+/// retain Rust's implicit `{name}` captures.
+macro_rules! __conduwuit_log {
+	// The field prefix is formatted eagerly by the `@parse` arms, so check the
+	// level first: disabled events must not pay for `Debug`-formatting fields.
+	($level:ident, target: $target:literal, $($rest:tt)+) => {{
+		if ::log::log_enabled!(target: $target, $crate::__conduwuit_level!($level)) {
+			$crate::__conduwuit_log!(@parse $level, ($target), String::new(), $($rest)+)
+		}
+	}};
+	($level:ident, $($rest:tt)+) => {{
+		if ::log::log_enabled!($crate::__conduwuit_level!($level)) {
+			$crate::__conduwuit_log!(@parse $level, default, String::new(), $($rest)+)
+		}
+	}};
+
+	(@emit $level:ident, default, $prefix:expr) => {
+		::log::$level!("{}", $prefix)
+	};
+	(@emit $level:ident, ($target:literal), $prefix:expr) => {
+		::log::$level!(target: $target, "{}", $prefix)
+	};
+
+	(@parse $level:ident, $target:tt, $prefix:expr, %$value:expr) => {{
+		let prefix = format!("{}{}={} ", $prefix, stringify!($value), &$value);
+		$crate::__conduwuit_log!(@emit $level, $target, prefix)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, ?$value:expr) => {{
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($value), &$value);
+		$crate::__conduwuit_log!(@emit $level, $target, prefix)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident) => {{
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($name), &$name);
+		$crate::__conduwuit_log!(@emit $level, $target, prefix)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = %$value:expr) => {{
+		let prefix = format!("{}{}={} ", $prefix, stringify!($name), &$value);
+		$crate::__conduwuit_log!(@emit $level, $target, prefix)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = ?$value:expr) => {{
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($name), &$value);
+		$crate::__conduwuit_log!(@emit $level, $target, prefix)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = $value:expr) => {{
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($name), &$value);
+		$crate::__conduwuit_log!(@emit $level, $target, prefix)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, %$value:expr,) => {{
+		let prefix = format!("{}{}={} ", $prefix, stringify!($value), &$value);
+		$crate::__conduwuit_log!(@emit $level, $target, prefix)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, ?$value:expr,) => {{
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($value), &$value);
+		$crate::__conduwuit_log!(@emit $level, $target, prefix)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident,) => {{
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($name), &$name);
+		$crate::__conduwuit_log!(@emit $level, $target, prefix)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = %$value:expr,) => {{
+		let prefix = format!("{}{}={} ", $prefix, stringify!($name), &$value);
+		$crate::__conduwuit_log!(@emit $level, $target, prefix)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = ?$value:expr,) => {{
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($name), &$value);
+		$crate::__conduwuit_log!(@emit $level, $target, prefix)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = $value:expr,) => {{
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($name), &$value);
+		$crate::__conduwuit_log!(@emit $level, $target, prefix)
+	}};
+
+	(@parse $level:ident, $target:tt, $prefix:expr, %$value:expr, $($rest:tt)+) => {{
+		let prefix = format!("{}{}={} ", $prefix, stringify!($value), &$value);
+		$crate::__conduwuit_log!(@parse $level, $target, prefix, $($rest)+)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, ?$value:expr, $($rest:tt)+) => {{
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($value), &$value);
+		$crate::__conduwuit_log!(@parse $level, $target, prefix, $($rest)+)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident, $($rest:tt)+) => {{
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($name), &$name);
+		$crate::__conduwuit_log!(@parse $level, $target, prefix, $($rest)+)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = %$value:expr, $($rest:tt)+) => {{
+		let prefix = format!("{}{}={} ", $prefix, stringify!($name), &$value);
+		$crate::__conduwuit_log!(@parse $level, $target, prefix, $($rest)+)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = ?$value:expr, $($rest:tt)+) => {{
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($name), &$value);
+		$crate::__conduwuit_log!(@parse $level, $target, prefix, $($rest)+)
+	}};
+	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = $value:expr, $($rest:tt)+) => {{
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($name), &$value);
+		$crate::__conduwuit_log!(@parse $level, $target, prefix, $($rest)+)
+	}};
+
+	(@parse $level:ident, default, $prefix:expr, $fmt:literal $(, $args:expr)* $(,)?) => {
+		::log::$level!("{}{}", $prefix, format_args!($fmt $(, $args)*))
+	};
+	(@parse $level:ident, ($target:literal), $prefix:expr, $fmt:literal $(, $args:expr)* $(,)?) => {
+		::log::$level!(target: $target, "{}{}", $prefix, format_args!($fmt $(, $args)*))
+	};
 }
 
 #[macro_export]
-macro_rules! trace {
-    ( $($x:tt)+ ) => { ::tracing::trace!( $($x)+ ) }
+macro_rules! event {
+	($level:expr_2021, $($x:tt)+) => { $crate::debug!($($x)+) };
 }

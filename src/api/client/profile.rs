@@ -1,4 +1,3 @@
-use axum::extract::State;
 use conduwuit::{
 	Err, Result,
 	matrix::pdu::PduBuilder,
@@ -22,7 +21,7 @@ use slipstream::{
 	presence::PresenceState,
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `PUT /_matrix/client/r0/profile/{userId}/displayname`
 ///

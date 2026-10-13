@@ -48,9 +48,9 @@ mod tests {
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 
 		// Linear chain: A -> B -> C (B's parent is A, C's parent is B)
-		let a = event_id!("$A").to_owned();
-		let b = event_id!("$B").to_owned();
-		let c = event_id!("$C").to_owned();
+		let a = event_id!("$A");
+		let b = event_id!("$B");
+		let c = event_id!("$C");
 
 		entries.insert(a.clone(), (0_u64.into(), 1, 1));
 		entries.insert(b.clone(), (0_u64.into(), 2, 2));
@@ -71,10 +71,10 @@ mod tests {
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 
 		// A -> B -> C -> A (cycle) with D disconnected (no parents)
-		let a = event_id!("$A").to_owned();
-		let b = event_id!("$B").to_owned();
-		let c = event_id!("$C").to_owned();
-		let d = event_id!("$D").to_owned();
+		let a = event_id!("$A");
+		let b = event_id!("$B");
+		let c = event_id!("$C");
+		let d = event_id!("$D");
 
 		entries.insert(a.clone(), (0_u64.into(), 1, 10));
 		entries.insert(b.clone(), (0_u64.into(), 2, 20));
@@ -99,9 +99,9 @@ mod tests {
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 
 		// Root A, then B and C both have A as parent (fork)
-		let a = event_id!("$A").to_owned();
-		let b = event_id!("$B").to_owned();
-		let c = event_id!("$C").to_owned();
+		let a = event_id!("$A");
+		let b = event_id!("$B");
+		let c = event_id!("$C");
 
 		entries.insert(a.clone(), (0_u64.into(), 1, 1));
 		entries.insert(b.clone(), (0_u64.into(), 2, 2));
@@ -123,10 +123,10 @@ mod tests {
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 
 		// A -> B -> D, A -> C -> D (diamond)
-		let a = event_id!("$A").to_owned();
-		let b = event_id!("$B").to_owned();
-		let c = event_id!("$C").to_owned();
-		let d = event_id!("$D").to_owned();
+		let a = event_id!("$A");
+		let b = event_id!("$B");
+		let c = event_id!("$C");
+		let d = event_id!("$D");
 
 		entries.insert(a.clone(), (0_u64.into(), 1, 1));
 		entries.insert(b.clone(), (0_u64.into(), 2, 2));
@@ -149,8 +149,8 @@ mod tests {
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 
 		// B's parent is Z, which is NOT in entries (external/already-known)
-		let b = event_id!("$B").to_owned();
-		let z = event_id!("$Z").to_owned();
+		let b = event_id!("$B");
+		let z = event_id!("$Z");
 
 		entries.insert(b.clone(), (0_u64.into(), 1, 1));
 
@@ -166,9 +166,9 @@ mod tests {
 		let mut entries = HashMap::new();
 		let graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 
-		let a = event_id!("$A").to_owned();
-		let b = event_id!("$B").to_owned();
-		let c = event_id!("$C").to_owned();
+		let a = event_id!("$A");
+		let b = event_id!("$B");
+		let c = event_id!("$C");
 
 		// All events have 0 in-degree (no parents).
 		// B has the lowest depth, A has the lowest timestamp.

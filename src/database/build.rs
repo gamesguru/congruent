@@ -7,7 +7,7 @@ fn main() {
 		println!("cargo:rustc-link-search=native={lib_dir}");
 	}
 
-	let libs = ["z", "bz2", "lz4", "snappy", "zstd", "uring", "stdc++"];
+	let libs = ["z", "zstd", "uring", "stdc++"];
 	for lib in libs {
 		println!("cargo:rustc-link-lib={lib}");
 	}

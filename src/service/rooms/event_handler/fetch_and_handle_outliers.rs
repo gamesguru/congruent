@@ -130,7 +130,7 @@ where
 					let _permit = sem.acquire().await;
 					for attempt in 0..2_u8 {
 						if is_retry && attempt > 0 {
-							tokio::time::sleep(std::time::Duration::from_secs(
+							smol::Timer::after(std::time::Duration::from_secs(
 								2_u64.pow(attempt.into()),
 							))
 							.await;
@@ -228,7 +228,12 @@ where
 		requested_seeds.push(id.to_owned());
 
 		if let Ok(local_pdu) = self.services.timeline.get_pdu(id).await {
-			if self.services.pdu_metadata.is_event_soft_failed(id).await {
+			if self
+				.services
+				.pdu_metadata
+				.is_event_soft_failed(id)
+				.unwrap_or(false)
+			{
 				info!(target: "auth_chain", "Found known soft-failed outlier locally: {id}");
 			} else {
 				trace!("Found {id} in main timeline or outlier tree");
@@ -237,7 +242,12 @@ where
 			continue;
 		}
 
-		if self.services.pdu_metadata.is_event_soft_failed(id).await {
+		if self
+			.services
+			.pdu_metadata
+			.is_event_soft_failed(id)
+			.unwrap_or(false)
+		{
 			warn!(target: "auth_chain", "Skipping unparsable soft-failed outlier: {id}");
 			continue;
 		}
@@ -302,10 +312,10 @@ where
 									},
 								| None => {
 									let mut version = None;
-									if let Ok(json) =
-										slipstream::codec::from_str::<slipstream::json::Value>(
-											raw_pdu.get(),
-										) {
+									if let Ok(json) = slipstream::codec::from_str::<
+										slipstream::json::Value,
+									>(raw_pdu.get())
+									{
 										if json.get("type").and_then(|t| t.as_str())
 											== Some("m.room.create")
 										{
@@ -382,7 +392,7 @@ where
 											.services
 											.pdu_metadata
 											.is_event_soft_failed(&auth_event)
-											.await
+											.unwrap_or(false)
 										{
 											info!(target: "auth_chain", "Found known soft-failed auth event locally: {auth_event}");
 										}
@@ -495,10 +505,10 @@ where
 											.and_then(CanonicalJsonValue::as_array)
 										{
 											for auth_event in auth_events {
-												if let Ok(aeid) =
-													slipstream::codec::from_value::<OwnedEventId>(
-														auth_event,
-													) {
+												if let Ok(aeid) = slipstream::codec::from_value::<
+													OwnedEventId,
+												>(auth_event)
+												{
 													next_auth_events.insert(aeid);
 												}
 											}
@@ -682,18 +692,17 @@ where
 							// only a count plus the first few IDs rather than the
 							// full list, to keep the stored reason bounded.
 							let preview: Vec<_> = missing.iter().take(5).collect();
-							self.services
-								.pdu_metadata
-								.mark_event_rejected(
-									&next_id,
-									&crate::rooms::pdu_metadata::RejectionCode::MissingAuthEvent
-										.with_detail(format!(
-											"{} auth events still missing after /event_auth and \
-											 individual /event retries, e.g. {preview:?}",
-											missing.len()
-										)),
-								)
-								.await;
+							if let Err(error) = self.services.pdu_metadata.mark_event_rejected(
+								&next_id,
+								&crate::rooms::pdu_metadata::RejectionCode::MissingAuthEvent
+									.with_detail(format!(
+										"{} auth events still missing after /event_auth and \
+										 individual /event retries, e.g. {preview:?}",
+										missing.len()
+									)),
+							) {
+								warn!(%error, %next_id, "failed to record rejection verdict");
+							}
 							self.services
 								.outlier
 								.add_pdu_outlier(&next_id, &value, Some(room_id))

@@ -1,7 +1,5 @@
 use std::{borrow::Borrow, collections::HashMap, iter::once, time::Duration};
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, PduCount, Result, debug, debug_info, debug_warn, err, error, info,
 	matrix::{
@@ -39,11 +37,11 @@ use slipstream::{
 	},
 	sswire::Raw,
 };
-use tokio::join;
 
 use super::{banned_room_check, validate_remote_member_event_stub};
 use crate::{
 	Ruma,
+	router::extract::{ClientIp, State},
 	server::{select_authorising_user, user_can_perform_restricted_join},
 };
 
@@ -55,7 +53,6 @@ use crate::{
 ///   rules locally
 /// - If the server does not know about the room: asks other servers over
 ///   federation
-#[tracing::instrument(skip_all, fields(%client), name = "join", level = "info")]
 pub(crate) async fn join_room_by_id_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -126,7 +123,6 @@ pub(crate) async fn join_room_by_id_route(
 /// - If the server does not know about the room: use the server name query
 ///   param if specified. if not specified, asks other servers over federation
 ///   via room alias server name and room ID server name
-#[tracing::instrument(skip_all, fields(%client), name = "join", level = "info")]
 pub(crate) async fn join_room_by_id_or_alias_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -338,7 +334,6 @@ pub async fn join_room_by_id_helper(
 	Ok(join_room_by_id::v3::Response::new(room_id.to_owned()))
 }
 
-#[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_remote", level = "info")]
 async fn join_room_by_id_helper_remote(
 	services: &Services,
 	sender_user: &UserId,
@@ -567,7 +562,6 @@ async fn join_room_by_id_helper_remote(
 	.await
 }
 
-#[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_remote_process", level = "info")]
 #[allow(clippy::too_many_arguments)]
 async fn join_room_by_id_helper_remote_process(
 	services: &Services,
@@ -634,7 +628,9 @@ async fn join_room_by_id_helper_remote_process(
 					.outlier
 					.add_pdu_outlier(&event_id, &value, Some(room_id))
 					.await;
-				services.rooms.pdu_metadata.clear_pdu_markers(&event_id);
+				if let Err(error) = services.rooms.pdu_metadata.clear_pdu_markers(&event_id) {
+					warn!(%error, %event_id, "failed to clear pdu markers");
+				}
 				eids.push(event_id.clone());
 				if let Some(state_key) = &pdu.state_key {
 					let shortstatekey = services
@@ -655,7 +651,7 @@ async fn join_room_by_id_helper_remote_process(
 	let (state, mut state_eids) = state;
 	outlier_event_ids.append(&mut state_eids);
 
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	for (&shortstatekey, event_id) in &state {
 		if let Ok((kind, state_key)) = services
 			.rooms
@@ -720,7 +716,9 @@ async fn join_room_by_id_helper_remote_process(
 				.outlier
 				.add_pdu_outlier(&event_id, &value, Some(room_id))
 				.await;
-			services.rooms.pdu_metadata.clear_pdu_markers(&event_id);
+			if let Err(error) = services.rooms.pdu_metadata.clear_pdu_markers(&event_id) {
+				warn!(%error, %event_id, "failed to clear pdu markers");
+			}
 			eids.push(event_id);
 			eids
 		})
@@ -780,12 +778,19 @@ async fn join_room_by_id_helper_remote_process(
 	let (root_handle, root_node) =
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root for join: {e:?}")))?;
-
+	let pending_nodes = services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive_deferred(room_id.as_bytes(), root_node)?;
+	// The cache delta traverses the new root from mtxdb. Publish its nodes
+	// first, but keep the room-root pointer unchanged until the cache update
+	// succeeds. If the update fails these are harmless unrooted nodes.
 	services
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive(root_node);
+		.publish_nodes(room_id.as_bytes(), &pending_nodes)?;
 
 	// Sample the joining user's membership *before* the `/send_join` state root is
 	// installed. That state includes the joiner's own membership, so reading the
@@ -816,7 +821,7 @@ async fn join_room_by_id_helper_remote_process(
 	services
 		.rooms
 		.state
-		.set_room_state_hamt(room_id, &root_handle, &state_lock);
+		.set_room_state_hamt(room_id, &root_handle, &state_lock)?;
 
 	// Promote auth chain + state outliers to the backfilled timeline.
 	// This makes the room's origin events (create, initial joins, power
@@ -878,16 +883,11 @@ async fn join_room_by_id_helper_remote_process(
 	// can indeed fail, in which case the local membership cache may be left in an
 	// inconsistent state (where the user appears joined in the cache but the join
 	// PDU is not persisted).
-	let (state_root_handle, state_node) = services
+	let (state_root_handle, _state_node, pending_nodes) = services
 		.rooms
 		.state
 		.append_to_state(&parsed_join_pdu, room_id, &state_lock, None)
 		.await?;
-	services
-		.rooms
-		.state_hamt
-		.store
-		.persist_node_recursive(state_node);
 
 	info!("Appending new room join event");
 	Box::pin(services.rooms.timeline.append_pdu(
@@ -899,6 +899,7 @@ async fn join_room_by_id_helper_remote_process(
 			state_lock: &state_lock,
 			room_id,
 			state_root_handle: Some(state_root_handle),
+			pending_nodes,
 			prev_state_root_handle: previous_root_handle,
 			advance_current_state: false,
 			was_joined_before_state_install: Some((sender_user, was_joined_before_state_install)),
@@ -951,7 +952,6 @@ async fn handle_missing_join_extremities(
 	Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_local", level = "info")]
 async fn join_room_by_id_helper_local(
 	services: &Services,
 	sender_user: &UserId,
@@ -963,7 +963,7 @@ async fn join_room_by_id_helper_local(
 ) -> Result {
 	info!("Joining room locally");
 
-	let (room_version, join_rules, is_invited) = join!(
+	let (room_version, join_rules, is_invited) = futures::join!(
 		services.rooms.state.get_room_version(room_id),
 		services.rooms.state_accessor.get_join_rules(room_id),
 		services.rooms.state_cache.is_invited(sender_user, room_id)
@@ -999,7 +999,7 @@ async fn join_room_by_id_helper_local(
 					if auth_user.is_none() {
 						drop(state_lock);
 						for _ in 0..5 {
-							tokio::time::sleep(Duration::from_millis(150)).await;
+							smol::Timer::after(Duration::from_millis(150)).await;
 							auth_user = select_authorising_user(
 								services,
 								room_id,
@@ -1254,7 +1254,7 @@ async fn make_join_request(
 
 		let mut forbidden_retried = false;
 		loop {
-			let make_join_response = tokio::time::timeout(
+			let make_join_response = conduwuit::timeout(
 				REQUEST_TIMEOUT,
 				services.sending.send_federation_request(
 					remote_server,
@@ -1314,7 +1314,7 @@ async fn make_join_request(
 									 {RESTRICTED_RETRY_DELAY:?} to allow federation to propagate"
 								);
 								forbidden_retried = true;
-								tokio::time::sleep(RESTRICTED_RETRY_DELAY).await;
+								smol::Timer::after(RESTRICTED_RETRY_DELAY).await;
 								continue;
 							}
 							warn!("{remote_server} refuses to let us join: {e}.");
@@ -1362,45 +1362,6 @@ fn deprioritize(
 		servers.into_iter().partition(|s| deprioritized.contains(s));
 	servers.append(&mut depr);
 	servers
-}
-
-#[cfg(test)]
-mod tests {
-	use slipstream::OwnedServerName;
-
-	use super::*;
-
-	#[test]
-	fn deprioritizing_servers_works() -> Result<(), Box<dyn std::error::Error>> {
-		let servers = vec![
-			"example.com".try_into()?,
-			"slow.invalid".try_into()?,
-			"example.org".try_into()?,
-		];
-		let depr = vec!["slow.invalid".try_into()?];
-		let expected: Vec<OwnedServerName> = vec![
-			"example.com".try_into()?,
-			"example.org".try_into()?,
-			"slow.invalid".try_into()?,
-		];
-
-		let servers = deprioritize(servers, &depr);
-		assert_eq!(servers, expected);
-		Ok(())
-	}
-
-	#[test]
-	fn empty_deprioritized_is_noop() -> Result<(), Box<dyn std::error::Error>> {
-		let servers = vec![
-			"example.com".try_into()?,
-			"slow.invalid".try_into()?,
-			"example.org".try_into()?,
-		];
-
-		let depr_servers = deprioritize(servers.clone(), &[]);
-		assert_eq!(depr_servers, servers);
-		Ok(())
-	}
 }
 
 async fn fetch_missing_extremity(
@@ -1491,4 +1452,43 @@ async fn fetch_missing_extremity(
 		.await?;
 
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use slipstream::OwnedServerName;
+
+	use super::*;
+
+	#[test]
+	fn deprioritizing_servers_works() -> Result<(), Box<dyn std::error::Error>> {
+		let servers = vec![
+			"example.com".try_into()?,
+			"slow.invalid".try_into()?,
+			"example.org".try_into()?,
+		];
+		let depr = vec!["slow.invalid".try_into()?];
+		let expected: Vec<OwnedServerName> = vec![
+			"example.com".try_into()?,
+			"example.org".try_into()?,
+			"slow.invalid".try_into()?,
+		];
+
+		let servers = deprioritize(servers, &depr);
+		assert_eq!(servers, expected);
+		Ok(())
+	}
+
+	#[test]
+	fn empty_deprioritized_is_noop() -> Result<(), Box<dyn std::error::Error>> {
+		let servers = vec![
+			"example.com".try_into()?,
+			"slow.invalid".try_into()?,
+			"example.org".try_into()?,
+		];
+
+		let depr_servers = deprioritize(servers.clone(), &[]);
+		assert_eq!(depr_servers, servers);
+		Ok(())
+	}
 }

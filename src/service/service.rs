@@ -43,11 +43,6 @@ pub(crate) trait Service: Any + Send + Sync {
 	/// Return the name of the service.
 	/// i.e. `crate::service::make_name(std::module_path!())`
 	fn name(&self) -> &str;
-
-	/// Return true if the service worker opts out of the tokio cooperative
-	/// budgeting. This can reduce tail latency at the risk of event loop
-	/// starvation.
-	fn unconstrained(&self) -> bool { false }
 }
 
 /// Args are passed to `Service::build` when a service is constructed. This
@@ -55,6 +50,7 @@ pub(crate) trait Service: Any + Send + Sync {
 pub(crate) struct Args<'a> {
 	pub(crate) server: &'a Arc<Server>,
 	pub(crate) db: &'a Arc<Database>,
+	pub(crate) mtxdb: &'a Arc<conduwuit_mtxdb::store::MtxdbStore>,
 	pub(crate) service: &'a Arc<Map>,
 }
 
@@ -110,6 +106,9 @@ impl<T: Service + Send + Sync> Dep<T> {
 			|| self.init(),
 		)
 	}
+
+	#[inline]
+	pub(crate) fn arc(&self) -> Arc<T> { Arc::clone(self.get()) }
 }
 
 impl<T: Service + Send + Sync> Dep<T> {

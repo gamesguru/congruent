@@ -33,10 +33,9 @@ impl Drop for TempDbGuard {
 async fn open_test_database(prefix: &str) -> (TempDbGuard, std::sync::Arc<crate::Database>) {
 	use conduwuit::{
 		Server,
-		config::Config,
+		config::{Config, RawConfig},
 		log::{Log, LogLevelReloadHandles, capture},
 	};
-	use figment::providers::Format;
 
 	static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 	let count = TEST_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -45,124 +44,143 @@ async fn open_test_database(prefix: &str) -> (TempDbGuard, std::sync::Arc<crate:
 
 	let guard = TempDbGuard { path: db_path.clone() };
 
-	let figment = figment::Figment::new().merge(figment::providers::Toml::string(&format!(
+	let config_raw = RawConfig::from_toml(&format!(
 		r#"
 			server_name = "test.conduwuit.local"
 			database_path = "{}"
 			"#,
 		db_path.to_string_lossy().replace('\\', "/")
-	)));
+	))
+	.expect("failed to parse test config");
 
-	let config = Config::new(&figment).expect("failed to parse config");
-	let runtime_handle = tokio::runtime::Handle::current();
+	let config = Config::new(&config_raw).expect("failed to parse config");
+	let runtime_handle = ();
 	let server = std::sync::Arc::new(Server::new(config, Some(&runtime_handle), Log {
-		reload: LogLevelReloadHandles::default(),
-		capture: std::sync::Arc::new(capture::State::default()),
+		reload: LogLevelReloadHandles,
+		capture: std::sync::Arc::new(capture::State),
 	}));
 
-	let db = crate::Database::open(&server)
-		.await
-		.expect("failed to open database");
+	let db = crate::Database::open(&server).expect("failed to open database");
 
 	(guard, db)
 }
 
-#[tokio::test]
-async fn recursive_multi_get_traversal() {
-	let _serial = DB_TEST_MUTEX.lock().await;
-	let (_guard, db) = open_test_database("recursive_get").await;
-	let map = &db["global"];
+#[test]
+fn recursive_multi_get_traversal() {
+	smol::block_on(async {
+		let _serial = DB_TEST_MUTEX.lock().await;
+		let (_guard, db) = open_test_database("recursive_get").await;
+		let map = &db["global"];
 
-	// Insert DAG nodes:
-	// A -> B, C
-	// B -> A (cycle) & D (diamond convergence)
-	// C -> D (diamond convergence) & M (missing)
-	// D -> E
-	map.insert(b"node_A", b"node_B,node_C");
-	map.insert(b"node_B", b"node_A,node_D");
-	map.insert(b"node_C", b"node_D,node_M"); // node_M is never inserted
-	map.insert(b"node_D", b"node_E");
-	map.insert(b"node_E", b"");
+		// Insert DAG nodes:
+		// A -> B, C
+		// B -> A (cycle) & D (diamond convergence)
+		// C -> D (diamond convergence) & M (missing)
+		// D -> E
+		map.insert(b"node_A", b"node_B,node_C");
+		map.insert(b"node_B", b"node_A,node_D");
+		map.insert(b"node_C", b"node_D,node_M"); // node_M is never inserted
+		map.insert(b"node_D", b"node_E");
+		map.insert(b"node_E", b"");
 
-	let parse_val = |slice: &[u8]| -> conduwuit::Result<String> {
-		String::from_utf8(slice.to_vec()).map_err(|e| std::io::Error::other(e).into())
-	};
+		let parse_val = |slice: &[u8]| -> conduwuit::Result<String> {
+			String::from_utf8(slice.to_vec()).map_err(|e| std::io::Error::other(e).into())
+		};
 
-	let extract_children = |val: &String, sink: &mut Vec<Vec<u8>>| {
-		if !val.is_empty() {
-			for part in val.split(',') {
-				sink.push(part.as_bytes().to_vec());
+		let extract_children = |val: &String, sink: &mut Vec<Vec<u8>>| {
+			if !val.is_empty() {
+				for part in val.split(',') {
+					sink.push(part.as_bytes().to_vec());
+				}
 			}
-		}
-	};
+		};
 
-	// Test 1: full traversal with cycle, diamond, and missing key detection
-	let output = map
-		.recursive_multi_get(
-			vec![b"node_A".to_vec(), b"node_A".to_vec()],
-			None,
-			None,
-			parse_val,
-			extract_children,
-		)
-		.await
-		.expect("traversal failed");
+		// Test 1: full traversal with cycle, diamond, and missing key detection
+		let output = map
+			.recursive_multi_get(
+				vec![b"node_A".to_vec(), b"node_A".to_vec()],
+				None,
+				None,
+				parse_val,
+				extract_children,
+			)
+			.await
+			.expect("traversal failed");
 
-	assert!(!output.truncated);
-	assert_eq!(output.missing, vec![b"node_M".to_vec()]);
-	assert_eq!(output.values, vec![
-		"node_B,node_C".to_owned(),
-		"node_A,node_D".to_owned(),
-		"node_D,node_M".to_owned(),
-		"node_E".to_owned(),
-		String::new(),
-	]);
+		assert!(!output.truncated);
+		assert_eq!(output.missing, vec![b"node_M".to_vec()]);
+		assert_eq!(output.values, vec![
+			"node_B,node_C".to_owned(),
+			"node_A,node_D".to_owned(),
+			"node_D,node_M".to_owned(),
+			"node_E".to_owned(),
+			String::new(),
+		]);
 
-	// Test 2: truncation via max_depth
-	let depth_output = map
-		.recursive_multi_get(vec![b"node_A".to_vec()], None, Some(1), parse_val, extract_children)
-		.await
-		.expect("traversal failed");
+		// Test 2: truncation via max_depth
+		let depth_output = map
+			.recursive_multi_get(
+				vec![b"node_A".to_vec()],
+				None,
+				Some(1),
+				parse_val,
+				extract_children,
+			)
+			.await
+			.expect("traversal failed");
 
-	assert!(depth_output.truncated);
-	assert_eq!(depth_output.values, vec!["node_B,node_C".to_owned()]);
+		assert!(depth_output.truncated);
+		assert_eq!(depth_output.values, vec!["node_B,node_C".to_owned()]);
 
-	// Test 3: truncation via max_nodes
-	let node_output = map
-		.recursive_multi_get(vec![b"node_A".to_vec()], Some(2), None, parse_val, extract_children)
-		.await
-		.expect("traversal failed");
+		// Test 3: truncation via max_nodes
+		let node_output = map
+			.recursive_multi_get(
+				vec![b"node_A".to_vec()],
+				Some(2),
+				None,
+				parse_val,
+				extract_children,
+			)
+			.await
+			.expect("traversal failed");
 
-	assert!(node_output.truncated);
-	assert_eq!(
-		node_output.values,
-		vec!["node_B,node_C".to_owned(), "node_A,node_D".to_owned(),]
-	);
+		assert!(node_output.truncated);
+		assert_eq!(node_output.values, vec![
+			"node_B,node_C".to_owned(),
+			"node_A,node_D".to_owned(),
+		]);
 
-	// Test 4: truncation via max_nodes = Some(0)
-	let zero_node_output = map
-		.recursive_multi_get(vec![b"node_A".to_vec()], Some(0), None, parse_val, extract_children)
-		.await
-		.expect("traversal failed");
+		// Test 4: truncation via max_nodes = Some(0)
+		let zero_node_output = map
+			.recursive_multi_get(
+				vec![b"node_A".to_vec()],
+				Some(0),
+				None,
+				parse_val,
+				extract_children,
+			)
+			.await
+			.expect("traversal failed");
 
-	assert!(zero_node_output.truncated);
-	assert!(zero_node_output.values.is_empty());
+		assert!(zero_node_output.truncated);
+		assert!(zero_node_output.values.is_empty());
 
-	// Test 5: mid-batch truncation still records missing keys
-	let mid_batch_output = map
-		.recursive_multi_get(
-			vec![b"node_C".to_vec(), b"node_M".to_vec()],
-			Some(1),
-			None,
-			parse_val,
-			extract_children,
-		)
-		.await
-		.expect("traversal failed");
+		// Test 5: mid-batch truncation still records missing keys
+		let mid_batch_output = map
+			.recursive_multi_get(
+				vec![b"node_C".to_vec(), b"node_M".to_vec()],
+				Some(1),
+				None,
+				parse_val,
+				extract_children,
+			)
+			.await
+			.expect("traversal failed");
 
-	assert!(mid_batch_output.truncated);
-	assert_eq!(mid_batch_output.values, vec!["node_D,node_M".to_owned()]);
-	assert_eq!(mid_batch_output.missing, vec![b"node_M".to_vec()]);
+		assert!(mid_batch_output.truncated);
+		assert_eq!(mid_batch_output.values, vec!["node_D,node_M".to_owned()]);
+		assert_eq!(mid_batch_output.missing, vec![b"node_M".to_vec()]);
+	});
 }
 
 #[test]
@@ -351,15 +369,15 @@ fn json_filter_legacy_row_decodes() {
 	assert_eq!(filter.0.event_fields, Some(vec!["content.body".to_owned()]));
 
 	let again = serialize_to_vec(Json(compact_filter(&filter.0))).expect("failed to serialize");
-	assert_eq!(&again[..], &stored[..], "legacy row did not re-encode byte-identically");
+	assert_eq!(&*again, &stored[..], "legacy row did not re-encode byte-identically");
 }
 
 #[test]
 fn json_malformed_is_error() {
 	use conduwuit::slipstream::json::Value;
 
-	assert!(de::from_slice::<Json<Value>>(b"{not json").is_err());
-	assert!(de::from_slice::<Json<Value>>(&[0xFF, 0xFE]).is_err());
+	de::from_slice::<Json<Value>>(b"{not json").unwrap_err();
+	de::from_slice::<Json<Value>>(&[0xFF, 0xFE]).unwrap_err();
 }
 
 #[test]
@@ -654,7 +672,7 @@ fn serde_tuple_option_some_none_some() {
 	aa.extend_from_slice(user_id.as_bytes());
 
 	let bb: (Option<OwnedRoomId>, Option<OwnedEventId>, Option<OwnedUserId>) =
-		(Some(room_id.into()), None, Some(user_id.into()));
+		(Some(room_id), None, Some(user_id));
 
 	let bbs = serialize_to_vec(&bb).expect("failed to serialize tuple");
 	assert_eq!(aa, bbs);

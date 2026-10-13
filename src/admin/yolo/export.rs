@@ -4,11 +4,11 @@ use conduwuit::{
 	Result,
 	matrix::{Event, pdu::PduEvent},
 };
+use futures::io::AsyncWriteExt;
 use slipstream::{
 	CanonicalJsonObject, EventId, OwnedEventId, events::TimelineEventType,
 	json::Value as JsonValue,
 };
-use tokio::io::AsyncWriteExt;
 
 pub(super) struct DagExportStats {
 	pub count: u64,
@@ -74,8 +74,7 @@ pub(super) async fn decorate_pdu_for_export(
 			.services
 			.rooms
 			.pdu_metadata
-			.is_event_soft_failed(pdu.event_id())
-			.await;
+			.is_event_soft_failed(pdu.event_id())?;
 		if is_soft_failed {
 			obj.insert("__soft_failed".to_owned(), JsonValue::Bool(true));
 			is_separated = true;
@@ -85,8 +84,7 @@ pub(super) async fn decorate_pdu_for_export(
 			.services
 			.rooms
 			.pdu_metadata
-			.is_event_rejected(pdu.event_id())
-			.await;
+			.is_event_rejected(pdu.event_id())?;
 		if is_rejected {
 			obj.insert("__rejected".to_owned(), JsonValue::Bool(true));
 			is_separated = true;
@@ -130,8 +128,7 @@ pub(super) async fn decorate_pdu_for_export(
 				.services
 				.rooms
 				.pdu_metadata
-				.is_event_soft_failed(pdu.event_id())
-				.await;
+				.is_event_soft_failed(pdu.event_id())?;
 			obj.insert("__soft_failed".to_owned(), JsonValue::from(is_soft_failed));
 			obj.insert("__rejected".to_owned(), JsonValue::from(is_rejected));
 		}
@@ -166,8 +163,8 @@ impl DagExportStats {
 	pub(super) async fn process_and_write_pdu(
 		&mut self,
 		ctx: &crate::context::Context<'_>,
-		file: &mut tokio::fs::File,
-		outliers_file: &mut tokio::fs::File,
+		file: &mut async_fs::File,
+		outliers_file: &mut async_fs::File,
 		pdu_json: CanonicalJsonObject,
 		pdu_result: Result<PduEvent>,
 		is_outlier: bool,

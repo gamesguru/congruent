@@ -5,6 +5,7 @@ mod federation;
 mod heal;
 mod imports;
 mod misc;
+mod mtxdb_export;
 pub(crate) mod outlier_utils;
 mod outliers;
 mod rejected;
@@ -452,6 +453,28 @@ pub enum YoloCommand {
 		skip_sig_verify: bool,
 	},
 
+	/// Export one room's events and metadata to a JSONL file for the mtxdb CLI.
+	///
+	/// Read-only; reads RocksDB and never touches mtxdb. The file starts with a
+	/// `header` line and ends with an `end` line carrying the counts; a file
+	/// without the `end` line is truncated.
+	ExportMtxdb {
+		/// Room ID (omit when using --all).
+		room_id: Option<OwnedRoomId>,
+		/// Output file for one room, or output directory when using --all.
+		#[arg(long)]
+		path: Option<String>,
+		/// Export every room with a current-state root.
+		#[arg(long)]
+		all: bool,
+	},
+	/// Export global signing-key records to a JSONL file.
+	ExportMtxdbKeys {
+		/// Output path. Defaults to `/tmp/mtxdb-export-keys.jsonl`.
+		#[arg(long)]
+		path: Option<String>,
+	},
+
 	/// Emergency command to re-import outliers from a JSONL file.
 	ImportOutliers {
 		/// The raw JSONL content.
@@ -773,7 +796,7 @@ pub enum YoloCommand {
 		#[arg(long, default_value = "3")]
 		rounds: usize,
 
-		/// Override the safety limit that prevents tracing >50 roots at once.
+		/// Override the safety limit that prevents processing >50 roots at once.
 		#[arg(long = "override")]
 		override_limit: bool,
 	},

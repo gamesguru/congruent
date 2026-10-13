@@ -8,6 +8,7 @@ use std::{
 	sync::{Arc, Weak},
 };
 
+use async_lock::RwLock;
 use async_trait::async_trait;
 use conduwuit::{Err, SyncRwLock, utils};
 use conduwuit_core::{
@@ -28,7 +29,6 @@ use slipstream::{
 		},
 	},
 };
-use tokio::sync::RwLock;
 
 use crate::{Dep, account_data, globals, media::MXC_LENGTH, rooms, rooms::state::RoomMutexGuard};
 
@@ -140,12 +140,12 @@ impl crate::Service for Service {
 		self.console_auto_start().await;
 
 		loop {
-			tokio::select! {
-				command = receiver.recv_async() => match command {
+			futures::select_biased! {
+			command = receiver.recv_async().fuse() => match command {
 					Ok(command) => self.handle_command(command).await,
 					Err(_) => break,
 				},
-				sig = signals.recv() => match sig {
+			sig = signals.recv().fuse() => match sig {
 					Ok(sig) => self.handle_signal(sig).await,
 					Err(_) => continue,
 				},

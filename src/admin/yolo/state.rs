@@ -221,14 +221,13 @@ pub(super) async fn compare_room_state(
 								.outlier
 								.add_pdu_outlier(&eid, &val, Some(&room_id))
 								.await;
-							self.services
-								.rooms
-								.pdu_metadata
-								.mark_event_rejected(
+							if let Err(error) =
+								self.services.rooms.pdu_metadata.mark_event_rejected(
 									&eid,
 									"signature verification failed in compare-room-state",
-								)
-								.await;
+								) {
+								conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
+							}
 							(eid, val, true)
 						},
 						| Err(e2) => {
@@ -406,7 +405,7 @@ pub(super) async fn compare_room_state(
 			.services
 			.rooms
 			.state_accessor
-			.state_full_hamt(local_root_handle.clone());
+			.state_full_hamt(&room_id, local_root_handle.clone());
 		pin_mut!(state_full);
 		while let Some(((event_type, state_key), pdu)) = state_full.next().await {
 			let eid = pdu.event_id().to_owned();
@@ -895,13 +894,13 @@ pub(super) async fn set_state_event(
 	self.services
 		.rooms
 		.pdu_metadata
-		.unmark_event_rejected(&event_id);
+		.unmark_event_rejected(&event_id)?;
 	self.services
 		.rooms
 		.pdu_metadata
-		.unmark_event_soft_failed(&event_id);
+		.unmark_event_soft_failed(&event_id)?;
 
-	let state_lock = self.services.rooms.state.mutex.lock(&room_id).await;
+	let _state_lock = self.services.rooms.state.mutex.lock(&room_id).await;
 
 	// Current room state root (HAMT). The target event is overlaid onto the
 	// resolved state below and persisted via `set_event_state_with_root`.
@@ -918,7 +917,7 @@ pub(super) async fn set_state_event(
 		.services
 		.rooms
 		.state_accessor
-		.state_full_ids_hamt(&current_root)
+		.state_full_ids_hamt(&room_id, &current_root)
 		.try_collect()
 		.await?;
 
@@ -935,7 +934,7 @@ pub(super) async fn set_state_event(
 
 	// Build the HAMT root for the new state, resolving short IDs so the
 	// lattice can be reconstructed from the entries.
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	let mut entries = Vec::with_capacity(new_state.len());
 	let mut short_state_keys = Vec::with_capacity(new_state.len());
 	let mut event_ids = Vec::with_capacity(new_state.len());
@@ -981,24 +980,18 @@ pub(super) async fn set_state_event(
 	// `set_event_state` + `set_room_state` pair: the event is associated with
 	// the new snapshot, but the room's derived caches are not recomputed here
 	// (the membership cache is updated explicitly below for member events).
-	self.services.globals.with_cork_and_flush(|| {
-		self.services
-			.rooms
-			.state_hamt
-			.store
-			.persist_node_recursive(root_node);
-	});
+	let pending_nodes = self
+		.services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive_deferred(room_id.as_bytes(), root_node)?;
 
 	self.services
 		.rooms
 		.state
-		.set_event_roothandle(&event_id, &new_root)
+		.set_event_and_room_roothandles_with_nodes(&room_id, &event_id, &new_root, &pending_nodes)
 		.await?;
-
-	self.services
-		.rooms
-		.state
-		.set_room_state_hamt(&room_id, &new_root, &state_lock);
 
 	// Rebuild membership cache if this is a member event
 	if event_type == StateEventType::RoomMember {
@@ -1124,7 +1117,7 @@ pub(super) async fn audit_membership(
 		.services
 		.rooms
 		.state_accessor
-		.state_full_hamt(state_root.clone());
+		.state_full_hamt(&room_id, state_root.clone());
 
 	let state_scan_started = Instant::now();
 	pin_mut!(state);
@@ -1703,14 +1696,13 @@ pub(super) async fn audit_membership(
 									.outlier
 									.add_pdu_outlier(&eid, &val, Some(&room_id))
 									.await;
-								self.services
-									.rooms
-									.pdu_metadata
-									.mark_event_rejected(
+								if let Err(error) =
+									self.services.rooms.pdu_metadata.mark_event_rejected(
 										&eid,
 										"signature verification failed in rescue-room",
-									)
-									.await;
+									) {
+									conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
+								}
 							}
 							continue;
 						},
@@ -1938,14 +1930,14 @@ mod tests {
 	#[test]
 	fn test_fmt_event_meta_empty() {
 		let meta = HashMap::new();
-		let eid = event_id!("$abc:test.org").to_owned();
+		let eid = event_id!("$abc:test.org");
 		assert_eq!(fmt_event_meta("m.room.member", &eid, &meta), "");
 	}
 
 	#[test]
 	fn test_fmt_event_meta_member() {
 		let mut meta = HashMap::new();
-		let eid = event_id!("$abc:test.org").to_owned();
+		let eid = event_id!("$abc:test.org");
 		meta.insert(eid.clone(), ("join".to_owned(), "@user:test.org".to_owned()));
 		assert_eq!(fmt_event_meta("m.room.member", &eid, &meta), " [join]");
 	}
@@ -1953,7 +1945,7 @@ mod tests {
 	#[test]
 	fn test_fmt_event_meta_power_levels() {
 		let mut meta = HashMap::new();
-		let eid = event_id!("$abc:test.org").to_owned();
+		let eid = event_id!("$abc:test.org");
 		meta.insert(eid.clone(), (String::new(), "@user:test.org".to_owned()));
 		assert_eq!(fmt_event_meta("m.room.power_levels", &eid, &meta), " [by @user:test.org]");
 	}

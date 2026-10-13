@@ -24,7 +24,7 @@ The crate names are generally self-explanatory:
   logging and error handling macros, and [syn][syn] and [procedural
   macros][proc-macro] used for admin room commands and others
 - `main` is the "primary" sub-crate. This is where the `main()` function lives,
-  tokio worker and async initialisation, Sentry initialisation, [clap][clap]
+  tokio worker and async initialisation, [clap][clap]
   init, and signal handling. If you are adding new [Rust features][features],
   they _must_ go here.
 - `router` is the webserver and request handling bits, using axum, tower,
@@ -94,28 +94,6 @@ All forked dependencies are maintained under the
 - [rust-rocksdb][continuwuation-rust-rocksdb] - Fork of
   [rust-rocksdb/rust-rocksdb][rust-rocksdb] fixing musl build issues, removing
   unnecessary `gtest` include, and using our RocksDB and jemallocator forks
-- [tracing][continuwuation-tracing] - Fork of [tokio-rs/tracing][tracing]
-  implementing `Clone` for `EnvFilter` to support dynamically changing tracing
-  environments
-
-## Debugging with `tokio-console`
-
-[`tokio-console`][7] can be a useful tool for debugging and profiling. To make a
-`tokio-console`-enabled build of Continuwuity, enable the `tokio_console`
-feature, disable the default `release_max_log_level` feature, and set the
-`--cfg tokio_unstable` flag to enable experimental tokio APIs. A build might
-look like this:
-
-```bash
-RUSTFLAGS="--cfg tokio_unstable" cargo +nightly build \
-    --release \
-    --no-default-features \
-    --features=systemd,element_hacks,gzip_compression,brotli_compression,zstd_compression,tokio_console
-```
-
-You will also need to enable the `tokio_console` config option in Continuwuity
-when starting it. This was due to tokio-console causing gradual memory
-leak/usage if left enabled.
 
 ## Building Docker Images
 
@@ -184,14 +162,11 @@ Refer to the Docker Buildx documentation for more advanced build options.
     https://forgejo.ellis.link/continuwuation/rustyline-async
 [continuwuation-rust-rocksdb]:
     https://forgejo.ellis.link/continuwuation/rust-rocksdb
-[continuwuation-tracing]: https://forgejo.ellis.link/continuwuation/tracing
 [ruma]: https://github.com/ruma/ruma/
 [rocksdb]: https://github.com/facebook/rocksdb/
 [jemallocator]: https://github.com/tikv/jemallocator/
 [rustyline-async]: https://github.com/zyansheep/rustyline-async/
 [rust-rocksdb]: https://github.com/rust-rocksdb/rust-rocksdb/
-[tracing]: https://github.com/tokio-rs/tracing/
-[7]: https://docs.rs/tokio-console/latest/tokio_console/
 [8]: https://github.com/zaidoon1/
 [9]: https://github.com/rust-lang/cargo/issues/12162
 [workspaces]: https://doc.rust-lang.org/cargo/reference/workspaces.html

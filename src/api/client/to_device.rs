@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use axum::extract::State;
 use conduwuit::{Error, Result};
 use conduwuit_service::sending::EduBuf;
 use futures::StreamExt;
@@ -12,7 +11,7 @@ use slipstream::{
 	to_device::DeviceIdOrAllDevices,
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `PUT /_matrix/client/r0/sendToDevice/{eventType}/{txnId}`
 ///

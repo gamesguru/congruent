@@ -109,7 +109,10 @@ pub(super) async fn rescue_room(
 
 	if force {
 		for event_id in &event_ids {
-			self.services.rooms.pdu_metadata.clear_pdu_markers(event_id);
+			self.services
+				.rooms
+				.pdu_metadata
+				.clear_pdu_markers(event_id)?;
 		}
 	}
 
@@ -237,7 +240,7 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 	self.services
 		.rooms
 		.pdu_metadata
-		.clear_pdu_markers(&event_id);
+		.clear_pdu_markers(&event_id)?;
 
 	// --force fast path: bypass state resolution and auth entirely.
 	// Required for ancient events where remote servers have pruned historical
@@ -283,6 +286,7 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 				// historical/admin rescue; not a live timeline tip
 				false,
 				false,
+				None,
 			),
 	)
 	.await?;
@@ -408,8 +412,7 @@ pub(super) async fn check_rooms(&self, problems_only: bool, deep: bool, fix: boo
 					.services
 					.rooms
 					.pdu_metadata
-					.is_event_soft_failed(create_id)
-					.await;
+					.is_event_soft_failed(create_id)?;
 				if soft_failed {
 					issues.push("SOFT_FAILED_CREATE".to_owned());
 				}

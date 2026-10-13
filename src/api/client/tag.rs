@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use axum::extract::State;
 use conduwuit::Result;
 use slipstream::{
 	api::client::tag::{create_tag, delete_tag, get_tags},
@@ -10,7 +9,7 @@ use slipstream::{
 	},
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `PUT /_matrix/client/r0/user/{userId}/rooms/{roomId}/tags/{tag}`
 ///

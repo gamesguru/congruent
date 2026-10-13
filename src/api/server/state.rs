@@ -1,12 +1,11 @@
 use std::{borrow::Borrow, iter::once};
 
-use axum::extract::State;
 use conduwuit::{Result, at, err, info, utils::IterStream};
 use futures::{FutureExt, TryStreamExt};
 use slipstream::{OwnedEventId, api::federation::event::get_room_state};
 
 use super::AccessCheck;
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/federation/v1/state/{roomId}`
 ///
@@ -41,7 +40,7 @@ pub(crate) async fn get_room_state_route(
 	let state_ids: Vec<OwnedEventId> = services
 		.rooms
 		.state_accessor
-		.state_full_ids_hamt(&root_handle)
+		.state_full_ids_hamt(&body.room_id, &root_handle)
 		.try_collect::<Vec<_>>()
 		.await?
 		.into_iter()

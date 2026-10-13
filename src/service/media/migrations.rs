@@ -7,6 +7,8 @@ use std::{
 	time::Instant,
 };
 
+use async_fs;
+use blocking::unblock;
 use conduwuit::{
 	Config, Result, debug, debug_info, debug_warn, error, info,
 	utils::{ReadyExt, stream::TryIgnore},
@@ -41,9 +43,10 @@ pub(crate) async fn migrate_sha256_media(services: &Services) -> Result<()> {
 	// move the file to the new location
 	for (old_path, path) in changes {
 		if old_path.exists() {
-			tokio::fs::rename(&old_path, &path).await?;
+			async_fs::rename(&old_path, &path).await?;
 			if config.media_compat_file_link {
-				tokio::fs::symlink(&path, &old_path).await?;
+				symlink_async(path.as_os_str().to_owned(), old_path.as_os_str().to_owned())
+					.await?;
 			}
 		}
 	}
@@ -109,7 +112,7 @@ async fn handle_media_check(
 	let new_exists = files.contains(new_path);
 	let old_exists = files.contains(old_path);
 	let old_is_symlink = || async {
-		tokio::fs::symlink_metadata(old_path)
+		async_fs::symlink_metadata(old_path)
 			.await
 			.is_ok_and(|md| md.is_symlink())
 	};
@@ -130,7 +133,7 @@ async fn handle_media_check(
 			"Media found but missing legacy link. Fixing..."
 		);
 
-		tokio::fs::symlink(&new_path, &old_path).await?;
+		symlink_async(new_path.to_owned(), old_path.to_owned()).await?;
 	}
 
 	if config.media_compat_file_link && !new_exists && old_exists {
@@ -144,8 +147,8 @@ async fn handle_media_check(
 			"Legacy media not expected to be a symlink without an existing sha256 migration."
 		);
 
-		tokio::fs::rename(&old_path, &new_path).await?;
-		tokio::fs::symlink(&new_path, &old_path).await?;
+		async_fs::rename(&old_path, &new_path).await?;
+		symlink_async(new_path.to_owned(), old_path.to_owned()).await?;
 	}
 
 	if !config.media_compat_file_link && old_exists && old_is_symlink().await {
@@ -159,8 +162,13 @@ async fn handle_media_check(
 			"sha256 migration into new file expected prior to cleaning legacy symlink here."
 		);
 
-		tokio::fs::remove_file(&old_path).await?;
+		async_fs::remove_file(&old_path).await?;
 	}
 
+	Ok(())
+}
+
+async fn symlink_async(source: OsString, destination: OsString) -> Result<()> {
+	unblock(move || std::os::unix::fs::symlink(source, destination)).await?;
 	Ok(())
 }

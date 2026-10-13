@@ -1,9 +1,7 @@
-use std::{fmt::Debug, mem};
+use std::fmt::Debug;
 
 use bytes::BytesMut;
-use conduwuit::{
-	Err, Result, debug_error, err, implement, trace, utils, utils::response::LimitReadExt, warn,
-};
+use conduwuit::{Err, Result, debug_error, err, implement, trace, utils, warn};
 use slipstream::api::{
 	IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken, appservice::Registration,
 };
@@ -58,36 +56,15 @@ where
 	);
 	*http_request.uri_mut() = parts.try_into().expect("our manipulation is always valid");
 
-	let reqwest_request = reqwest::Request::try_from(http_request)?;
-
 	let client = &self.services.client.appservice;
 
-	let mut response = client.execute(reqwest_request).await.map_err(|e| {
+	let response = client.execute(http_request).await.map_err(|e| {
 		warn!("Could not send request to appservice \"{}\" at {dest}: {e:?}", registration.id);
 		e
 	})?;
 
-	// reqwest::Response -> http::Response conversion
 	let status = response.status();
-	let mut http_response_builder = http::Response::builder()
-		.status(status)
-		.version(response.version());
-	mem::swap(
-		response.headers_mut(),
-		http_response_builder
-			.headers_mut()
-			.expect("http::response::Builder is usable"),
-	);
-
-	let body = response
-		.limit_read(
-			self.server
-				.config
-				.max_request_size
-				.try_into()
-				.expect("usize fits into u64"),
-		)
-		.await?;
+	let body = response.into_body();
 
 	if !status.is_success() {
 		debug_error!("Appservice response bytes: {:?}", utils::string_from_bytes(&body));
@@ -98,9 +75,7 @@ where
 	}
 
 	let response = T::IncomingResponse::try_from_http_response(
-		http_response_builder
-			.body(body)
-			.expect("reqwest body is valid http body"),
+		http::Response::builder().status(status).body(body)?,
 	);
 
 	response.map(Some).map_err(|e| {

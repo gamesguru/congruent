@@ -12,7 +12,6 @@ use slipstream::{EventId, OwnedEventId, RoomId, RoomVersionId};
 // TODO: if we know the prev_events of the incoming event we can avoid the
 #[implement(super::Service)]
 // request and build the state from a known point and resolve if > 1 prev_event
-#[tracing::instrument(name = "state", level = "debug", skip_all)]
 pub(crate) async fn state_at_incoming_degree_one<Pdu>(
 	&self,
 	incoming_pdu: &Pdu,
@@ -56,7 +55,7 @@ where
 	let mut state: HashMap<_, _> = self
 		.services
 		.state_accessor
-		.state_full_ids_hamt(&prev_roothandle)
+		.state_full_ids_hamt(room_id, &prev_roothandle)
 		.try_collect()
 		.await?;
 
@@ -79,7 +78,6 @@ where
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "state", level = "debug", skip_all)]
 pub(crate) async fn state_at_incoming_resolved<Pdu>(
 	&self,
 	incoming_pdu: &Pdu,
@@ -137,7 +135,10 @@ where
 			extremity_roothandles.len()
 		);
 		let (root_handle, prev_event) = unique_forks[0].1.clone();
-		let Ok(fork_state) = self.state_at_incoming_fork(root_handle, prev_event).await else {
+		let Ok(fork_state) = self
+			.state_at_incoming_fork(room_id, root_handle, prev_event)
+			.await
+		else {
 			return Ok(None);
 		};
 		return fork_state
@@ -161,15 +162,12 @@ where
 		.into_iter()
 		.try_stream()
 		.wide_and_then(|(root_handle, prev_event)| {
-			self.state_at_incoming_fork(root_handle, prev_event)
+			self.state_at_incoming_fork(room_id, root_handle, prev_event)
 		})
 		.try_collect()
 		.await?;
 
-	let Ok(new_state) = self
-		.state_resolution(room_id, room_version_id, fork_states.iter(), None)
-		.boxed()
-		.await
+	let Ok(new_state) = self.state_resolution(room_id, room_version_id, fork_states.iter(), None)
 	else {
 		return Ok(None);
 	};
@@ -193,6 +191,7 @@ where
 #[implement(super::Service)]
 async fn state_at_incoming_fork<Pdu>(
 	&self,
+	room_id: &RoomId,
 	root_handle: rezzy::hamt::RootHandle,
 	prev_event: Pdu,
 ) -> Result<StateMap<OwnedEventId>>
@@ -202,7 +201,7 @@ where
 	let mut leaf_state: HashMap<_, _> = self
 		.services
 		.state_accessor
-		.state_full_ids_hamt(&root_handle)
+		.state_full_ids_hamt(room_id, &root_handle)
 		.try_collect()
 		.await?;
 
@@ -238,7 +237,7 @@ async fn get_extremity_lthash<Pdu>(
 	&self,
 	_root_handle: &rezzy::hamt::RootHandle,
 	_prev_event: &Pdu,
-) -> Result<rezzy::LtHash>
+) -> Result<rezzy::incremental::LtHash>
 where
 	Pdu: Event + Send + Sync,
 {
@@ -257,7 +256,6 @@ where
 /// by local event creation when the room has diverged: state must be resolved
 /// across every fork, not just the room's current-state pointer.
 #[implement(super::Service)]
-#[tracing::instrument(name = "state", level = "debug", skip_all)]
 pub(crate) async fn resolve_extremities<'a, I>(
 	&self,
 	prev_events: I,
@@ -300,21 +298,18 @@ where
 		.into_iter()
 		.try_stream()
 		.wide_and_then(|(root_handle, prev_event)| {
-			self.state_at_incoming_fork(root_handle, prev_event)
+			self.state_at_incoming_fork(room_id, root_handle, prev_event)
 		})
 		.try_collect()
 		.await?;
 
-	let Ok(new_state) = self
-		.state_resolution(room_id, room_version_id, fork_states.iter(), None)
-		.boxed()
-		.await
+	let Ok(new_state) = self.state_resolution(room_id, room_version_id, fork_states.iter(), None)
 	else {
 		return Ok(None);
 	};
 
 	// Build a HAMT root handle from the resolved state.
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	let mut entries = Vec::with_capacity(new_state.len());
 	for ((ty, sk), id) in &new_state {
 		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
@@ -336,12 +331,10 @@ where
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!("Failed to build HAMT root: {e:?}"))?;
 
-	self.services.globals.with_cork_and_flush(|| {
-		self.services
-			.state_hamt
-			.store
-			.persist_node_recursive(root_node);
-	});
+	self.services
+		.state_hamt
+		.store
+		.persist_node_recursive(room_id.as_bytes(), root_node)?;
 
 	Ok(Some(root_handle))
 }

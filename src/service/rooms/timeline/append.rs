@@ -31,6 +31,8 @@ pub struct AppendPduContext<'a> {
 	pub state_lock: &'a RoomMutexGuard,
 	pub room_id: &'a slipstream::RoomId,
 	pub state_root_handle: Option<rezzy::hamt::RootHandle>,
+	/// Nodes built for `state_root_handle`, held until the root is published.
+	pub pending_nodes: Vec<crate::rooms::state_hamt::store::PendingNode>,
 	pub prev_state_root_handle: Option<rezzy::hamt::RootHandle>,
 	pub advance_current_state: bool,
 	/// Membership of the event's state key in this room, sampled *before* a
@@ -53,7 +55,6 @@ pub(super) struct PduPushEval<'a> {
 /// Append the incoming event setting the state snapshot to the state from
 /// the server that sent the event.
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip_all)]
 #[allow(clippy::too_many_arguments)]
 pub async fn append_incoming_pdu<'a, Leaves>(
 	&'a self,
@@ -71,6 +72,7 @@ where
 		state_lock,
 		room_id,
 		state_root_handle,
+		pending_nodes,
 		prev_state_root_handle,
 		advance_current_state,
 		was_joined_before_state_install,
@@ -91,13 +93,18 @@ where
 		{
 			self.services
 				.state
-				.set_event_roothandle(pdu.event_id(), root_handle)
+				.set_event_roothandle_with_nodes(
+					room_id,
+					pdu.event_id(),
+					root_handle,
+					&pending_nodes,
+				)
 				.await?;
 		}
 
 		self.services
 			.pdu_metadata
-			.unmark_event_rejected(pdu.event_id());
+			.unmark_event_rejected(pdu.event_id())?;
 
 		conduwuit::debug_warn!(
 			event_id = %pdu.event_id,
@@ -111,6 +118,7 @@ where
 			state_lock,
 			room_id,
 			state_root_handle,
+			pending_nodes,
 			prev_state_root_handle,
 			advance_current_state,
 			was_joined_before_state_install,
@@ -129,7 +137,7 @@ where
 	// resolution. Soft-fail flags are intentional and must persist.
 	self.services
 		.pdu_metadata
-		.unmark_event_rejected(pdu.event_id());
+		.unmark_event_rejected(pdu.event_id())?;
 
 	// Process admin commands for federation events
 	if *pdu.kind() == TimelineEventType::RoomMessage {
@@ -162,7 +170,6 @@ where
 /// Returns pdu id
 #[implement(super::Service)]
 #[allow(clippy::too_many_arguments)]
-#[tracing::instrument(level = "debug", skip_all)]
 pub async fn append_pdu<'a, Leaves>(
 	&'a self,
 	pdu: &'a PduEvent,
@@ -178,6 +185,7 @@ where
 		state_lock,
 		room_id,
 		state_root_handle,
+		pending_nodes,
 		prev_state_root_handle,
 		advance_current_state,
 		was_joined_before_state_install,
@@ -266,7 +274,7 @@ where
 			Some(pdu.event_id()),
 			state_lock,
 		)
-		.await;
+		.await?;
 
 	let insert_lock = self.mutex_insert.lock(room_id).await;
 	info!(
@@ -336,6 +344,7 @@ where
 		state_lock,
 		state_root_handle.as_ref(),
 		prev_state_root_handle.as_ref(),
+		&pending_nodes,
 	))
 	.await?;
 	// Recovered outlier timelines carry no state event of their own, so the batch
@@ -347,7 +356,7 @@ where
 	{
 		self.services
 			.state
-			.set_room_state_hamt(room_id, root_handle, state_lock);
+			.set_room_state_hamt(room_id, root_handle, state_lock)?;
 	}
 	drop(cork);
 	let receipt_content = BTreeMap::from_iter([(
@@ -550,8 +559,7 @@ where
 				{
 					if content.membership
 						== slipstream::events::room::member::MembershipState::Join
-						&& !was_joined
-						&& self.services.globals.user_is_local(&target_user_id)
+						&& !was_joined && self.services.globals.user_is_local(&target_user_id)
 					{
 						self.services
 							.users

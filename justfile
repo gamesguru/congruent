@@ -20,10 +20,10 @@ init-prebuild:
     @echo "Done. You can now run prebuild commands."
 
 # Pre-build all C/C++ dependencies
-prebuild-all: init-prebuild prebuild-jemalloc prebuild-lz4 prebuild-snappy prebuild-zstd prebuild-rocksdb prebuild-aws-lc
+prebuild-all: init-prebuild prebuild-jemalloc prebuild-lz4 prebuild-snappy prebuild-zstd prebuild-rocksdb
 
 # Install all pre-built C/C++ dependencies
-install-all: install-jemalloc install-lz4 install-snappy install-zstd install-rocksdb install-aws-lc
+install-all: install-jemalloc install-lz4 install-snappy install-zstd install-rocksdb
 
 # Builds liburing
 prebuild-liburing:
@@ -233,37 +233,6 @@ install-zstd:
     cd {{ PREFIX }}/build/zstd && sudo make install -C lib PREFIX={{ PREFIX }}
     sudo ldconfig
 
-# Pre-build aws-lc
-prebuild-aws-lc:
-    #!/usr/bin/env bash
-    set -e
-    TAG=$(grep "^aws-lc," {{ CSV }} | cut -d',' -f4 | tr -d '\r')
-    REPO=$(grep "^aws-lc," {{ CSV }} | cut -d',' -f3 | tr -d '\r')
-    sudo mkdir -p {{ PREFIX }}/build && sudo chown -R $USER:$USER {{ PREFIX }}/build
-    echo "Cloning aws-lc $TAG..."
-    [ ! -d "{{ PREFIX }}/build/aws-lc" ] && git clone $REPO {{ PREFIX }}/build/aws-lc || true
-    echo "Building aws-lc..."
-    cd {{ PREFIX }}/build/aws-lc
-    git fetch --all --tags
-    git checkout $TAG
-    # aws-lc (boringssl) has issues with sccache wrapping during CMake checks
-    export NO_SCCACHE=1
-    unset CC
-    unset CXX
-    unset CMAKE_C_COMPILER_LAUNCHER
-    unset CMAKE_CXX_COMPILER_LAUNCHER
-
-    mkdir -p build && cd build
-    # rm -f CMakeCache.txt
-    cmake -DCMAKE_INSTALL_PREFIX={{ PREFIX }} -DBUILD_TESTING=OFF -DBUILD_LIBSSL=ON -DGENERATE_RUST_BINDINGS=ON ..
-    make -j$(nproc)
-
-# Install aws-lc globally (requires sudo)
-install-aws-lc:
-    @echo "Installing aws-lc to {{ PREFIX }}... (Requires sudo)"
-    cd {{ PREFIX }}/build/aws-lc/build && sudo make install
-    sudo ldconfig
-
 # --- CPU Profiling ---
 
 # Run CPU flamegraph profiling on release build (requires sudo for perf)
@@ -275,13 +244,6 @@ profile-runtime-cpu *args:
 profile-runtime-cpu-dev *args:
     cargo flamegraph --root --dev --features local_profiling --bin conduwuit -- {{ args }}
     @echo "Flamegraph saved to flamegraph.svg"
-
-# --- Async & I/O Profiling ---
-
-# Run with tokio-console instrumentation active
-profile-runtime-async *args:
-    @echo "Run 'tokio-console' in a separate terminal"
-    env RUSTFLAGS="--cfg tokio_unstable ${RUSTFLAGS:-}" cargo run --features local_profiling --bin conduwuit -- {{ args }}
 
 # --- Memory Profiling (jemalloc) ---
 
@@ -512,7 +474,10 @@ e2ee args=".*":
             RPC_BIN="$COMPLEMENT_SRC/rpc"
             if [ ! -x "$RPC_BIN" ] || [ -n "$(find "$COMPLEMENT_SRC/cmd/rpc" "$COMPLEMENT_SRC/internal/deploy/rpc" "$COMPLEMENT_SRC/internal/api" "$COMPLEMENT_SRC/go.mod" "$COMPLEMENT_SRC/go.sum" -newer "$RPC_BIN" -print -quit 2>/dev/null)" ]; then
                 echo "Building complement-crypto's cmd/rpc binary (multiprocess tests)..."
-                (cd "$COMPLEMENT_SRC" && go build -tags="$CRYPTO_TAGS" -o rpc ./cmd/rpc)
+                # libmatrix_sdk_ffi.a is a static archive, so its libm/libzstd
+                # deps aren't recorded; --no-as-needed keeps them linked even
+                # though CGO_LDFLAGS precede the generated -lmatrix_sdk_ffi.
+                (cd "$COMPLEMENT_SRC" && CGO_LDFLAGS="${CGO_LDFLAGS:-} -Wl,--no-as-needed -lzstd -lm" go build -tags="$CRYPTO_TAGS" -o rpc ./cmd/rpc)
             fi
             export COMPLEMENT_CRYPTO_RPC_BINARY="$RPC_BIN"
             ;;
@@ -718,7 +683,13 @@ bootstrap-crypto:
     #   2. MATRIX_JS_SDK_SOURCE env/.env entry (url#sha, kept for compatibility)
     #   3. the pinned GitLab fork commit
     sdk="{{ LOCAL_JS_SDK }}"
-    (cd complement-crypto-src && LOCAL_JS_SDK="$sdk" just bootstrap)
+    rust_sdk_dir="${COMPLEMENT_CRYPTO_RUST_SDK_DIR:-}"
+    if [ -n "$rust_sdk_dir" ]; then
+        # Resolve relative to the caller's repository root before changing into
+        # the complement-crypto submodule, which has a different working dir.
+        rust_sdk_dir="$(realpath "$rust_sdk_dir")"
+    fi
+    (cd complement-crypto-src && LOCAL_JS_SDK="$sdk" COMPLEMENT_CRYPTO_RUST_SDK_DIR="$rust_sdk_dir" just bootstrap)
 
 # Rebuild just the JS-SDK bundle complement-crypto embeds (a subset of
 # bootstrap-crypto); run it after changing the SDK pin.

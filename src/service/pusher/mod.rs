@@ -1,7 +1,6 @@
-use std::{fmt::Debug, mem, sync::Arc};
+use std::{fmt::Debug, sync::Arc};
 
 use bytes::BytesMut;
-use conduwuit::utils::response::LimitReadExt;
 use conduwuit_core::{
 	Err, Event, Result, debug_warn, err, trace,
 	utils::{stream::TryIgnore, string_from_bytes},
@@ -9,7 +8,6 @@ use conduwuit_core::{
 };
 use conduwuit_database::{Deserialized, Ignore, Interfix, Map};
 use futures::{Stream, StreamExt};
-use ipaddress::IPAddress;
 use slipstream::{
 	DeviceId, OwnedDeviceId, RoomId, UInt, UserId,
 	api::{
@@ -31,7 +29,7 @@ use slipstream::{
 	uint,
 };
 
-use crate::{Dep, client, config, globals, rooms, sending, users};
+use crate::{Dep, client, globals, rooms, sending, users};
 
 pub struct Service {
 	db: Data,
@@ -40,7 +38,6 @@ pub struct Service {
 
 struct Services {
 	globals: Dep<globals::Service>,
-	config: Dep<config::Service>,
 	client: Dep<client::Service>,
 	state: Dep<rooms::state::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
@@ -65,7 +62,6 @@ impl crate::Service for Service {
 			services: Services {
 				globals: args.depend::<globals::Service>("globals"),
 				client: args.depend::<client::Service>("client"),
-				config: args.depend::<config::Service>("config"),
 				state: args.depend::<rooms::state::Service>("rooms::state"),
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
@@ -122,8 +118,10 @@ impl Service {
 						)));
 					}
 
-					if let Ok(ip) =
-						IPAddress::parse(url.host_str().expect("URL previously validated"))
+					if let Ok(ip) = url
+						.host_str()
+						.expect("URL previously validated")
+						.parse::<std::net::IpAddr>()
 					{
 						if !self.services.client.valid_cidr_range(&ip) {
 							return Err!(Request(InvalidParam(
@@ -194,7 +192,6 @@ impl Service {
 			.map(|(_, pushkey): (Ignore, &str)| pushkey)
 	}
 
-	#[tracing::instrument(skip(self, dest, request))]
 	pub async fn send_request<T>(&self, dest: &str, request: T) -> Result<T::IncomingResponse>
 	where
 		T: OutgoingRequest + Debug + Send,
@@ -213,54 +210,21 @@ impl Service {
 			})?
 			.map(BytesMut::freeze);
 
-		let reqwest_request = reqwest::Request::try_from(http_request)?;
-
-		if let Some(url_host) = reqwest_request.url().host_str() {
+		if let Some(url_host) = http_request.uri().host() {
 			trace!("Checking request URL for IP");
-			if let Ok(ip) = IPAddress::parse(url_host) {
+			if let Ok(ip) = url_host.parse::<std::net::IpAddr>() {
 				if !self.services.client.valid_cidr_range(&ip) {
 					return Err!(BadServerResponse("Not allowed to send requests to this IP"));
 				}
 			}
 		}
 
-		let response = self.services.client.pusher.execute(reqwest_request).await;
+		let response = self.services.client.pusher.execute(http_request).await;
 
 		match response {
-			| Ok(mut response) => {
-				// reqwest::Response -> http::Response conversion
-
-				trace!("Checking response destination's IP");
-				if let Some(remote_addr) = response.remote_addr() {
-					if let Ok(ip) = IPAddress::parse(remote_addr.ip().to_string()) {
-						if !self.services.client.valid_cidr_range(&ip) {
-							return Err!(BadServerResponse(
-								"Not allowed to send requests to this IP"
-							));
-						}
-					}
-				}
-
+			| Ok(response) => {
 				let status = response.status();
-				let mut http_response_builder = http::Response::builder()
-					.status(status)
-					.version(response.version());
-				mem::swap(
-					response.headers_mut(),
-					http_response_builder
-						.headers_mut()
-						.expect("http::response::Builder is usable"),
-				);
-
-				let body = response
-					.limit_read(
-						self.services
-							.config
-							.max_request_size
-							.try_into()
-							.expect("usize fits into u64"),
-					)
-					.await?;
+				let body = response.into_body();
 
 				if !status.is_success() {
 					debug_warn!("Push gateway response body: {:?}", string_from_bytes(&body));
@@ -270,9 +234,7 @@ impl Service {
 				}
 
 				let response = T::IncomingResponse::try_from_http_response(
-					http_response_builder
-						.body(body)
-						.expect("reqwest body is valid http body"),
+					http::Response::builder().status(status).body(body)?,
 				);
 				response.map_err(|e| {
 					err!(BadServerResponse(warn!(
@@ -282,12 +244,11 @@ impl Service {
 			},
 			| Err(e) => {
 				warn!("Could not send request to pusher {dest}: {e}");
-				Err(e.into())
+				Err(e)
 			},
 		}
 	}
 
-	#[tracing::instrument(skip(self, user, unread, pusher, ruleset, event))]
 	pub async fn send_push_notice<E>(
 		&self,
 		user: &UserId,
@@ -369,7 +330,6 @@ impl Service {
 		Some(subscribed)
 	}
 
-	#[tracing::instrument(skip(self, user, ruleset, pdu), level = "debug")]
 	pub async fn get_actions<'a>(
 		&self,
 		user: &UserId,
@@ -417,7 +377,6 @@ impl Service {
 		ruleset.get_actions(pdu, &ctx)
 	}
 
-	#[tracing::instrument(skip(self, unread, pusher, tweaks, event))]
 	async fn send_notice<E>(
 		&self,
 		unread: UInt,
@@ -447,8 +406,10 @@ impl Service {
 					)));
 				}
 
-				if let Ok(ip) =
-					IPAddress::parse(url.host_str().expect("URL previously validated"))
+				if let Ok(ip) = url
+					.host_str()
+					.expect("URL previously validated")
+					.parse::<std::net::IpAddr>()
 				{
 					if !self.services.client.valid_cidr_range(&ip) {
 						return Err!(Request(InvalidParam(

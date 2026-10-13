@@ -15,7 +15,6 @@ impl super::Service {
 	/// - m.replace relations are bundled to include the most recent replacement
 	///   event.
 	/// - m.reference relations are bundled to include a chunk of event IDs.
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn get_bundled_aggregations(
 		&self,
 		user_id: &UserId,
@@ -139,7 +138,7 @@ impl super::Service {
 			let pdu = &relation.1;
 
 			// Validate replacement
-			if !Self::is_valid_replacement_event(original_event, pdu).await? {
+			if !Self::is_valid_replacement_event(original_event, pdu)? {
 				continue;
 			}
 
@@ -171,7 +170,6 @@ impl super::Service {
 	}
 
 	/// Adds bundled aggregations to a PDU's unsigned field
-	#[tracing::instrument(skip(self, pdu), level = "debug")]
 	pub async fn add_bundled_aggregations_to_pdu(
 		&self,
 		user_id: &UserId,
@@ -222,8 +220,7 @@ impl super::Service {
 
 	/// Validates that an event is acceptable as a replacement for another event
 	/// See C/S spec "Validity of replacement events"
-	#[tracing::instrument(level = "debug")]
-	async fn is_valid_replacement_event(
+	fn is_valid_replacement_event(
 		original_event: &PduEvent,
 		replacement_event: &PduEvent,
 	) -> Result<bool> {
@@ -474,7 +471,7 @@ mod tests {
 	}
 
 	/// Test that a valid replacement event passes validation
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_valid_replacement_event() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -505,14 +502,13 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(result.unwrap(), "Valid replacement event should be accepted");
 	}
 
 	/// Test replacement event with different room ID is rejected
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_replacement_event_different_room() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -539,14 +535,13 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(!result.unwrap(), "Different room ID should be rejected");
 	}
 
 	/// Test replacement event with different sender is rejected
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_replacement_event_different_sender() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -573,14 +568,13 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(!result.unwrap(), "Different sender should be rejected");
 	}
 
 	/// Test replacement event with different type is rejected
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_replacement_event_different_type() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -605,14 +599,13 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(!result.unwrap(), "Different event type should be rejected");
 	}
 
 	/// Test replacement event with state key is rejected
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_replacement_event_with_state_key() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -637,14 +630,13 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(!result.unwrap(), "Event with state key should be rejected");
 	}
 
 	/// Test replacement of an event that is already a replacement is rejected
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_replacement_event_original_is_replacement() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -678,14 +670,13 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(!result.unwrap(), "Replacement of replacement should be rejected");
 	}
 
 	/// Test replacement event missing m.new_content is rejected
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_replacement_event_missing_new_content() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -709,14 +700,13 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(!result.unwrap(), "Missing m.new_content should be rejected");
 	}
 
 	/// Test encrypted replacement event without m.new_content is accepted
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_replacement_event_encrypted_missing_new_content_is_valid() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -751,8 +741,7 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(
 			result.unwrap(),

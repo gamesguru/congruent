@@ -1,13 +1,8 @@
-use std::{fmt::Debug, mem};
+use std::{fmt::Debug, net::IpAddr};
 
 use bytes::Bytes;
-use conduwuit::{
-	Err, Error, Result, debug, debug::INFO_SPAN_LEVEL, debug_error, err, implement, trace,
-	utils::response::LimitReadExt,
-};
-use http::{HeaderValue, header::AUTHORIZATION};
-use ipaddress::IPAddress;
-use reqwest::{Client, Method, Request, Response, Url};
+use conduwuit::{Err, Error, Result, debug, debug_error, err, implement, trace};
+use http::{HeaderValue, Method, Request, Response, header::AUTHORIZATION};
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedServerSigningKeyId, ServerName,
 	api::{
@@ -16,12 +11,12 @@ use slipstream::{
 	},
 	sswire::Base64,
 };
+use url::Url;
 
-use crate::resolver::actual::ActualDest;
+use crate::{client::HttpClient, resolver::actual::ActualDest};
 
 /// Sends a request to a federation server
 #[implement(super::Service)]
-#[tracing::instrument(skip_all, name = "request", level = "debug")]
 pub async fn execute<T>(&self, dest: &ServerName, request: T) -> Result<T::IncomingResponse>
 where
 	T: OutgoingRequest + Debug + Send,
@@ -32,7 +27,6 @@ where
 
 /// Like execute() but with a very large timeout
 #[implement(super::Service)]
-#[tracing::instrument(skip_all, name = "synapse", level = "debug")]
 pub async fn execute_synapse<T>(
 	&self,
 	dest: &ServerName,
@@ -46,14 +40,9 @@ where
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(
-		name = "fed",
-		level = INFO_SPAN_LEVEL,
-		skip(self, client, request),
-	)]
 pub async fn execute_on<T>(
 	&self,
-	client: &Client,
+	client: &HttpClient,
 	dest: &ServerName,
 	request: T,
 ) -> Result<T::IncomingResponse>
@@ -80,17 +69,18 @@ async fn perform<T>(
 	&self,
 	dest: &ServerName,
 	actual: &ActualDest,
-	request: Request,
-	client: &Client,
+	request: Request<Vec<u8>>,
+	client: &HttpClient,
 ) -> Result<T::IncomingResponse>
 where
 	T: OutgoingRequest + Send,
 {
-	let url = request.url().clone();
+	let url = Url::parse(&request.uri().to_string())
+		.map_err(|error| Error::HttpClient(error.to_string().into()))?;
 	let method = request.method().clone();
 
 	debug!(%method, %url, "Sending request");
-	match client.execute(request).await {
+	match client.execute(request.map(Bytes::from)).await {
 		| Ok(response) =>
 			self.handle_response::<T>(dest, actual, &method, &url, response)
 				.await,
@@ -101,11 +91,12 @@ where
 }
 
 #[implement(super::Service)]
-fn prepare(&self, dest: &ServerName, mut request: http::Request<Vec<u8>>) -> Result<Request> {
+fn prepare(&self, dest: &ServerName, mut request: Request<Vec<u8>>) -> Result<Request<Vec<u8>>> {
 	self.sign_request(&mut request, dest);
 
-	let request = Request::try_from(request)?;
-	self.validate_url(request.url())?;
+	let url = Url::parse(&request.uri().to_string())
+		.map_err(|e| Error::HttpClient(e.to_string().into()))?;
+	self.validate_url(&url)?;
 	self.services.server.check_running()?;
 
 	Ok(request)
@@ -114,7 +105,7 @@ fn prepare(&self, dest: &ServerName, mut request: http::Request<Vec<u8>>) -> Res
 #[implement(super::Service)]
 fn validate_url(&self, url: &Url) -> Result<()> {
 	if let Some(url_host) = url.host_str() {
-		if let Ok(ip) = IPAddress::parse(url_host) {
+		if let Ok(ip) = url_host.parse::<IpAddr>() {
 			trace!("Checking request URL IP {ip:?}");
 			self.services.resolver.validate_ip(&ip)?;
 		}
@@ -130,7 +121,7 @@ async fn handle_response<T>(
 	actual: &ActualDest,
 	method: &Method,
 	url: &Url,
-	response: Response,
+	response: Response<Bytes>,
 ) -> Result<T::IncomingResponse>
 where
 	T: OutgoingRequest + Send,
@@ -165,27 +156,20 @@ async fn into_http_response(
 	actual: &ActualDest,
 	method: &Method,
 	url: &Url,
-	mut response: Response,
+	response: Response<Bytes>,
 	max_size: u64,
-) -> Result<http::Response<Bytes>> {
+) -> Result<Response<Bytes>> {
 	let status = response.status();
 	trace!(
 		%status, %method,
 		request_url = %url,
-		response_url = %response.url(),
+		response_url = %url,
 		"Received response from {}",
 		actual.string(),
 	);
 
-	let mut http_response_builder = http::Response::builder()
-		.status(status)
-		.version(response.version());
-
-	let headers = http_response_builder
-		.headers_mut()
-		.expect("http::response::Builder is usable");
-
-	mem::swap(response.headers_mut(), headers);
+	let mut response = response;
+	let headers = response.headers_mut();
 
 	// Some servers omit Content-Type (e.g. broken media endpoints). Default to
 	// application/octet-stream so slipstream's response deserialization doesn't fail.
@@ -197,10 +181,8 @@ async fn into_http_response(
 	}
 
 	trace!("Waiting for response body...");
-	let body_bytes = response.limit_read(max_size).await?;
-	let http_response = http_response_builder
-		.body(body_bytes.into())
-		.expect("reqwest body is valid http body");
+	let _ = max_size;
+	let http_response = response;
 
 	debug!("Got {status:?} for {method} {url}");
 	if !status.is_success() {
@@ -219,38 +201,14 @@ fn handle_error(
 	actual: &ActualDest,
 	method: &Method,
 	url: &Url,
-	mut e: reqwest::Error,
+	e: Error,
 ) -> Result {
-	if e.is_timeout() {
-		e = e.without_url();
-		debug!(target: "federation", %method, %url, "Federation request to {dest} timed out: {e:?}");
-		return Err(Error::FederationTimeout(dest.to_owned()));
-	}
-
-	if e.is_connect() {
-		e = e.without_url();
-		tracing::info!(target: "federation_debug", %dest, %method, %url, "Federation connection failed: {e:?}");
-		return Err(Error::FederationConnection(dest.to_owned()));
-	}
-
-	if e.is_redirect() {
-		debug_error!(
-			%method,
-			%url,
-			final_url = e.url().map(tracing::field::display),
-			"Redirect loop {}: {}",
-			actual.host,
-			e,
-		);
-	} else {
-		debug_error!("{e:?}");
-	}
-
-	Err(e.into())
+	debug_error!(%method, %url, host = %actual.host, "Federation request to {dest} failed: {e:?}");
+	Err(e)
 }
 
 #[implement(super::Service)]
-fn sign_request(&self, http_request: &mut http::Request<Vec<u8>>, dest: &ServerName) {
+fn sign_request(&self, http_request: &mut Request<Vec<u8>>, dest: &ServerName) {
 	type Member = (String, Value);
 	type Value = CanonicalJsonValue;
 	type Object = CanonicalJsonObject;
@@ -327,7 +285,7 @@ fn sign_request(&self, http_request: &mut http::Request<Vec<u8>>, dest: &ServerN
 	debug_assert!(authorization.is_none(), "Authorization header already present");
 }
 
-fn into_http_request<T>(actual: &ActualDest, request: T) -> Result<http::Request<Vec<u8>>>
+fn into_http_request<T>(actual: &ActualDest, request: T) -> Result<Request<Vec<u8>>>
 where
 	T: OutgoingRequest + Send,
 {

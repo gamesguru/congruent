@@ -4,9 +4,9 @@ mod panic;
 mod response;
 mod serde;
 
-use std::{any::Any, borrow::Cow, convert::Infallible, error::Error as _, sync::PoisonError};
+use std::{any::Any, borrow::Cow, convert::Infallible, sync::PoisonError};
 
-pub use self::{err::visit, log::*};
+pub use self::log::*;
 
 #[derive(thiserror::Error)]
 pub enum Error {
@@ -41,31 +41,27 @@ pub enum Error {
 	#[error(transparent)]
 	CapacityError(#[from] arrayvec::CapacityError),
 	#[error(transparent)]
-	CargoToml(#[from] cargo_toml::Error),
-	#[error(transparent)]
 	Clap(#[from] clap::error::Error),
-	#[error(transparent)]
-	Extension(#[from] axum::extract::rejection::ExtensionRejection),
-	#[error(transparent)]
-	Figment(#[from] figment::error::Error),
 	#[error(transparent)]
 	Http(#[from] http::Error),
 	#[error(transparent)]
 	HttpHeader(#[from] http::header::InvalidHeaderValue),
-	#[error("Join error: {0}")]
-	JoinError(#[from] tokio::task::JoinError),
 	#[error(transparent)]
 	JsParseInt(#[from] slipstream::JsParseIntError), // js_int re-export
 	#[error(transparent)]
 	JsTryFromInt(#[from] slipstream::JsTryFromIntError), // js_int re-export
-	#[error(transparent)]
-	Path(#[from] axum::extract::rejection::PathRejection),
 	#[error("Mutex poisoned: {0}")]
 	Poison(Cow<'static, str>),
 	#[error("Regex error: {0}")]
 	Regex(#[from] regex::Error),
-	#[error("{0}")]
-	Reqwest(#[source] FormattedReqwestError),
+	#[error("HTTP client error: {0}")]
+	HttpClient(Cow<'static, str>),
+	#[error("HTTP client timeout: {0}")]
+	HttpClientTimeout(Cow<'static, str>),
+	#[error("HTTP client connect error: {0}")]
+	HttpClientConnect(Cow<'static, str>),
+	#[error(transparent)]
+	JoinError(#[from] crate::rt::JoinError),
 	#[error("{0}")]
 	SerdeDe(Cow<'static, str>),
 	#[error("{0}")]
@@ -74,17 +70,6 @@ pub enum Error {
 	TomlDe(#[from] toml::de::Error),
 	#[error(transparent)]
 	TomlSer(#[from] toml::ser::Error),
-	#[error("Tracing filter error: {0}")]
-	TracingFilter(#[from] tracing_subscriber::filter::ParseError),
-	#[error("Tracing reload error: {0}")]
-	TracingReload(#[from] tracing_subscriber::reload::Error),
-	#[error(transparent)]
-	TypedHeader(#[from] axum_extra::typed_header::TypedHeaderRejection),
-	#[error(transparent)]
-	YamlDe(#[from] serde_saphyr::Error),
-	#[error(transparent)]
-	YamlSer(#[from] serde_saphyr::ser_error::Error),
-
 	// slipstream/conduwuit
 	#[error("Arithmetic operation failed: {0}")]
 	Arithmetic(Cow<'static, str>),
@@ -154,6 +139,7 @@ impl Error {
 	pub fn from_errno() -> Self { Self::Io(std::io::Error::last_os_error()) }
 
 	//#[deprecated]
+	#[must_use]
 	pub fn bad_database(message: &'static str) -> Self {
 		crate::err!(Database(error!("{message}")))
 	}
@@ -222,11 +208,13 @@ impl Error {
 			| Self::Request(kind, _, code) => response::status_code(kind, *code),
 			| Self::BadRequest(kind, ..) => response::bad_request_code(kind),
 			| Self::FeatureDisabled(..) => response::bad_request_code(self.kind()),
-			| Self::Reqwest(error) => error.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+			| Self::HttpClient(..)
+			| Self::HttpClientConnect(..)
+			| Self::FederationConnection(_) => StatusCode::BAD_GATEWAY,
+			| Self::HttpClientTimeout(..) | Self::FederationTimeout(_) =>
+				StatusCode::GATEWAY_TIMEOUT,
 			| Self::Conflict(_) => StatusCode::CONFLICT,
 			| Self::Io(error) => response::io_error_code(error.kind()),
-			| Self::FederationTimeout(_) => StatusCode::GATEWAY_TIMEOUT,
-			| Self::FederationConnection(_) => StatusCode::BAD_GATEWAY,
 			| Self::Uiaa(_) => StatusCode::UNAUTHORIZED,
 			| _ => StatusCode::INTERNAL_SERVER_ERROR,
 		}
@@ -273,41 +261,3 @@ pub fn infallible(_e: &Infallible) {
 #[must_use]
 #[allow(clippy::needless_pass_by_value)]
 pub fn sanitized_message(e: Error) -> String { e.sanitized_message() }
-
-#[derive(Debug)]
-pub struct FormattedReqwestError(reqwest::Error);
-
-impl std::ops::Deref for FormattedReqwestError {
-	type Target = reqwest::Error;
-
-	fn deref(&self) -> &Self::Target { &self.0 }
-}
-
-impl std::error::Error for FormattedReqwestError {
-	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { self.0.source() }
-}
-
-impl std::fmt::Display for FormattedReqwestError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		if let Some(hyper_error) = self.0.source()
-			&& hyper_error.is::<hyper_util::client::legacy::Error>()
-			&& let Some(real_error) = hyper_error.source()
-		{
-			if let Some(real_reason) = real_error.source() {
-				write!(f, "{real_error}: {real_reason}")
-			} else {
-				write!(f, "{real_error}")
-			}
-		} else {
-			write!(f, "Request error: {}", self.0)
-		}
-	}
-}
-
-impl From<reqwest::Error> for FormattedReqwestError {
-	fn from(err: reqwest::Error) -> Self { Self(err) }
-}
-
-impl From<reqwest::Error> for Error {
-	fn from(err: reqwest::Error) -> Self { Self::Reqwest(err.into()) }
-}

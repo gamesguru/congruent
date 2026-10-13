@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Result, debug, debug_warn, trace,
 	utils::{IterStream, future::TryExtExt},
@@ -21,7 +19,13 @@ use slipstream::{
 	space::SpaceRoomJoinRule::{self, *},
 };
 
-use crate::{Ruma, RumaResponse};
+use crate::{
+	Ruma, RumaResponse,
+	router::{
+		ApiError,
+		extract::{ClientIp, State},
+	},
+};
 
 /// # `GET /_matrix/client/unstable/im.nheko.summary/rooms/{roomIdOrAlias}/summary`
 ///
@@ -36,23 +40,24 @@ pub(crate) async fn get_room_summary_legacy(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_summary::msc3266::Request>,
-) -> Result<RumaResponse<get_summary::msc3266::Response>> {
+) -> std::result::Result<RumaResponse<get_summary::msc3266::Response>, ApiError> {
 	get_room_summary(State(services), ClientIp(client), body)
 		.boxed()
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }
 
 /// # `GET /_matrix/client/unstable/im.nheko.summary/summary/{roomIdOrAlias}`
 /// # `GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`
 ///
 /// Returns a short description of the state of a room.
-#[tracing::instrument(skip_all, fields(%client), name = "room_summary", level = "info")]
 pub(crate) async fn get_room_summary(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_summary::msc3266::Request>,
 ) -> Result<get_summary::msc3266::Response> {
+	debug!(%client, "room summary request");
 	let (room_id, servers) = services
 		.rooms
 		.alias
@@ -135,7 +140,7 @@ async fn local_room_summary_response(
 	sender_user: Option<&UserId>,
 ) -> Result<get_summary::msc3266::Response> {
 	trace!(
-		sender_user = sender_user.map(tracing::field::display),
+		sender_user = sender_user.map(ToString::to_string),
 		"Sending local room summary response for {room_id:?}"
 	);
 	let (join_rule, world_readable, guest_can_join) = join3(
@@ -256,7 +261,7 @@ async fn remote_room_summary_hierarchy_response(
 	const MAX_SERVERS_TO_TRY: usize = 5;
 	const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
-	trace!(sender_user = ?sender_user.map(tracing::field::display), ?servers, "Sending remote room summary response for {room_id:?}");
+	trace!(sender_user = ?sender_user.map(ToString::to_string), ?servers, "Sending remote room summary response for {room_id:?}");
 	if !services.config.allow_federation {
 		return Err!(Request(Forbidden("Federation is disabled.")));
 	}
@@ -287,7 +292,7 @@ async fn remote_room_summary_hierarchy_response(
 
 	for server in servers.iter().take(MAX_SERVERS_TO_TRY) {
 		debug!("Fetching room summary for {room_id} from server {server}");
-		let result = tokio::time::timeout(
+		let result = conduwuit::timeout(
 			REQUEST_TIMEOUT,
 			services
 				.sending

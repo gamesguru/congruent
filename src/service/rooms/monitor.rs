@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use conduwuit::{Event, Result, debug, info, utils::ReadyExt, warn};
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt, pin_mut};
 use slipstream::OwnedServerName;
 
 use crate::service::Dep;
@@ -72,11 +72,10 @@ impl Service {
 			return Ok(());
 		}
 
-		let mut interval = tokio::time::interval(Duration::from_secs(sweep_interval));
-		interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+		let mut interval = async_io::Timer::interval(Duration::from_secs(sweep_interval));
 		let mut shutdown = self.services.server.signal.subscribe();
 		// consume the immediate first tick so we don't double-scan on startup
-		interval.tick().await;
+		interval.next().await;
 
 		// --- Periodic HAMT node reclamation ---
 		// A dedicated task rather than another arm on the forward-fill tick, so
@@ -95,32 +94,37 @@ impl Service {
 			// Clone the handle so it does not keep `server` borrowed while the
 			// task below moves it.
 			let runtime = server.runtime().clone();
-			runtime.spawn(async move {
+			drop(runtime.spawn(async move {
 				let mut interval =
-					tokio::time::interval(Duration::from_secs(node_sweep_interval));
-				interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+					async_io::Timer::interval(Duration::from_secs(node_sweep_interval));
 				// consume the immediate first tick so we don't sweep on startup
-				interval.tick().await;
+				interval.next().await;
 
 				loop {
-					tokio::select! {
-						_ = interval.tick() => {},
-						_ = shutdown.recv() => {},
+					let tick = interval.next();
+					let signal = shutdown.recv();
+					pin_mut!(tick, signal);
+					futures::select_biased! {
+						_ = tick.fuse() => {},
+						_ = signal.fuse() => {},
 					}
 
 					if !server.running() {
 						break;
 					}
 
-					Self::sweep_state_hamt_nodes(&state, delete).await;
+					Self::report_state_hamt_orphans(&state, delete).await;
 				}
-			});
+			}));
 		}
 
 		loop {
-			tokio::select! {
-				_ = interval.tick() => {},
-				_ = shutdown.recv() => {},
+			let tick = interval.next();
+			let signal = shutdown.recv();
+			pin_mut!(tick, signal);
+			futures::select_biased! {
+				_ = tick.fuse() => {},
+				_ = signal.fuse() => {},
 			}
 
 			if !self.services.server.running() {
@@ -136,46 +140,39 @@ impl Service {
 		}
 	}
 
-	/// One HAMT node reclamation pass, reporting what it did either way.
-	///
-	/// Dry run unless `state_hamt_node_sweep_delete` is set: the sweep deletes
-	/// everything no recorded root reaches, so it is only safe to trust that the
-	/// recorded root set is complete.
-	///
-	/// The grace window is one hour, comfortably longer than the interval between
-	/// a node being persisted and being linked into a root handle, so a
-	/// concurrent state update is never mistaken for an orphan.
-	async fn sweep_state_hamt_nodes(state: &crate::rooms::state::Service, delete: bool) {
-		let dry_run = !delete;
-		let grace = Duration::from_hours(1);
+	/// Dry-run orphan scan over the mtxdb HAMT store, logged each interval. It
+	/// never deletes: standalone node writes can still land before their roots,
+	/// so mtxdb is not yet safe to sweep, and `state_hamt_node_sweep_delete` is
+	/// ignored with a warning until a live sweep exists.
+	async fn report_state_hamt_orphans(state: &crate::rooms::state::Service, delete: bool) {
+		use crate::rooms::state_hamt::orphan_scan::sample;
 
-		match state.sweep_hamt_nodes(grace, dry_run).await {
-			| Ok(report) if dry_run => {
-				info!(
-					target: "state_hamt",
-					"HAMT node sweep (dry run): {} orphaned nodes, {} bytes reclaimable",
-					report.orphaned,
-					report.bytes,
-				);
+		if delete {
+			warn!(
+				target: "state_hamt",
+				"state_hamt_node_sweep_delete is set, but HAMT nodes now live in mtxdb and \
+				 the live sweep is not implemented; only reporting"
+			);
+		}
 
-				if report.orphaned > 0 {
-					warn!(
-						target: "state_hamt",
-						"{} unreachable HAMT nodes would be reclaimed; set 						 state_hamt_node_sweep_delete to enable deletion",
-						report.orphaned,
-					);
-				}
-			},
+		match state.scan_hamt_orphans().await {
 			| Ok(report) => {
 				info!(
 					target: "state_hamt",
-					"HAMT node sweep: reclaimed {} orphaned nodes, {} bytes",
-					report.orphaned,
-					report.bytes,
+					"HAMT orphan scan (dry run): {} rooms scanned, {} skipped {:?}; {} of {} \
+					 nodes unreachable from their room's roots; {} persisted across two runs",
+					report.rooms.len(),
+					report.skipped.total(),
+					report.skipped,
+					report.orphan_count(),
+					report.stored_nodes(),
+					report.persisted_two_passes,
 				);
+				let examples = report.rooms.iter().flat_map(|room| room.orphans.iter());
+				debug!(target: "state_hamt", "orphan examples: {:?}", sample(examples));
 			},
-			| Err(e) => {
-				warn!(target: "state_hamt", "HAMT node sweep failed: {e}");
+			| Err(error) => {
+				warn!(target: "state_hamt", "HAMT orphan scan (dry run) failed: {error}");
 			},
 		}
 	}
@@ -214,8 +211,8 @@ impl Service {
 
 				// Yield to the executor between rooms to prevent starving
 				// client requests on low-memory boxes.
-				tokio::task::yield_now().await;
-				tokio::time::sleep(Duration::from_millis(50)).await;
+				smol::future::yield_now().await;
+				smol::Timer::after(Duration::from_millis(50)).await;
 			})
 			.await;
 	}

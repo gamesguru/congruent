@@ -1,10 +1,4 @@
-use axum::RequestPartsExt;
-use axum_extra::{
-	TypedHeader,
-	headers::{Authorization, authorization::Bearer},
-	typed_header::TypedHeaderRejectionReason,
-};
-use conduwuit::{Err, Error, Result, debug_error, err, warn};
+use conduwuit::{Err, Error, Result, debug_error, err, info, warn};
 use futures::{
 	TryFutureExt,
 	future::{
@@ -31,7 +25,6 @@ use slipstream::{
 	},
 	endpoint::EndpointRequest,
 };
-use tracing::info;
 
 use super::request::Request;
 use crate::service::appservice::RegistrationInfo;
@@ -52,7 +45,7 @@ pub(super) struct Auth {
 
 pub(super) async fn auth(
 	services: &Services,
-	request: &mut Request,
+	request: &Request,
 	json_body: Option<&CanonicalJsonValue>,
 	metadata: &Metadata,
 ) -> Result<Auth> {
@@ -62,7 +55,7 @@ pub(super) async fn auth(
 
 	let stack_var = 0_u8;
 	if request.parts.uri.path().contains("/login") {
-		tracing::info!(
+		conduwuit::info!(
 			"AUTH_DEBUG: URI: {} {}, Metadata ptr: {:p}, Stack pointer: {:p}, Expected login \
 			 ptr: {:p}, Expected ping ptr: {:p}",
 			&request.parts.method,
@@ -74,12 +67,13 @@ pub(super) async fn auth(
 		);
 	}
 
-	let bearer: Option<TypedHeader<Authorization<Bearer>>> =
-		request.parts.extract().await.unwrap_or(None);
-	let token = match &bearer {
-		| Some(TypedHeader(Authorization(bearer))) => Some(bearer.token()),
-		| None => request.query.access_token.as_deref(),
-	};
+	let token = request
+		.parts
+		.headers
+		.get(http::header::AUTHORIZATION)
+		.and_then(|value| value.to_str().ok())
+		.and_then(|value| value.strip_prefix("Bearer "))
+		.or(request.query.access_token.as_deref());
 
 	let token = find_token(services, token).await?;
 
@@ -202,7 +196,7 @@ pub(super) async fn auth(
 				"Only server signatures should be used on this endpoint.",
 			)),
 		| (AuthScheme::AppserviceToken, Token::User(_)) => {
-			tracing::error!(
+			conduwuit::error!(
 				"AUTH_CORRUPTION_DETECTED: metadata.authentication is AppserviceToken but token \
 				 is User. URI: {} {}, Metadata pointer: {:p}, Authentication scheme: {:?}",
 				&request.parts.method,
@@ -301,7 +295,7 @@ async fn auth_appservice(
 
 async fn auth_server(
 	services: &Services,
-	request: &mut Request,
+	request: &Request,
 	body: Option<&CanonicalJsonValue>,
 ) -> Result<Auth> {
 	type Member = (String, CanonicalJsonValue);
@@ -426,25 +420,13 @@ fn auth_server_checks_impl(
 	Ok(())
 }
 
-async fn parse_x_matrix(request: &mut Request) -> Result<XMatrix> {
-	let TypedHeader(Authorization(x_matrix)) = request
+async fn parse_x_matrix(request: &Request) -> Result<XMatrix> {
+	let value = request
 		.parts
-		.extract::<TypedHeader<Authorization<XMatrix>>>()
-		.await
-		.map_err(|e| {
-			let msg = match e.reason() {
-				| TypedHeaderRejectionReason::Missing => "Missing Authorization header",
-				| TypedHeaderRejectionReason::Error(_) => "Invalid X-Matrix signatures",
-				| _ => "Unknown header-related error",
-			};
-
-			err!(Request(Forbidden(warn!(
-				"{msg}: {e} for {} {}",
-				&request.parts.method, &request.parts.uri
-			))))
-		})?;
-
-	Ok(x_matrix)
+		.headers
+		.get(http::header::AUTHORIZATION)
+		.ok_or_else(|| err!(Request(Forbidden("Missing Authorization header"))))?;
+	XMatrix::decode(value).ok_or_else(|| err!(Request(Forbidden("Invalid X-Matrix signatures"))))
 }
 
 async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {

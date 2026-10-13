@@ -1,23 +1,18 @@
 use std::{collections::BTreeMap, time::Instant};
 
 use conduwuit::{
-	Err, Event, PduEvent, Result, debug::INFO_SPAN_LEVEL, defer, implement,
+	Err, Event, PduEvent, Result, debug, defer, implement,
 	utils::continue_exponential_backoff_secs, warn,
 };
-use slipstream::{CanonicalJsonValue, EventId, MilliSecondsSinceUnixEpoch, RoomId, ServerName};
-use tracing::debug;
+use slipstream::{
+	CanonicalJsonValue, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, ServerName,
+};
 
 use crate::rooms::pdu_metadata::RejectionCode;
 
 #[implement(super::Service)]
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
-#[tracing::instrument(
-	name = "prev",
-	level = INFO_SPAN_LEVEL,
-	skip_all,
-	fields(%prev_id),
-)]
 pub(super) async fn handle_prev_pdu<'a, Pdu>(
 	&self,
 	origin: &'a ServerName,
@@ -27,6 +22,7 @@ pub(super) async fn handle_prev_pdu<'a, Pdu>(
 	create_event: &'a Pdu,
 	first_ts_in_room: MilliSecondsSinceUnixEpoch,
 	prev_id: &'a EventId,
+	state_ids_anchor: Option<OwnedEventId>,
 ) -> Result<bool>
 where
 	Pdu: Event + Send + Sync,
@@ -76,7 +72,7 @@ where
 			if self.services.timeline.non_outlier_pdu_exists(prev_id).await {
 				return Ok(false);
 			}
-			if self.services.pdu_metadata.is_event_rejected(prev_id).await {
+			if self.services.pdu_metadata.is_event_rejected(prev_id)? {
 				// Read-only check here: whether we go on to actually retry is
 				// still gated by the further early-returns below (outlier JSON
 				// missing, unparsable, or too old), and we must not clear the
@@ -89,8 +85,7 @@ where
 				let retry_worthy = self
 					.services
 					.pdu_metadata
-					.get_rejection_reason(prev_id)
-					.await
+					.get_rejection_reason(prev_id)?
 					.is_some_and(|reason| {
 						crate::rooms::pdu_metadata::is_retryable_rejection_reason(&reason)
 					});
@@ -123,8 +118,7 @@ where
 	if self
 		.services
 		.pdu_metadata
-		.get_rejection_reason(prev_id)
-		.await
+		.get_rejection_reason(prev_id)?
 		.as_deref()
 		.and_then(RejectionCode::parse)
 		.is_some_and(|code| code == RejectionCode::StateResolutionFailedWithPrevsPresent)
@@ -157,6 +151,7 @@ where
 		room_id,
 		false,
 		false,
+		state_ids_anchor,
 	))
 	.await?;
 

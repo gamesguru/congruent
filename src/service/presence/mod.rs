@@ -1,7 +1,11 @@
 mod data;
 mod presence;
 
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{
+	collections::HashSet,
+	sync::Arc,
+	time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use conduwuit::{
@@ -15,7 +19,6 @@ use slipstream::{
 	OwnedServerName, OwnedUserId, UInt, UserId, events::presence::PresenceEvent,
 	presence::PresenceState,
 };
-use tokio::time::Instant;
 
 use self::{data::Data, presence::Presence};
 use crate::{Dep, globals, users};
@@ -86,15 +89,15 @@ impl crate::Service for Service {
 		};
 
 		let mut presence_timers =
-			std::collections::HashMap::<OwnedUserId, tokio::task::JoinHandle<()>>::new();
+			std::collections::HashMap::<OwnedUserId, conduwuit::JoinHandle<()>>::new();
 		let mut events_received: u64 = 0;
 		let mut next_tally = Instant::now()
 			.checked_add(Duration::from_mins(5))
 			.unwrap_or_else(Instant::now);
 
 		let self_flush = Arc::clone(&self);
-		let flush_task = self.services.server.runtime().spawn(async move {
-			let mut interval = tokio::time::interval(Duration::from_secs(
+		let mut flush_task = self.services.server.runtime().spawn(async move {
+			let mut interval = async_io::Timer::interval(Duration::from_secs(
 				self_flush
 					.services
 					.server
@@ -102,7 +105,7 @@ impl crate::Service for Service {
 					.federation_presence_interval_s,
 			));
 			loop {
-				interval.tick().await;
+				interval.next().await;
 				if !self_flush.services.server.running() {
 					break;
 				}
@@ -135,7 +138,7 @@ impl crate::Service for Service {
 					while let Some(room_id) = joined_rooms.next().await {
 						iterations = iterations.wrapping_add(1);
 						if iterations == 0 {
-							tokio::task::yield_now().await;
+							smol::future::yield_now().await;
 						}
 						room_users
 							.entry(room_id.clone())
@@ -149,7 +152,7 @@ impl crate::Service for Service {
 					while let Some(server) = room_servers.next().await {
 						iterations = iterations.wrapping_add(1);
 						if iterations == 0 {
-							tokio::task::yield_now().await;
+							smol::future::yield_now().await;
 						}
 						if !self_flush.services.globals.server_is_ours(&server) {
 							let mut entry = self_flush
@@ -208,7 +211,7 @@ impl crate::Service for Service {
 						.await
 						.ok();
 				}
-				tokio::task::yield_now().await;
+				smol::future::yield_now().await;
 			}
 		});
 
@@ -222,29 +225,30 @@ impl crate::Service for Service {
 					let user_id_clone = user_id.clone();
 
 					let new_task = self.services.server.runtime().spawn(async move {
-						tokio::time::sleep(timeout).await;
+						smol::Timer::after(timeout).await;
 						self_clone
 							.process_presence_timer(&user_id_clone)
 							.await
 							.log_err()
 							.ok();
 
-						tokio::task::yield_now().await;
+						smol::future::yield_now().await;
 					});
 
-					if let Some(old_task) = presence_timers.insert(user_id, new_task) {
+					if let Some(mut old_task) = presence_timers.insert(user_id, new_task) {
 						old_task.abort();
 					}
 				},
 				| Ok((user_id, None)) =>
-					if let Some(task) = presence_timers.remove(&user_id) {
+					if let Some(mut task) = presence_timers.remove(&user_id) {
 						task.abort();
 					},
 			}
 
 			// Periodic tally
 			if !self.services.server.is_maintenance() && Instant::now() >= next_tally {
-				presence_timers.retain(|_, task| !task.is_finished());
+				// Completed timers are replaced or removed when their user changes
+				// state; the map is bounded by the number of users with timers.
 				info!(
 					target: "stats",
 					"Presence stats: {} active timers, {} received",
@@ -260,7 +264,7 @@ impl crate::Service for Service {
 
 		flush_task.abort();
 
-		for (_, handle) in presence_timers {
+		for (_, mut handle) in presence_timers {
 			handle.abort();
 		}
 
@@ -418,7 +422,7 @@ impl Service {
 		while let Some((user_id, count, bytes)) = presence_stream.next().await {
 			iterations = iterations.wrapping_add(1);
 			if iterations == 0 {
-				tokio::task::yield_now().await;
+				smol::future::yield_now().await;
 			}
 
 			if !self.services.server.running() {

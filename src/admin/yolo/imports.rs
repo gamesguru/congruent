@@ -16,17 +16,16 @@ pub(super) async fn import_pdus(
 	force: bool,
 	room_version: Option<RoomVersionId>,
 ) -> Result {
-	use futures::StreamExt;
-	use tokio::io::AsyncBufReadExt;
+	use futures::{StreamExt, io::AsyncBufReadExt};
 	self.bail_restricted()?;
 
 	let inferred_room_id = match room_id {
 		| Some(r) => r,
 		| None => {
-			let file = tokio::fs::File::open(&path)
+			let file = async_fs::File::open(&path)
 				.await
 				.map_err(|e| err!("Failed to open file {path}: {e}"))?;
-			let mut reader = tokio::io::BufReader::new(file);
+			let mut reader = futures::io::BufReader::new(file);
 			let mut first_line = String::new();
 			reader
 				.read_line(&mut first_line)
@@ -98,56 +97,60 @@ pub(super) async fn import_pdus(
 	let room_version_ref = room_version.clone();
 
 	let room_id_ref = room_id.clone();
-	let parsed_pdus: Vec<_> = tokio::task::spawn_blocking(move || {
-		use std::io::BufRead;
-		let file = std::fs::File::open(&path).expect("Failed to open file for parsing");
-		let reader = std::io::BufReader::new(file);
+	let parsed_pdus: Vec<_> = self
+		.services
+		.server
+		.runtime()
+		.spawn_blocking(move || {
+			use std::io::BufRead;
+			let file = std::fs::File::open(&path).expect("Failed to open file for parsing");
+			let reader = std::io::BufReader::new(file);
 
-		reader
-			.lines()
-			.map_while(Result::ok)
-			.filter(|line| !line.trim().is_empty())
-			.filter_map(|line| {
-				let value: CanonicalJsonObject = match slipstream::codec::from_str(&line) {
-					| Ok(v) => v,
-					| Err(e) => {
-						warn!("Failed to parse JSON: {e}");
-						return None;
-					},
-				};
-
-				let is_outlier = value
-					.get("__outlier")
-					.and_then(slipstream::CanonicalJsonValue::as_bool)
-					.unwrap_or(false);
-				let is_soft_failed = value
-					.get("__soft_failed")
-					.and_then(slipstream::CanonicalJsonValue::as_bool)
-					.unwrap_or(false);
-				let is_rejected = value
-					.get("__rejected")
-					.and_then(slipstream::CanonicalJsonValue::as_bool)
-					.unwrap_or(false);
-
-				let (eid, value, pdu_event) =
-					match conduwuit::utils::pdu_parser::parse_and_clean_pdu(
-						value,
-						room_id_ref.as_ref(),
-						&room_version_ref,
-					) {
+			reader
+				.lines()
+				.map_while(Result::ok)
+				.filter(|line| !line.trim().is_empty())
+				.filter_map(|line| {
+					let value: CanonicalJsonObject = match slipstream::codec::from_str(&line) {
 						| Ok(v) => v,
 						| Err(e) => {
-							warn!("Failed to parse_and_clean_pdu: {e}");
+							warn!("Failed to parse JSON: {e}");
 							return None;
 						},
 					};
 
-				Some((eid, value, pdu_event, is_outlier, is_soft_failed, is_rejected))
-			})
-			.collect()
-	})
-	.await
-	.unwrap();
+					let is_outlier = value
+						.get("__outlier")
+						.and_then(slipstream::CanonicalJsonValue::as_bool)
+						.unwrap_or(false);
+					let is_soft_failed = value
+						.get("__soft_failed")
+						.and_then(slipstream::CanonicalJsonValue::as_bool)
+						.unwrap_or(false);
+					let is_rejected = value
+						.get("__rejected")
+						.and_then(slipstream::CanonicalJsonValue::as_bool)
+						.unwrap_or(false);
+
+					let (eid, value, pdu_event) =
+						match conduwuit::utils::pdu_parser::parse_and_clean_pdu(
+							value,
+							room_id_ref.as_ref(),
+							&room_version_ref,
+						) {
+							| Ok(v) => v,
+							| Err(e) => {
+								warn!("Failed to parse_and_clean_pdu: {e}");
+								return None;
+							},
+						};
+
+					Some((eid, value, pdu_event, is_outlier, is_soft_failed, is_rejected))
+				})
+				.collect()
+		})
+		.await
+		.unwrap();
 
 	let total = parsed_pdus.len();
 
@@ -338,21 +341,26 @@ pub(super) async fn import_pdus(
 				self.services
 					.rooms
 					.timeline
-					.finish_promote_outlier(&room_id, eid)
-					.await;
+					.finish_promote_outlier(&room_id, eid);
 			}
 			for (eid, is_soft_failed, is_rejected) in queued_marker_updates {
 				if is_rejected {
-					self.services
+					if let Err(error) = self
+						.services
 						.rooms
 						.pdu_metadata
-						.mark_event_rejected_skip_visibility_check(&eid, "imported as rejected");
+						.mark_event_rejected_skip_visibility_check(&eid, "imported as rejected")
+					{
+						warn!(%error, %eid, "failed to record rejection verdict");
+					}
 				}
 				if is_soft_failed {
-					self.services.rooms.pdu_metadata.mark_event_soft_failed(
+					if let Err(error) = self.services.rooms.pdu_metadata.mark_event_soft_failed(
 						&eid,
 						conduwuit_service::rooms::pdu_metadata::SoftFailCode::Imported,
-					);
+					) {
+						warn!(%error, %eid, "failed to record soft-fail verdict");
+					}
 				}
 			}
 			info!(

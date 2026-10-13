@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use conduwuit::Result;
 use slipstream::api::client::thirdparty::get_protocols;
 
-use crate::{Ruma, RumaResponse};
+use crate::{Ruma, RumaResponse, router::ApiError};
 
 /// # `GET /_matrix/client/r0/thirdparty/protocols`
 ///
@@ -21,6 +21,9 @@ pub(crate) async fn get_protocols_route(
 /// calls this
 pub(crate) async fn get_protocols_route_unstable(
 	body: Ruma<get_protocols::v3::Request>,
-) -> Result<RumaResponse<get_protocols::v3::Response>> {
-	get_protocols_route(body).await.map(RumaResponse)
+) -> std::result::Result<RumaResponse<get_protocols::v3::Response>, ApiError> {
+	get_protocols_route(body)
+		.await
+		.map(RumaResponse)
+		.map_err(Into::into)
 }

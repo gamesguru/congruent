@@ -26,8 +26,7 @@ pub async fn user_was_joined_hamt(
 	user_id: &UserId,
 ) -> bool {
 	self.user_membership_hamt(room_id, root_handle, user_id)
-		.await
-		== MembershipState::Join
+		.await == MembershipState::Join
 }
 
 /// The user was an invited or joined room member at this state (potentially
@@ -113,7 +112,7 @@ where
 /// Tests whether a HAMT root contains any state event of `event_type`.
 pub async fn state_contains_type_hamt(
 	&self,
-	_room_id: &RoomId,
+	room_id: &RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	event_type: &StateEventType,
 ) -> bool {
@@ -122,7 +121,7 @@ pub async fn state_contains_type_hamt(
 	// iterated `state_keys`); here we stream the root's short IDs, resolve each
 	// to its `(event_type, state_key)`, and stop at the first match.
 	let shortstatekeys = self
-		.state_full_shortids_hamt(root_handle.clone())
+		.state_full_shortids_hamt(room_id, root_handle.clone())
 		.ignore_err()
 		.map(at!(0));
 
@@ -157,12 +156,10 @@ pub async fn state_contains_shortstatekey_hamt(
 		room_id,
 	);
 
-	let root_node = self
-		.services
-		.state_hamt
-		.store
-		.get_node(&root_handle.structural_hash)?;
-	let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+	let store = &self.services.state_hamt.store;
+	let root_node =
+		store.get_node(room_id.as_bytes(), &structural_key, &root_handle.structural_hash)?;
+	let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
 	let res = root_node
 		.search(&structural_key, &shortstatekey, &mut resolver)
 		.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?;
@@ -190,12 +187,10 @@ pub async fn state_get_shortid_hamt(
 		room_id,
 	);
 
-	let root_node = self
-		.services
-		.state_hamt
-		.store
-		.get_node(&root_handle.structural_hash)?;
-	let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+	let store = &self.services.state_hamt.store;
+	let root_node =
+		store.get_node(room_id.as_bytes(), &structural_key, &root_handle.structural_hash)?;
+	let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
 	root_node
 		.search(&structural_key, &shortstatekey, &mut resolver)
 		.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?
@@ -251,7 +246,6 @@ where
 
 /// Returns a PDU from `room_id` with key `(event_type, state_key)` via HAMT.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 #[allow(unused_variables)]
 pub async fn room_state_get_hamt_legacy(
 	&self,
@@ -291,9 +285,10 @@ pub async fn room_state_get_hamt_legacy(
 #[implement(super::Service)]
 pub fn state_full_ids_hamt<'a>(
 	&'a self,
+	room_id: &'a RoomId,
 	root_handle: &'a rezzy::hamt::RootHandle,
 ) -> futures::stream::BoxStream<'a, Result<(ShortStateKey, OwnedEventId)>> {
-	self.state_full_shortids_hamt(root_handle.clone())
+	self.state_full_shortids_hamt(room_id, root_handle.clone())
 		.map(move |result| async move {
 			let (ssk, seid): (ShortStateKey, ShortEventId) = result?;
 			let event_id = self
@@ -309,12 +304,13 @@ pub fn state_full_ids_hamt<'a>(
 
 /// Returns a Stream of all the full state PDUs for a given RootHandle.
 #[implement(super::Service)]
-pub fn state_full_pdus_hamt(
-	&self,
+pub fn state_full_pdus_hamt<'a>(
+	&'a self,
+	room_id: &'a RoomId,
 	root_handle: rezzy::hamt::RootHandle,
-) -> impl Stream<Item = impl Event> + Send + '_ {
+) -> impl Stream<Item = impl Event> + Send + 'a {
 	let short_ids = self
-		.state_full_shortids_hamt(root_handle)
+		.state_full_shortids_hamt(room_id, root_handle)
 		.ignore_err()
 		.map(at!(1));
 
@@ -333,11 +329,12 @@ pub fn state_full_pdus_hamt(
 /// PDU lookup failures are emitted as `Err` items instead of being dropped, so
 /// callers that cache or serve a snapshot can fail closed on partial state.
 #[implement(super::Service)]
-pub fn state_full_pdus_hamt_strict(
-	&self,
+pub fn state_full_pdus_hamt_strict<'a>(
+	&'a self,
+	room_id: &'a RoomId,
 	root_handle: rezzy::hamt::RootHandle,
-) -> impl Stream<Item = Result<Pdu>> + Send + '_ {
-	self.state_full_shortids_hamt(root_handle)
+) -> impl Stream<Item = Result<Pdu>> + Send + 'a {
+	self.state_full_shortids_hamt(room_id, root_handle)
 		.map(move |result| async move {
 			let (_, short_id) = result?;
 			let event_id = self
@@ -353,11 +350,12 @@ pub fn state_full_pdus_hamt_strict(
 /// Returns a Stream of all the full state (type, key, event) for a given
 /// RootHandle.
 #[implement(super::Service)]
-pub fn state_full_hamt(
-	&self,
+pub fn state_full_hamt<'a>(
+	&'a self,
+	room_id: &'a RoomId,
 	root_handle: rezzy::hamt::RootHandle,
-) -> impl Stream<Item = ((StateEventType, StateKey), impl Event)> + Send + '_ {
-	self.state_full_pdus_hamt(root_handle)
+) -> impl Stream<Item = ((StateEventType, StateKey), impl Event)> + Send + 'a {
+	self.state_full_pdus_hamt(room_id, root_handle)
 		.ready_filter_map(|pdu| Some(((pdu.kind().clone().into(), pdu.state_key()?.into()), pdu)))
 }
 
@@ -366,6 +364,7 @@ pub fn state_full_hamt(
 #[implement(super::Service)]
 pub fn state_keys_with_ids_hamt<'a, Id>(
 	&'a self,
+	room_id: &'a RoomId,
 	root_handle: rezzy::hamt::RootHandle,
 	event_type: &'a StateEventType,
 ) -> impl Stream<Item = (StateKey, Id)> + Send + 'a
@@ -380,7 +379,7 @@ where
 	// so dropping non-matching entries can never misalign a state key with an
 	// unrelated event id.
 	let short_ids = self
-		.state_full_shortids_hamt(root_handle)
+		.state_full_shortids_hamt(room_id, root_handle)
 		.ignore_err()
 		.unzip()
 		.map(|(ssks, sids): (Vec<ShortStateKey>, Vec<ShortEventId>)| (ssks, sids))
@@ -418,22 +417,23 @@ where
 #[implement(super::Service)]
 #[inline]
 /// Returns entries present in the first root and absent from the second.
-pub async fn state_removed_hamt(
+pub fn state_removed_hamt(
 	&self,
+	room_id: &RoomId,
 	root_handles: (&rezzy::hamt::RootHandle, &rezzy::hamt::RootHandle),
 ) -> Result<Vec<(ShortStateKey, ShortEventId)>> {
-	self.state_added_hamt((root_handles.1, root_handles.0))
-		.await
+	self.state_added_hamt(room_id, (root_handles.1, root_handles.0))
 }
 
 #[implement(super::Service)]
 /// Returns entries present in the second root and absent from the first.
-pub async fn state_added_hamt(
+pub fn state_added_hamt(
 	&self,
+	room_id: &RoomId,
 	root_handles: (&rezzy::hamt::RootHandle, &rezzy::hamt::RootHandle),
 ) -> Result<Vec<(ShortStateKey, ShortEventId)>> {
-	let full_state_a = self.load_full_state_hamt(root_handles.0).await?;
-	let full_state_b = self.load_full_state_hamt(root_handles.1).await?;
+	let full_state_a = self.load_full_state_hamt(room_id, root_handles.0)?;
+	let full_state_b = self.load_full_state_hamt(room_id, root_handles.1)?;
 
 	Ok(full_state_b
 		.into_iter()
@@ -443,14 +443,15 @@ pub async fn state_added_hamt(
 
 #[implement(super::Service)]
 /// Streams every short state-key and short event-ID pair in a HAMT root.
-pub fn state_full_shortids_hamt(
-	&self,
+pub fn state_full_shortids_hamt<'a>(
+	&'a self,
+	room_id: &'a RoomId,
 	root_handle: rezzy::hamt::RootHandle,
-) -> impl Stream<Item = Result<(ShortStateKey, ShortEventId)>> + Send + '_ {
+) -> impl Stream<Item = Result<(ShortStateKey, ShortEventId)>> + Send + 'a {
+	let room_id = room_id.to_owned();
 	let load = async move {
 		let mut entries: Vec<_> = self
-			.load_full_state_hamt(&root_handle)
-			.await?
+			.load_full_state_hamt(&room_id, &root_handle)?
 			.into_iter()
 			.collect();
 		// The HAMT stores entries keyed by ShortStateKey, whose value is a
@@ -469,14 +470,21 @@ pub fn state_full_shortids_hamt(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(skip(self, root_handle), level = "debug")]
 /// Tests whether a HAMT root has no entries.
-pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -> Result<bool> {
-	let root_node = self
-		.services
-		.state_hamt
-		.store
-		.get_node(&root_handle.structural_hash)?;
+pub fn state_is_empty_hamt(
+	&self,
+	room_id: &RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
+) -> Result<bool> {
+	let structural_key = crate::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		room_id,
+	);
+	let root_node = self.services.state_hamt.store.get_node(
+		room_id.as_bytes(),
+		&structural_key,
+		&root_handle.structural_hash,
+	)?;
 
 	// O(1) structural check on the root's datamap/nodemap bitmaps, rather than
 	// materializing the full tree to test `.is_empty()`.
@@ -484,16 +492,21 @@ pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "load_hamt", level = "debug", skip_all)]
 /// Materializes all state entries stored beneath a HAMT root.
-pub async fn load_full_state_hamt(
+pub fn load_full_state_hamt(
 	&self,
+	room_id: &RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 ) -> Result<std::collections::HashMap<ShortStateKey, ShortEventId>> {
-	let structural_hash = root_handle.structural_hash;
-	let root_node = self.services.state_hamt.store.get_node(&structural_hash)?;
+	let structural_key = crate::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		room_id,
+	);
+	let store = &self.services.state_hamt.store;
+	let root_node =
+		store.get_node(room_id.as_bytes(), &structural_key, &root_handle.structural_hash)?;
 	let mut short_states = std::collections::HashMap::new();
-	let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+	let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
 	root_node
 		.visit_entries(&mut resolver, &mut |&k, &v| {
 			short_states.insert(k, v);
@@ -552,14 +565,14 @@ pub async fn pdu_roothandle_before_event(
 			);
 			let (empty_root, empty_node) = rezzy::hamt::build_hamt_root_handle(
 				&structural_key,
-				&rezzy::state::LtHash::default(),
+				&rezzy::incremental::LtHash::default(),
 				Vec::new(),
 			)
 			.map_err(|e| err!(error!("Failed to build empty HAMT root: {e:?}")))?;
 			self.services
 				.state_hamt
 				.store
-				.persist_node_recursive(empty_node);
+				.persist_node_recursive(room_id.as_bytes(), empty_node)?;
 
 			return Ok(empty_root);
 		}

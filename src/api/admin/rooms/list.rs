@@ -1,9 +1,8 @@
-use axum::extract::State;
 use conduwuit::{Err, Result};
 use futures::StreamExt;
 use slipstream::{OwnedRoomId, continuwuity_admin_api::rooms};
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_continuwuity/admin/rooms/list`
 ///

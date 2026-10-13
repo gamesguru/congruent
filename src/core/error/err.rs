@@ -87,7 +87,7 @@ macro_rules! err {
 
 	(Config($item:literal, $($args:tt)+)) => {{
 		let mut buf = String::new();
-		$crate::error::Error::Config($item, $crate::err_log!(buf, error, config = %$item, $($args)+))
+		$crate::error::Error::Config($item, $crate::err_log!(buf, error, $($args)+))
 	}};
 
 	($variant:ident($level:ident!($($args:tt)+))) => {{
@@ -113,37 +113,74 @@ macro_rules! err {
 	};
 }
 
-/// A trinity of integration between tracing, logging, and Error. This is a
-/// customization of tracing::event! with the primary purpose of sharing the
+/// A trinity of integration between logging and Error. This is a
+/// customization of the logging event macro with the primary purpose of sharing the
 /// error string, fieldset parsing and formatting. An added benefit is that we
 /// can share the same callsite metadata for the source of our Error and the
-/// associated logging and tracing event dispatches.
+/// associated logging event dispatches.
 #[macro_export]
 #[collapse_debuginfo(yes)]
 macro_rules! err_log {
+	($out:ident, $level:ident, $fmt:literal $(, $args:expr)* $(,)?) => {{
+		let message = format!($fmt $(, $args)*);
+		$crate::$level!("{}", message);
+		($out).push_str(&message);
+		($out).into()
+	}};
+
 	($out:ident, $level:ident, $($fields:tt)+) => {{
-		use $crate::tracing::{
-			callsite, callsite2, metadata, valueset_all, Callsite,
-			Level,
-		};
-
-		const LEVEL: Level = $crate::err_lev!($level);
-		static __CALLSITE: callsite::DefaultCallsite = callsite2! {
-			name: std::concat! {
-				"event ",
-				std::file!(),
-				":",
-				std::line!(),
-			},
-			kind: metadata::Kind::EVENT,
-			target: std::module_path!(),
-			level: LEVEL,
-			fields: $($fields)+,
-		};
-
-		($crate::error::visit)(&mut $out, LEVEL, &__CALLSITE, &mut valueset_all!(__CALLSITE.metadata().fields(), $($fields)+));
+		let message = $crate::__conduwuit_format!($($fields)+);
+		$crate::$level!("{}", message);
+		($out).push_str(&message);
 		($out).into()
 	}}
+}
+
+#[doc(hidden)]
+#[macro_export]
+/// Formats tracing-style fields for error values without emitting a log record.
+///
+/// This mirrors `__conduwuit_log!` so `err!(error!(...))` preserves the same
+/// field values and format-string captures as ordinary log calls.
+macro_rules! __conduwuit_format {
+	(target: $target:literal, $($rest:tt)+) => {
+		$crate::__conduwuit_format!($($rest)+)
+	};
+	($fmt:literal $(, $args:expr)* $(,)?) => {
+		format!($fmt $(, $args)*)
+	};
+
+	(%$value:expr,) => { format!("{}={} ", stringify!($value), &$value) };
+	(?$value:expr,) => { format!("{}={:?} ", stringify!($value), &$value) };
+	($name:ident,) => { format!("{}={:?} ", stringify!($name), &$name) };
+	($name:ident = %$value:expr,) => { format!("{}={} ", stringify!($name), &$value) };
+	($name:ident = ?$value:expr,) => { format!("{}={:?} ", stringify!($name), &$value) };
+	($name:ident = $value:expr,) => { format!("{}={:?} ", stringify!($name), &$value) };
+	(%$value:expr) => { format!("{}={} ", stringify!($value), &$value) };
+	(?$value:expr) => { format!("{}={:?} ", stringify!($value), &$value) };
+	($name:ident) => { format!("{}={:?} ", stringify!($name), &$name) };
+	($name:ident = %$value:expr) => { format!("{}={} ", stringify!($name), &$value) };
+	($name:ident = ?$value:expr) => { format!("{}={:?} ", stringify!($name), &$value) };
+	($name:ident = $value:expr) => { format!("{}={:?} ", stringify!($name), &$value) };
+
+	(%$value:expr, $($rest:tt)+) => {{
+		format!("{}={} {}", stringify!($value), &$value, $crate::__conduwuit_format!($($rest)+))
+	}};
+	(?$value:expr, $($rest:tt)+) => {{
+		format!("{}={:?} {}", stringify!($value), &$value, $crate::__conduwuit_format!($($rest)+))
+	}};
+	($name:ident, $($rest:tt)+) => {{
+		format!("{}={:?} {}", stringify!($name), &$name, $crate::__conduwuit_format!($($rest)+))
+	}};
+	($name:ident = %$value:expr, $($rest:tt)+) => {{
+		format!("{}={} {}", stringify!($name), &$value, $crate::__conduwuit_format!($($rest)+))
+	}};
+	($name:ident = ?$value:expr, $($rest:tt)+) => {{
+		format!("{}={:?} {}", stringify!($name), &$value, $crate::__conduwuit_format!($($rest)+))
+	}};
+	($name:ident = $value:expr, $($rest:tt)+) => {{
+		format!("{}={:?} {}", stringify!($name), &$value, $crate::__conduwuit_format!($($rest)+))
+	}};
 }
 
 #[macro_export]
@@ -151,83 +188,41 @@ macro_rules! err_log {
 macro_rules! err_lev {
 	(debug_warn) => {
 		if $crate::debug::logging() {
-			$crate::tracing::Level::WARN
+			$crate::log::Level::WARN
 		} else {
-			$crate::tracing::Level::DEBUG
+			$crate::log::Level::DEBUG
 		}
 	};
 
 	(debug_error) => {
 		if $crate::debug::logging() {
-			$crate::tracing::Level::ERROR
+			$crate::log::Level::ERROR
 		} else {
-			$crate::tracing::Level::DEBUG
+			$crate::log::Level::DEBUG
 		}
 	};
 
 	(warn) => {
-		$crate::tracing::Level::WARN
+		$crate::log::Level::WARN
 	};
 
 	(info) => {
-		$crate::tracing::Level::INFO
+		$crate::log::Level::INFO
 	};
 
 	(error) => {
-		$crate::tracing::Level::ERROR
+		$crate::log::Level::ERROR
 	};
 
 	(info) => {
-		$crate::tracing::Level::INFO
+		$crate::log::Level::INFO
 	};
 
 	(debug) => {
-		$crate::tracing::Level::DEBUG
+		$crate::log::Level::DEBUG
 	};
 
 	(trace) => {
-		$crate::tracing::Level::TRACE
+		$crate::log::Level::TRACE
 	};
-}
-
-use std::{fmt, fmt::Write};
-
-use tracing::{
-	__macro_support, __tracing_log, Callsite, Event, Level,
-	callsite::DefaultCallsite,
-	field::{Field, ValueSet, Visit},
-	level_enabled,
-};
-
-struct Visitor<'a>(&'a mut String);
-
-impl Visit for Visitor<'_> {
-	#[inline]
-	fn record_debug(&mut self, field: &Field, val: &dyn fmt::Debug) {
-		if field.name() == "message" {
-			write!(self.0, "{val:?}").expect("stream error");
-		} else {
-			write!(self.0, " {}={val:?}", field.name()).expect("stream error");
-		}
-	}
-}
-
-pub fn visit(
-	out: &mut String,
-	level: Level,
-	__callsite: &'static DefaultCallsite,
-	vs: &mut ValueSet<'_>,
-) {
-	let meta = __callsite.metadata();
-	let enabled = level_enabled!(level) && {
-		let interest = __callsite.interest();
-		!interest.is_never() && __macro_support::__is_enabled(meta, interest)
-	};
-
-	if enabled {
-		Event::dispatch(meta, vs);
-	}
-
-	__tracing_log!(level, __callsite, vs);
-	vs.record(&mut Visitor(out));
 }

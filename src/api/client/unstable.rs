@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
-use conduwuit::{Err, Result, err};
+use conduwuit::{Err, Result, debug, err};
 use futures::{FutureExt, StreamExt};
 use slipstream::{
 	OwnedRoomId,
@@ -22,6 +20,10 @@ use super::{update_avatar_url, update_displayname};
 use crate::{
 	Ruma,
 	msc2836::{self, Params, Requester},
+	router::{
+		ApiError,
+		extract::{ClientIp, State},
+	},
 };
 
 /// # `GET /_matrix/client/unstable/uk.half-shot.msc2666/user/mutual_rooms`
@@ -31,12 +33,12 @@ use crate::{
 /// TODO: Implement pagination, currently this just returns everything
 ///
 /// An implementation of [MSC2666](https://github.com/matrix-org/matrix-spec-proposals/pull/2666)
-#[tracing::instrument(skip_all, fields(%client), name = "mutual_rooms", level = "info")]
 pub(crate) async fn get_mutual_rooms_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<mutual_rooms::unstable::Request>,
 ) -> Result<mutual_rooms::unstable::Response> {
+	debug!(%client, "mutual rooms request");
 	let sender_user = body.sender_user();
 
 	if sender_user == &*body.user_id {
@@ -310,7 +312,7 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use tokio::sync::RwLock;
+use async_lock::RwLock;
 
 type DagCacheMap =
 	std::collections::HashMap<OwnedRoomId, (Instant, Vec<slipstream::json::Value>)>;
@@ -324,13 +326,15 @@ static DAG_CACHE: LazyLock<RwLock<DagCacheMap>> =
 /// Cached for 2 seconds to support hundreds of concurrent forensic viewers.
 pub(crate) async fn get_room_dag_route(
 	State(services): State<crate::State>,
-	axum::extract::Path(room_id_str): axum::extract::Path<String>,
+	crate::router::extract::Path(room_id_str): crate::router::extract::Path<String>,
 	auth: Option<
-		axum_extra::TypedHeader<
-			axum_extra::headers::Authorization<axum_extra::headers::authorization::Bearer>,
+		crate::router::extract::TypedHeader<
+			crate::router::extract::headers::Authorization<
+				crate::router::extract::headers::authorization::Bearer,
+			>,
 		>,
 	>,
-) -> Result<impl axum::response::IntoResponse> {
+) -> std::result::Result<impl crate::router::response::IntoResponse, ApiError> {
 	use conduwuit::{Err, err};
 	use futures::StreamExt;
 	use slipstream::OwnedRoomId;
@@ -344,10 +348,12 @@ pub(crate) async fn get_room_dag_route(
 	if !is_public {
 		// Extract token for private rooms
 		let token = match auth {
-			| Some(axum_extra::TypedHeader(axum_extra::headers::Authorization(bearer))) =>
-				bearer.token().to_owned(),
+			| Some(crate::router::extract::TypedHeader(
+				crate::router::extract::headers::Authorization(bearer),
+			)) => bearer.token().to_owned(),
 			| None => {
-				return Err!(Request(MissingToken("Missing access token for private room.")));
+				return Err!(Request(MissingToken("Missing access token for private room.")))
+					.map_err(Into::into);
 			},
 		};
 
@@ -364,7 +370,8 @@ pub(crate) async fn get_room_dag_route(
 		if !services.users.is_admin(&user_id).await {
 			return Err!(Request(Forbidden(
 				"You must be a server admin to view this private room's DAG."
-			)));
+			)))
+			.map_err(Into::into);
 		}
 	}
 

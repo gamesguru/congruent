@@ -10,7 +10,6 @@ edition = "2024"
 mtx-slipstream = { path = "/run/media/shane/shane4tb-ent/repos/_mtx-slipstream" }
 rezzy-json = { path = "/run/media/shane/shane4tb-ent/repos/rezzy/rezzy-json" }
 simd-json = { version = "0.18", default-features = false, features = ["runtime-detection", "swar-number-parsing"] }
-bytes = "1"
 
 [profile.release]
 opt-level = 3

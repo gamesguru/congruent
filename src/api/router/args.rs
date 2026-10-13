@@ -1,17 +1,17 @@
 use std::{mem, ops::Deref};
 
-use axum::{body::Body, extract::FromRequest};
 use bytes::Bytes;
-use conduwuit::{Error, Result, debug, debug_warn, err, trace};
+use conduwuit::{Result, debug, debug_warn, err, trace};
 use futures::future::BoxFuture;
+use hyper::body::Incoming;
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, DeviceId, OwnedDeviceId, OwnedServerName,
 	OwnedUserId, ServerName, UserId,
 	api::{EndpointRequest, IncomingRequest},
 };
 
-use super::{auth, request, request::Request};
-use crate::{State, service::appservice::RegistrationInfo};
+use super::{auth, extract::FromRequest, request, request::Request};
+use crate::{State, router::ApiError, service::appservice::RegistrationInfo};
 
 /// Extractor for Ruma request structs
 pub(crate) struct Args<T> {
@@ -43,16 +43,16 @@ pub(crate) struct Args<T> {
 }
 
 pub(crate) fn authenticate_user<'a>(
-	request: hyper::Request<Body>,
+	request: hyper::Request<Incoming>,
 	services: &'a State,
 	metadata: &'a slipstream::api::Metadata,
 ) -> BoxFuture<'a, Result<OwnedUserId>> {
 	Box::pin(async move {
-		let mut request = request::from(services, request).await?;
+		let request = request::from(services, request).await?;
 		let json_body = std::str::from_utf8(&request.body)
 			.ok()
 			.and_then(|body| slipstream::canonical_json::from_json_str(body).ok());
-		let auth = auth::auth(services, &mut request, json_body.as_ref(), metadata).await?;
+		let auth = auth::auth(services, &request, json_body.as_ref(), metadata).await?;
 		auth.sender_user
 			.ok_or_else(|| err!(Request(MissingToken("Missing access token."))))
 	})
@@ -107,14 +107,14 @@ where
 	fn deref(&self) -> &Self::Target { &self.body }
 }
 
-impl<T> FromRequest<State, Body> for Args<T>
+impl<T> FromRequest<State, Incoming> for Args<T>
 where
 	T: EndpointRequest + IncomingRequest + Send + Sync + 'static,
 {
-	type Rejection = Error;
+	type Rejection = ApiError;
 
 	async fn from_request(
-		request: hyper::Request<Body>,
+		request: hyper::Request<Incoming>,
 		services: &State,
 	) -> Result<Self, Self::Rejection> {
 		let mut request = request::from(services, request).await?;
@@ -132,9 +132,9 @@ where
 			&& !request.parts.uri.path().contains("/media/")
 		{
 			if std::str::from_utf8(&request.body).is_err() {
-				return Err(err!(Request(NotJson("Request body is not valid UTF-8"))));
+				return Err(err!(Request(NotJson("Request body is not valid UTF-8"))).into());
 			}
-			return Err(err!(Request(BadJson("Invalid JSON body"))));
+			return Err(err!(Request(BadJson("Invalid JSON body"))).into());
 		}
 
 		// while very unusual and really shouldn't be recommended, Synapse accepts POST
@@ -167,7 +167,8 @@ where
 			if millis > 3_153_600_000_000 {
 				return Err(err!(Request(InvalidParam(
 					"org.matrix.msc4140.delay value exceeds acceptable bounds"
-				))));
+				)))
+				.into());
 			}
 
 			Some(std::time::Duration::from_millis(millis))
@@ -175,7 +176,7 @@ where
 			None
 		};
 
-		let auth = auth::auth(services, &mut request, json_body.as_ref(), &T::METADATA).await?;
+		let auth = auth::auth(services, &request, json_body.as_ref(), &T::METADATA).await?;
 		let body = make_body::<T>(&mut request, json_body.as_mut())?;
 		Ok(Self {
 			body,
@@ -196,7 +197,7 @@ where
 	let body = take_body(request, json_body);
 	let http_request = into_http_request(request, body);
 	let path = request.parts.uri.path();
-	T::try_from_http_request(http_request, &request.path).map_err(|e| {
+	T::try_from_http_request(http_request, request.path.0.as_slice()).map_err(|e| {
 		err!(Request(BadJson(debug_warn!("Failed to deserialize request for {path}: {e}"))))
 	})
 }

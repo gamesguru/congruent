@@ -3,8 +3,6 @@ use std::{
 	time::Duration,
 };
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Error, Result, at, err, error, extract_variant, is_equal_to,
 	matrix::{Event, TypeStateKey, pdu::PduCount},
@@ -56,6 +54,10 @@ use crate::{
 	Ruma,
 	client::{
 		DEFAULT_BUMP_TYPES, TimelinePdus, ignored_filter, is_ignored_invite, sync::load_timeline,
+	},
+	router::{
+		ApiError,
+		extract::{ClientIp, State},
 	},
 };
 
@@ -574,15 +576,17 @@ pub(crate) async fn sync_events_v5_route(
 	State(ref services): State<crate::State>,
 	ClientIp(client_ip): ClientIp,
 	body: Ruma<CompatSyncRequest>,
-) -> Result<axum::response::Response> {
-	Box::pin(sync_events_v5_route_inner(services, client_ip, body, SyncEndpoint::StableV5)).await
+) -> std::result::Result<crate::router::response::Response, ApiError> {
+	Box::pin(sync_events_v5_route_inner(services, client_ip, body, SyncEndpoint::StableV5))
+		.await
+		.map_err(Into::into)
 }
 
 pub(crate) async fn sync_events_unstable_msc3575_route(
 	State(ref services): State<crate::State>,
 	ClientIp(client_ip): ClientIp,
 	body: Ruma<CompatSyncRequest>,
-) -> Result<axum::response::Response> {
+) -> std::result::Result<crate::router::response::Response, ApiError> {
 	Box::pin(sync_events_v5_route_inner(
 		services,
 		client_ip,
@@ -590,6 +594,7 @@ pub(crate) async fn sync_events_unstable_msc3575_route(
 		SyncEndpoint::UnstableMsc3575,
 	))
 	.await
+	.map_err(Into::into)
 }
 
 async fn sync_events_v5_route_inner(
@@ -597,7 +602,7 @@ async fn sync_events_v5_route_inner(
 	client_ip: std::net::IpAddr,
 	body: Ruma<CompatSyncRequest>,
 	endpoint: SyncEndpoint,
-) -> Result<axum::response::Response> {
+) -> Result<crate::router::response::Response> {
 	let sender_user = body.sender_user.as_ref().expect("user is authenticated");
 	let sender_device = body.sender_device.as_ref().expect("user is authenticated");
 
@@ -716,7 +721,7 @@ async fn sync_events_v5_route_inner(
 					while let Some(remaining) =
 						deadline.checked_duration_since(std::time::Instant::now())
 					{
-						if tokio::time::timeout(remaining, watcher).await.is_err() {
+						if conduwuit::timeout(remaining, watcher).await.is_err() {
 							break;
 						}
 
@@ -792,7 +797,11 @@ async fn build_sync_events_v5(
 		endpoint,
 		persist_cache,
 	} = *context;
-	let next_batch = services.globals.current_count()?;
+	// See `globals::Service::edu_barrier`.
+	let next_batch = {
+		let _barrier = services.globals.edu_barrier.write().await;
+		services.globals.current_count()?
+	};
 
 	let all_joined_rooms = services
 		.rooms
@@ -833,7 +842,7 @@ async fn build_sync_events_v5(
 		.map(at!(0))
 		.collect::<Vec<OwnedRoomId>>();
 
-	let ((all_joined_rooms, all_invited_rooms, all_knocked_rooms), all_left_rooms) = tokio::join!(
+	let ((all_joined_rooms, all_invited_rooms, all_knocked_rooms), all_left_rooms) = futures::join!(
 		join3(all_joined_rooms, all_invited_rooms, all_knocked_rooms),
 		all_left_rooms
 	);
@@ -1582,7 +1591,7 @@ fn sync_events_v5_json_response(
 	response: &sync_events::v5::Response,
 	room_extras: RoomExtras,
 	thread_subscriptions_extension: Option<Value>,
-) -> Result<axum::response::Response> {
+) -> Result<crate::router::response::Response> {
 	let mut value = response.to_body();
 	if let Some(thread_subscriptions) = thread_subscriptions_extension {
 		value
@@ -1766,7 +1775,7 @@ async fn collect_required_state(
 				let full_state = services
 					.rooms
 					.state_accessor
-					.state_full_hamt(current_root_handle.clone());
+					.state_full_hamt(room_id, current_root_handle.clone());
 				pin_mut!(full_state);
 				while let Some(((state_event_type, full_state_key), event)) =
 					full_state.next().await
@@ -1799,6 +1808,7 @@ async fn collect_required_state(
 						.rooms
 						.state_accessor
 						.state_keys_with_ids_hamt::<OwnedEventId>(
+							room_id,
 							current_root_handle.clone(),
 							event_type,
 						)
@@ -2150,6 +2160,7 @@ where
 					.rooms
 					.state_accessor
 					.state_keys_with_ids_hamt(
+						room_id,
 						current_root_handle.clone(),
 						&StateEventType::RoomMember,
 					)
@@ -2159,7 +2170,11 @@ where
 				let since_state_ids: HashMap<_, _> = services
 					.rooms
 					.state_accessor
-					.state_keys_with_ids_hamt(since_root_handle, &StateEventType::RoomMember)
+					.state_keys_with_ids_hamt(
+						room_id,
+						since_root_handle,
+						&StateEventType::RoomMember,
+					)
 					.collect()
 					.await;
 
@@ -2341,8 +2356,7 @@ async fn filter_active_rooms<'a>(
 					.rooms
 					.state_accessor
 					.is_encrypted_room(room_id)
-					.await
-					== is_encrypted)
+					.await == is_encrypted)
 					.then_some(room_id)
 			})
 			.collect()

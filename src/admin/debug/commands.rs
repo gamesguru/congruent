@@ -7,6 +7,7 @@ use std::{
 
 use conduwuit::{
 	Err, Result, err, info,
+	log::EnvFilter,
 	matrix::{
 		Event,
 		pdu::{PduEvent, PduId, RawPduId},
@@ -19,14 +20,12 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use lettre::message::Mailbox;
 use service::rooms::short::{ShortEventId, ShortRoomId};
 use slipstream::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
 	RoomVersionId,
 	api::federation::event::{get_event, get_room_state},
 };
-use tracing_subscriber::EnvFilter;
 
 use crate::admin_command;
 
@@ -140,8 +139,7 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 		.services
 		.rooms
 		.pdu_metadata
-		.is_event_soft_failed(&event_id)
-		.await;
+		.is_event_soft_failed(&event_id)?;
 	if soft_failed {
 		status.push_str(" [SOFT-FAIL]");
 	}
@@ -150,8 +148,7 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 		.services
 		.rooms
 		.pdu_metadata
-		.is_event_rejected(&event_id)
-		.await;
+		.is_event_rejected(&event_id)?;
 	if rejected {
 		status.push_str(" [REJECTED]");
 	}
@@ -403,7 +400,7 @@ pub(super) async fn ping(&self, server: OwnedServerName) -> Result {
 		return Err!("Not allowed to send federation requests to ourselves.");
 	}
 
-	let timer = tokio::time::Instant::now();
+	let timer = Instant::now();
 
 	match self
 		.services
@@ -466,7 +463,7 @@ pub(super) async fn change_log_level(&self, filter: Option<String>, reset: bool)
 			.reload(&old_filter_layer, Some(handles))
 		{
 			| Err(e) => {
-				return Err!("Failed to modify and reload the global tracing log level: {e}");
+				return Err!("Failed to modify and reload the global log level: {e}");
 			},
 			| Ok(()) => {
 				let value = &self.services.server.config.log;
@@ -493,7 +490,7 @@ pub(super) async fn change_log_level(&self, filter: Option<String>, reset: bool)
 				return self.write_str("Successfully changed log level").await;
 			},
 			| Err(e) => {
-				return Err!("Failed to modify and reload the global tracing log level: {e}");
+				return Err!("Failed to modify and reload the global log level: {e}");
 			},
 		}
 	}
@@ -533,16 +530,16 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 	utils::pdu_json_canonical_strip(&mut event);
 
 	// Status flags
-	let (is_rejected, is_soft_failed) = tokio::join!(
-		self.services
-			.rooms
-			.pdu_metadata
-			.is_event_rejected(&event_id),
-		self.services
-			.rooms
-			.pdu_metadata
-			.is_event_soft_failed(&event_id),
-	);
+	let is_rejected = self
+		.services
+		.rooms
+		.pdu_metadata
+		.is_event_rejected(&event_id)?;
+	let is_soft_failed = self
+		.services
+		.rooms
+		.pdu_metadata
+		.is_event_soft_failed(&event_id)?;
 	let is_outlier = self
 		.services
 		.rooms
@@ -653,8 +650,7 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 			.services
 			.rooms
 			.pdu_metadata
-			.get_rejection_reason(&event_id)
-			.await
+			.get_rejection_reason(&event_id)?
 			.unwrap_or_default();
 		if reason.is_empty() {
 			writeln!(out, "Rejection reason: <none stored (legacy)>")?;
@@ -667,8 +663,7 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 			.services
 			.rooms
 			.pdu_metadata
-			.get_soft_fail_reason(&event_id)
-			.await
+			.get_soft_fail_reason(&event_id)?
 			.unwrap_or_default();
 		if reason.is_empty() {
 			writeln!(out, "Soft-fail reason: <none stored (legacy)>")?;
@@ -681,7 +676,6 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 }
 
 #[admin_command]
-#[tracing::instrument(skip(self), level = "info")]
 pub(super) async fn first_pdu_in_room(&self, room_id: OwnedRoomId) -> Result {
 	self.bail_restricted()?;
 
@@ -708,7 +702,6 @@ pub(super) async fn first_pdu_in_room(&self, room_id: OwnedRoomId) -> Result {
 }
 
 #[admin_command]
-#[tracing::instrument(skip(self), level = "info")]
 pub(super) async fn latest_pdu_in_room(&self, room_id: OwnedRoomId) -> Result {
 	self.bail_restricted()?;
 
@@ -735,7 +728,6 @@ pub(super) async fn latest_pdu_in_room(&self, room_id: OwnedRoomId) -> Result {
 }
 
 #[admin_command]
-#[tracing::instrument(skip(self), level = "info")]
 #[allow(clippy::fn_params_excessive_bools)]
 pub(crate) async fn force_set_state(
 	&self,
@@ -908,14 +900,14 @@ pub(crate) async fn force_set_state(
 	// Un-reject/un-soft-fail the authoritative remote events so they
 	//    can participate in state resolution
 	for eid in &remote_eids {
-		self.services.rooms.pdu_metadata.clear_pdu_markers(eid);
+		self.services.rooms.pdu_metadata.clear_pdu_markers(eid)?;
 	}
 
 	// Neutralize DAG poison BEFORE state resolution evaluates them
 	info!("Rejecting conflicting local state");
 	Box::pin(self.reject_conflicting_state(&room_id, &at_event_id, &remote_eids)).await;
 
-	let new_room_state = if absolute {
+	let (new_room_state, pending_nodes) = if absolute {
 		info!("Resolving new room state (ABSOLUTE OVERRIDE)");
 		self.services
 			.rooms
@@ -963,10 +955,11 @@ pub(crate) async fn force_set_state(
 		info!("Forcing new room state (quiet mode)");
 	}
 
-	self.services
-		.rooms
-		.state
-		.set_room_state_hamt(room_id.as_ref(), &new_room_state, &state_lock);
+	self.services.rooms.state.set_room_state_hamt_with_nodes(
+		room_id.as_ref(),
+		&new_room_state,
+		&pending_nodes,
+	)?;
 
 	// Update joined count from state snapshot
 	self.services
@@ -995,7 +988,7 @@ pub(crate) async fn force_set_state(
 				None,
 				&state_lock,
 			)
-			.await;
+			.await?;
 
 		// Associate the tip event with the forced state root so that
 		// state_at_incoming inherits the forced state when the next event
@@ -1005,13 +998,18 @@ pub(crate) async fn force_set_state(
 		self.services
 			.rooms
 			.state
-			.set_event_roothandle(tip_pdu.event_id(), &new_room_state)
+			.set_event_roothandle_with_nodes(
+				&room_id,
+				tip_pdu.event_id(),
+				&new_room_state,
+				&pending_nodes,
+			)
 			.await?;
 		info!("Set tip {} as sole extremity", tip_pdu.event_id());
 	} else {
 		// No timeline events — /sync won't deliver this room.
 		// Promote the most recent state event as a timeline anchor.
-		Box::pin(self.promote_sync_anchor(&room_id, &new_room_state, &state_lock)).await;
+		Box::pin(self.promote_sync_anchor(&room_id, &new_room_state, &state_lock)).await?;
 	}
 
 	drop(state_lock);
@@ -1155,7 +1153,7 @@ async fn fetch_and_load_state(
 			.services
 			.rooms
 			.state_accessor
-			.state_full_ids_hamt(&root_handle)
+			.state_full_ids_hamt(room_id, &root_handle)
 			.try_collect()
 			.await?;
 
@@ -1239,7 +1237,7 @@ async fn validate_and_extract_state(
 		self.services
 			.rooms
 			.pdu_metadata
-			.clear_pdu_markers(&event_id);
+			.clear_pdu_markers(&event_id)?;
 
 		let total = validated.saturating_add(dropped);
 		if total.is_multiple_of(100) {
@@ -1361,7 +1359,7 @@ async fn validate_and_add_auth_chain(
 			self.services
 				.rooms
 				.pdu_metadata
-				.clear_pdu_markers(&event_id);
+				.clear_pdu_markers(&event_id)?;
 			auth_existing = auth_existing.saturating_add(1);
 		} else {
 			// Only sig-verify events we actually need to store
@@ -1391,7 +1389,7 @@ async fn validate_and_add_auth_chain(
 			self.services
 				.rooms
 				.pdu_metadata
-				.clear_pdu_markers(&event_id);
+				.clear_pdu_markers(&event_id)?;
 
 			self.services
 				.rooms
@@ -1431,7 +1429,7 @@ async fn dry_run_comparison(
 			self.services
 				.rooms
 				.state_accessor
-				.state_full_ids_hamt(&root_handle)
+				.state_full_ids_hamt(room_id, &root_handle)
 				.try_collect()
 				.await?
 		} else {
@@ -1532,7 +1530,7 @@ async fn reject_conflicting_state(
 		.services
 		.rooms
 		.state_accessor
-		.state_full_hamt(local_root)
+		.state_full_hamt(room_id, local_root)
 		.map(|(_, pdu)| pdu.event_id().to_owned())
 		.collect()
 		.await;
@@ -1541,18 +1539,23 @@ async fn reject_conflicting_state(
 	if !extra.is_empty() {
 		let mut rejected = 0_usize;
 		for eid in &extra {
-			if !self
-				.services
-				.rooms
-				.pdu_metadata
-				.is_event_rejected(eid)
-				.await
-			{
-				self.services
+			let already_rejected = match self.services.rooms.pdu_metadata.is_event_rejected(eid) {
+				| Ok(rejected) => rejected,
+				| Err(error) => {
+					conduwuit::warn!(%error, %eid, "failed to read rejection verdict");
+					continue;
+				},
+			};
+			if !already_rejected {
+				if let Err(error) = self
+					.services
 					.rooms
 					.pdu_metadata
 					.mark_event_rejected(eid, "conflicting state replaced by remote")
-					.await;
+				{
+					conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
+					continue;
+				}
 				rejected = rejected.saturating_add(1);
 			}
 		}
@@ -1583,7 +1586,7 @@ async fn promote_sync_anchor(
 	room_id: &slipstream::RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	state_lock: &conduwuit_service::rooms::state::RoomMutexGuard,
-) {
+) -> Result<()> {
 	use conduwuit::matrix::Event;
 	use futures::StreamExt;
 
@@ -1597,7 +1600,7 @@ async fn promote_sync_anchor(
 		.services
 		.rooms
 		.state_accessor
-		.state_full_pdus_hamt(root_handle.clone())
+		.state_full_pdus_hamt(room_id, root_handle.clone())
 		.map(|pdu| {
 			let ts: u64 = pdu.origin_server_ts().0;
 			let eid = pdu.event_id().to_owned();
@@ -1643,7 +1646,7 @@ async fn promote_sync_anchor(
 					.rooms
 					.state
 					.set_forward_extremities(room_id, once(anchor_id.clone()), None, state_lock)
-					.await;
+					.await?;
 				info!("Promoted {anchor_id} as timeline anchor for /sync");
 			},
 			| Err(e) => {
@@ -1653,6 +1656,8 @@ async fn promote_sync_anchor(
 	} else {
 		warn!("No state events found to promote as timeline anchor");
 	}
+
+	Ok(())
 }
 
 #[admin_command]
@@ -1914,7 +1919,7 @@ pub(super) async fn send_test_email(&self) -> Result {
 	};
 
 	mailer
-		.send(Mailbox::new(None, email.clone()), service::mailer::messages::Test)
+		.send(email.clone(), service::mailer::messages::Test)
 		.await?;
 
 	self.write_str(&format!("Test email successfully sent to {email}"))

@@ -55,15 +55,6 @@ impl Deserialize for DehydratedDevice {
 /// JSON *without* the extra field, and cross-signing signature verification
 /// fails — causing the device to appear "Not trusted".
 #[implement(super::Service)]
-#[tracing::instrument(
-	level = "info",
-	skip_all,
-	fields(
-		%user_id,
-		device_id = %request.device_id,
-		display_name = ?request.initial_device_display_name,
-	)
-)]
 pub async fn set_dehydrated_device(&self, user_id: &UserId, request: Request) -> Result {
 	assert!(
 		self.exists(user_id).await,
@@ -142,14 +133,6 @@ pub async fn set_dehydrated_device(&self, user_id: &UserId, request: Request) ->
 /// no-op, but an Err is still returned to indicate that. Otherwise returns the
 /// removed dehydrated device_id.
 #[implement(super::Service)]
-#[tracing::instrument(
-	level = "debug",
-	skip_all,
-	fields(
-		%user_id,
-		device_id = ?maybe_device_id,
-	)
-)]
 pub(super) async fn remove_dehydrated_device(
 	&self,
 	user_id: &UserId,
@@ -172,11 +155,6 @@ pub(super) async fn remove_dehydrated_device(
 
 /// Get the device_id of the user's dehydrated device.
 #[implement(super::Service)]
-#[tracing::instrument(
-	level = "debug",
-	skip_all,
-	fields(%user_id)
-)]
 pub async fn get_dehydrated_device_id(&self, user_id: &UserId) -> Result<OwnedDeviceId> {
 	self.get_dehydrated_device(user_id)
 		.await
@@ -185,12 +163,6 @@ pub async fn get_dehydrated_device_id(&self, user_id: &UserId) -> Result<OwnedDe
 
 /// Get the dehydrated device private data
 #[implement(super::Service)]
-#[tracing::instrument(
-	level = "debug",
-	skip_all,
-	fields(%user_id),
-	ret,
-)]
 pub async fn get_dehydrated_device(&self, user_id: &UserId) -> Result<DehydratedDevice> {
 	self.db
 		.userid_dehydrateddevice

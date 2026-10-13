@@ -8,7 +8,7 @@ use std::{
 	time::Duration,
 };
 
-#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[cfg(all(not(target_env = "msvc"), feature = "mimalloc"))]
 use conduwuit_core::result::LogDebugErr;
 use conduwuit_core::{
 	Result, debug, is_true,
@@ -23,7 +23,7 @@ const WORKER_MIN: usize = 2;
 const WORKER_KEEPALIVE: u64 = 36;
 const MAX_BLOCKING_THREADS: usize = 1024;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
-#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[cfg(all(not(target_env = "msvc"), feature = "mimalloc"))]
 const DISABLE_MUZZY_THRESHOLD: usize = 4;
 
 static WORKER_AFFINITY: OnceLock<bool> = OnceLock::new();
@@ -93,10 +93,8 @@ fn enable_histogram(builder: &mut Builder, args: &Args) {
 }
 
 #[cfg(all(tokio_unstable, feature = "tokio_metrics"))]
-#[tracing::instrument(name = "stop", level = "info", skip_all)]
 pub(super) fn shutdown(server: &Arc<Server>, runtime: tokio::runtime::Runtime) {
-	use conduwuit_core::event;
-	use tracing::Level;
+	use conduwuit_core::{event, log::Level};
 
 	// The final metrics output is promoted to INFO when tokio_unstable is active in
 	// a release/bench mode and DEBUG is likely optimized out
@@ -113,7 +111,6 @@ pub(super) fn shutdown(server: &Arc<Server>, runtime: tokio::runtime::Runtime) {
 }
 
 #[cfg(not(all(tokio_unstable, feature = "tokio_metrics")))]
-#[tracing::instrument(name = "stop", level = "info", skip_all)]
 pub(super) fn shutdown(server: &Arc<Server>, runtime: tokio::runtime::Runtime) {
 	wait_shutdown(server, runtime);
 }
@@ -126,22 +123,13 @@ fn wait_shutdown(_server: &Arc<Server>, runtime: tokio::runtime::Runtime) {
 
 	runtime.shutdown_timeout(SHUTDOWN_TIMEOUT);
 
-	// Join any jemalloc threads so they don't appear in use at exit.
-	#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
-	conduwuit_core::alloc::je::background_thread_enable(false)
+	// Join any allocator threads so they don't appear in use at exit.
+	#[cfg(all(not(target_env = "msvc"), feature = "mimalloc"))]
+	conduwuit_core::alloc::mi::background_thread_enable(false)
 		.log_debug_err()
 		.ok();
 }
 
-#[tracing::instrument(
-	name = "fork",
-	level = "debug",
-	skip_all,
-	fields(
-		id = ?thread::current().id(),
-		name = %thread::current().name().unwrap_or("None"),
-	),
-)]
 fn thread_start() {
 	debug_assert_eq!(
 		Some(WORKER_NAME),
@@ -172,9 +160,9 @@ fn set_worker_affinity() {
 	set_worker_mallctl(id);
 }
 
-#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[cfg(all(not(target_env = "msvc"), feature = "mimalloc"))]
 fn set_worker_mallctl(id: usize) {
-	use conduwuit_core::alloc::je::{
+	use conduwuit_core::alloc::mi::{
 		is_affine_arena,
 		this_thread::{set_arena, set_muzzy_decay},
 	};
@@ -194,98 +182,39 @@ fn set_worker_mallctl(id: usize) {
 	}
 }
 
-#[cfg(any(not(feature = "jemalloc"), target_env = "msvc"))]
+#[cfg(any(not(feature = "mimalloc"), target_env = "msvc"))]
 fn set_worker_mallctl(_: usize) {}
 
-#[tracing::instrument(
-	name = "join",
-	level = "debug",
-	skip_all,
-	fields(
-		id = ?thread::current().id(),
-		name = %thread::current().name().unwrap_or("None"),
-	),
-)]
 fn thread_stop() {}
 
-#[tracing::instrument(
-	name = "work",
-	level = "trace",
-	skip_all,
-	fields(
-		id = ?thread::current().id(),
-		name = %thread::current().name().unwrap_or("None"),
-	),
-)]
 fn thread_unpark() {}
 
-#[tracing::instrument(
-	name = "park",
-	level = "trace",
-	skip_all,
-	fields(
-		id = ?thread::current().id(),
-		name = %thread::current().name().unwrap_or("None"),
-	),
-)]
 fn thread_park() {
 	match GC_ON_PARK
 		.get()
 		.as_ref()
 		.expect("GC_ON_PARK initialized by runtime::new()")
 	{
-		| Some(true) | None if cfg!(feature = "jemalloc_conf") => gc_on_park(),
+		| Some(true) | None if cfg!(feature = "mimalloc_conf") => gc_on_park(),
 		| _ => (),
 	}
 }
 
 fn gc_on_park() {
-	#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
-	conduwuit_core::alloc::je::this_thread::decay()
+	#[cfg(all(not(target_env = "msvc"), feature = "mimalloc"))]
+	conduwuit_core::alloc::mi::this_thread::decay()
 		.log_debug_err()
 		.ok();
 }
 
 #[cfg(tokio_unstable)]
-#[tracing::instrument(
-	name = "spawn",
-	level = "trace",
-	skip_all,
-	fields(
-		id = %meta.id(),
-	),
-)]
 fn task_spawn(meta: &tokio::runtime::TaskMeta<'_>) {}
 
 #[cfg(tokio_unstable)]
-#[tracing::instrument(
-	name = "finish",
-	level = "trace",
-	skip_all,
-	fields(
-		id = %meta.id()
-	),
-)]
 fn task_terminate(meta: &tokio::runtime::TaskMeta<'_>) {}
 
 #[cfg(tokio_unstable)]
-#[tracing::instrument(
-	name = "enter",
-	level = "trace",
-	skip_all,
-	fields(
-		id = %meta.id()
-	),
-)]
 fn task_enter(meta: &tokio::runtime::TaskMeta<'_>) {}
 
 #[cfg(tokio_unstable)]
-#[tracing::instrument(
-	name = "leave",
-	level = "trace",
-	skip_all,
-	fields(
-		id = %meta.id()
-	),
-)]
 fn task_leave(meta: &tokio::runtime::TaskMeta<'_>) {}
