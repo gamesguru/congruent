@@ -44,6 +44,7 @@ pub(super) struct Auth {
 	pub(super) appservice_info: Option<RegistrationInfo>,
 }
 
+/// Authenticates the request according to the endpoint's authentication scheme.
 pub(super) async fn auth(
 	services: &Services,
 	request: &Request,
@@ -248,6 +249,7 @@ fn expired_token_error() -> Error {
 	Error::BadRequest(ErrorKind::UnknownToken { soft_logout: true }, "Access token has expired.")
 }
 
+/// Rejects an unrecognized access token with a hard logout.
 fn unknown_token_error() -> Error {
 	Error::BadRequest(ErrorKind::UnknownToken { soft_logout: false }, "Unknown access token.")
 }
@@ -451,6 +453,7 @@ fn classify_user_token(user: (OwnedUserId, OwnedDeviceId), expired: bool) -> Tok
 	if expired { Token::Expired } else { Token::User(user) }
 }
 
+/// Resolves a supplied user or appservice token, checking user-token expiry.
 async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {
 	let Some(token) = token else {
 		return Ok(Token::None);
@@ -485,6 +488,7 @@ async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {
 mod tests {
 	use super::*;
 
+	/// Returns a fixed user and device pair for token-classification tests.
 	fn user() -> (OwnedUserId, OwnedDeviceId) {
 		(
 			OwnedUserId::parse("@alice:local.com").unwrap(),
@@ -492,6 +496,7 @@ mod tests {
 		)
 	}
 
+	/// Verifies that an unexpired token retains its user and device identity.
 	#[test]
 	fn a_live_user_token_authenticates() {
 		let Token::User(authenticated) = classify_user_token(user(), false) else {
@@ -500,12 +505,14 @@ mod tests {
 		assert_eq!(authenticated, user());
 	}
 
+	/// Verifies that an expired token remains distinct from an invalid token.
 	#[test]
 	fn a_lapsed_user_token_is_expired_not_invalid() {
 		// Expired maps to a soft logout; Invalid would be a hard one.
 		assert!(matches!(classify_user_token(user(), true), Token::Expired));
 	}
 
+	/// Verifies that expired access tokens allow the client to refresh its session.
 	#[test]
 	fn an_expired_token_is_a_soft_logout() {
 		assert!(matches!(
@@ -514,6 +521,7 @@ mod tests {
 		));
 	}
 
+	/// Verifies that unknown access tokens require the client to log in again.
 	#[test]
 	fn an_unknown_token_is_a_hard_logout() {
 		assert!(matches!(

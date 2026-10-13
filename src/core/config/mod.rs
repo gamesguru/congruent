@@ -3255,6 +3255,7 @@ fn default_openid_token_ttl() -> u64 { 60 * 60 }
 
 fn default_login_token_ttl() -> u64 { 2 * 60 * 1000 }
 
+/// Returns the default access-token lifetime of five minutes in milliseconds.
 fn default_access_token_ttl() -> u64 { 5 * 60 * 1000 }
 
 fn default_turn_ttl() -> u64 { 60 * 60 * 24 }
@@ -3422,6 +3423,7 @@ fn default_presence_idle_debounce_ms() -> u64 { 60000 }
 mod tests {
 	use super::{Config, RawConfig, default_access_token_ttl};
 
+	/// Verifies that the default access-token lifetime is 300,000 milliseconds.
 	#[test]
 	fn access_tokens_default_to_five_minutes() {
 		assert_eq!(default_access_token_ttl(), 300_000);

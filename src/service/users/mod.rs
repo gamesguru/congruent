@@ -184,6 +184,7 @@ struct Data {
 }
 
 impl crate::Service for Service {
+	/// Initializes the user service with its dependencies and database maps.
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let current_count = args
 			.depend::<globals::Service>("globals")
@@ -1161,6 +1162,7 @@ impl Service {
 		Ok((access_token, new_refresh, ttl))
 	}
 
+	/// Revokes one access token and its expiry, preserving the device's other tokens.
 	async fn remove_access_token(&self, user_id: &UserId, device_id: &DeviceId, token: &str) {
 		let tokens =
 			token_expiry::without_token(self.active_tokens(user_id, device_id).await, token);
