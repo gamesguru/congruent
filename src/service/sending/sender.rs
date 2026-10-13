@@ -852,10 +852,20 @@ impl Service {
 		let mut all_changes = BTreeMap::<u64, HashSet<OwnedUserId>>::new();
 
 		while let Some(room_id) = server_rooms.next().await {
+			// A server never sent anything before doesn't need the history from before
+			// we joined the room through it.
+			let from = if since.0 == 0 {
+				self.services
+					.state_partial
+					.partial_since(&room_id)
+					.unwrap_or(0)
+			} else {
+				since.0
+			};
 			let keys_changed = self
 				.services
 				.users
-				.room_keys_changed(&room_id, Some(since.0), None)
+				.room_keys_changed(&room_id, Some(from), None)
 				.ready_filter(|(user_id, _)| self.services.globals.user_is_local(user_id));
 
 			pin_mut!(keys_changed);

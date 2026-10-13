@@ -32,6 +32,8 @@ pub struct Service {
 	resolved: tokio::sync::Notify,
 	/// Global count at which each room's partial state was resolved.
 	resolved_at: Mutex<std::collections::HashMap<OwnedRoomId, u64>>,
+	/// Global count at which each room was partially joined since startup.
+	partial_since: Mutex<std::collections::HashMap<OwnedRoomId, u64>>,
 	resync_tx: loole::Sender<OwnedRoomId>,
 	resync_rx: loole::Receiver<OwnedRoomId>,
 }
@@ -62,6 +64,7 @@ impl crate::Service for Service {
 			pending_sends: Mutex::new(std::collections::HashMap::new()),
 			resolved: tokio::sync::Notify::new(),
 			resolved_at: Mutex::new(std::collections::HashMap::new()),
+			partial_since: Mutex::new(std::collections::HashMap::new()),
 			resync_tx,
 			resync_rx,
 			db: Data {
@@ -109,6 +112,10 @@ impl Service {
 		self.db
 			.state_partial_rooms
 			.insert(room_id.as_bytes(), remote_server.as_bytes());
+		self.partial_since
+			.lock()
+			.expect("locked")
+			.insert(room_id.to_owned(), self.services.globals.current_count().unwrap_or(0));
 		// Start resyncing straight away, like Synapse's _start_partial_state_room_sync.
 		_ = self.resync_tx.send(room_id.to_owned());
 	}
@@ -155,6 +162,17 @@ impl Service {
 			.expect("locked")
 			.insert(room_id.to_owned(), count);
 		self.resolved.notify_waiters();
+	}
+
+	/// The global count at which we partially joined this room, if since
+	/// startup. Servers that learn of the room only through the join have no
+	/// interest in earlier device-list changes.
+	pub fn partial_since(&self, room_id: &RoomId) -> Option<u64> {
+		self.partial_since
+			.lock()
+			.expect("locked")
+			.get(room_id)
+			.copied()
 	}
 
 	/// The global count at which this room finished resyncing, if it did so
