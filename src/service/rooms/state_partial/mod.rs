@@ -8,7 +8,7 @@ use std::{
 use async_trait::async_trait;
 use conduwuit::Result;
 use database::{Deserialized, Map};
-use slipstream::{OwnedRoomId, OwnedServerName, RoomId, ServerName};
+use slipstream::{EventId, OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, ServerName};
 
 use crate::{Dep, rooms};
 
@@ -77,7 +77,19 @@ impl crate::Service for Service {
 }
 
 impl Service {
-	pub fn mark_as_partial(&self, room_id: &RoomId, remote_server: &ServerName) {
+	pub fn mark_as_partial(
+		&self,
+		room_id: &RoomId,
+		remote_server: &ServerName,
+		state_event_id: Option<&EventId>,
+	) {
+		// The event the remote server's partial state is "at": a resync must ask for
+		// the full state at this event, not at our own (unknown to them) join.
+		if let Some(event_id) = state_event_id {
+			self.db
+				.state_partial_events
+				.insert(room_id.as_bytes(), event_id.as_bytes());
+		}
 		self.db
 			.state_partial_rooms
 			.insert(room_id.as_bytes(), remote_server.as_bytes());
@@ -101,6 +113,15 @@ impl Service {
 			}
 			notified.await;
 		}
+	}
+
+	pub async fn resync_event_id(&self, room_id: &RoomId) -> Option<OwnedEventId> {
+		self.db
+			.state_partial_events
+			.qry(room_id)
+			.await
+			.ok()
+			.and_then(|h| h.deserialized().ok())
 	}
 
 	pub async fn partial_server(&self, room_id: &RoomId) -> Result<Option<OwnedServerName>> {

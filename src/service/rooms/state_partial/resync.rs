@@ -68,6 +68,7 @@ impl Service {
 				| Ok(()) => {
 					info!("Successfully resynced partial state for room {}", room_id);
 					self.db.state_partial_rooms.remove(room_id.as_bytes());
+					self.db.state_partial_events.remove(room_id.as_bytes());
 					self.resolved.notify_waiters();
 					return;
 				},
@@ -149,13 +150,16 @@ impl Service {
 			debug!("Asking {} for missing full state of {}", server, room_id);
 			let request = get_room_state::v1::Request {
 				room_id: room_id.to_owned(),
-				event_id: self
-					.services
-					.state
-					.get_forward_extremities(room_id)
-					.next()
-					.await
-					.expect("room has forward extremities"),
+				event_id: match self.resync_event_id(room_id).await {
+					| Some(event_id) => event_id,
+					| None => self
+						.services
+						.state
+						.get_forward_extremities(room_id)
+						.next()
+						.await
+						.expect("room has forward extremities"),
+				},
 			};
 
 			match self

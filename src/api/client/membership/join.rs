@@ -867,6 +867,7 @@ async fn join_room_by_id_helper_remote_process(
 	// on this exact room, with no state mutation in between -- a second
 	// explicit call here would just re-read the same numbers it just wrote.
 
+	let resync_event_id = remote_latest_events.first().cloned();
 	let mut missing_latest = Vec::new();
 	if !send_join_response.room_state.members_omitted {
 		for event_id in remote_latest_events {
@@ -936,7 +937,7 @@ async fn join_room_by_id_helper_remote_process(
 		services
 			.rooms
 			.state_partial
-			.mark_as_partial(room_id, &remote_server);
+			.mark_as_partial(room_id, &remote_server, resync_event_id.as_deref());
 	}
 
 	Ok(())
