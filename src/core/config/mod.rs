@@ -3420,10 +3420,17 @@ fn default_presence_idle_debounce_ms() -> u64 { 60000 }
 
 #[cfg(test)]
 mod tests {
-	use super::default_access_token_ttl;
+	use super::{Config, RawConfig, default_access_token_ttl};
 
 	#[test]
 	fn access_tokens_default_to_five_minutes() {
 		assert_eq!(default_access_token_ttl(), 300_000);
+	}
+
+	#[test]
+	fn an_omitted_access_token_ttl_is_five_minutes() {
+		let raw = RawConfig::from_toml("server_name = \"test.local\"").unwrap();
+		let config = Config::new(&raw).unwrap();
+		assert_eq!(config.access_token_ttl, 300_000);
 	}
 }

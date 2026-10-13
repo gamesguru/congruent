@@ -31,6 +31,14 @@ pub fn check(config: &Config) -> Result {
         warn!("\n\nWARNING: \n\nTLS CERTIFICATE VALIDATION IS DISABLED, THIS IS HIGHLY INSECURE AND SHOULD NOT BE USED IN PRODUCTION.\n\n");
     }
 
+	if config.access_token_ttl == 0 {
+		return Err!(Config(
+			"access_token_ttl",
+			"access_token_ttl must be greater than zero, or every access token expires \
+			 instantly."
+		));
+	}
+
 	warn_deprecated(config);
 	warn_unknown_key(config);
 

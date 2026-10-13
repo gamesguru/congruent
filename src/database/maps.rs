@@ -110,6 +110,7 @@ const MAP_NAMES: &[&str] = &[
 	"tokenids",
 	"url_previews",
 	"userdeviceid_metadata",
+	"userdeviceid_prevrefreshtoken",
 	"userdeviceid_refreshtoken",
 	"userdeviceid_token",
 	"userdevicesessionid_uiaainfo",

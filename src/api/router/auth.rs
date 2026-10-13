@@ -494,7 +494,10 @@ mod tests {
 
 	#[test]
 	fn a_live_user_token_authenticates() {
-		assert!(matches!(classify_user_token(user(), false), Token::User(_)));
+		let Token::User(authenticated) = classify_user_token(user(), false) else {
+			panic!("a live token must authenticate");
+		};
+		assert_eq!(authenticated, user());
 	}
 
 	#[test]
