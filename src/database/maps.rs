@@ -99,6 +99,8 @@ const MAP_NAMES: &[&str] = &[
 	"state_hamt_node_mtimes",
 	"state_hamt_nodes",
 	"state_hamt_root_lattices",
+	"state_partial_events",
+	"state_partial_rooms",
 	"statehash_shortstatehash",
 	"statekey_shortstatekey",
 	"threadid_userids",
