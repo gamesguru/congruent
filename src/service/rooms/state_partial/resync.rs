@@ -337,7 +337,7 @@ mod tests {
 	fn test_pdu_parsing() {
 		let room_id = RoomId::parse("!room:example.com").unwrap();
 		let raw = RawJsonValue::from_json_string(
-			r#"{"content":{"body":"test"},"type":"m.room.message","room_id":"!room:example.com","sender":"@user:example.com","origin_server_ts":123456789,"auth_events":[],"prev_events":[],"depth":1,"hashes":{"sha256":"hash"},"signatures":{"example.com":{"ed25519:key":"sig"}}}"#.to_owned(),
+			r#"{"event_id":"$event:example.com","content":{"body":"test"},"type":"m.room.message","room_id":"!room:example.com","sender":"@user:example.com","origin_server_ts":123456789,"auth_events":[],"prev_events":[],"depth":1,"hashes":{"sha256":"hash"},"signatures":{"example.com":{"ed25519:key":"sig"}}}"#.to_owned(),
 		)
 		.unwrap();
 		let room_version = RoomVersionId::V1;
