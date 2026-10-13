@@ -12,9 +12,7 @@ use conduwuit_core::{
 use futures::{StreamExt, TryStreamExt};
 use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, RoomVersionId, ServerName,
-	api::federation::event::get_room_state,
-	events::StateEventType,
-	sswire::RawJsonValue,
+	api::federation::event::get_room_state, events::StateEventType, sswire::RawJsonValue,
 };
 
 use crate::rooms::{short::ShortStateKey, state_partial::Service};
@@ -282,9 +280,12 @@ impl Service {
 			.event_handler
 			.state_map_to_root_handle(room_id, &new_state)
 			.await?;
-		self.services
-			.state
-			.set_room_state_hamt_with_nodes(room_id, &new_root, &pending_nodes, &state_lock)?;
+		self.services.state.set_room_state_hamt_with_nodes(
+			room_id,
+			&new_root,
+			&pending_nodes,
+			&state_lock,
+		)?;
 		Ok(())
 	}
 }
@@ -305,33 +306,34 @@ fn sort_servers(suggested: &ServerName, others: Vec<OwnedServerName>) -> Vec<Own
 
 #[cfg(test)]
 mod tests {
-	use slipstream::{owned_server_name, server_name};
-
 	use super::*;
 
 	#[test]
 	fn test_sort_servers() {
-		let suggested = server_name!("primary.com");
+		let suggested = OwnedServerName::parse("primary.com").unwrap();
 		let others = vec![
-			owned_server_name!("second.com"),
-			owned_server_name!("third.com"),
-			owned_server_name!("primary.com"),
+			OwnedServerName::parse("second.com").unwrap(),
+			OwnedServerName::parse("third.com").unwrap(),
+			OwnedServerName::parse("primary.com").unwrap(),
 		];
 
-		let sorted = sort_servers(suggested, others);
+		let sorted = sort_servers(&suggested, others);
 
 		assert_eq!(sorted.len(), 3);
 		assert_eq!(sorted[0], "primary.com");
-		assert!(sorted.contains(&owned_server_name!("second.com")));
-		assert!(sorted.contains(&owned_server_name!("third.com")));
+		assert!(sorted.contains(&OwnedServerName::parse("second.com").unwrap()));
+		assert!(sorted.contains(&OwnedServerName::parse("third.com").unwrap()));
 	}
 
 	#[test]
 	fn test_sort_servers_no_suggested_in_others() {
-		let suggested = server_name!("primary.com");
-		let others = vec![owned_server_name!("second.com"), owned_server_name!("third.com")];
+		let suggested = OwnedServerName::parse("primary.com").unwrap();
+		let others = vec![
+			OwnedServerName::parse("second.com").unwrap(),
+			OwnedServerName::parse("third.com").unwrap(),
+		];
 
-		let sorted = sort_servers(suggested, others);
+		let sorted = sort_servers(&suggested, others);
 
 		assert_eq!(sorted.len(), 3);
 		assert_eq!(sorted[0], "primary.com");
