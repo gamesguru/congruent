@@ -259,7 +259,11 @@ impl Services {
 
 		let tx = self.mtxdb.begin_transaction();
 		marker
-			.put(&tx, ImportMarker { data_format: DATA_FORMAT, events: 0 })
+			.put(&tx, ImportMarker {
+				data_format: DATA_FORMAT,
+				events: 0,
+				closures: 0,
+			})
 			.map_err(db_error)?;
 		tx.commit().map_err(db_error)?;
 		info!("Fresh database: marked mtxdb import complete.");

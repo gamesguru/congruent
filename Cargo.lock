@@ -1087,9 +1087,9 @@ dependencies = [
 
 [[package]]
 name = "deranged"
-version = "0.5.8"
+version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 
 [[package]]
 name = "digest"
@@ -2132,7 +2132,7 @@ dependencies = [
 [[package]]
 name = "mtx-slipstream"
 version = "0.1.0"
-source = "git+https://gitlab.com/Wombat-Foundation/mtx-slipstream.git?branch=dev#1d5cf4e207905c2853808a48a350a3f101befd94"
+source = "git+https://gitlab.com/Wombat-Foundation/mtx-slipstream.git?branch=dev#8f2288109e0b0bc5b221818532393af0f0f2e39d"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -2144,7 +2144,7 @@ dependencies = [
 [[package]]
 name = "mtxdb"
 version = "0.1.0-beta.2"
-source = "git+https://gitlab.com/Wombat-Foundation/mtxdb.git?branch=refactor%2Fpack-id-store-layout#de884d6534df80afcdf9758ee5b1403989d657e8"
+source = "git+https://gitlab.com/Wombat-Foundation/mtxdb.git?branch=refactor%2Fpack-id-store-layout#702c266607f8fe1f30425947db308c8887a55853"
 dependencies = [
  "arc-swap",
  "blake3",
@@ -2515,7 +2515,7 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 [[package]]
 name = "rezzy"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#99ec54b687118705e4f0e41cfd2cd5b90b0365a0"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#a6371a77efe06aa102db23f53a3d89e833ef8229"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -2529,7 +2529,7 @@ dependencies = [
 [[package]]
 name = "rezzy-json"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#99ec54b687118705e4f0e41cfd2cd5b90b0365a0"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#a6371a77efe06aa102db23f53a3d89e833ef8229"
 dependencies = [
  "ryu",
 ]
@@ -2537,7 +2537,7 @@ dependencies = [
 [[package]]
 name = "rezzy-recon"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#99ec54b687118705e4f0e41cfd2cd5b90b0365a0"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#a6371a77efe06aa102db23f53a3d89e833ef8229"
 dependencies = [
  "base64 0.23.1",
  "sha2",
@@ -2621,9 +2621,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-native-certs"
-version = "0.8.4"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
+checksum = "4a073f5dc7469f984c52ad2752b63b0807745133b6de880b7b64c1ac4c48aec4"
 dependencies = [
  "openssl-probe",
  "rustls-pki-types",
