@@ -310,13 +310,23 @@ impl Service {
 	}
 
 	pub async fn send_edu_room(&self, room_id: &RoomId, serialized: EduBuf) -> Result {
-		let servers = self
+		let mut servers = self
 			.services
 			.state_cache
 			.room_servers(room_id)
-			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name));
+			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name))
+			.collect::<Vec<_>>()
+			.await;
+		if let Ok(Some(partial_server)) =
+			self.services.state_partial.partial_server(room_id).await
+		{
+			if !servers.contains(&partial_server) {
+				servers.push(partial_server);
+			}
+		}
 
-		self.send_edu_servers(servers, serialized).await
+		self.send_edu_servers(futures::stream::iter(servers), serialized)
+			.await
 	}
 
 	pub async fn send_edu_servers<'a, S>(&self, servers: S, serialized: EduBuf) -> Result

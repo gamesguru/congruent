@@ -837,7 +837,18 @@ impl Service {
 
 		let server_rooms = self.services.state_cache.server_rooms(server_name);
 
-		pin_mut!(server_rooms);
+		let mut rooms: Vec<OwnedRoomId> = server_rooms.collect().await;
+		for room_id in self
+			.services
+			.state_partial
+			.partial_rooms_via(server_name)
+			.await
+		{
+			if !rooms.contains(&room_id) {
+				rooms.push(room_id);
+			}
+		}
+		let mut server_rooms = futures::stream::iter(rooms);
 		let mut all_changes = BTreeMap::<u64, HashSet<OwnedUserId>>::new();
 
 		while let Some(room_id) = server_rooms.next().await {

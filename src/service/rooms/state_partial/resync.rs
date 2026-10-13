@@ -405,6 +405,19 @@ impl Service {
 		info!("Repaired state snapshots of {repaired} events in {room_id} after resync");
 	}
 
+	/// Rooms whose state is still partial and that we joined through `server`.
+	pub async fn partial_rooms_via(&self, server: &ServerName) -> Vec<OwnedRoomId> {
+		self.db
+			.state_partial_rooms
+			.stream()
+			.ignore_err()
+			.filter_map(|(room_id, via): (OwnedRoomId, OwnedServerName)| {
+				futures::future::ready((via.as_ref() == server).then_some(room_id))
+			})
+			.collect()
+			.await
+	}
+
 	async fn update_state_graph(
 		&self,
 		room_id: &RoomId,
