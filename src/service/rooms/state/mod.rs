@@ -387,6 +387,39 @@ impl Service {
 		prev_root_handle: Option<&rezzy::hamt::RootHandle>,
 		pre_persisted_nodes: &[rooms::state_hamt::store::PendingNode],
 	) -> Result<rezzy::hamt::RootHandle> {
+		let root_handle = self
+			.persist_event_state_with_root(
+				room_id,
+				new_pdu,
+				state_lock,
+				state_root_handle,
+				prev_root_handle,
+				pre_persisted_nodes,
+			)
+			.await?;
+
+		self.update_event_state_caches(room_id, new_pdu, prev_root_handle, &root_handle)
+			.await?;
+
+		Ok(root_handle)
+	}
+
+	/// Persists the event's state association (its HAMT root and, for state
+	/// events, the room's current-state pointer) without touching the derived
+	/// membership caches. These writes are keyed by event id, so they may run
+	/// before the event's timeline row is visible. A caller that does so must
+	/// call `update_event_state_caches` once the row is visible, because that
+	/// update allocates stream counts (e.g. a left marker) which sync compares
+	/// against the event's own count.
+	pub async fn persist_event_state_with_root(
+		&self,
+		room_id: &RoomId,
+		new_pdu: &PduEvent,
+		state_lock: &RoomMutexGuard,
+		state_root_handle: Option<&rezzy::hamt::RootHandle>,
+		prev_root_handle: Option<&rezzy::hamt::RootHandle>,
+		pre_persisted_nodes: &[rooms::state_hamt::store::PendingNode],
+	) -> Result<rezzy::hamt::RootHandle> {
 		let shorteventid = self
 			.services
 			.short
@@ -444,23 +477,38 @@ impl Service {
 
 		self.db.shorteventid_roothandle.apply_batch(batch);
 
-		// Update the derived membership/participation caches for the state
-		// transition. `state_root_handle` is the *post*-event root, so the delta
-		// must be computed against `prev_root_handle` (the state before this
-		// event was applied), otherwise the diff is empty and joined members /
-		// their servers are never registered for outbound federation fan-out.
-		if is_state {
+		Ok(root_handle)
+	}
+
+	/// Updates the derived membership/participation caches for the state
+	/// transition made by `new_pdu`. `root_handle` is the *post*-event root, so
+	/// the delta must be computed against `prev_root_handle` (the state before
+	/// this event was applied), otherwise the diff is empty and joined members /
+	/// their servers are never registered for outbound federation fan-out.
+	///
+	/// This must run after the event's timeline row is visible: it allocates
+	/// stream counts for membership markers (e.g. `mark_as_left`), and sync only
+	/// delivers a leave event if its marker count is greater than the event's
+	/// count.
+	pub async fn update_event_state_caches(
+		&self,
+		room_id: &RoomId,
+		new_pdu: &PduEvent,
+		prev_root_handle: Option<&rezzy::hamt::RootHandle>,
+		root_handle: &rezzy::hamt::RootHandle,
+	) -> Result<()> {
+		if is_state_event(new_pdu) {
 			if let Some(prev_root) = prev_root_handle {
 				Box::pin(self.update_caches_for_state_delta_between(
 					room_id,
 					Some(prev_root),
-					&root_handle,
+					root_handle,
 				))
 				.await?;
 			}
 		}
 
-		Ok(root_handle)
+		Ok(())
 	}
 
 	/// Appends a state event to the room's HAMT state and returns the new root.

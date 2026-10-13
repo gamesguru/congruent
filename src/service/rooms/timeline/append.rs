@@ -310,11 +310,12 @@ where
 	// before the sync barrier is taken. That keeps the span between allocating a
 	// count and making its row visible down to the RocksDB batch apply, and it
 	// means no timeline row is ever visible without its state association. A
-	// failure afterwards leaves at worst unreferenced records.
+	// failure afterwards leaves at worst unreferenced records. The derived
+	// membership caches are deliberately not updated here; see below.
 	if existing_pdu.is_none() {
 		self.db.write_event_to_mtxdb(pdu, &pdu_json);
 	}
-	Box::pin(self.services.state.set_event_state_with_root(
+	let event_state_root = Box::pin(self.services.state.persist_event_state_with_root(
 		room_id,
 		pdu,
 		state_lock,
@@ -359,6 +360,21 @@ where
 
 		(pdu_id, pdu_count, Some(count))
 	};
+
+	// Update the derived membership caches only now that the row is visible. This
+	// allocates stream counts for markers such as the left marker, and sync only
+	// delivers a leave event when the marker's count is greater than the event's
+	// own. Allocating it before the event's count would let a sync report the
+	// room as left without the leave event and never deliver the event itself.
+	self.services
+		.state
+		.update_event_state_caches(
+			room_id,
+			pdu,
+			prev_state_root_handle.as_ref(),
+			&event_state_root,
+		)
+		.await?;
 
 	// Recovered outlier timelines carry no state event of their own, so the batch
 	// above did not advance the room pointer for them. A state event already had
