@@ -56,6 +56,7 @@ struct Services {
 	state: Dep<rooms::state::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
+	state_partial: Dep<rooms::state_partial::Service>,
 	user: Dep<rooms::user::Service>,
 	users: Dep<users::Service>,
 	presence: Dep<presence::Service>,
@@ -107,6 +108,7 @@ impl crate::Service for Service {
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
+				state_partial: args.depend::<rooms::state_partial::Service>("rooms::state_partial"),
 				user: args.depend::<rooms::user::Service>("rooms::user"),
 				users: args.depend::<users::Service>("users"),
 				presence: args.depend::<presence::Service>("presence"),
@@ -222,13 +224,32 @@ impl Service {
 	}
 
 	pub async fn send_pdu_room(&self, room_id: &RoomId, pdu_id: &RawPduId) -> Result {
-		let servers = self
+		// In a partial-state room the member list is incomplete, so the server we
+		// joined through may be absent from `room_servers`; always include it.
+		let partial_server = self
+			.services
+			.state_partial
+			.partial_server(room_id)
+			.await
+			.ok()
+			.flatten();
+
+		let mut servers = self
 			.services
 			.state_cache
 			.room_servers(room_id)
-			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name));
+			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name))
+			.collect::<Vec<_>>()
+			.await;
+		if let Some(partial_server) = partial_server {
+			if !servers.contains(&partial_server) {
+				servers.push(partial_server);
+			}
+		}
 
-		let num_servers = self.send_pdu_servers(servers, pdu_id).await?;
+		let num_servers = self
+			.send_pdu_servers(futures::stream::iter(servers), pdu_id)
+			.await?;
 
 		if num_servers > 100 {
 			warn!("Broadcasting PDU in {room_id} to {num_servers} servers");

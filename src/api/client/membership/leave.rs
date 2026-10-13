@@ -168,13 +168,20 @@ pub async fn leave_room(
 
 					drop(state_lock);
 
-					let remote_servers = services
+					let mut remote_servers = services
 						.rooms
 						.state_cache
 						.room_servers(room_id)
 						.ready_filter(|server| !services.globals.server_is_ours(server))
 						.collect::<Vec<_>>()
 						.await;
+					if let Ok(Some(partial_server)) =
+						services.rooms.state_partial.partial_server(room_id).await
+					{
+						if !remote_servers.contains(&partial_server) {
+							remote_servers.push(partial_server);
+						}
+					}
 
 					services
 						.sending
