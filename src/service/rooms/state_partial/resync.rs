@@ -111,12 +111,15 @@ impl Service {
 
 			debug!("Resyncing partial state for room {} from server {}", room_id, server_name);
 			match self.clone().resync_room(room_id, &server_name).await {
-				| Ok(()) => {
+				| Ok(discovered) => {
 					info!("Successfully resynced partial state for room {}", room_id);
 					self.db.state_partial_rooms.remove(room_id.as_bytes());
 					self.db.state_partial_events.remove(room_id.as_bytes());
 					self.send_pending(room_id).await;
 					self.notify_resolved(room_id);
+					for user_id in discovered {
+						self.services.users.mark_device_key_update(&user_id).await;
+					}
 					return;
 				},
 				| Err(e) => {
@@ -132,7 +135,7 @@ impl Service {
 		self: Arc<Self>,
 		room_id: &RoomId,
 		server_name: &ServerName,
-	) -> Result<()> {
+	) -> Result<Vec<slipstream::OwnedUserId>> {
 		debug!("Resyncing room {} starting with server {}", room_id, server_name);
 
 		let (response, remote_server) = self.fetch_remote_state(room_id, server_name).await?;
@@ -195,13 +198,12 @@ impl Service {
 			.room_members(&room_id)
 			.collect()
 			.await;
-		for user_id in discovered {
-			if !known.contains(&user_id) && !self.services.globals.user_is_local(&user_id) {
-				self.services.users.mark_device_key_update(&user_id).await;
-			}
-		}
-
-		Ok(())
+		// Returned so the caller marks them only after the room is delivered:
+		// marking wakes long-polling syncs, which must see the room resolved.
+		Ok(discovered
+			.into_iter()
+			.filter(|u| !known.contains(u) && !self.services.globals.user_is_local(u))
+			.collect())
 	}
 
 	async fn fetch_remote_state(
