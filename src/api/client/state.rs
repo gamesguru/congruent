@@ -522,6 +522,12 @@ async fn allowed_to_send_state_event(
 						| Err(_) => false,
 					};
 
+					info!(
+						%room_id,
+						state_key,
+						is_join_to_join,
+						"membership PUT: strict parse failed ({e})"
+					);
 					if !is_join_to_join {
 						return Err!(Request(BadJson(
 							"Membership content must have a valid JSON body with at least a \
