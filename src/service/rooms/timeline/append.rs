@@ -306,6 +306,24 @@ where
 		.user
 		.reset_notification_counts(pdu.sender(), room_id);
 
+	// Everything below is keyed by event id, not by stream count, so it runs
+	// before the sync barrier is taken. That keeps the span between allocating a
+	// count and making its row visible down to the RocksDB batch apply, and it
+	// means no timeline row is ever visible without its state association. A
+	// failure afterwards leaves at worst unreferenced records.
+	if existing_pdu.is_none() {
+		self.db.write_event_to_mtxdb(pdu, &pdu_json);
+	}
+	Box::pin(self.services.state.set_event_state_with_root(
+		room_id,
+		pdu,
+		state_lock,
+		state_root_handle.as_ref(),
+		prev_state_root_handle.as_ref(),
+		&pending_nodes,
+	))
+	.await?;
+
 	let (pdu_id, pdu_count, private_read_count) = if let Some((existing_id, existing_count)) =
 		existing_pdu
 	{
@@ -326,7 +344,9 @@ where
 		info!(target: "timeline_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: about to insert");
 
 		// Write first, then publish the count
-		self.db.append_pdu(&pdu_id, pdu, &pdu_json, pdu_count).await;
+		self.db
+			.append_pdu_prewritten(&pdu_id, pdu, &pdu_json, pdu_count)
+			.await;
 		info!(target: "timeline_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: insert complete");
 
 		info!(
@@ -340,17 +360,6 @@ where
 		(pdu_id, pdu_count, Some(count))
 	};
 
-	// Commit the event's state association inside the same cork as the timeline
-	// write, so a flush never exposes the PDU without its state root.
-	Box::pin(self.services.state.set_event_state_with_root(
-		room_id,
-		pdu,
-		state_lock,
-		state_root_handle.as_ref(),
-		prev_state_root_handle.as_ref(),
-		&pending_nodes,
-	))
-	.await?;
 	// Recovered outlier timelines carry no state event of their own, so the batch
 	// above did not advance the room pointer for them. A state event already had
 	// it committed inside that batch, so re-writing it here would be redundant.
