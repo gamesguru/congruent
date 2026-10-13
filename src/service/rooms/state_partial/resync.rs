@@ -43,12 +43,7 @@ impl Service {
 
 	/// Spawn a resync task for the room unless one is already running.
 	fn start_resync(self: Arc<Self>, room_id: OwnedRoomId) {
-		if !self
-			.active
-			.lock()
-			.expect("locked")
-			.insert(room_id.clone())
-		{
+		if !self.active.lock().expect("locked").insert(room_id.clone()) {
 			return;
 		}
 
@@ -73,6 +68,7 @@ impl Service {
 				| Ok(()) => {
 					info!("Successfully resynced partial state for room {}", room_id);
 					self.db.state_partial_rooms.remove(room_id.as_bytes());
+					self.resolved.notify_waiters();
 					return;
 				},
 				| Err(e) => {

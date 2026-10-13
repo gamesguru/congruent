@@ -95,6 +95,18 @@ pub(super) async fn verify_make_membership(
 		return Err!(Request(NotFound("Room is unknown to this server.")));
 	}
 
+	if services
+		.rooms
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|s| s.is_some())
+	{
+		return Err!(Request(NotFound(
+			"This server has not finished joining the room (partial state)."
+		)));
+	}
+
 	let local_server = services.globals.server_name();
 	if !services
 		.rooms
@@ -153,6 +165,18 @@ pub(super) async fn verify_send_membership(
 	slipstream::OwnedUserId,
 	slipstream::OwnedUserId,
 )> {
+	if services
+		.rooms
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|s| s.is_some())
+	{
+		return Err!(Request(NotFound(
+			"This server has not finished joining the room (partial state)."
+		)));
+	}
+
 	if services.moderation.is_remote_server_forbidden(origin) {
 		warn!(
 			%origin,

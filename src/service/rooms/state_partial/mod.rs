@@ -1,6 +1,9 @@
 pub mod resync;
 
-use std::{collections::HashSet, sync::{Arc, Mutex}};
+use std::{
+	collections::HashSet,
+	sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use conduwuit::Result;
@@ -15,6 +18,8 @@ pub struct Service {
 	/// Rooms with a resync task currently running.
 	active: Mutex<HashSet<OwnedRoomId>>,
 	/// Wakes the resync worker when a room is newly marked partial.
+	/// Woken whenever a room's partial state is resolved.
+	resolved: tokio::sync::Notify,
 	resync_tx: loole::Sender<OwnedRoomId>,
 	resync_rx: loole::Receiver<OwnedRoomId>,
 }
@@ -41,6 +46,7 @@ impl crate::Service for Service {
 		let (resync_tx, resync_rx) = loole::unbounded();
 		Ok(Arc::new(Self {
 			active: Mutex::new(HashSet::new()),
+			resolved: tokio::sync::Notify::new(),
 			resync_tx,
 			resync_rx,
 			db: Data {
@@ -77,6 +83,24 @@ impl Service {
 			.insert(room_id.as_bytes(), remote_server.as_bytes());
 		// Start resyncing straight away, like Synapse's _start_partial_state_room_sync.
 		_ = self.resync_tx.send(room_id.to_owned());
+	}
+
+	/// Wait until the room no longer has partial state (Synapse's
+	/// `await_full_state`).
+	pub async fn await_full_state(&self, room_id: &RoomId) {
+		loop {
+			let notified = self.resolved.notified();
+			tokio::pin!(notified);
+			notified.as_mut().enable();
+			if !self
+				.partial_server(room_id)
+				.await
+				.is_ok_and(|s| s.is_some())
+			{
+				return;
+			}
+			notified.await;
+		}
 	}
 
 	pub async fn partial_server(&self, room_id: &RoomId) -> Result<Option<OwnedServerName>> {
