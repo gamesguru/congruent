@@ -628,7 +628,7 @@
 {"Action":"pass","Test":"TestOutboundFederationSend"}
 {"Action":"fail","Test":"TestPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanFastJoinDuringPartialStateJoin"}
-{"Action":"fail","Test":"TestPartialStateJoin/CanLazyLoadingSyncDuringPartialStateJoin"}
+{"Action":"pass","Test":"TestPartialStateJoin/CanLazyLoadingSyncDuringPartialStateJoin"}
 {"Action":"fail","Test":"TestPartialStateJoin/CanReceiveDeviceListUpdateDuringPartialStateJoin"}
 {"Action":"fail","Test":"TestPartialStateJoin/CanReceiveEventsDuringPartialStateJoin"}
 {"Action":"fail","Test":"TestPartialStateJoin/CanReceiveEventsWithHalfMissingGrandparentsDuringPartialStateJoin"}
@@ -636,10 +636,10 @@
 {"Action":"fail","Test":"TestPartialStateJoin/CanReceiveEventsWithMissingParentsDuringPartialStateJoin"}
 {"Action":"skip","Test":"TestPartialStateJoin/CanReceivePresenceDuringPartialStateJoin"}
 {"Action":"fail","Test":"TestPartialStateJoin/CanReceiveReceiptDuringPartialStateJoin"}
-{"Action":"fail","Test":"TestPartialStateJoin/CanReceiveSigningKeyUpdateDuringPartialStateJoin"}
+{"Action":"pass","Test":"TestPartialStateJoin/CanReceiveSigningKeyUpdateDuringPartialStateJoin"}
 {"Action":"fail","Test":"TestPartialStateJoin/CanReceiveToDeviceDuringPartialStateJoin"}
 {"Action":"fail","Test":"TestPartialStateJoin/CanReceiveTypingDuringPartialStateJoin"}
-{"Action":"fail","Test":"TestPartialStateJoin/CanSendEventsDuringPartialStateJoin"}
+{"Action":"pass","Test":"TestPartialStateJoin/CanSendEventsDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/Can_change_display_name_during_partial_state_join"}
 {"Action":"fail","Test":"TestPartialStateJoin/Device_list_tracking"}
 {"Action":"fail","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_no_longer_tracked_for_user_incorrectly_believed_to_be_in_room"}
@@ -662,10 +662,10 @@
 {"Action":"fail","Test":"TestPartialStateJoin/Leave_during_resync"}
 {"Action":"fail","Test":"TestPartialStateJoin/Leave_during_resync/can_be_triggered_by_remote_ban"}
 {"Action":"fail","Test":"TestPartialStateJoin/Leave_during_resync/can_be_triggered_by_remote_kick"}
-{"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/does_not_wait_for_resync"}
+{"Action":"fail","Test":"TestPartialStateJoin/Leave_during_resync/does_not_wait_for_resync"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/is_seen_after_the_resync"}
-{"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/succeeds,_then_another_user_can_join_without_resync_completing"}
-{"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/succeeds,_then_rejoin_succeeds_without_resync_completing"}
+{"Action":"fail","Test":"TestPartialStateJoin/Leave_during_resync/succeeds,_then_another_user_can_join_without_resync_completing"}
+{"Action":"fail","Test":"TestPartialStateJoin/Leave_during_resync/succeeds,_then_rejoin_succeeds_without_resync_completing"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/works_after_a_second_partial_join"}
 {"Action":"fail","Test":"TestPartialStateJoin/MembersRequestBlocksDuringPartialStateJoin"}
 {"Action":"fail","Test":"TestPartialStateJoin/Outgoing_device_list_updates"}
