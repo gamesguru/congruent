@@ -600,7 +600,7 @@ async fn join_room_by_id_helper_remote_process(
 			match res {
 				| Ok(val) => Some(val),
 				| Err(e) => {
-					info!("Could not validate send_join response room_state event: {e:?}");
+					warn!(%room_id, "Could not validate send_join response room_state event; the joined state will be incomplete: {e:?}");
 					None
 				},
 			}
@@ -611,7 +611,7 @@ async fn join_room_by_id_helper_remote_process(
 				let pdu = match PduEvent::from_id_val(&event_id, value.clone(), Some(room_id)) {
 					| Ok(pdu) => pdu,
 					| Err(e) => {
-						info!("Invalid PDU in send_join response: {e:?}: {value:#?}");
+						warn!(%room_id, "Invalid PDU in send_join response, dropped from joined state: {e:?}: {value:#?}");
 						return (state, eids);
 					},
 				};
