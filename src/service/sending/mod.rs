@@ -357,13 +357,21 @@ impl Service {
 	}
 
 	pub async fn flush_room(&self, room_id: &RoomId) -> Result<()> {
-		let servers = self
+		let mut servers = self
 			.services
 			.state_cache
 			.room_servers(room_id)
-			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name));
+			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name))
+			.collect::<Vec<_>>()
+			.await;
+		if let Ok(Some(partial_server)) = self.services.state_partial.partial_server(room_id).await
+		{
+			if !servers.contains(&partial_server) {
+				servers.push(partial_server);
+			}
+		}
 
-		self.flush_servers(servers).await
+		self.flush_servers(futures::stream::iter(servers)).await
 	}
 
 	pub async fn wait_for_pdu_servers(
