@@ -314,6 +314,10 @@ where
 			| PduCount::Backfilled(_) => None,
 		})
 	} else {
+		// Sync snapshots `current_count()` under the barrier's write side. Hold
+		// the read side from count allocation until this PDU is visible, so sync
+		// cannot advance past a count whose event is still being written.
+		let _barrier = self.services.globals.edu_barrier.read().await;
 		let count = self.services.globals.next_count()?;
 		let pdu_count = PduCount::Normal(count);
 		let pdu_id: RawPduId = PduId { shortroomid, shorteventid: pdu_count }.into();
