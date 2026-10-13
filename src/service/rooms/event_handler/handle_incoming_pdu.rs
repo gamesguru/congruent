@@ -403,6 +403,21 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	// it through here means it doesn't repeat the round-trip.
 	let mut prefetched_prev: Option<PrefetchedPrev> = None;
 
+	// A partial-state room can't serve /state_ids for events we've never seen
+	// (members are omitted), so resolve missing auth events with /event_auth
+	// straight away instead of deferring to a /state_ids retry.
+	let first_stage = if self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|s| s.is_some())
+	{
+		AuthRecoveryStage::AfterStateIds
+	} else {
+		AuthRecoveryStage::BeforeStateIds
+	};
+
 	let (incoming_pdu, val) = match Box::pin(self.handle_outlier_pdu(
 		origin,
 		Some(create_event),
@@ -412,7 +427,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 		false,
 		false,
 		room_version,
-		AuthRecoveryStage::BeforeStateIds,
+		first_stage,
 	))
 	.await
 	{
