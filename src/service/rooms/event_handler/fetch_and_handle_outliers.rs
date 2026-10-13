@@ -35,7 +35,7 @@ pub async fn fetch_and_handle_outliers<'a, Pdu, Events>(
 	create_event: Option<&'a Pdu>,
 	room_id: &'a RoomId,
 	skip_sig_verify: bool,
-	room_version_override: Option<&'a slipstream::RoomVersionId>,
+	room_version: &'a slipstream::RoomVersionId,
 	explicit_routing_servers: Option<Vec<OwnedServerName>>,
 ) -> Vec<(PduEvent, Option<BTreeMap<String, CanonicalJsonValue>>)>
 where
@@ -329,29 +329,7 @@ where
 									}
 									match version {
 										| Some(v) => v,
-										| None => {
-											if let Some(override_v) = room_version_override {
-												override_v.clone()
-											} else {
-												match self
-													.services
-													.state
-													.get_room_version(room_id)
-													.await
-												{
-													| Ok(v) => v,
-													| Err(e) => {
-														warn!(
-															"Unknown room version for \
-															 {room_id}, skipping outlier \
-															 {next_id}: {e}"
-														);
-														back_off(next_id.clone());
-														continue;
-													},
-												}
-											}
-										},
+										| None => room_version.clone(),
 									}
 								},
 							};
@@ -460,37 +438,7 @@ where
 							 {successful_server}"
 						);
 
-						let room_version_id = match create_event {
-							| Some(ce) => {
-								match crate::rooms::event_handler::get_room_version_id(ce) {
-									| Ok(v) => v,
-									| Err(_) => {
-										warn!(
-											"Provided create_event for {room_id} has no room \
-											 version! Skipping auth chain for {next_id}"
-										);
-										back_off(next_id.clone());
-										continue;
-									},
-								}
-							},
-							| None =>
-								if let Some(override_v) = room_version_override {
-									override_v.clone()
-								} else {
-									match self.services.state.get_room_version(room_id).await {
-										| Ok(v) => v,
-										| Err(e) => {
-											warn!(
-												"Unknown room version for {room_id}, skipping \
-												 auth chain for {next_id}: {e}"
-											);
-											back_off(next_id.clone());
-											continue;
-										},
-									}
-								},
-						};
+						let room_version_id = room_version.clone();
 
 						for pdu_raw in res.auth_chain {
 							match gen_event_id_canonical_json(&pdu_raw, &room_version_id) {
@@ -607,7 +555,7 @@ where
 				value.clone(),
 				true,
 				skip_sig_verify,
-				room_version_override,
+				room_version,
 				super::AuthRecoveryStage::BeforeStateIds,
 			))
 			.await

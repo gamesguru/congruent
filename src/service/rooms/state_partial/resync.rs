@@ -30,10 +30,8 @@ impl Service {
 				.state_partial_rooms
 				.stream()
 				.ignore_err()
-				.broadn_then(4, move |(room_id, server_name): (&RoomId, &ServerName)| {
-					self_copy
-						.clone()
-						.resync_one_room(room_id.to_owned(), server_name.to_owned())
+				.broadn_then(4, move |(room_id, server_name): (OwnedRoomId, OwnedServerName)| {
+					self_copy.clone().resync_one_room(room_id, server_name)
 				})
 				.collect::<Vec<()>>()
 				.await;
@@ -124,14 +122,13 @@ impl Service {
 			debug!("Asking {} for missing full state of {}", server, room_id);
 			let request = get_room_state::v1::Request {
 				room_id: room_id.to_owned(),
-				event_id: (*self
+				event_id: self
 					.services
 					.state
 					.get_forward_extremities(room_id)
 					.next()
 					.await
-					.expect("room has forward extremities"))
-				.to_owned(),
+					.expect("room has forward extremities"),
 			};
 
 			match self
@@ -263,7 +260,7 @@ impl Service {
 		new_state_ids: BTreeMap<ShortStateKey, OwnedEventId>,
 	) -> Result<()> {
 		info!("Updating state graph for partial room {}", room_id);
-		let state_lock = self.services.state.mutex.lock(room_id).await;
+		let _state_lock = self.services.state.mutex.lock(room_id).await;
 
 		let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 		let mut new_state = self
@@ -280,12 +277,9 @@ impl Service {
 			.event_handler
 			.state_map_to_root_handle(room_id, &new_state)
 			.await?;
-		self.services.state.set_room_state_hamt_with_nodes(
-			room_id,
-			&new_root,
-			&pending_nodes,
-			&state_lock,
-		)?;
+		self.services
+			.state
+			.set_room_state_hamt_with_nodes(room_id, &new_root, &pending_nodes)?;
 		Ok(())
 	}
 }
@@ -343,7 +337,7 @@ mod tests {
 	fn test_pdu_parsing() {
 		let room_id = RoomId::parse("!room:example.com").unwrap();
 		let raw = RawJsonValue::from_json_string(
-			r#"{"content":{"body":"test"},"type":"m.room.message","room_id":"!room:example.com","sender":"@user:example.com","origin_server_ts":123456789,"auth_events":[],"prev_events":[],"depth":1,"hashes":{"sha256":"hash"},"signatures":{"example.com":{"ed25519:key":"sig"}}}"#,
+			r#"{"content":{"body":"test"},"type":"m.room.message","room_id":"!room:example.com","sender":"@user:example.com","origin_server_ts":123456789,"auth_events":[],"prev_events":[],"depth":1,"hashes":{"sha256":"hash"},"signatures":{"example.com":{"ed25519:key":"sig"}}}"#.to_owned(),
 		)
 		.unwrap();
 		let room_version = RoomVersionId::V1;

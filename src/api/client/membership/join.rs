@@ -571,7 +571,7 @@ async fn join_room_by_id_helper_remote_process(
 	remote_server: OwnedServerName,
 	join_event: CanonicalJsonObject,
 	event_id: slipstream::OwnedEventId,
-	state_lock: RoomMutexGuard,
+	mut state_lock: RoomMutexGuard,
 	send_join_response: federation::membership::create_join_event::v2::Response,
 	remote_latest_events: Vec<slipstream::OwnedEventId>,
 ) -> Result {
@@ -866,8 +866,14 @@ async fn join_room_by_id_helper_remote_process(
 	drop(state_lock);
 
 	if !send_join_response.room_state.members_omitted && !remote_latest_events.is_empty() {
-		handle_missing_join_extremities(services, room_id, &remote_server, remote_latest_events)
-			.await?;
+		handle_missing_join_extremities(
+			services,
+			room_id,
+			&room_version_id,
+			&remote_server,
+			remote_latest_events,
+		)
+		.await?;
 	}
 
 	// Re-acquire the state lock before appending our join event
@@ -922,6 +928,7 @@ async fn join_room_by_id_helper_remote_process(
 async fn handle_missing_join_extremities(
 	services: &Services,
 	room_id: &RoomId,
+	room_version_id: &RoomVersionId,
 	remote_server: &OwnedServerName,
 	remote_latest_events: Vec<slipstream::OwnedEventId>,
 ) -> Result<()> {
@@ -943,7 +950,9 @@ async fn handle_missing_join_extremities(
 	);
 
 	for event_id in missing_latest {
-		if let Err(e) = fetch_missing_extremity(services, remote_server, room_id, &event_id).await
+		if let Err(e) =
+			fetch_missing_extremity(services, room_version_id, remote_server, room_id, &event_id)
+				.await
 		{
 			warn!("Failed to fetch missing extremity {event_id}: {e}");
 		}
@@ -1366,6 +1375,7 @@ fn deprioritize(
 
 async fn fetch_missing_extremity(
 	services: &Services,
+	room_version_id: &RoomVersionId,
 	remote_server: &OwnedServerName,
 	room_id: &RoomId,
 	event_id: &slipstream::OwnedEventId,
@@ -1409,7 +1419,14 @@ async fn fetch_missing_extremity(
 			services
 				.rooms
 				.event_handler
-				.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true, None)
+				.handle_incoming_pdu(
+					remote_server,
+					room_id,
+					&parsed_event_id,
+					value,
+					true,
+					room_version_id,
+				)
 				.await?;
 			return Ok(());
 		}
@@ -1448,7 +1465,14 @@ async fn fetch_missing_extremity(
 	services
 		.rooms
 		.event_handler
-		.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true, None)
+		.handle_incoming_pdu(
+			remote_server,
+			room_id,
+			&parsed_event_id,
+			value,
+			true,
+			room_version_id,
+		)
 		.await?;
 
 	Ok(())

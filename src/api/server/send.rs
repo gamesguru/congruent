@@ -906,7 +906,7 @@ async fn handle_edu_receipt_room_user(
 		.await && !services
 		.rooms
 		.state_partial
-		.is_partial_from_server(room_id, origin)
+		.is_partial_from_server(&room_id, &origin)
 		.await
 		.unwrap_or(false)
 	{
@@ -979,7 +979,7 @@ async fn handle_edu_typing(
 		.await && !services
 		.rooms
 		.state_partial
-		.is_partial_from_server(&typing.room_id, typing.user_id.server_name())
+		.is_partial_from_server(&typing.room_id, &typing.user_id.server_name())
 		.await
 		.unwrap_or(false)
 	{

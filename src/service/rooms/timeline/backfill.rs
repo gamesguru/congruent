@@ -737,7 +737,7 @@ async fn get_remote_pdu_limited(
 					event_id,
 					value,
 					false,
-					Some(&room_version_id),
+					&room_version_id,
 				)
 				.boxed()
 				.await

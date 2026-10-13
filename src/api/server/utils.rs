@@ -319,7 +319,7 @@ pub(super) async fn handle_and_send_incoming_pdu(
 	room_id: &RoomId,
 	event_id: &EventId,
 	value: slipstream::CanonicalJsonObject,
-	room_version_id: Option<&slipstream::RoomVersionId>,
+	room_version_id: &slipstream::RoomVersionId,
 ) -> Result<conduwuit_core::pdu::RawPduId> {
 	use futures::FutureExt;
 
