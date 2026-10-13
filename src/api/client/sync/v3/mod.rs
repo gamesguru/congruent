@@ -597,6 +597,19 @@ pub(crate) async fn build_sync_events(
 		.state_cache
 		.rooms_joined(syncing_user)
 		.map(|room_id| async move {
+			// MSC3902: eager (non-lazy-loading) syncs must omit rooms whose state
+			// is still partial, as the member list would be incomplete.
+			if !context.lazy_loading_enabled()
+				&& services
+					.rooms
+					.state_partial
+					.partial_server(&room_id)
+					.await
+					.is_ok_and(|s| s.is_some())
+			{
+				return None;
+			}
+
 			let joined_room = load_joined_room(services, context, room_id.clone()).await;
 
 			match joined_room {
