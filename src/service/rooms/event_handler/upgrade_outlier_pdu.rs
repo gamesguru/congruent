@@ -189,7 +189,10 @@ where
 		from_state.or_else(|| {
 			partial_auth_events
 				.iter()
-				.find(|p| *p.kind() == k.clone().into() && p.state_key() == Some(s.as_str()))
+				.find(|p| {
+					*p.kind() == slipstream::events::TimelineEventType::from(k.clone())
+						&& p.state_key() == Some(s.as_str())
+				})
 				.cloned()
 		})
 	};
@@ -256,7 +259,10 @@ where
 			ready(auth_events.get(&key).map(ToOwned::to_owned).or_else(|| {
 				partial_auth_events
 					.iter()
-					.find(|p| *p.kind() == k.clone().into() && p.state_key() == Some(s))
+					.find(|p| {
+						*p.kind() == slipstream::events::TimelineEventType::from(k.clone())
+							&& p.state_key() == Some(s)
+					})
 					.cloned()
 			}))
 		};
