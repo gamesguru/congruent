@@ -44,6 +44,9 @@ pub(crate) async fn get_event_authorization_route(
 	if event.room_id_or_hash().as_deref() != Some(body.room_id.as_ref()) {
 		return Err!(Request(NotFound("Event does not belong to this room.")));
 	}
+	let room_version = services.rooms.state.get_room_version(&body.room_id).await?;
+	let implicit_create_event = matches!(room_version.as_str(), "12" | "12.1")
+		.then(|| format!("${}", body.room_id.as_str().trim_start_matches('!')));
 
 	let auth_chain = services
 		.rooms
@@ -51,6 +54,7 @@ pub(crate) async fn get_event_authorization_route(
 		.event_ids_iter(&body.room_id, once(body.event_id.borrow()))
 		.ready_filter_map(Result::ok)
 		.ready_filter(|id| id != &body.event_id)
+		.ready_filter(|id| implicit_create_event.as_deref() != Some(id.as_str()))
 		.filter_map(|id| async move { services.rooms.timeline.get_pdu_json(&id).await.ok() })
 		.then(|pdu| services.sending.convert_to_outgoing_federation_event(pdu))
 		.collect()

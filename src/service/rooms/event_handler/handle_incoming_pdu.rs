@@ -790,8 +790,6 @@ pub async fn process_timeline_upgrade(
 			"prev_event contained structurally invalid data"
 		))));
 	}
-	self.processed_pdu_cache.insert(event_id.clone(), ());
-
 	debug!(events = ?sorted_prev_events, "Handling previous events");
 
 	// Corked (but not flushed) for the whole loop so a gap with many
@@ -839,7 +837,8 @@ pub async fn process_timeline_upgrade(
 	// repairs and the incoming event become visible together.
 	let final_prev_id = sorted_prev_events.last().cloned();
 	let final_prev_anchor = prev_fetch_deeper_anchor.clone();
-	self.services
+	let result = self
+		.services
 		.timeline
 		.with_cork_and_flush(|| async move {
 			// Typed parameter so `prev_id` below is inferred as `&EventId`.
@@ -926,5 +925,9 @@ pub async fn process_timeline_upgrade(
 			.await
 			.map(|(pdu_id, _)| pdu_id)
 		})
-		.await
+		.await;
+	if result.is_ok() {
+		self.processed_pdu_cache.insert(event_id.clone(), ());
+	}
+	result
 }
