@@ -651,6 +651,49 @@ async fn build_local_dag(
 	.map_err(|e| err!("failed to resolve local graph: {e}"))
 }
 
+/// Recover a room's version from a local invitee's stored stripped state, for
+/// a room we are not resident in (e.g. a rescinded out-of-band invite).
+async fn invited_room_version(
+	services: &Services,
+	room_id: &slipstream::RoomId,
+) -> Option<slipstream::RoomVersionId> {
+	let mut invited = Box::pin(services.rooms.state_cache.room_members_invited(room_id));
+
+	while let Some(user_id) = invited.next().await {
+		if !services.globals.user_is_local(&user_id) {
+			continue;
+		}
+
+		let Ok(stripped) = services
+			.rooms
+			.state_cache
+			.invite_state(&user_id, room_id)
+			.await
+		else {
+			continue;
+		};
+
+		let version = stripped.iter().find_map(|event| {
+			let event = event.json().ok()?;
+			(event.get("type")?.as_str()? == "m.room.create")
+				.then(|| {
+					event
+						.get("content")?
+						.get("room_version")?
+						.as_str()
+						.map(str::to_owned)
+				})
+				.flatten()
+		});
+
+		if let Some(version) = version {
+			return slipstream::RoomVersionId::from_str(&version).ok();
+		}
+	}
+
+	None
+}
+
 async fn handle_room(
 	services: &Services,
 	_client: &IpAddr,
@@ -710,39 +753,46 @@ async fn handle_room(
 					.and_then(slipstream::CanonicalJsonValue::as_str)
 					== Some("m.room.create");
 				if !is_create {
-					// Room unknown locally: not a transient failure. Mirror the event
-					// handler's non-participation handling per PDU instead of failing
-					// the whole transaction (which also carries EDUs and other rooms).
-					debug_warn!(%room_id, %event_id, "room version unavailable: {state_error}");
-					let is_member = value
-						.get("type")
-						.and_then(slipstream::CanonicalJsonValue::as_str)
-						== Some("m.room.member");
-					let result = if is_member {
-						services
-							.rooms
-							.outlier
-							.add_pdu_outlier(&event_id, &value, Some(room_id))
-							.await;
-						Ok(())
+					// Room unknown locally. Like Tuwunel, recover the version from a
+					// pending local invite's stripped state so the event handler still
+					// runs (it owns invite-rescind handling); otherwise this is not a
+					// transient failure: reject only this PDU instead of the whole
+					// transaction (which also carries EDUs and other rooms).
+					if let Some(version) = invited_room_version(services, room_id).await {
+						info!(%room_id, %event_id, %version, "room unknown locally; using version from invite state");
+						version
 					} else {
-						Err(err!(Request(NotFound(
-							"This server is not participating in that room."
-						))))
-					};
-					results.push((event_id, result));
-					continue;
+						info!(%room_id, %event_id, "room unknown locally and no invite state: {state_error}");
+						let is_member = value
+							.get("type")
+							.and_then(slipstream::CanonicalJsonValue::as_str)
+							== Some("m.room.member");
+						let result = if is_member {
+							services
+								.rooms
+								.outlier
+								.add_pdu_outlier(&event_id, &value, Some(room_id))
+								.await;
+							Ok(())
+						} else {
+							Err(err!(Request(NotFound(
+								"This server is not participating in that room."
+							))))
+						};
+						results.push((event_id, result));
+						continue;
+					}
+				} else {
+					let version = value
+						.get("content")
+						.and_then(slipstream::CanonicalJsonValue::as_object)
+						.and_then(|content| content.get("room_version"))
+						.and_then(slipstream::CanonicalJsonValue::as_str)
+						.map_or(Ok(slipstream::RoomVersionId::V1), |version| {
+							slipstream::RoomVersionId::from_str(version)
+						});
+					version.map_err(|e| TransactionError::Transient(e.to_string()))?
 				}
-
-				let version = value
-					.get("content")
-					.and_then(slipstream::CanonicalJsonValue::as_object)
-					.and_then(|content| content.get("room_version"))
-					.and_then(slipstream::CanonicalJsonValue::as_str)
-					.map_or(Ok(slipstream::RoomVersionId::V1), |version| {
-						slipstream::RoomVersionId::from_str(version)
-					});
-				version.map_err(|e| TransactionError::Transient(e.to_string()))?
 			},
 		};
 		services

@@ -63,11 +63,6 @@ export CONTINUWUITY_TLS__CERTS="/$SERVER_NAME.crt"
 # And who it is
 export CONTINUWUITY_SERVER_NAME="$SERVER_NAME"
 # Ensure each test node gets an isolated database to prevent reuse errors
-# fast_joins (MSC3902) is only enabled for explicit TestPartialStateJoin runs
-if [ "${COMPLEMENT_WRAPPER_FAST_JOINS:-}" = "true" ]; then
-	export CONDUWUIT_FAST_JOINS=true
-fi
-
 export CONDUWUIT_DATABASE_PATH="${CONDUWUIT_DATABASE_PATH:-/var/lib/continuwuity/$SERVER_NAME}"
 echo "rocksdb: $CONDUWUIT_DATABASE_PATH/rocksdb"
 echo "mtxdb: $CONDUWUIT_DATABASE_PATH/mtxdb"

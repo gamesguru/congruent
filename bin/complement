@@ -22,16 +22,9 @@ COMPLEMENT_BASE_IMAGE="${COMPLEMENT_BASE_IMAGE:-continuwuity:complement}"
 
 # Complement tests that are skipped due to flakiness/reliability issues or we
 # don't implement such features and won't for a long time.
-# This can be overridden by environment variable. TestPartialStateJoin needs
-# fast_joins enabled on the homeservers, which would change every other test, so
-# it is only run (and fast_joins only enabled) when explicitly requested via
-# COMPLEMENT_RUN.
-DEFAULT_SKIPPED_TESTS='TestPartialStateJoin.*'
-if [[ "${COMPLEMENT_RUN:-}" == *PartialStateJoin* ]]; then
-	DEFAULT_SKIPPED_TESTS=''
-	export COMPLEMENT_WRAPPER_FAST_JOINS=true
-fi
-SKIPPED_COMPLEMENT_TESTS="${SKIPPED_COMPLEMENT_TESTS:-"$DEFAULT_SKIPPED_TESTS"}"
+# This can be overridden by environment variable. TestPartialStateJoin runs by
+# default (fast_joins is enabled in complement.config.toml).
+SKIPPED_COMPLEMENT_TESTS="${SKIPPED_COMPLEMENT_TESTS:-""}"
 
 # A regex for tests to run.
 RUN_TESTS="${COMPLEMENT_RUN:-.}"
