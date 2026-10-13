@@ -937,7 +937,7 @@ async fn join_room_by_id_helper_remote_process(
 		services
 			.rooms
 			.state_partial
-			.mark_as_partial(room_id, &remote_server, resync_event_id.as_deref());
+			.mark_as_partial(room_id, &remote_server, resync_event_id.as_ref());
 	}
 
 	Ok(())
