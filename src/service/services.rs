@@ -110,6 +110,7 @@ impl Services {
 				state_cache: build!(rooms::state_cache::Service),
 				state_compressor: build!(rooms::state_compressor::Service),
 				state_partial: build!(rooms::state_partial::Service),
+				state_hamt: build!(rooms::state_hamt::Service),
 				threads: build!(rooms::threads::Service),
 				timeline: build!(rooms::timeline::Service),
 				typing: build!(rooms::typing::Service),
@@ -185,7 +186,10 @@ impl Services {
 		if self.server.config.allow_local_presence {
 			_ = self
 				.presence
-				.ping_presence(&self.globals.server_user, &ruma::presence::PresenceState::Offline)
+				.ping_presence(
+					&self.globals.server_user,
+					&slipstream::presence::PresenceState::Offline,
+				)
 				.await;
 		}
 

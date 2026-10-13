@@ -6,9 +6,9 @@
 use std::{convert::AsRef, fmt::Debug, io::Write};
 
 use conduwuit::{arrayvec::ArrayVec, implement};
-use serde::Serialize;
 
 use crate::{
+	dbkey::DbKey,
 	keyval::{KeyBuf, ValBuf},
 	ser,
 	util::or_else,
@@ -22,8 +22,8 @@ use crate::{
 #[inline]
 pub fn put<K, V>(&self, key: K, val: V)
 where
-	K: Serialize + Debug,
-	V: Serialize,
+	K: DbKey + Debug,
+	V: DbKey,
 {
 	let mut key_buf = KeyBuf::new();
 	let mut val_buf = ValBuf::new();
@@ -38,7 +38,7 @@ where
 #[inline]
 pub fn put_raw<K, V>(&self, key: K, val: V)
 where
-	K: Serialize + Debug,
+	K: DbKey + Debug,
 	V: AsRef<[u8]>,
 {
 	let mut key_buf = KeyBuf::new();
@@ -54,7 +54,7 @@ where
 pub fn raw_put<K, V>(&self, key: K, val: V)
 where
 	K: AsRef<[u8]>,
-	V: Serialize,
+	V: DbKey,
 {
 	let mut val_buf = ValBuf::new();
 	self.raw_bput(key, val, &mut val_buf);
@@ -68,8 +68,8 @@ where
 #[inline]
 pub fn put_aput<const VMAX: usize, K, V>(&self, key: K, val: V)
 where
-	K: Serialize + Debug,
-	V: Serialize,
+	K: DbKey + Debug,
+	V: DbKey,
 {
 	let mut key_buf = KeyBuf::new();
 	let mut val_buf = ArrayVec::<u8, VMAX>::new();
@@ -84,8 +84,8 @@ where
 #[inline]
 pub fn aput_put<const KMAX: usize, K, V>(&self, key: K, val: V)
 where
-	K: Serialize + Debug,
-	V: Serialize,
+	K: DbKey + Debug,
+	V: DbKey,
 {
 	let mut key_buf = ArrayVec::<u8, KMAX>::new();
 	let mut val_buf = ValBuf::new();
@@ -100,8 +100,8 @@ where
 #[inline]
 pub fn aput<const KMAX: usize, const VMAX: usize, K, V>(&self, key: K, val: V)
 where
-	K: Serialize + Debug,
-	V: Serialize,
+	K: DbKey + Debug,
+	V: DbKey,
 {
 	let mut key_buf = ArrayVec::<u8, KMAX>::new();
 	let mut val_buf = ArrayVec::<u8, VMAX>::new();
@@ -116,7 +116,7 @@ where
 #[inline]
 pub fn aput_raw<const KMAX: usize, K, V>(&self, key: K, val: V)
 where
-	K: Serialize + Debug,
+	K: DbKey + Debug,
 	V: AsRef<[u8]>,
 {
 	let mut key_buf = ArrayVec::<u8, KMAX>::new();
@@ -132,7 +132,7 @@ where
 pub fn raw_aput<const VMAX: usize, K, V>(&self, key: K, val: V)
 where
 	K: AsRef<[u8]>,
-	V: Serialize,
+	V: DbKey,
 {
 	let mut val_buf = ArrayVec::<u8, VMAX>::new();
 	self.raw_bput(key, val, &mut val_buf);
@@ -145,8 +145,8 @@ where
 #[implement(super::Map)]
 pub fn bput<K, V, Bk, Bv>(&self, key: K, val: V, mut buf: (Bk, Bv))
 where
-	K: Serialize + Debug,
-	V: Serialize,
+	K: DbKey + Debug,
+	V: DbKey,
 	Bk: Write + AsRef<[u8]>,
 	Bv: Write + AsRef<[u8]>,
 {
@@ -162,7 +162,7 @@ where
 #[tracing::instrument(skip(self, val, buf), level = "trace")]
 pub fn bput_raw<K, V, Bk>(&self, key: K, val: V, mut buf: Bk)
 where
-	K: Serialize + Debug,
+	K: DbKey + Debug,
 	V: AsRef<[u8]>,
 	Bk: Write + AsRef<[u8]>,
 {
@@ -178,7 +178,7 @@ where
 pub fn raw_bput<K, V, Bv>(&self, key: K, val: V, mut buf: Bv)
 where
 	K: AsRef<[u8]>,
-	V: Serialize,
+	V: DbKey,
 	Bv: Write + AsRef<[u8]>,
 {
 	let val = ser::serialize(&mut buf, val).expect("failed to serialize insertion val");

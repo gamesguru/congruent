@@ -7,9 +7,9 @@ use conduwuit::{
 	matrix::{Event, pdu::PduBuilder},
 	utils::BoolExt,
 };
-use conduwuit_service::Services;
-use futures::{FutureExt, StreamExt, TryStreamExt};
-use ruma::{
+use conduwuit_service::{Services, rooms::state::root_handle_fingerprint};
+use futures::{FutureExt, TryStreamExt};
+use slipstream::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, UserId,
 	api::client::state::{get_state_events, get_state_events_for_key, send_state_event},
 	events::{
@@ -23,11 +23,13 @@ use ruma::{
 			server_acl::RoomServerAclEventContent,
 		},
 	},
-	serde::Raw,
+	sswire::Raw,
 };
-use serde_json::json;
 
-use crate::{Ruma, RumaResponse};
+use crate::{
+	Ruma, RumaResponse,
+	json_util::{json_response, require_object_content, single_field},
+};
 
 /// # `PUT /_matrix/client/*/rooms/{roomId}/state/{eventType}/{stateKey}`
 ///
@@ -40,12 +42,14 @@ pub(crate) async fn send_state_event_for_key_route(
 	let sender_user = body.sender_user();
 	services
 		.users
-		.update_device_last_seen(sender_user, body.sender_device.as_deref(), ip)
+		.update_device_last_seen(sender_user, body.sender_device.as_ref(), ip)
 		.await;
 
 	if services.users.is_suspended(sender_user).await? {
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
+
+	require_object_content(&body.body.body)?;
 
 	if let Some(delay) = body.delay {
 		if std::time::SystemTime::now().checked_add(delay).is_none() {
@@ -54,7 +58,7 @@ pub(crate) async fn send_state_event_for_key_route(
 		let event = conduwuit_service::rooms::delayed_events::ScheduledDelayedEvent {
 			event_type: body.event_type.clone().into(),
 			state_key: Some(body.state_key.clone()),
-			content: body.body.body.cast_ref().clone(),
+			content: body.body.body.cast(),
 			user_id: sender_user.to_owned(),
 			room_id: body.room_id.clone(),
 			running_since: std::time::SystemTime::now(),
@@ -66,10 +70,7 @@ pub(crate) async fn send_state_event_for_key_route(
 			.queue_delayed_event(event)
 			.await?;
 
-		return Ok(axum::Json(serde_json::json!({
-			"delay_id": delay_id,
-		}))
-		.into_response());
+		return Ok(json_response(single_field("delay_id", &delay_id)));
 	}
 
 	let event_id = send_state_event_for_key_helper(
@@ -131,25 +132,26 @@ pub(crate) async fn get_state_events_route(
 	}
 
 	// For departed users, serve state frozen at the point they left
-	let shortstatehash = if !is_joined {
-		let ssh = leave_shortstatehash(&services, sender_user, room_id).await;
+	let leave_root = if !is_joined {
+		let root = leave_roothandle(&services, sender_user, room_id).await;
 		info!(
 			target: "membership_debug",
-			"/state: departed user {sender_user} in {room_id}, leave_ssh={ssh:?}"
+			"/state: departed user {sender_user} in {room_id}, leave_root={:?}",
+			root.as_ref().map(root_handle_fingerprint)
 		);
-		ssh
+		root
 	} else {
 		None
 	};
 
-	let room_state: Vec<_> = if let Some(ssh) = shortstatehash {
+	let room_state: Vec<_> = if let Some(root) = leave_root {
 		services
 			.rooms
 			.state_accessor
-			.state_full_pdus(ssh)
-			.map(Event::into_format)
-			.collect()
-			.await
+			.state_full_pdus_hamt_strict(root)
+			.map_ok(Event::into_format)
+			.try_collect()
+			.await?
 	} else {
 		services
 			.rooms
@@ -197,16 +199,17 @@ pub(crate) async fn get_state_events_for_key_route(
 
 	// For departed users, look up state from the snapshot at departure
 	let event = if !is_joined {
-		if let Some(ssh) = leave_shortstatehash(&services, sender_user, room_id).await {
+		if let Some(root) = leave_roothandle(&services, sender_user, room_id).await {
 			info!(
 				target: "membership_debug",
-				"/state/{}: departed user {sender_user} in {room_id}, using leave_ssh={ssh}",
-				body.event_type
+				"/state/{}: departed user {sender_user} in {room_id}, using leave_root={:?}",
+				body.event_type,
+				Some(root_handle_fingerprint(&root))
 			);
 			services
 				.rooms
 				.state_accessor
-				.state_get(ssh, &body.event_type, &body.state_key)
+				.state_get_in_room_hamt(room_id, &root, &body.event_type, &body.state_key)
 				.await
 		} else {
 			services
@@ -236,18 +239,22 @@ pub(crate) async fn get_state_events_for_key_route(
 		.is_some_and(|f| f.to_lowercase().eq("event"));
 
 	Ok(get_state_events_for_key::v3::Response {
-		content: event_format.or(|| event.get_content_as_value()),
+		content: event_format.or(|| {
+			event
+				.get_content::<slipstream::json::Value>()
+				.expect("Failed to represent Event content as JsonValue")
+		}),
 		event: event_format.then(|| {
-			json!({
-				"content": event.content(),
-				"event_id": event.event_id(),
-				"origin_server_ts": event.origin_server_ts(),
-				"room_id": event.room_id_or_hash(),
-				"sender": event.sender(),
-				"state_key": event.state_key(),
-				"type": event.kind(),
-				"unsigned": event.unsigned(),
-			})
+			let mut object = slipstream::ObjectBuilder::new();
+			object.field("content", &event.content());
+			object.field("event_id", &event.event_id());
+			object.field("origin_server_ts", &event.origin_server_ts());
+			object.field("room_id", &event.room_id_or_hash());
+			object.field("sender", &event.sender());
+			object.field("state_key", &event.state_key());
+			object.field("type", &event.kind());
+			object.field("unsigned", &event.unsigned());
+			object.finish()
 		}),
 	})
 }
@@ -272,11 +279,11 @@ pub(crate) async fn get_state_events_for_empty_key_route(
 /// Get the shortstatehash for the state snapshot at the point when a user
 /// departed (left/banned) from a room. Returns None if the leave event
 /// can't be found or has no associated state snapshot.
-async fn leave_shortstatehash(
+async fn leave_roothandle(
 	services: &Services,
 	user_id: &UserId,
 	room_id: &RoomId,
-) -> Option<u64> {
+) -> Option<rezzy::hamt::RootHandle> {
 	let leave_pdu = services
 		.rooms
 		.state_cache
@@ -288,7 +295,7 @@ async fn leave_shortstatehash(
 	services
 		.rooms
 		.state_accessor
-		.pdu_shortstatehash(leave_pdu.event_id())
+		.pdu_roothandle_before_event(leave_pdu.event_id())
 		.await
 		.ok()
 }
@@ -313,11 +320,11 @@ async fn send_state_event_for_key_helper(
 		.await
 	{
 		if existing_event.sender() == sender {
-			if let Ok(existing_content) =
-				serde_json::from_str::<serde_json::Value>(existing_event.content().get())
-			{
+			if let Ok(existing_content) = slipstream::codec::from_str::<slipstream::json::Value>(
+				existing_event.content().get(),
+			) {
 				if let Ok(new_content) =
-					serde_json::from_str::<serde_json::Value>(json.json().get())
+					slipstream::codec::from_str::<slipstream::json::Value>(json.get())
 				{
 					if existing_content == new_content {
 						return Ok(existing_event.event_id().into());
@@ -333,7 +340,7 @@ async fn send_state_event_for_key_helper(
 		.build_and_append_pdu(
 			PduBuilder {
 				event_type: event_type.to_string().into(),
-				content: serde_json::from_str(json.json().get())?,
+				content: slipstream::codec::from_str(json.get())?,
 				state_key: Some(state_key.into()),
 				timestamp,
 				..Default::default()
@@ -505,7 +512,7 @@ async fn allowed_to_send_state_event(
 				| Ok(content) => content,
 				| Err(e) => {
 					let is_join_to_join = match UserId::parse(state_key) {
-						| Ok(uid) => services.rooms.state_cache.is_joined(uid, room_id).await,
+						| Ok(uid) => services.rooms.state_cache.is_joined(&uid, room_id).await,
 						| Err(_) => false,
 					};
 
@@ -517,8 +524,8 @@ async fn allowed_to_send_state_event(
 					}
 
 					// Attempt lenient parse: strip the offending field and retry
-					let mut raw_value: serde_json::Value =
-						serde_json::from_str(json.json().get()).map_err(|err| {
+					let mut raw_value: slipstream::json::Value =
+						slipstream::codec::from_str(json.get()).map_err(|err| {
 							err!(Request(BadJson(
 								"Membership content must have a valid JSON body with at least a \
 								 valid membership state: {err}"
@@ -530,7 +537,7 @@ async fn allowed_to_send_state_event(
 					}
 
 					let content =
-						serde_json::from_value::<RoomMemberEventContent>(raw_value.clone())
+						slipstream::codec::from_value::<RoomMemberEventContent>(&raw_value)
 							.map_err(|err| {
 								err!(Request(BadJson(
 									"Membership content must have a valid JSON body with at \
@@ -538,10 +545,7 @@ async fn allowed_to_send_state_event(
 								)))
 							})?;
 
-					*json = Raw::<AnyStateEventContent>::from_json_string(serde_json::to_string(
-						&raw_value,
-					)?)
-					.unwrap();
+					*json = Raw::<AnyStateEventContent>::from_value(&raw_value);
 					content
 				},
 			};
@@ -561,13 +565,11 @@ async fn allowed_to_send_state_event(
 					if services
 						.rooms
 						.state_cache
-						.is_joined(state_key, room_id)
+						.is_joined(&state_key, room_id)
 						.await
 					{
 						membership_content.join_authorized_via_users_server = None;
-						*json = Raw::<AnyStateEventContent>::from_json_string(
-							serde_json::to_string(&membership_content)?,
-						)?;
+						*json = Raw::<AnyStateEventContent>::from_value(&membership_content);
 						return Ok(());
 					}
 
@@ -606,13 +608,14 @@ async fn allowed_to_send_state_event(
 				.room_state_get(room_id, &StateEventType::RoomCreate, "")
 				.await;
 			if let Ok(room_create) = room_create {
-				if let Ok(create_content) =
-					serde_json::from_str::<RoomCreateEventContent>(room_create.content().get())
-				{
+				if let Ok(create_content) = slipstream::codec::from_str::<RoomCreateEventContent>(
+					room_create.content().get(),
+				) {
 					let room_features = RoomVersion::new(&create_content.room_version);
 					if let Ok(room_features) = room_features {
 						if room_features.explicitly_privilege_room_creators
-							&& let Ok(mut pl_content) = json.deserialize_as::<serde_json::Value>()
+							&& let Ok(mut pl_content) =
+								json.deserialize_as::<slipstream::json::Value>()
 							&& let Some(pl_obj) = pl_content.as_object_mut()
 						{
 							let mut creators = vec![room_create.sender().as_str().to_owned()];
@@ -635,7 +638,7 @@ async fn allowed_to_send_state_event(
 								let users_empty = pl_obj
 									.get("users")
 									.and_then(|u| u.as_object())
-									.is_none_or(serde_json::Map::is_empty);
+									.is_none_or(slipstream::json::Object::is_empty);
 								let has_non_users_content =
 									pl_obj.keys().any(|key| key != "users");
 
@@ -645,9 +648,7 @@ async fn allowed_to_send_state_event(
 									)));
 								}
 
-								*json = Raw::<AnyStateEventContent>::from_json_string(
-									serde_json::to_string(&pl_content)?,
-								)?;
+								*json = Raw::<AnyStateEventContent>::from_value(&pl_content);
 							}
 						}
 					}

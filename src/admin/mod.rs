@@ -1,4 +1,4 @@
-#![recursion_limit = "192"]
+#![recursion_limit = "384"]
 #![allow(clippy::wildcard_imports)]
 #![allow(clippy::enum_glob_use)]
 #![allow(clippy::too_many_arguments)]

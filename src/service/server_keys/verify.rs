@@ -1,11 +1,12 @@
 use conduwuit::{
-	Err, Result, debug_warn, implement, matrix::event::gen_event_id_canonical_json, trace,
+	Err, Result, debug_warn, implement,
+	matrix::{event::gen_event_id_canonical_json, pdu::RawJson as RawJsonValue},
+	trace,
 };
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedServerName, RoomVersionId,
 	ServerName, UserId, signatures::Verified,
 };
-use serde_json::value::RawValue as RawJsonValue;
 
 /// Extract the origin server(s) from an event and strip all non-origin
 /// signatures. Per the Matrix spec, only the origin server's signature is
@@ -27,43 +28,38 @@ fn isolate_origin_signatures(
 			| CanonicalJsonValue::String(s) => UserId::parse(s.as_str()).ok(),
 			| _ => None,
 		})
-		.map(|user_id| user_id.server_name().to_owned());
+		.map(|user_id| user_id.server_name());
 
 	// For V1/V2, event_id is server-assigned (e.g. "$abc:example.com"),
 	// so that server's signature is also authoritative.
 	let event_id_server: Option<OwnedServerName> = match room_version {
-		| RoomVersionId::V1 | RoomVersionId::V2 => event
-			.get("event_id")
-			.and_then(|v| match v {
-				| CanonicalJsonValue::String(s) => {
-					// V1/V2 event_ids look like "$opaque:server.name"
-					s.split_once(':')
-						.and_then(|(_, srv)| ServerName::parse(srv).ok())
-				},
-				| _ => None,
-			})
-			.map(ToOwned::to_owned),
+		| RoomVersionId::V1 | RoomVersionId::V2 => event.get("event_id").and_then(|v| match v {
+			| CanonicalJsonValue::String(s) => {
+				// V1/V2 event_ids look like "$opaque:server.name"
+				s.split_once(':')
+					.and_then(|(_, srv)| ServerName::parse(srv).ok())
+			},
+			| _ => None,
+		}),
 		| _ => None,
 	};
 
 	let Some(ref sender) = sender_server else {
-		// Can't determine origin — return as-is, let ruma handle the failure
+		// Can't determine origin — return as-is, let slipstream handle the failure
 		return event.clone();
 	};
 
 	// The `origin` field identifies the server that created/signed the event.
 	// For restricted joins, this differs from the sender (the resident server
 	// signs the join event on behalf of the joining user).
-	let origin_field_server: Option<OwnedServerName> = event
-		.get("origin")
-		.and_then(|v| match v {
+	let origin_field_server: Option<OwnedServerName> =
+		event.get("origin").and_then(|v| match v {
 			| CanonicalJsonValue::String(s) => ServerName::parse(s.as_str()).ok(),
 			| _ => None,
-		})
-		.map(ToOwned::to_owned);
+		});
 
 	// Build the set of origin servers to retain
-	let mut origin_servers: Vec<&ServerName> = vec![sender.as_ref()];
+	let mut origin_servers: Vec<&ServerName> = vec![sender];
 	if let Some(ref eid_server) = event_id_server {
 		if eid_server != sender {
 			origin_servers.push(eid_server.as_ref());
@@ -75,7 +71,7 @@ fn isolate_origin_signatures(
 		}
 	}
 
-	// For V8+ restricted joins, ruma requires a signature from the server of
+	// For V8+ restricted joins, slipstream requires a signature from the server of
 	// the user in `join_authorised_via_users_server`. We must retain it.
 	let authorized_server: Option<OwnedServerName> = match room_version {
 		| RoomVersionId::V1
@@ -91,7 +87,7 @@ fn isolate_origin_signatures(
 			.and_then(|c| c.get("join_authorised_via_users_server"))
 			.and_then(|v| v.as_str())
 			.and_then(|s| UserId::parse(s).ok())
-			.map(|u| u.server_name().to_owned()),
+			.map(|u| u.server_name()),
 	};
 	if let Some(ref auth_server) = authorized_server {
 		if !origin_servers.iter().any(|s| *s == auth_server.as_str()) {
@@ -222,7 +218,7 @@ pub async fn verify_event_at(
 
 	let keys = self.get_event_keys(&event, room_version).await?;
 
-	let result = ruma::signatures::verify_event(&keys, &event, room_version);
+	let result = slipstream::signatures::verify_event(&keys, &event, room_version);
 	if let Err(ref e) = result {
 		let event_id = event
 			.get("event_id")
@@ -231,14 +227,14 @@ pub async fn verify_event_at(
 		let signatures = event
 			.get("signatures")
 			.and_then(|v| v.as_object())
-			.map(|v| serde_json::to_string(v).unwrap_or_default())
+			.map(slipstream::codec::to_string)
 			.unwrap_or_default();
 		// Canonical JSON actually fed into the signature check (post
 		// isolate_origin_signatures, pre our own event_id re-insertion) --
 		// needed to diff against what the origin actually signed when
 		// tracking down canonicalization-mismatch verification failures.
 		// Remove once that's resolved; this is deliberately temporary.
-		let canonical_json = serde_json::to_string(&event).unwrap_or_default();
+		let canonical_json = slipstream::codec::to_string(&event);
 		conduwuit::warn!(
 			"Signature verification failed for event {event_id} in {context}. Error: {e:?}. \
 			 Available keys: {keys:?}. Event signatures: {signatures}. Canonical JSON verified: \
@@ -257,7 +253,7 @@ pub async fn verify_json(
 ) -> Result {
 	let room_version = room_version.unwrap_or(&RoomVersionId::V12);
 	let keys = self.get_event_keys(event, room_version).await?;
-	ruma::signatures::verify_json(&keys, event.clone()).map_err(Into::into)
+	slipstream::signatures::verify_json(&keys, event.clone()).map_err(Into::into)
 }
 
 use std::sync::Arc;
@@ -271,12 +267,12 @@ pub fn concurrent_validate_and_add_events<'a, I>(
 	room_version: &'a RoomVersionId,
 ) -> impl Stream<Item = Result<(OwnedEventId, CanonicalJsonObject)>> + Send + 'a
 where
-	I: IntoIterator<Item = Box<RawJsonValue>> + Send + 'a,
+	I: IntoIterator<Item = RawJsonValue> + Send + 'a,
 	<I as IntoIterator>::IntoIter: Send,
 {
 	let server_keys_outer = self.clone();
 	futures::stream::iter(events)
-		.map(move |pdu: Box<RawJsonValue>| {
+		.map(move |pdu: RawJsonValue| {
 			let server_keys = server_keys_outer.clone();
 			let room_version_id = room_version.clone();
 			let runtime = server_keys.services.server.runtime().clone();

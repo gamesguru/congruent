@@ -4,7 +4,7 @@ use axum::extract::State;
 use conduwuit::{Error, Result};
 use conduwuit_service::sending::EduBuf;
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	api::{
 		client::{error::ErrorKind, to_device::send_event_to_device},
 		federation::{self, transactions::edu::DirectDeviceContent},
@@ -22,7 +22,7 @@ pub(crate) async fn send_event_to_device_route(
 	body: Ruma<send_event_to_device::v3::Request>,
 ) -> Result<send_event_to_device::v3::Response> {
 	let sender_user = body.sender_user();
-	let sender_device = body.sender_device.as_deref();
+	let sender_device = body.sender_device_opt();
 
 	// Check if this is a new transaction id
 	if services
@@ -38,31 +38,34 @@ pub(crate) async fn send_event_to_device_route(
 		for (target_device_id_maybe, event) in map {
 			if !services.globals.user_is_local(target_user_id) {
 				let mut map = BTreeMap::new();
-				map.insert(target_device_id_maybe.clone(), event.clone());
+				let target_device_id = match target_device_id_maybe {
+					| DeviceIdOrAllDevices::DeviceId(device_id) =>
+						DeviceIdOrAllDevices::DeviceId(device_id.clone()),
+					| DeviceIdOrAllDevices::AllDevices => DeviceIdOrAllDevices::AllDevices,
+				};
+				map.insert(target_device_id, event.clone().cast());
 				let mut messages = BTreeMap::new();
 				messages.insert(target_user_id.clone(), map);
 				let count = services.globals.next_count()?;
 
 				let mut buf = EduBuf::new();
-				serde_json::to_writer(
-					&mut buf,
-					&federation::transactions::edu::Edu::DirectToDevice(DirectDeviceContent {
+				let edu =
+					federation::transactions::edu::Edu::DirectToDevice(DirectDeviceContent {
 						sender: sender_user.to_owned(),
 						ev_type: body.event_type.clone(),
-						message_id: count.to_string().into(),
+						message_id: slipstream::OwnedTransactionId::parse(count.to_string())?,
 						messages,
-					}),
-				)
-				.expect("DirectToDevice EDU can be serialized");
+					});
+				buf.extend_from_slice(slipstream::codec::to_string(&edu).as_bytes());
 
 				services
 					.sending
-					.send_reliable_edu_server(target_user_id.server_name(), buf)?;
+					.send_reliable_edu_server(&target_user_id.server_name(), buf)?;
 
 				continue;
 			}
 
-			let event_type = &body.event_type.to_string();
+			let event_type = &body.event_type.clone();
 
 			let event = event
 				.deserialize_as()
@@ -87,14 +90,17 @@ pub(crate) async fn send_event_to_device_route(
 					services
 						.users
 						.all_device_ids(target_user_id)
-						.for_each(|target_device_id| {
-							services.users.add_to_device_event(
-								sender_user,
-								target_user_id,
-								target_device_id,
-								event_type,
-								event.clone(),
-							)
+						.for_each(|target_device_id| async move {
+							services
+								.users
+								.add_to_device_event(
+									sender_user,
+									target_user_id,
+									&target_device_id,
+									event_type,
+									event.clone(),
+								)
+								.await;
 						})
 						.await;
 				},

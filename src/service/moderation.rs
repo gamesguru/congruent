@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use conduwuit::{Result, implement};
-use ruma::ServerName;
+use slipstream::ServerName;
 
 use crate::{Dep, config};
 
@@ -31,7 +31,7 @@ impl crate::Service for Service {
 #[must_use]
 pub fn is_remote_server_ignored(&self, server_name: &ServerName) -> bool {
 	// We must never block federating with ourselves
-	if server_name == self.services.config.server_name {
+	if self.services.config.server_name == server_name {
 		return false;
 	}
 
@@ -45,7 +45,7 @@ pub fn is_remote_server_ignored(&self, server_name: &ServerName) -> bool {
 #[must_use]
 pub fn is_remote_server_forbidden(&self, server_name: &ServerName) -> bool {
 	// We must never block federating with ourselves
-	if server_name == self.services.config.server_name {
+	if self.services.config.server_name == server_name {
 		return false;
 	}
 

@@ -2,7 +2,7 @@ use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, at};
 use futures::StreamExt;
-use ruma::api::client::dehydrated_device::{
+use slipstream::api::client::dehydrated_device::{
 	delete_dehydrated_device::unstable as delete_dehydrated_device,
 	get_dehydrated_device::unstable as get_dehydrated_device, get_events::unstable as get_events,
 	put_dehydrated_device::unstable as put_dehydrated_device,
@@ -21,16 +21,13 @@ pub(crate) async fn put_dehydrated_device_route(
 	ClientIp(client): ClientIp,
 	body: Ruma<put_dehydrated_device::Request>,
 ) -> Result<put_dehydrated_device::Response> {
-	let sender_user = body
-		.sender_user
-		.as_deref()
-		.expect("AccessToken authentication required");
+	let sender_user = body.sender_user().to_owned();
 
 	let device_id = body.body.device_id.clone();
 
 	services
 		.users
-		.set_dehydrated_device(sender_user, body.body)
+		.set_dehydrated_device(&sender_user, body.body)
 		.await?;
 
 	Ok(put_dehydrated_device::Response { device_id })

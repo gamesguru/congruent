@@ -10,12 +10,12 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use ruma::{
+use slipstream::{
 	CanonicalJsonValue, EventId, OwnedEventId, RoomId, ServerName, UserId,
 	api::federation::membership::create_join_event,
 	events::room::{join_rules::JoinRule, member::MembershipState},
+	sswire::Raw,
 };
-use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
 
 use crate::Ruma;
 
@@ -25,7 +25,7 @@ async fn create_join_event(
 	services: &Services,
 	origin: &ServerName,
 	room_id: &RoomId,
-	pdu: &RawJsonValue,
+	pdu: &Raw<slipstream::json::Value>,
 	omit_members: bool,
 ) -> Result<create_join_event::v2::RoomState> {
 	let (event_id, mut value, content, room_version_id, _sender, state_key) =
@@ -40,10 +40,10 @@ async fn create_join_event(
 
 	// We need to return the state prior to joining, let's keep a reference to that
 	// here
-	let shortstatehash = services
+	let root_handle = services
 		.rooms
 		.state
-		.get_room_shortstatehash(room_id)
+		.get_room_state_hamt(room_id)
 		.await
 		.map_err(|e| err!(Request(NotFound(error!("Room has no state: {e}")))))?;
 
@@ -60,7 +60,7 @@ async fn create_join_event(
 		.await;
 
 	if let Some(authorising_user) = content.join_authorized_via_users_server {
-		use ruma::RoomVersionId::*;
+		use slipstream::RoomVersionId::*;
 
 		if matches!(room_version_id, V1 | V2 | V3 | V4 | V5 | V6 | V7) {
 			return Err!(Request(InvalidParam(
@@ -127,13 +127,21 @@ async fn create_join_event(
 	.await?;
 
 	trace!("Fetching current state IDs");
-	let state_ids: Vec<OwnedEventId> = services
+	// Resolve short event IDs in batches rather than one lookup per state
+	// event; any traversal or lookup failure aborts the join response.
+	let short_event_ids: Vec<_> = services
 		.rooms
 		.state_accessor
-		.state_full_ids(shortstatehash)
-		.map(at!(1))
-		.collect()
-		.await;
+		.state_full_shortids_hamt(root_handle.clone())
+		.map_ok(at!(1))
+		.try_collect()
+		.await?;
+	let state_ids: Vec<OwnedEventId> = services
+		.rooms
+		.short
+		.multi_get_eventid_from_short::<OwnedEventId, _>(short_event_ids.into_iter().stream())
+		.try_collect()
+		.await?;
 
 	// Per MSC3943 (an addendum to MSC3706), a nameless room's heroes'
 	// membership events must still be included in a partial-state response so
@@ -143,13 +151,15 @@ async fn create_join_event(
 	// those instead and doesn't need heroes at all.
 	let heroes = if omit_members {
 		let (has_name, has_canonical_alias) = tokio::join!(
-			services
-				.rooms
-				.state_accessor
-				.state_contains_type(shortstatehash, &ruma::events::StateEventType::RoomName),
-			services.rooms.state_accessor.state_contains_type(
-				shortstatehash,
-				&ruma::events::StateEventType::RoomCanonicalAlias
+			services.rooms.state_accessor.state_contains_type_hamt(
+				room_id,
+				&root_handle,
+				&slipstream::events::StateEventType::RoomName,
+			),
+			services.rooms.state_accessor.state_contains_type_hamt(
+				room_id,
+				&root_handle,
+				&slipstream::events::StateEventType::RoomCanonicalAlias,
 			),
 		);
 		if has_name || has_canonical_alias {
@@ -222,7 +232,7 @@ async fn create_join_event(
 			let retained_state_id_set = &retained_state_id_set;
 			async move {
 				match event_id {
-					| Ok(event_id) if retained_state_id_set.contains(&*event_id) => None,
+					| Ok(event_id) if retained_state_id_set.contains(&event_id) => None,
 					| other => Some(other),
 				}
 			}
@@ -259,7 +269,7 @@ async fn create_join_event(
 	Ok(create_join_event::v2::RoomState {
 		auth_chain,
 		state,
-		event: to_raw_value(&CanonicalJsonValue::Object(value)).ok(),
+		event: Some(Raw::from_value(&CanonicalJsonValue::Object(value))),
 		members_omitted: omit_members,
 		servers_in_room,
 	})
@@ -304,6 +314,7 @@ pub(crate) async fn create_join_event_v1_route(
 		.boxed()
 		.await?;
 	let transformed = create_join_event::v1::RoomState {
+		origin: services.globals.server_name().to_string(),
 		auth_chain: room_state.auth_chain,
 		state: room_state.state,
 		event: room_state.event,

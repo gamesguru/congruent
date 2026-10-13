@@ -1,6 +1,6 @@
 use conduwuit::{Err, Result};
 use futures::{FutureExt, StreamExt};
-use ruma::{OwnedRoomId, OwnedRoomOrAliasId};
+use slipstream::{OwnedRoomId, OwnedRoomOrAliasId};
 
 use crate::{PAGE_SIZE, admin_command, get_room_info};
 
@@ -22,14 +22,14 @@ pub(super) async fn list_rooms(
 		.metadata
 		.iter_ids()
 		.filter_map(|room_id| async move {
-			(!exclude_disabled || !self.services.rooms.metadata.is_disabled(room_id).await)
+			(!exclude_disabled || !self.services.rooms.metadata.is_disabled(&room_id).await)
 				.then_some(room_id)
 		})
 		.filter_map(|room_id| async move {
-			(!exclude_banned || !self.services.rooms.metadata.is_banned(room_id).await)
+			(!exclude_banned || !self.services.rooms.metadata.is_banned(&room_id).await)
 				.then_some(room_id)
 		})
-		.then(|room_id| get_room_info(self.services, room_id))
+		.then(|room_id| async move { get_room_info(self.services, &room_id).await })
 		.then(|(room_id, total_members, name)| async move {
 			let local_members: Vec<_> = self
 				.services
@@ -94,7 +94,7 @@ pub(super) async fn bump(
 	self.bail_restricted()?;
 
 	if all {
-		let skip_set: std::collections::HashSet<&ruma::RoomId> =
+		let skip_set: std::collections::HashSet<&slipstream::RoomId> =
 			skip.iter().map(AsRef::as_ref).collect();
 		let ours = self.services.globals.server_name();
 		let rooms = self.services.rooms.state_cache.server_rooms(ours);
@@ -103,7 +103,7 @@ pub(super) async fn bump(
 		let mut skipped = 0_usize;
 
 		while let Some(room_id) = room_stream.next().await {
-			if skip_set.contains(room_id) {
+			if skip_set.contains(&room_id) {
 				skipped = skipped.saturating_add(1);
 				continue;
 			}
@@ -112,7 +112,7 @@ pub(super) async fn bump(
 				.services
 				.rooms
 				.state_cache
-				.active_local_users_in_room(room_id)
+				.active_local_users_in_room(&room_id)
 				.boxed()
 				.next()
 				.await
@@ -121,7 +121,7 @@ pub(super) async fn bump(
 				self.services
 					.rooms
 					.monitor
-					.check_room(room_id, 0)
+					.check_room(&room_id, 0)
 					.boxed()
 					.await?;
 				thumper = thumper.saturating_add(1);

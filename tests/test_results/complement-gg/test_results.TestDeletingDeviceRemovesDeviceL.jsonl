@@ -1,2 +1,0 @@
-{"Action":"pass","Test":"TestDeletingDeviceRemovesDeviceLocalNotificationSettings"}
-{"Action":"pass","Test":"TestDeletingDeviceRemovesDeviceLocalNotificationSettings/Deleting_a_user's_device_should_delete_any_local_notification_settings_entries_from_their_account_data"}

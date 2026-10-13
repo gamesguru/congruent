@@ -50,3 +50,9 @@ indent_style = tab
 
 [[bash]]
 indent_style=tab
+
+[*.git*]
+indent_style = tab
+
+[{COMMIT_EDITMSG,MERGE_MSG,SQUASH_MSG,TAG_EDITMSG,git-rebase-todo}]
+max_line_length = 72

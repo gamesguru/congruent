@@ -25,10 +25,10 @@ use crate::{admin, client, server};
 pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 	let config = &server.config;
 	let mut router = router
-        .ruma_route(&client::get_profile_key_route)
-        .ruma_route(&client::set_profile_key_route)
-        .ruma_route(&client::delete_profile_key_route)
-        .ruma_route(&client::appservice_ping)
+		.ruma_route(&client::get_profile_key_route)
+		.ruma_route(&client::set_profile_key_route)
+		.ruma_route(&client::delete_profile_key_route)
+		.ruma_route(&client::appservice_ping)
 		.ruma_route(&client::get_supported_versions_route)
 		.ruma_route(&client::get_register_available_route)
 		.ruma_route(&client::register::register_route)
@@ -69,11 +69,13 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::get_global_account_data_route)
 		.ruma_route(&client::get_room_account_data_route)
 		.route(
-			"/_matrix/client/unstable/org.matrix.msc3391/user/{user_id}/account_data/{event_type}",
+			"/_matrix/client/unstable/org.matrix.msc3391/user/{user_id}/account_data/\
+			 {event_type}",
 			delete(client::delete_global_account_data_msc3391_route),
 		)
 		.route(
-			"/_matrix/client/unstable/org.matrix.msc3391/user/{user_id}/rooms/{room_id}/account_data/{event_type}",
+			"/_matrix/client/unstable/org.matrix.msc3391/user/{user_id}/rooms/{room_id}/\
+			 account_data/{event_type}",
 			delete(client::delete_room_account_data_msc3391_route),
 		)
 		.ruma_route(&client::set_displayname_route)
@@ -113,8 +115,14 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::get_alias_route)
 		.ruma_route(&client::join_room_by_id_route)
 		.ruma_route(&client::join_room_by_id_or_alias_route)
-		.route("/_matrix/client/v3/rooms/{room_id}/joined_members", get(client::joined_members_route))
-		.route("/_matrix/client/r0/rooms/{room_id}/joined_members", get(client::joined_members_route))
+		.route(
+			"/_matrix/client/v3/rooms/{room_id}/joined_members",
+			get(client::joined_members_route),
+		)
+		.route(
+			"/_matrix/client/r0/rooms/{room_id}/joined_members",
+			get(client::joined_members_route),
+		)
 		.ruma_route(&client::knock_room_route)
 		.ruma_route(&client::leave_room_route)
 		.ruma_route(&client::forget_room_route)
@@ -258,7 +266,8 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::upgrade_room_route)
 		.ruma_route(&client::get_threads_route)
 		.route(
-			"/_matrix/client/unstable/io.element.msc4306/rooms/{room_id}/thread/{thread_id}/subscription",
+			"/_matrix/client/unstable/io.element.msc4306/rooms/{room_id}/thread/{thread_id}/\
+			 subscription",
 			get(client::get_thread_subscription_msc4306_route)
 				.put(client::put_thread_subscription_msc4306_route)
 				.delete(client::delete_thread_subscription_msc4306_route),
@@ -272,7 +281,7 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::get_room_summary)
 		.route(
 			"/_matrix/client/unstable/im.nheko.summary/rooms/{room_id_or_alias}/summary",
-			get(client::get_room_summary_legacy)
+			get(client::get_room_summary_legacy),
 		)
 		.ruma_route(&client::get_suspended_status)
 		.ruma_route(&client::put_suspended_status)
@@ -283,7 +292,10 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.route("/_continuwuity/server_version", get(client::conduwuit_server_version))
 		.ruma_route(&client::room_initial_sync_route)
 		.route("/client/server.json", get(client::syncv3_client_server_json))
-		.route("/_matrix/client/unstable/org.continuwuity.dag/{room_id}", get(client::get_room_dag_route))
+		.route(
+			"/_matrix/client/unstable/org.continuwuity.dag/{room_id}",
+			get(client::get_room_dag_route),
+		)
 		.ruma_route(&admin::rooms::ban::ban_room)
 		.ruma_route(&admin::rooms::list::list_rooms);
 
@@ -298,12 +310,15 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 			.ruma_route(&server::get_remote_server_keys_route)
 			.ruma_route(&server::get_remote_server_keys_batch_route)
 			.merge(
-			Router::new()
-				.ruma_route(&server::get_public_rooms_route)
-				.ruma_route(&server::get_public_rooms_filtered_route)
-				.layer(axum::middleware::map_response(inject_public_join_rule)),
-		)
-			.ruma_route(&server::send_transaction_message_route)
+				Router::new()
+					.ruma_route(&server::get_public_rooms_route)
+					.ruma_route(&server::get_public_rooms_filtered_route)
+					.layer(axum::middleware::map_response(inject_public_join_rule)),
+			)
+			.route(
+				"/_matrix/federation/v1/send/{txnId}",
+				put(server::send_transaction_message_route),
+			)
 			.ruma_route(&server::get_event_route)
 			.ruma_route(&server::get_backfill_route)
 			.ruma_route(&server::get_missing_events_route)
@@ -336,7 +351,16 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 			.route(
 				"/_matrix/federation/unstable/org.matrix.msc0f01/room_digest/{room_id}",
 				get(server::room_digest::get_room_digest_route),
-			)
+			);
+
+		if config.experimental_features.msc4500_enabled {
+			router = router.route(
+				"/_matrix/federation/unstable/tk.nutra.msc4500/state_accumulator/{room_id}",
+				get(server::get_state_accumulator_route),
+			);
+		}
+
+		router = router
 			.route("/_conduwuit/local_user_count", get(client::conduwuit_local_user_count))
 			.route("/_continuwuity/local_user_count", get(client::conduwuit_local_user_count));
 	} else {
@@ -447,15 +471,19 @@ async fn inject_public_join_rule(res: axum::response::Response) -> axum::respons
 		return axum::response::Response::from_parts(parts, axum::body::Body::empty());
 	};
 
-	if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+	if let Some(mut json) = std::str::from_utf8(&bytes)
+		.ok()
+		.and_then(|text| slipstream::codec::from_str::<slipstream::json::Value>(text).ok())
+	{
 		if let Some(chunk) = json.get_mut("chunk").and_then(|c| c.as_array_mut()) {
 			for room in chunk {
 				if room.get("join_rule").is_none() {
-					room["join_rule"] = serde_json::json!("public");
+					room["join_rule"] = slipstream::json::Value::String("public".into());
 				}
 			}
 		}
-		if let Ok(modified_bytes) = serde_json::to_vec(&json) {
+		{
+			let modified_bytes = slipstream::codec::to_string(&json).into_bytes();
 			return axum::response::Response::from_parts(
 				parts,
 				axum::body::Body::from(modified_bytes),
@@ -466,12 +494,12 @@ async fn inject_public_join_rule(res: axum::response::Response) -> axum::respons
 	axum::response::Response::from_parts(parts, axum::body::Body::from(bytes))
 }
 
-/// ruma's `ResultRoomEvents::results` has `skip_serializing_if =
+/// slipstream's `ResultRoomEvents::results` has `skip_serializing_if =
 /// "Vec::is_empty"`, so an empty page of search results serializes with the
 /// `results` key dropped entirely rather than as `results: []`. Complement's
 /// `Can back-paginate search results` test (and the spec's implied contract)
 /// expects the key to always be present when `room_events` was requested.
-/// Patched here at the response-body level instead of in the vendored ruma
+/// Patched here at the response-body level instead of in the vendored slipstream
 /// crate, mirroring `inject_public_join_rule` above.
 async fn ensure_search_results_present(
 	res: axum::response::Response,
@@ -484,17 +512,21 @@ async fn ensure_search_results_present(
 		return axum::response::Response::from_parts(parts, axum::body::Body::empty());
 	};
 
-	if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+	if let Some(mut json) = std::str::from_utf8(&bytes)
+		.ok()
+		.and_then(|text| slipstream::codec::from_str::<slipstream::json::Value>(text).ok())
+	{
 		if let Some(room_events) = json
 			.get_mut("search_categories")
 			.and_then(|c| c.get_mut("room_events"))
 			.and_then(|r| r.as_object_mut())
 		{
 			room_events
-				.entry("results")
-				.or_insert_with(|| serde_json::json!([]));
+				.entry("results".to_owned())
+				.or_insert_with(|| slipstream::json::Value::Array(Vec::new()));
 		}
-		if let Ok(modified_bytes) = serde_json::to_vec(&json) {
+		{
+			let modified_bytes = slipstream::codec::to_string(&json).into_bytes();
 			return axum::response::Response::from_parts(
 				parts,
 				axum::body::Body::from(modified_bytes),
@@ -505,7 +537,7 @@ async fn ensure_search_results_present(
 	axum::response::Response::from_parts(parts, axum::body::Body::from(bytes))
 }
 
-/// ruma's `get_message_events::v3::Request::dir` is a required `Direction`
+/// slipstream's `get_message_events::v3::Request::dir` is a required `Direction`
 /// (no `Option`, no `#[serde(default)]`), matching the letter of the spec
 /// ("dir (Required)"). But Synapse treats it as optional and defaults to
 /// forwards when absent (`PaginationConfig.from_request`,
@@ -517,10 +549,10 @@ async fn ensure_search_results_present(
 /// request missing `dir` would otherwise 400 with `M_BAD_JSON` before our
 /// handler ever gets to run its own checks.
 ///
-/// Since this is a required *request* field (not a response shape ruma
+/// Since this is a required *request* field (not a response shape slipstream
 /// serializes for us), it can't be patched the same way as the
 /// response-side workarounds above -- there's no body to fix up after the
-/// fact, because ruma's deserializer rejects the request before our handler
+/// fact, because slipstream's deserializer rejects the request before our handler
 /// runs. Instead this injects a default `dir=f` into the query string
 /// ahead of extraction, mirroring Synapse's default.
 async fn default_messages_dir(

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use conduwuit::{implement, trace};
 use futures::{Future, FutureExt, StreamExt, stream::FuturesUnordered};
-use ruma::{DeviceId, UserId};
+use slipstream::{DeviceId, UserId};
 
 #[implement(super::Service)]
 pub async fn setup_watch<'a>(
@@ -41,7 +41,7 @@ pub async fn setup_watch<'a>(
 
 	// Collect joined rooms into a HashSet for O(1) lookups
 	let rooms_joined_stream = self.services.state_cache.rooms_joined(user_id);
-	let joined_rooms: HashSet<_> = rooms_joined_stream.map(ToOwned::to_owned).collect().await;
+	let joined_rooms: HashSet<_> = rooms_joined_stream.collect().await;
 
 	// Exactly ONE typing watcher for the entire sync loop
 	if !joined_rooms.is_empty() {
@@ -114,6 +114,11 @@ pub async fn setup_watch<'a>(
 	// More key changes (used when user is not joined to any rooms)
 	futures.push(self.db.keychangeid_userid.watch_prefix(&userid_prefix));
 	futures.push(self.db.deviceleftid_userid.watch_prefix(&userid_prefix));
+
+	// MSC4429 profile updates are keyed by global stream position, so they
+	// cannot be watched with the syncing user's key prefix. A global watcher is
+	// required to wake profile-filtered /sync requests promptly.
+	futures.push(self.db.userprofileupdate_value.watch_prefix(&[]));
 
 	// One time keys
 	futures.push(

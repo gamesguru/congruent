@@ -10,7 +10,9 @@ use conduwuit::{
 };
 use database::{Deserialized, Json, Map};
 use futures::{FutureExt, Stream, StreamExt};
-use ruma::{CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, RoomId};
+use slipstream::{
+	CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, RoomId,
+};
 
 use crate::{Dep, rooms, rooms::short::ShortRoomId};
 
@@ -77,8 +79,8 @@ pub fn stream_keys(&self) -> impl Stream<Item = OwnedEventId> + Send + '_ {
 		.raw_stream()
 		.ignore_err()
 		.ready_filter_map(|(key, val)| {
-			let eid = OwnedEventId::try_from(std::str::from_utf8(key).ok()?).ok()?;
-			let meta: rooms::timeline::EventMetadata = bincode::deserialize(val).ok()?;
+			let eid = OwnedEventId::parse(std::str::from_utf8(key).ok()?).ok()?;
+			let meta = rooms::timeline::EventMetadata::from_bincode(val).ok()?;
 			meta.is_outlier.then_some(eid)
 		})
 }
@@ -112,7 +114,7 @@ pub fn room_stream<'a>(
 				.raw_stream()
 				.ignore_err()
 				.ready_filter_map(move |(key, val)| {
-					let eid = OwnedEventId::try_from(std::str::from_utf8(key).ok()?).ok()?;
+					let eid = OwnedEventId::parse(std::str::from_utf8(key).ok()?).ok()?;
 					let meta: rooms::timeline::EventMetadata = bincode::deserialize(val).ok()?;
 					if !meta.is_outlier {
 						return None;
@@ -129,7 +131,9 @@ pub fn room_stream<'a>(
 			async move {
 				let pdu = self.get_pdu_outlier(&eid).await.ok()?;
 				// If metadata had a 0 short_room_id, we must check the actual PDU room_id
-				if meta_short_room_id == 0 && pdu.room_id() != Some(&*room_id) {
+				if meta_short_room_id == 0
+					&& pdu.room_id().map(OwnedRoomId::as_str) != Some(&*room_id)
+				{
 					return None;
 				}
 				Some((eid, pdu))
@@ -207,8 +211,7 @@ fn derive_room_id(
 ) -> Option<OwnedRoomId> {
 	pdu.get("room_id")
 		.and_then(CanonicalJsonValue::as_str)
-		.and_then(|r| <&RoomId>::try_from(r).ok())
-		.map(ToOwned::to_owned)
+		.and_then(|r| OwnedRoomId::parse(r).ok())
 		.or_else(|| room_id.map(ToOwned::to_owned))
 		.or_else(|| {
 			let is_create =
@@ -229,22 +232,48 @@ pub fn add_pdu_outlier_batch<'a>(
 	pdu: &CanonicalJsonObject,
 	room_id: Option<&RoomId>,
 ) {
+	self.add_pdu_outlier_batch_impl(batch, event_id, pdu, room_id, false);
+}
+
+/// Append the PDU as an outlier during demotion of a timeline event.
+///
+/// Bypasses the `!meta.is_outlier` guard because the event's timeline pointers
+/// are being removed in the same `Batch`.
+#[implement(Service)]
+#[tracing::instrument(skip(self, batch, pdu), level = "debug")]
+pub fn add_pdu_outlier_batch_demote<'a>(
+	&'a self,
+	batch: &mut database::Batch<'a>,
+	event_id: &EventId,
+	pdu: &CanonicalJsonObject,
+	room_id: Option<&RoomId>,
+) {
+	self.add_pdu_outlier_batch_impl(batch, event_id, pdu, room_id, true);
+}
+
+#[implement(Service)]
+fn add_pdu_outlier_batch_impl<'a>(
+	&'a self,
+	batch: &mut database::Batch<'a>,
+	event_id: &EventId,
+	pdu: &CanonicalJsonObject,
+	room_id: Option<&RoomId>,
+	demote: bool,
+) {
 	// Guard: never overwrite an event that already has a timeline entry.
 	// The eventid_pdu and eventid_metadata tables are shared between timeline
 	// and outlier paths. Re-adding a timeline event as an outlier would set
 	// is_outlier=true and zero out deprecated_local_topo_depth, making the event
 	// invisible to /sync's timeline iterator (the "stuck state" bug).
-	let mut existing_outlier_meta = None;
 	if let Ok(existing_meta) = self.db.eventid_metadata.get_blocking(event_id.as_bytes()) {
 		if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&existing_meta) {
-			if !meta.is_outlier {
+			if !demote && !meta.is_outlier {
 				info!(
 					%event_id,
 					"add_pdu_outlier: skipping, event already in timeline"
 				);
 				return;
 			}
-			existing_outlier_meta = Some(meta);
 		}
 	}
 
@@ -259,40 +288,27 @@ pub fn add_pdu_outlier_batch<'a>(
 		.batch_raw_put(batch, event_id.as_bytes(), Json(&pdu));
 
 	if let Ok(parsed_pdu) =
-		serde_json::from_value::<PduEvent>(serde_json::to_value(&pdu).unwrap())
+		slipstream::codec::from_value::<PduEvent>(&slipstream::json::Value::Object(pdu.clone()))
 	{
 		let short_room_id = room_id_from_pdu
-			.as_deref()
+			.as_ref()
 			.map_or(0, |rid| self.services.short.get_or_create_shortroomid_blocking(rid));
 
 		// `PduEvent::rejected` is `#[serde(skip)]` (bookkeeping only, never on
 		// the wire), so a freshly-parsed `parsed_pdu` always reports
-		// `rejected() == false` here. Carry over any rejected/soft-failed
-		// state from an existing outlier entry so this call doesn't clobber
-		// a rejection that mark_event_rejected() just recorded moments ago
-		// (every reject call site adds the outlier immediately afterwards).
+		// `rejected() == false` here. Rejection/soft-fail verdicts live in
+		// the independent `eventid_rejections` / `eventid_softfailed`
+		// stores, which this function never touches, so a rejection recorded
+		// by `mark_event_rejected()` is preserved across the outlier write.
 		let metadata = rooms::timeline::EventMetadata {
 			short_room_id,
 			is_outlier: true,
 			origin_server_ts: parsed_pdu.origin_server_ts().0,
 			depth: parsed_pdu.depth(),
-			soft_failed: existing_outlier_meta
-				.as_ref()
-				.is_some_and(|m| m.soft_failed),
-			rejected: parsed_pdu.rejected()
-				|| existing_outlier_meta.as_ref().is_some_and(|m| m.rejected),
 			redacted_by: parsed_pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: None,
 			deprecated_local_topo_depth: 0,
 			pdu_count: None,
-			soft_fail_reason: existing_outlier_meta
-				.as_ref()
-				.map(|m| m.soft_fail_reason.clone())
-				.unwrap_or_default(),
-			rejection_reason: existing_outlier_meta
-				.as_ref()
-				.map(|m| m.rejection_reason.clone())
-				.unwrap_or_default(),
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
 			self.db

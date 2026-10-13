@@ -6,16 +6,16 @@ use std::{collections::HashMap, sync::Arc};
 use conduwuit::{
 	Pdu, Result, SyncRwLock, implement,
 	result::LogErr,
-	utils::{ReadyExt, stream::TryIgnore},
+	utils::{MutexMap, ReadyExt, stream::TryIgnore},
 	warn,
 };
 use database::{Deserialized, Ignore, Interfix, Map};
 use futures::{Stream, StreamExt, future::join5, pin_mut};
 use moka::sync::Cache;
-use ruma::{
+use slipstream::{
 	OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, ServerName, UserId,
 	events::{AnyStrippedStateEvent, room::member::MembershipState},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::{Dep, account_data, appservice::RegistrationInfo, config, globals, rooms, users};
@@ -27,6 +27,11 @@ pub struct Service {
 	services: Services,
 	db: Data,
 	pub rooms_joining: SyncRwLock<std::collections::HashSet<OwnedRoomId>>,
+	/// Serializes the read-decide-write sections of `mark_as_left` and
+	/// `mark_as_invited`. `mark_as_left` reads the pending invite to decide
+	/// whether to preserve it and then applies a batch; an invite landing
+	/// between that read and the write was deleted by the stale decision.
+	membership_mutex: MutexMap<OwnedRoomId, ()>,
 }
 
 struct Services {
@@ -37,6 +42,7 @@ struct Services {
 	state: Dep<rooms::state::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	users: Dep<users::Service>,
+	spaces: Dep<rooms::spaces::Service>,
 }
 
 struct Data {
@@ -66,6 +72,7 @@ impl crate::Service for Service {
 		Ok(Arc::new(Self {
 			appservice_in_room_cache: SyncRwLock::new(HashMap::new()),
 			rooms_joining: SyncRwLock::new(std::collections::HashSet::new()),
+			membership_mutex: MutexMap::new(),
 			// Ugly way to build the cache with a dynamic capacity
 			server_visibility_cache: Cache::builder()
 				.max_capacity(
@@ -104,6 +111,7 @@ impl crate::Service for Service {
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				users: args.depend::<users::Service>("users"),
+				spaces: args.depend::<rooms::spaces::Service>("rooms::spaces"),
 			},
 			db: Data {
 				roomid_invitedcount: args.db["roomid_invitedcount"].clone(),
@@ -183,13 +191,13 @@ pub fn clear_appservice_in_room_cache(&self) { self.appservice_in_room_cache.wri
 pub fn room_servers<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a ServerName> + Send + 'a {
+) -> impl Stream<Item = OwnedServerName> + Send + 'a {
 	let prefix = (room_id, Interfix);
 	self.db
 		.roomserverids
 		.keys_prefix(&prefix)
 		.ignore_err()
-		.map(|(_, server): (Ignore, &ServerName)| server)
+		.map(|(_, server): (Ignore, OwnedServerName)| server)
 }
 
 #[implement(Service)]
@@ -228,14 +236,14 @@ pub async fn server_is_participant<'a>(
 pub fn server_rooms<'a>(
 	&'a self,
 	server: &'a ServerName,
-) -> impl Stream<Item = &'a RoomId> + Send + 'a {
+) -> impl Stream<Item = OwnedRoomId> + Send + 'a {
 	let prefix = (server, Interfix);
 	self.db
 		.serverroomids
 		.keys_prefix(&prefix)
 		.ignore_err()
-		.map(|(_, room_id): (Ignore, &RoomId)| room_id)
-		.ready_filter(|room_id| <&RoomId>::try_from(room_id.as_str()).is_ok())
+		.map(|(_, room_id): (Ignore, OwnedRoomId)| room_id)
+		.ready_filter(|room_id| RoomId::parse(room_id.as_str()).is_ok())
 }
 
 /// Expose raw keys for the clean_corrupt_rooms command
@@ -267,8 +275,8 @@ pub async fn server_sees_user(&self, server: &ServerName, user_id: &UserId) -> b
 	let sees = self
 		.server_rooms(server)
 		.any(|room_id| async move {
-			self.is_invited_or_joined(user_id, room_id).await
-				|| self.is_knocked(user_id, room_id).await
+			self.is_invited_or_joined(user_id, &room_id).await
+				|| self.is_knocked(user_id, &room_id).await
 		})
 		.await;
 
@@ -310,7 +318,7 @@ pub fn get_shared_rooms<'a>(
 	&'a self,
 	user_a: &'a UserId,
 	user_b: &'a UserId,
-) -> impl Stream<Item = &'a RoomId> + Send + 'a {
+) -> impl Stream<Item = OwnedRoomId> + Send + 'a {
 	use conduwuit::utils::set;
 
 	let a = self.rooms_joined(user_a);
@@ -324,13 +332,13 @@ pub fn get_shared_rooms<'a>(
 pub fn room_members<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a UserId> + Send + 'a {
+) -> impl Stream<Item = OwnedUserId> + Send + 'a {
 	let prefix = (room_id, Interfix);
 	self.db
 		.roomuserid_joined
 		.keys_prefix(&prefix)
 		.ignore_err()
-		.map(|(_, user_id): (Ignore, &UserId)| user_id)
+		.map(|(_, user_id): (Ignore, OwnedUserId)| user_id)
 }
 
 /// Invalidate user visibility cache for all users in the room.
@@ -339,10 +347,10 @@ pub fn room_members<'a>(
 pub async fn invalidate_user_visibility(&self, user_id: &UserId, room_id: &RoomId) {
 	self.room_members(room_id)
 		.ready_for_each(|other_user| {
-			let key = if user_id < other_user {
-				(user_id.to_owned(), other_user.to_owned())
+			let key = if user_id < &other_user {
+				(user_id.to_owned(), other_user)
 			} else {
-				(other_user.to_owned(), user_id.to_owned())
+				(other_user, user_id.to_owned())
 			};
 			self.user_visibility_cache.invalidate(&key);
 		})
@@ -356,7 +364,7 @@ pub async fn invalidate_server_visibility(&self, user_id: &UserId, room_id: &Roo
 	self.room_servers(room_id)
 		.ready_for_each(|server| {
 			self.server_visibility_cache
-				.invalidate(&(server.to_owned(), user_id.to_owned()));
+				.invalidate(&(server, user_id.to_owned()));
 		})
 		.await;
 }
@@ -375,7 +383,7 @@ pub async fn room_joined_count(&self, room_id: &RoomId) -> Result<u64> {
 pub fn local_users_in_room<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a UserId> + Send + 'a {
+) -> impl Stream<Item = OwnedUserId> + Send + 'a {
 	self.room_members(room_id)
 		.ready_filter(|user| self.services.globals.user_is_local(user))
 }
@@ -387,9 +395,11 @@ pub fn local_users_in_room<'a>(
 pub fn active_local_users_in_room<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a UserId> + Send + 'a {
-	self.local_users_in_room(room_id)
-		.filter(|user| self.services.users.is_active(user))
+) -> impl Stream<Item = OwnedUserId> + Send + 'a {
+	self.local_users_in_room(room_id).filter(move |user| {
+		let user = user.clone();
+		async move { self.services.users.is_active(&user).await }
+	})
 }
 
 /// Returns the number of users which are currently invited to a room
@@ -409,13 +419,13 @@ pub async fn room_invited_count(&self, room_id: &RoomId) -> Result<u64> {
 pub fn room_useroncejoined<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a UserId> + Send + 'a {
+) -> impl Stream<Item = OwnedUserId> + Send + 'a {
 	let prefix = (room_id, Interfix);
 	self.db
 		.roomuseroncejoinedids
 		.keys_prefix(&prefix)
 		.ignore_err()
-		.map(|(_, user_id): (Ignore, &UserId)| user_id)
+		.map(|(_, user_id): (Ignore, OwnedUserId)| user_id)
 }
 
 /// Returns an iterator over all invited members of a room.
@@ -424,13 +434,13 @@ pub fn room_useroncejoined<'a>(
 pub fn room_members_invited<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a UserId> + Send + 'a {
+) -> impl Stream<Item = OwnedUserId> + Send + 'a {
 	let prefix = (room_id, Interfix);
 	self.db
 		.roomuserid_invitecount
 		.keys_prefix(&prefix)
 		.ignore_err()
-		.map(|(_, user_id): (Ignore, &UserId)| user_id)
+		.map(|(_, user_id): (Ignore, OwnedUserId)| user_id)
 }
 
 /// Returns an iterator over all knocked members of a room.
@@ -439,13 +449,13 @@ pub fn room_members_invited<'a>(
 pub fn room_members_knocked<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a UserId> + Send + 'a {
+) -> impl Stream<Item = OwnedUserId> + Send + 'a {
 	let prefix = (room_id, Interfix);
 	self.db
 		.roomuserid_knockedcount
 		.keys_prefix(&prefix)
 		.ignore_err()
-		.map(|(_, user_id): (Ignore, &UserId)| user_id)
+		.map(|(_, user_id): (Ignore, OwnedUserId)| user_id)
 }
 
 #[implement(Service)]
@@ -483,13 +493,13 @@ pub async fn get_left_count(&self, room_id: &RoomId, user_id: &UserId) -> Result
 pub fn rooms_joined<'a>(
 	&'a self,
 	user_id: &'a UserId,
-) -> impl Stream<Item = &'a RoomId> + Send + 'a {
+) -> impl Stream<Item = OwnedRoomId> + Send + 'a {
 	let prefix = (user_id, Interfix);
 	self.db
 		.userroomid_joined
 		.keys_prefix(&prefix)
 		.ignore_err()
-		.map(|(_, room_id): (Ignore, &RoomId)| room_id)
+		.map(|(_, room_id): (Ignore, OwnedRoomId)| room_id)
 }
 
 /// Returns an iterator over all rooms a user was invited to.
@@ -500,15 +510,15 @@ pub fn rooms_invited<'a>(
 	user_id: &'a UserId,
 ) -> impl Stream<Item = StrippedStateEventItem> + Send + 'a {
 	type KeyVal<'a> = (Key<'a>, &'a [u8]);
-	type Key<'a> = (&'a UserId, &'a RoomId);
+	type Key<'a> = (OwnedUserId, OwnedRoomId);
 
 	let prefix = (user_id, Interfix);
 	self.db
 		.userroomid_invitestate
 		.stream_prefix(&prefix)
 		.ignore_err()
-		.map(|((_, room_id), state): KeyVal<'_>| (room_id.to_owned(), state))
-		.map(|(room_id, state)| Ok((room_id, serde_json::from_slice(state)?)))
+		.map(|((_, room_id), state): KeyVal<'_>| (room_id, state))
+		.map(|(room_id, state)| Ok((room_id, database::from_json_slice(state)?)))
 		.ignore_err()
 }
 
@@ -521,15 +531,15 @@ pub fn rooms_knocked<'a>(
 ) -> impl Stream<Item = StrippedStateEventItem> + Send + 'a {
 	// TODO: other places we depend on shorteventid but might not update it?
 	type KeyVal<'a> = (Key<'a>, &'a [u8]);
-	type Key<'a> = (&'a UserId, &'a RoomId);
+	type Key<'a> = (OwnedUserId, OwnedRoomId);
 
 	let prefix = (user_id, Interfix);
 	self.db
 		.userroomid_knockedstate
 		.stream_prefix(&prefix)
 		.ignore_err()
-		.map(|((_, room_id), state): KeyVal<'_>| (room_id.to_owned(), state))
-		.map(|(room_id, state)| Ok((room_id, serde_json::from_slice(state)?)))
+		.map(|((_, room_id), state): KeyVal<'_>| (room_id, state))
+		.map(|(room_id, state)| Ok((room_id, database::from_json_slice(state)?)))
 		.inspect(|res| {
 			if let Err(e) = res {
 				conduwuit::warn!("rooms_knocked deserialize error: {e}");
@@ -550,7 +560,7 @@ pub async fn invite_state(
 		.userroomid_invitestate
 		.qry(&key)
 		.await
-		.and_then(|handle| serde_json::from_slice(&handle).map_err(Into::into))
+		.and_then(|handle| database::from_json_slice(&handle))
 }
 
 #[implement(Service)]
@@ -565,7 +575,7 @@ pub async fn knock_state(
 		.userroomid_knockedstate
 		.qry(&key)
 		.await
-		.and_then(|handle| serde_json::from_slice(&handle).map_err(Into::into))
+		.and_then(|handle| database::from_json_slice(&handle))
 }
 
 #[implement(Service)]
@@ -576,7 +586,7 @@ pub async fn left_state(&self, user_id: &UserId, room_id: &RoomId) -> Result<Opt
 		.userroomid_leftstate
 		.qry(&key)
 		.await
-		.and_then(|handle| serde_json::from_slice(&handle).map_err(Into::into))
+		.and_then(|handle| database::from_json_slice(&handle))
 }
 
 /// Returns an iterator over all rooms a user left.
@@ -587,14 +597,14 @@ pub fn rooms_left<'a>(
 	user_id: &'a UserId,
 ) -> impl Stream<Item = (OwnedRoomId, Option<Pdu>)> + Send + 'a {
 	type KeyVal<'a> = (Key<'a>, Raw<Option<Pdu>>);
-	type Key<'a> = (&'a UserId, &'a RoomId);
+	type Key<'a> = (OwnedUserId, OwnedRoomId);
 
 	let prefix = (user_id, Interfix);
 	self.db
 		.userroomid_leftstate
 		.stream_prefix(&prefix)
 		.ignore_err()
-		.map(|((_, room_id), state): KeyVal<'_>| (room_id.to_owned(), state))
+		.map(|((_, room_id), state): KeyVal<'_>| (room_id, state))
 		.map(|(room_id, state)| Ok((room_id, state.deserialize()?)))
 		.ignore_err()
 }
@@ -619,7 +629,8 @@ pub async fn user_membership(
 		| (true, ..) => Some(MembershipState::Join),
 		| (_, true, ..) => {
 			if let Ok(Some(pdu)) = self.left_state(user_id, room_id).await {
-				if let Ok(content) = serde_json::from_str::<serde_json::Value>(pdu.content.get())
+				if let Ok(content) =
+					slipstream::codec::from_str::<slipstream::json::Value>(pdu.content.get())
 				{
 					if content.get("membership").and_then(|m| m.as_str()) == Some("ban") {
 						return Some(MembershipState::Ban);
@@ -715,11 +726,11 @@ pub async fn invite_sender(&self, user_id: &UserId, room_id: &RoomId) -> Result<
 }
 #[cfg(test)]
 mod serde_test3 {
-	use ruma::events::room::member::RoomMemberEventContent;
+	use slipstream::events::room::member::RoomMemberEventContent;
 	#[test]
 	fn test_serde() {
 		let s = r#"{"displayname":"user-2 🏳️‍⚧️","membership":"join"}"#;
-		match serde_json::from_str::<RoomMemberEventContent>(s) {
+		match slipstream::codec::from_str::<RoomMemberEventContent>(s) {
 			| Ok(c) => println!("Success: {:?}", c.membership),
 			| Err(e) => panic!("Error: {}", e),
 		}

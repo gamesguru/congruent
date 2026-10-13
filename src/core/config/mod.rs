@@ -18,16 +18,55 @@ use figment::providers::{Env, Format, Toml};
 pub use figment::{Figment, value::Value as FigmentValue};
 use lettre::message::Mailbox;
 use regex::RegexSet;
-use ruma::{
+use serde::{Deserialize, Serialize, de::IgnoredAny};
+use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, RoomVersionId,
 	api::client::discovery::{discover_homeserver::RtcFocusInfo, discover_support::ContactRole},
 };
-use serde::{Deserialize, Serialize, de::IgnoredAny};
 use url::Url;
 
 use self::proxy::ProxyConfig;
 pub use self::{check::check, manager::Manager};
 use crate::{Result, err, error::Error, utils::sys};
+
+fn deserialize_slipstream<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: slipstream::codec::Deserialize,
+{
+	let value = crate::utils::SerdeValue::deserialize(deserializer)?.0;
+	slipstream::codec::from_value(&value).map_err(serde::de::Error::custom)
+}
+
+fn deserialize_slipstream_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: slipstream::codec::Deserialize,
+{
+	let value = crate::utils::SerdeValue::deserialize(deserializer)?.0;
+	slipstream::codec::from_value(&value).map_err(serde::de::Error::custom)
+}
+
+fn deserialize_slipstream_opt<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: slipstream::codec::Deserialize,
+{
+	let value = Option::<crate::utils::SerdeValue>::deserialize(deserializer)?;
+	value
+		.map(|crate::utils::SerdeValue(value)| {
+			slipstream::codec::from_value(&value).map_err(serde::de::Error::custom)
+		})
+		.transpose()
+}
+
+fn clone_slipstream<T>(value: &T) -> T
+where
+	T: slipstream::codec::Serialize + slipstream::codec::Deserialize,
+{
+	slipstream::codec::from_value(&slipstream::codec::to_value(value))
+		.expect("valid Slipstream value must round-trip")
+}
 
 /// All the config options for continuwuity.
 #[allow(clippy::struct_excessive_bools)]
@@ -81,6 +120,7 @@ pub struct Config {
 	/// WIPE.
 	///
 	/// example: "continuwuity.org"
+	#[serde(deserialize_with = "deserialize_slipstream")]
 	pub server_name: OwnedServerName,
 
 	/// The default address (IPv4 or IPv6) continuwuity will listen on.
@@ -276,10 +316,6 @@ pub struct Config {
 	pub shortstatekey_cache_capacity: u32,
 
 	/// default: varies by system
-	#[serde(default = "default_shortstatehash_cache_capacity")]
-	pub shortstatehash_cache_capacity: u32,
-
-	/// default: varies by system
 	#[serde(default = "default_statekeyshort_cache_capacity")]
 	pub statekeyshort_cache_capacity: u32,
 
@@ -290,6 +326,13 @@ pub struct Config {
 	/// default: varies by system
 	#[serde(default = "default_stateinfo_cache_capacity")]
 	pub stateinfo_cache_capacity: u32,
+
+	/// Maximum entries in the LtHash lattice cache (MSC4500).
+	/// Each entry is 2 KiB; default 512 ≈ 1 MiB.
+	///
+	/// default: 512
+	#[serde(default = "default_lthash_cache_capacity")]
+	pub lthash_cache_capacity: u32,
 
 	/// default: varies by system
 	#[serde(default = "default_roomid_spacehierarchy_cache_capacity")]
@@ -827,6 +870,30 @@ pub struct Config {
 	#[serde(default = "default_forwardfill_sweep_interval_secs")]
 	pub forwardfill_sweep_interval_secs: u64,
 
+	/// How often the HAMT node reclamation sweep runs, in seconds. Set to 0 to
+	/// disable it.
+	///
+	/// The sweep walks every recorded root handle and deletes HAMT nodes that no
+	/// root can reach. It is a dry run by default: it reports what it would
+	/// reclaim without deleting, because reclaiming requires trusting that the
+	/// recorded root set really is complete. Enable
+	/// `state_hamt_node_sweep_delete` only once a dry run has shown the report
+	/// is sane.
+	///
+	/// default: 21600
+	#[serde(default = "default_state_hamt_node_sweep_interval_secs")]
+	pub state_hamt_node_sweep_interval_secs: u64,
+
+	/// Whether the periodic HAMT node sweep actually deletes unreachable nodes.
+	///
+	/// While false, the sweep is a dry run that only logs its report. A root
+	/// handle missing from the live set makes genuinely reachable nodes look
+	/// like orphans, so deletion is opt-in rather than the default.
+	///
+	/// default: false
+	#[serde(default)]
+	pub state_hamt_node_sweep_delete: bool,
+
 	/// Allows federation requests to be made to itself
 	///
 	/// This isn't intended and is very likely a bug if federation requests are
@@ -928,6 +995,7 @@ pub struct Config {
 	///
 	/// default: "12"
 	#[serde(default = "default_default_room_version")]
+	#[serde(deserialize_with = "deserialize_slipstream")]
 	pub default_room_version: RoomVersionId,
 
 	/// display: nested
@@ -1022,6 +1090,7 @@ pub struct Config {
 	///
 	/// default: ["matrix.org"]
 	#[serde(default = "default_trusted_servers")]
+	#[serde(deserialize_with = "deserialize_slipstream_vec")]
 	pub trusted_servers: Vec<OwnedServerName>,
 
 	/// Whether to query the servers listed in trusted_servers first or query
@@ -1229,6 +1298,7 @@ pub struct Config {
 	///
 	/// default: []
 	#[serde(default = "Vec::new")]
+	#[serde(deserialize_with = "deserialize_slipstream_vec")]
 	pub auto_join_rooms: Vec<OwnedRoomOrAliasId>,
 
 	/// Config option to automatically deactivate the account of any user who
@@ -1848,6 +1918,7 @@ pub struct Config {
 	///
 	/// default: []
 	#[serde(default = "Vec::new")]
+	#[serde(deserialize_with = "deserialize_slipstream_vec")]
 	pub deprioritize_joins_through_servers: Vec<OwnedServerName>,
 
 	/// Send messages from users that the user has ignored to the client.
@@ -1943,6 +2014,7 @@ pub struct Config {
 	///
 	/// default: []
 	#[serde(default = "Vec::new")]
+	#[serde(deserialize_with = "deserialize_slipstream_vec")]
 	pub bypassed_signature_events: Vec<OwnedEventId>,
 
 	/// Vector list of URLs allowed to send requests to for URL previews.
@@ -2149,6 +2221,7 @@ pub struct Config {
 	///
 	/// default: []
 	#[serde(default)]
+	#[serde(deserialize_with = "deserialize_slipstream_vec")]
 	pub admins_list: Vec<OwnedUserId>,
 
 	/// Defines whether those within the admin room are added to the
@@ -2410,7 +2483,7 @@ pub struct TlsConfig {
 }
 
 #[allow(rustdoc::broken_intra_doc_links, rustdoc::bare_urls)]
-#[derive(Clone, Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default)]
 #[config_example_generator(filename = "conduwuit-example.toml", section = "global.well_known")]
 pub struct WellKnownConfig {
 	/// The server URL that the client well-known file will serve. This should
@@ -2424,6 +2497,7 @@ pub struct WellKnownConfig {
 	/// should not be a URL.
 	///
 	/// example: "matrix.example.com:443"
+	#[serde(deserialize_with = "deserialize_slipstream_opt")]
 	pub server: Option<OwnedServerName>,
 
 	/// URL to a support page for the server, which will be served as part of
@@ -2435,6 +2509,7 @@ pub struct WellKnownConfig {
 	/// MSC1929 server support endpoint at /.well-known/matrix/support.
 	///
 	/// default: "m.role.admin"
+	#[serde(deserialize_with = "deserialize_slipstream_opt")]
 	pub support_role: Option<ContactRole>,
 
 	/// Email address for server support contacts, to be served as part of the
@@ -2448,6 +2523,7 @@ pub struct WellKnownConfig {
 	///
 	/// If no email or mxid is specified, all of the server's admins will be
 	/// listed.
+	#[serde(deserialize_with = "deserialize_slipstream_opt")]
 	pub support_mxid: Option<OwnedUserId>,
 
 	/// PGP key URI for server support contacts, to be served as part of the
@@ -2463,8 +2539,27 @@ pub struct WellKnownConfig {
 	/// Please migrate to the new `[global.matrix_rtc]` config section.
 	///
 	/// default: []
-	#[serde(default)]
+	#[serde(default, deserialize_with = "deserialize_slipstream_vec")]
 	pub rtc_focus_server_urls: Vec<RtcFocusInfo>,
+}
+
+impl Clone for WellKnownConfig {
+	fn clone(&self) -> Self {
+		Self {
+			client: self.client.clone(),
+			server: self.server.clone(),
+			support_page: self.support_page.clone(),
+			support_role: self.support_role.as_ref().map(clone_slipstream),
+			support_email: self.support_email.clone(),
+			support_mxid: self.support_mxid.clone(),
+			support_pgp_key: self.support_pgp_key.clone(),
+			rtc_focus_server_urls: self
+				.rtc_focus_server_urls
+				.iter()
+				.map(clone_slipstream)
+				.collect(),
+		}
+	}
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Default)]
@@ -2492,7 +2587,7 @@ pub struct BlurhashConfig {
 	pub blurhash_max_raw_size: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default)]
 #[config_example_generator(filename = "conduwuit-example.toml", section = "global.matrix_rtc")]
 pub struct MatrixRtcConfig {
 	/// A list of MatrixRTC foci (transports) which will be served via the
@@ -2509,8 +2604,16 @@ pub struct MatrixRtcConfig {
 	/// To disable, set this to an empty list (`[]`).
 	///
 	/// default: []
-	#[serde(default)]
+	#[serde(default, deserialize_with = "deserialize_slipstream_vec")]
 	pub foci: Vec<RtcFocusInfo>,
+}
+
+impl Clone for MatrixRtcConfig {
+	fn clone(&self) -> Self {
+		Self {
+			foci: self.foci.iter().map(clone_slipstream).collect(),
+		}
+	}
 }
 
 impl MatrixRtcConfig {
@@ -2693,6 +2796,7 @@ pub struct MeowlnirConfig {
 	pub secret: Option<String>,
 
 	/// The management room for which to send requests
+	#[serde(deserialize_with = "deserialize_slipstream_opt")]
 	pub management_room: Option<OwnedRoomId>,
 
 	/// If enabled run all federated join attempts (both federated and local)
@@ -2741,6 +2845,17 @@ pub struct ExperimentalConfig {
 	/// MSC4222: state_after in sync v2
 	#[serde(default)]
 	pub msc4222_enabled: bool,
+
+	/// MSC4500: State Accumulators
+	#[serde(default = "true_fn")]
+	pub msc4500_enabled: bool,
+
+	/// MSC4500: also commit the labelled state-resolution input set
+	/// (`resolution-inputs-blake3-v1`) in outbound `state_hashes`. This walks
+	/// the auth closure of every `prev_events` state per PDU, so it is off by
+	/// default.
+	#[serde(default)]
+	pub msc4500_resolution_inputs: bool,
 }
 
 impl Default for ExperimentalConfig {
@@ -2749,6 +2864,8 @@ impl Default for ExperimentalConfig {
 			msc3266_enabled: false,
 			msc4222_enabled: false,
 			msc3030_enabled: true,
+			msc4500_enabled: true,
+			msc4500_resolution_inputs: false,
 		}
 	}
 }
@@ -2985,10 +3102,6 @@ fn default_shortstatekey_cache_capacity() -> u32 {
 	parallelism_scaled_u32(10_000).saturating_add(100_000)
 }
 
-fn default_shortstatehash_cache_capacity() -> u32 {
-	parallelism_scaled_u32(10_000).saturating_add(100_000)
-}
-
 fn default_statekeyshort_cache_capacity() -> u32 {
 	parallelism_scaled_u32(10_000).saturating_add(100_000)
 }
@@ -2998,6 +3111,8 @@ fn default_servernameevent_data_cache_capacity() -> u32 {
 }
 
 fn default_stateinfo_cache_capacity() -> u32 { parallelism_scaled_u32(100) }
+
+fn default_lthash_cache_capacity() -> u32 { 512 }
 
 fn default_roomid_spacehierarchy_cache_capacity() -> u32 { parallelism_scaled_u32(1000) }
 
@@ -3091,6 +3206,8 @@ fn default_transaction_id_cache_max_age_secs() -> u64 { 60 * 60 * 2 }
 
 fn default_forwardfill_sweep_interval_secs() -> u64 { 60 * 60 * 4 }
 
+fn default_state_hamt_node_sweep_interval_secs() -> u64 { 60 * 60 * 6 }
+
 fn default_transaction_id_cache_max_entries() -> usize { 8192 }
 
 fn default_tracing_flame_filter() -> String {
@@ -3112,7 +3229,7 @@ fn default_otlp_protocol() -> String { "http".to_owned() }
 fn default_tracing_flame_output_path() -> String { "./tracing.folded".to_owned() }
 
 fn default_trusted_servers() -> Vec<OwnedServerName> {
-	vec![OwnedServerName::try_from("matrix.org").unwrap()]
+	vec![OwnedServerName::parse("matrix.org").expect("valid default server name")]
 }
 
 /// do debug logging by default for debug builds

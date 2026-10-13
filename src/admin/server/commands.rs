@@ -413,7 +413,7 @@ pub(super) async fn list_features(&self) -> Result {
 	enabled_features.sort_unstable();
 	enabled_features.dedup();
 
-	let mut available_features = conduwuit::build_metadata::WORKSPACE_FEATURES
+	let mut available_features = conduwuit_build_metadata::WORKSPACE_FEATURES
 		.iter()
 		.flat_map(|(_, f)| f.iter().map(|s| s.replace('_', "-")))
 		.collect::<Vec<_>>();
@@ -451,40 +451,41 @@ pub(super) async fn build_info(&self) -> Result {
 
 	// Git information
 	writeln!(info, "\n## Git Information\n")?;
-	if let Some(hash) = conduwuit::build_metadata::GIT_COMMIT_HASH {
+	let git = conduwuit::info::git::get();
+	if let Some(hash) = git.commit_hash {
 		writeln!(info, "**Commit Hash:** {hash}")?;
 	}
-	if let Some(hash) = conduwuit::build_metadata::GIT_COMMIT_HASH_SHORT {
+	if let Some(hash) = git.commit_hash_short {
 		writeln!(info, "**Commit Hash (short):** {hash}")?;
 	}
-	if let Some(url) = conduwuit::build_metadata::GIT_REMOTE_WEB_URL {
+	if let Some(url) = git.remote_web_url {
 		writeln!(info, "**Repository:** {url}")?;
 	}
-	if let Some(url) = conduwuit::build_metadata::GIT_REMOTE_COMMIT_URL {
+	if let Some(url) = git.remote_commit_url {
 		writeln!(info, "**Commit URL:** {url}")?;
 	}
 
 	// Build environment
 	writeln!(info, "\n## Build Environment\n")?;
-	if let Some(profile) = conduwuit::build_metadata::PROFILE {
+	if let Some(profile) = conduwuit_build_metadata::PROFILE {
 		writeln!(info, "**Profile:** {profile}")?;
 	}
-	if let Some(opt) = conduwuit::build_metadata::OPT_LEVEL {
+	if let Some(opt) = conduwuit_build_metadata::OPT_LEVEL {
 		writeln!(info, "**Optimization Level:** {opt}")?;
 	}
-	if let Some(debug) = conduwuit::build_metadata::DEBUG {
+	if let Some(debug) = conduwuit_build_metadata::DEBUG {
 		writeln!(info, "**Debug:** {debug}")?;
 	}
-	if let Some(target) = conduwuit::build_metadata::TARGET {
+	if let Some(target) = conduwuit_build_metadata::TARGET {
 		writeln!(info, "**Target:** {target}")?;
 	}
-	if let Some(host) = conduwuit::build_metadata::HOST {
+	if let Some(host) = conduwuit_build_metadata::HOST {
 		writeln!(info, "**Host:** {host}")?;
 	}
 
 	// Rust compiler information
 	writeln!(info, "\n## Compiler Information\n")?;
-	if let Some(rustc) = conduwuit::build_metadata::RUSTC_VERSION {
+	if let Some(rustc) = conduwuit_build_metadata::RUSTC_VERSION {
 		writeln!(info, "**Rustc Version:** {rustc}")?;
 	}
 
@@ -493,13 +494,13 @@ pub(super) async fn build_info(&self) -> Result {
 	writeln!(info, "**Architecture:** {}", std::env::consts::ARCH)?;
 	writeln!(info, "**OS:** {}", std::env::consts::OS)?;
 	writeln!(info, "**Family:** {}", std::env::consts::FAMILY)?;
-	if let Some(endian) = conduwuit::build_metadata::CFG_ENDIAN {
+	if let Some(endian) = conduwuit_build_metadata::CFG_ENDIAN {
 		writeln!(info, "**Endianness:** {endian}")?;
 	}
-	if let Some(ptr_width) = conduwuit::build_metadata::CFG_POINTER_WIDTH {
+	if let Some(ptr_width) = conduwuit_build_metadata::CFG_POINTER_WIDTH {
 		writeln!(info, "**Pointer Width:** {ptr_width} bits")?;
 	}
-	if let Some(env) = conduwuit::build_metadata::CFG_ENV {
+	if let Some(env) = conduwuit_build_metadata::CFG_ENV {
 		if !env.is_empty() {
 			writeln!(info, "**Environment:** {env}")?;
 		}

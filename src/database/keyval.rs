@@ -1,7 +1,9 @@
 use conduwuit::{Result, smallvec::SmallVec};
-use serde::{Deserialize, Serialize};
 
-use crate::{de, ser};
+use crate::{
+	dbkey::{DbDe, DbKey},
+	de, ser,
+};
 
 pub type KeyVal<'a, K = &'a Slice, V = &'a Slice> = (Key<'a, K>, Val<'a, V>);
 pub type Key<'a, T = &'a Slice> = T;
@@ -24,7 +26,7 @@ pub const DEF_STACK_CAP: usize = KEY_STACK_CAP;
 #[inline]
 pub fn serialize_key<T>(val: T) -> Result<KeyBuf>
 where
-	T: Serialize,
+	T: DbKey,
 {
 	ser::serialize_to::<KeyBuf, _>(val)
 }
@@ -32,7 +34,7 @@ where
 #[inline]
 pub fn serialize_val<T>(val: T) -> Result<ValBuf>
 where
-	T: Serialize,
+	T: DbKey,
 {
 	ser::serialize_to::<ValBuf, _>(val)
 }
@@ -40,8 +42,8 @@ where
 #[inline]
 pub(crate) fn _expect_deserialize<'a, K, V>(kv: Result<KeyVal<'a>>) -> KeyVal<'a, K, V>
 where
-	K: Deserialize<'a>,
-	V: Deserialize<'a>,
+	K: DbDe<'a>,
+	V: DbDe<'a>,
 {
 	result_deserialize(kv).expect("failed to deserialize result key/val")
 }
@@ -49,7 +51,7 @@ where
 #[inline]
 pub(crate) fn _expect_deserialize_key<'a, K>(key: Result<Key<'a>>) -> Key<'a, K>
 where
-	K: Deserialize<'a>,
+	K: DbDe<'a>,
 {
 	result_deserialize_key(key).expect("failed to deserialize result key")
 }
@@ -57,8 +59,8 @@ where
 #[inline]
 pub(crate) fn result_deserialize<'a, K, V>(kv: Result<KeyVal<'a>>) -> Result<KeyVal<'a, K, V>>
 where
-	K: Deserialize<'a>,
-	V: Deserialize<'a>,
+	K: DbDe<'a>,
+	V: DbDe<'a>,
 {
 	deserialize(kv?)
 }
@@ -66,7 +68,7 @@ where
 #[inline]
 pub(crate) fn result_deserialize_key<'a, K>(key: Result<Key<'a>>) -> Result<Key<'a, K>>
 where
-	K: Deserialize<'a>,
+	K: DbDe<'a>,
 {
 	deserialize_key(key?)
 }
@@ -74,8 +76,8 @@ where
 #[inline]
 pub fn deserialize<'a, K, V>(kv: KeyVal<'a>) -> Result<KeyVal<'a, K, V>>
 where
-	K: Deserialize<'a>,
-	V: Deserialize<'a>,
+	K: DbDe<'a>,
+	V: DbDe<'a>,
 {
 	Ok((deserialize_key::<K>(kv.0)?, deserialize_val::<V>(kv.1)?))
 }
@@ -83,7 +85,7 @@ where
 #[inline]
 pub fn deserialize_key<'a, K>(key: Key<'a>) -> Result<Key<'a, K>>
 where
-	K: Deserialize<'a>,
+	K: DbDe<'a>,
 {
 	de::from_slice::<K>(key)
 }
@@ -91,7 +93,7 @@ where
 #[inline]
 pub fn deserialize_val<'a, V>(val: Val<'a>) -> Result<Val<'a, V>>
 where
-	V: Deserialize<'a>,
+	V: DbDe<'a>,
 {
 	de::from_slice::<V>(val)
 }

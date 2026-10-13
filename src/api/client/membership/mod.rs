@@ -13,15 +13,12 @@ use std::net::IpAddr;
 use axum::extract::State;
 use conduwuit::{Err, Result, info, utils::stream::IterStream, warn};
 use futures::{FutureExt, StreamExt};
-use ruma::{
+use service::Services;
+use slipstream::{
 	CanonicalJsonObject, OwnedRoomId, OwnedServerName, RoomId, RoomVersionId, ServerName, UserId,
 	api::client::membership::joined_rooms,
-	events::{
-		StaticEventContent,
-		room::member::{MembershipState, RoomMemberEventContent},
-	},
+	events::room::member::{MembershipState, RoomMemberEventContent},
 };
-use service::Services;
 
 pub(crate) use self::{
 	ban::ban_user_route,
@@ -52,7 +49,6 @@ pub(crate) async fn joined_rooms_route(
 			.rooms
 			.state_cache
 			.rooms_joined(body.sender_user())
-			.map(ToOwned::to_owned)
 			.collect()
 			.await,
 	})
@@ -78,7 +74,7 @@ pub(crate) async fn banned_room_check(
 	if let Some(room_id) = room_id {
 		let room_banned = services.rooms.metadata.is_banned(room_id).await;
 		let server_banned = room_id.server_name().is_some_and(|server_name| {
-			services.moderation.is_remote_server_forbidden(server_name)
+			services.moderation.is_remote_server_forbidden(&server_name)
 		});
 		if room_banned || server_banned {
 			warn!(
@@ -257,11 +253,7 @@ pub(crate) async fn fetch_join_knock_servers(
 	from_alias: bool,
 ) -> Vec<OwnedServerName> {
 	if servers.is_empty() || from_alias {
-		let addl_via_servers = services
-			.rooms
-			.state_cache
-			.servers_invite_via(room_id)
-			.map(ToOwned::to_owned);
+		let addl_via_servers = services.rooms.state_cache.servers_invite_via(room_id);
 
 		let addl_state_servers = services
 			.rooms
@@ -272,9 +264,9 @@ pub(crate) async fn fetch_join_knock_servers(
 
 		let mut addl_servers: Vec<_> = addl_state_servers
 			.iter()
-			.filter_map(|event| event.get_field("sender").ok().flatten())
-			.filter_map(|sender: &str| UserId::parse(sender).ok())
-			.map(|user| user.server_name().to_owned())
+			.filter_map(|event| event.get_field::<String>("sender").ok().flatten())
+			.filter_map(|sender| UserId::parse(&sender).ok())
+			.map(|user| user.server_name())
 			.stream()
 			.chain(addl_via_servers)
 			.collect()
@@ -282,7 +274,7 @@ pub(crate) async fn fetch_join_knock_servers(
 
 		if !from_alias {
 			if let Some(server) = room_id.server_name() {
-				addl_servers.push(server.to_owned());
+				addl_servers.push(server);
 			}
 		}
 

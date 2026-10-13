@@ -6,7 +6,7 @@ use std::{
 	time::SystemTime,
 };
 
-use ruma::OwnedServerName;
+use slipstream::OwnedServerName;
 use tokio::{runtime, sync::broadcast};
 
 use crate::{Err, Result, config, config::Config, log::Log, metrics::Metrics};
@@ -137,6 +137,14 @@ impl Server {
 
 	#[inline]
 	pub fn running(&self) -> bool { !self.is_stopping() }
+
+	/// Whether the server is running without accepting network traffic.
+	///
+	/// This is the effective maintenance/offline state used by background
+	/// workers which must not perform network-facing work or emit periodic
+	/// operational noise while the server is being operated offline.
+	#[inline]
+	pub fn is_maintenance(&self) -> bool { !self.config.listening }
 
 	#[inline]
 	pub fn is_stopping(&self) -> bool { self.stopping.load(Ordering::Relaxed) }

@@ -1,16 +1,16 @@
-use std::{borrow::Borrow, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use conduwuit::{
-	Error, Result, err, implement, info,
+	Error, Result, err, implement,
 	state_res::StateMap,
 	trace,
 	utils::stream::{IterStream, ReadyExt, WidebandExt},
 	warn,
 };
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
-use ruma::{OwnedEventId, RoomId, RoomVersionId};
+use slipstream::{OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
 
-use crate::rooms::state_compressor::CompressedState;
+use crate::rooms::short::{ShortEventId, ShortStateKey};
 
 /// Pre-loaded event cache to avoid per-event RocksDB lookups during
 /// state resolution. Populated once at the start of bulk operations
@@ -18,126 +18,120 @@ use crate::rooms::state_compressor::CompressedState;
 pub(crate) type PduCache =
 	Arc<tokio::sync::RwLock<HashMap<OwnedEventId, Arc<conduwuit_core::PduEvent>>>>;
 
+fn copy_state_map(map: &StateMap<OwnedEventId>) -> StateMap<OwnedEventId> {
+	map.iter()
+		.map(|((ty, key), event_id)| {
+			((StateEventType::from(ty.as_str()), key.clone()), event_id.clone())
+		})
+		.collect()
+}
+
 #[implement(super::Service)]
 #[tracing::instrument(name = "resolve", level = "debug", skip_all)]
 pub async fn resolve_state(
 	&self,
 	room_id: &RoomId,
 	room_version_id: &RoomVersionId,
-	incoming_state: HashMap<u64, OwnedEventId>,
-) -> Result<Arc<CompressedState>> {
+	incomingstate: HashMap<u64, OwnedEventId>,
+) -> Result<rezzy::hamt::RootHandle> {
 	trace!("Loading current room state ids");
-	let current_sstatehash = self
+	let current_root_handle = self
 		.services
 		.state
-		.get_room_shortstatehash(room_id)
+		.get_room_state_hamt(room_id)
 		.map_err(|e| err!(Database(error!("No state for {room_id:?}: {e:?}"))))
 		.await?;
 
-	let current_state_ids: HashMap<_, _> = self
+	let currentstate_ids: HashMap<_, _> = self
 		.services
 		.state_accessor
-		.state_full_ids(current_sstatehash)
-		.collect()
-		.await;
+		.state_full_ids_hamt(&current_root_handle)
+		.try_collect()
+		.await?;
 
 	trace!("Loading fork states");
-	let fork_states = [current_state_ids, incoming_state];
+	let forkstates = [currentstate_ids, incomingstate];
 
-	// Build OwnedEventId -> ShortStateKey reverse map from the fork states BEFORE
-	// they are consumed into streams below. After state resolution completes, we
-	// use this for O(1) fast-path shortstatehash lookups instead of issuing
-	// ~50k concurrent get_or_create_shortstatekey DB calls.
-	//
-	// State resolution selects its output event_ids exclusively from the input
-	// fork states, so every resolved entry will normally hit this fast path.
-	// The get_or_create_shortstatekey fallback handles truly new state events
-	// (rare -- e.g., a new join that wasn't in either input fork).
-	let eid_to_ssk: HashMap<OwnedEventId, u64> = fork_states
-		.iter()
-		.flat_map(|fs| fs.iter().map(|(&ssk, eid)| (eid.clone(), ssk)))
-		.collect();
-
-	let fork_states = fork_states
+	let forkstates = forkstates
 		.iter()
 		.stream()
-		.wide_then(|fork_state| {
-			let shortstatekeys = fork_state.keys().copied().stream();
-			let event_ids = fork_state.values().cloned().stream();
+		.wide_then(|forkstate| {
+			let shortstatekeys = forkstate.keys().copied().stream();
+			let event_ids = forkstate.values().cloned().stream();
 			self.services
 				.short
 				.multi_get_statekey_from_short(shortstatekeys)
 				.zip(event_ids)
-				.ready_filter_map(|(ty_sk, id)| Some((ty_sk.ok()?, id)))
+				.ready_filter_map(|(ty_sk, id): (Result<_>, _)| Some((ty_sk.ok()?, id)))
 				.collect()
 		})
 		.map(Ok::<_, Error>)
 		.try_collect::<Vec<StateMap<OwnedEventId>>>();
-
-	let fork_states = fork_states.await?;
-
-	// Do NOT fetch from federation here. State resolution must be local-only
-	// to avoid blocking. Missing auth chain events cause state_res to skip those
-	// subgraph branches — producing a best-effort result with local data. The
-	// ingestion pipeline (handle_outlier_pdu, fetch_prev) is responsible for
-	// pre-fetching auth events before we reach this point.
-
-	// Diagnostic: log PL events in each fork state
-	for (i, fork) in fork_states.iter().enumerate() {
-		for ((ty, sk), eid) in fork {
-			if ty.to_string() == "m.room.power_levels" {
-				info!("resolve_state fork[{i}] PL ({ty},{sk}) => {eid}");
-			}
-		}
-	}
+	let forkstates = forkstates.await?;
 
 	trace!("Resolving state");
-	let n_fork_states: usize = fork_states.iter().map(HashMap::len).sum();
-	info!(%room_id, n_fork_states, "state_res: fork states loaded, starting resolution");
-	let t = std::time::Instant::now();
-	let state = self
-		.state_resolution(room_id, room_version_id, fork_states.iter(), None)
+	let state: StateMap<OwnedEventId> = self
+		.state_resolution(room_id, room_version_id, forkstates.iter(), None)
 		.boxed()
 		.await?;
-	info!(%room_id, n_resolved = state.len(), elapsed = ?t.elapsed(), "state_res: resolution complete");
 
-	// Diagnostic: log resolved PL and JoinRules
-	for ((ty, sk), eid) in &state {
-		if ty.to_string() == "m.room.power_levels" || ty.to_string() == "m.room.join_rules" {
-			info!("resolve_state RESULT ({ty},{sk}) => {eid}");
+	trace!("State resolution done.");
+
+	// `forkstates[0]` is the current state in `(type, state_key)` space, which
+	// is the same space `state` resolves into, so it doubles as the diff base
+	// for deciding which leaves actually changed.
+	let previous_statemap = &forkstates[0];
+
+	let mut lattice = rezzy::state::LtHash::default();
+	// Only the changed leaves become mutations, so this stays proportional to
+	// the state delta rather than the state size.
+	let mut mutations: Vec<(ShortStateKey, Option<ShortEventId>)> = Vec::new();
+
+	for ((ty, sk), id) in &state {
+		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
+
+		let shortstatekey = self
+			.services
+			.short
+			.get_or_create_shortstatekey(ty, sk)
+			.await;
+		let shorteventid = self.services.short.get_or_create_shorteventid(id).await;
+
+		if previous_statemap.get(&(ty.clone(), sk.clone())) != Some(id) {
+			mutations.push((shortstatekey, Some(shorteventid)));
 		}
 	}
-	trace!("State resolution done.");
-	let eid_to_ssk = &eid_to_ssk;
-	let state_events: Vec<_> = state
-		.iter()
-		.stream()
-		.wide_then(|((event_type, state_key), event_id)| async move {
-			// FAST PATH: ~99.9% of resolved events were in a fork state; their
-			// ShortStateKey is already known in memory — no DB call needed.
-			if let Some(&ssk) = eid_to_ssk.get(event_id) {
-				return (ssk, event_id.clone());
-			}
-			// SLOW PATH: truly new state event (e.g., a new join member event).
-			let ssk = self
+
+	// Resolution picks a winner per `(type, state_key)` from the union of the
+	// forks, so it should not drop a key the previous root carried. Handle it
+	// anyway rather than silently leaving a stale leaf behind.
+	for (ty, sk) in previous_statemap.keys() {
+		if !state.contains_key(&(ty.clone(), sk.clone())) {
+			let shortstatekey = self
 				.services
 				.short
-				.get_or_create_shortstatekey(event_type, state_key)
+				.get_or_create_shortstatekey(ty, sk)
 				.await;
-			(ssk, event_id.clone())
-		})
-		.collect()
-		.await;
+			mutations.push((shortstatekey, None));
+		}
+	}
 
-	trace!("Compressing state...");
-	let new_room_state: CompressedState = self
-		.services
-		.state_compressor
-		.compress_state_events(state_events.iter().map(|(ssk, eid)| (ssk, eid.borrow())))
-		.collect()
-		.await;
+	let structural_key = crate::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		room_id,
+	);
 
-	Ok(Arc::new(new_room_state))
+	// Copy-on-write from the current root: only the changed spines are written.
+	// Materializing the whole tree here would rewrite every node on every
+	// incoming state event.
+	self.services.globals.with_cork_and_flush(|| {
+		self.services.state.persist_state_hamt_mutations(
+			&structural_key,
+			&current_root_handle,
+			mutations,
+			&lattice,
+		)
+	})
 }
 
 #[implement(super::Service)]
@@ -159,7 +153,7 @@ where
 		return Ok(StateMap::new());
 	}
 	if num_maps == 1 {
-		return Ok(state_sets_vec[0].clone());
+		return Ok(copy_state_map(state_sets_vec[0]));
 	}
 
 	let lean_state_sets: Vec<rezzy::SharedState<String>> = state_sets_vec
@@ -167,7 +161,7 @@ where
 		.map(|map| {
 			let mut ss = rezzy::SharedState::new();
 			for ((ty, sk), id) in *map {
-				ss.insert((ty.to_string(), sk.to_string()), id.to_string());
+				ss.insert((ty.to_string().into(), sk.to_string()), id.to_string());
 			}
 			ss
 		})
@@ -183,19 +177,20 @@ where
 	};
 
 	struct LocalArenaProvider<'a, F> {
-		global_cache: &'a moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String>>>,
-		arena: typed_arena::Arena<Arc<rezzy::LeanEvent<String>>>,
+		global_cache:
+			&'a moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String, rezzy::JsonValue>>>,
+		arena: typed_arena::Arena<Arc<rezzy::LeanEvent<String, rezzy::JsonValue>>>,
 		version: rezzy::StateResVersion,
 		fetch_pdu: F,
 	}
 
-	impl<F> rezzy::basespec::rezzy_types::EventProvider<String, serde_json::Value>
+	impl<F> rezzy::basespec::rezzy_types::EventProvider<String, rezzy::JsonValue>
 		for LocalArenaProvider<'_, F>
 	where
 		F: Fn(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
 	{
-		fn get_event(&self, id: &String) -> Option<&rezzy::LeanEvent<String>> {
-			let event_id = OwnedEventId::try_from(id.as_str()).ok()?;
+		fn get_event(&self, id: &String) -> Option<&rezzy::LeanEvent<String, rezzy::JsonValue>> {
+			let event_id = OwnedEventId::parse(id.as_str()).ok()?;
 
 			if let Some(cached_arc) = self.global_cache.get(&event_id) {
 				let local_arc = self.arena.alloc(cached_arc);
@@ -231,7 +226,7 @@ where
 
 				if let Ok(mut pdu) = timeline.get_pdu_in_room(Some(room_id), eid).await {
 					if meta.is_event_rejected(&pdu.event_id).await
-						&& timeline.pdu_exists(&pdu.event_id).await
+						&& timeline.non_outlier_pdu_exists(&pdu.event_id).await
 					{
 						warn!(
 							event_id = %pdu.event_id,
@@ -274,7 +269,7 @@ where
 	) {
 		// V2.1+ subgraph computation needs full auth chain visibility.
 		// Build event context by BFS-walking auth chains from all fork state events.
-		let mut ctx: HashMap<String, rezzy::LeanEvent<String>> = HashMap::new();
+		let mut ctx: HashMap<String, rezzy::LeanEvent<String, rezzy::JsonValue>> = HashMap::new();
 		let mut q: std::collections::VecDeque<String> = lean_state_sets
 			.iter()
 			.flat_map(|ss| ss.values().cloned())
@@ -285,7 +280,7 @@ where
 			}
 			let ev = <_ as rezzy::basespec::rezzy_types::EventProvider<
 				String,
-				serde_json::Value,
+				rezzy::JsonValue,
 			>>::get_event(&provider, &eid);
 			if let Some(ev) = ev {
 				for aid in &ev.auth_events {
@@ -310,9 +305,9 @@ where
 	// Convert back to Ruma StateMap
 	let mut resolved = StateMap::new();
 	for ((ty_str, sk_str), eid_str) in resolved_lean {
-		let ty: ruma::events::StateEventType = ty_str.into();
+		let ty: StateEventType = ty_str.to_string().into();
 		let sk: conduwuit_core::matrix::StateKey = sk_str.into();
-		if let Ok(eid) = OwnedEventId::try_from(eid_str.as_str()) {
+		if let Ok(eid) = OwnedEventId::parse(eid_str.as_str()) {
 			resolved.insert((ty, sk), eid);
 		}
 	}
@@ -328,7 +323,7 @@ fn sender_power_level_from_auth<F>(
 where
 	F: FnMut(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
 {
-	if pdu.kind == ruma::events::TimelineEventType::RoomCreate {
+	if pdu.kind == slipstream::events::TimelineEventType::RoomCreate {
 		return i64::MAX;
 	}
 
@@ -361,7 +356,7 @@ where
 			continue;
 		};
 
-		if auth_pdu.kind == ruma::events::TimelineEventType::RoomCreate
+		if auth_pdu.kind == slipstream::events::TimelineEventType::RoomCreate
 			&& auth_pdu.state_key.as_deref() == Some("")
 		{
 			create_pdu = Some(auth_pdu);
@@ -369,15 +364,16 @@ where
 		}
 
 		if pl_level.is_some()
-			|| auth_pdu.kind != ruma::events::TimelineEventType::RoomPowerLevels
+			|| auth_pdu.kind != slipstream::events::TimelineEventType::RoomPowerLevels
 			|| auth_pdu.state_key.as_deref() != Some("")
 		{
 			continue;
 		}
 
-		let content_val: serde_json::Value =
-			serde_json::from_str(auth_pdu.content.get()).unwrap_or(serde_json::Value::Null);
-		let parse_intlike = |value: &serde_json::Value| {
+		let content_val: slipstream::json::Value =
+			slipstream::codec::from_str(auth_pdu.content.get())
+				.unwrap_or(slipstream::json::Value::Null);
+		let parse_intlike = |value: &slipstream::json::Value| {
 			value
 				.as_i64()
 				.or_else(|| value.as_str().and_then(|s| s.parse().ok()))
@@ -385,7 +381,7 @@ where
 
 		let level = content_val
 			.get("users")
-			.and_then(serde_json::Value::as_object)
+			.and_then(slipstream::json::Value::as_object)
 			.and_then(|users| users.get(pdu.sender.as_str()))
 			.and_then(parse_intlike)
 			.or_else(|| content_val.get("users_default").and_then(parse_intlike))
@@ -404,9 +400,9 @@ where
 		// `creator` content field is a pre-v11 concept and irrelevant here (see
 		// `state_res::event_auth`'s identical v12 check on `sender_power_level`).
 		let is_v12_creator = create_pdu.sender == pdu.sender
-			|| serde_json::from_str::<ruma::events::room::create::RoomCreateEventContent>(
-				create_pdu.content.get(),
-			)
+			|| slipstream::codec::from_str::<
+				slipstream::events::room::create::RoomCreateEventContent,
+			>(create_pdu.content.get())
 			.is_ok_and(|create_content| {
 				create_content
 					.additional_creators
@@ -428,34 +424,38 @@ where
 	// Pre-v12 fallback: with no power-levels event found in the auth chain,
 	// only the room's original creator gets an implicit power level of 100.
 	#[allow(deprecated)]
-	let is_pre_v12_creator = create_pdu.sender == pdu.sender
-		|| serde_json::from_str::<ruma::events::room::create::RoomCreateEventContent>(
-			create_pdu.content.get(),
-		)
-		.is_ok_and(|create_content| {
-			create_content
-				.creator
-				.as_ref()
-				.is_some_and(|creator| creator == &pdu.sender)
-		});
+	let is_pre_v12_creator =
+		create_pdu.sender == pdu.sender
+			|| slipstream::codec::from_str::<
+				slipstream::events::room::create::RoomCreateEventContent,
+			>(create_pdu.content.get())
+			.is_ok_and(|create_content| {
+				create_content
+					.creator
+					.as_ref()
+					.is_some_and(|creator| creator == &pdu.sender)
+			});
 
 	if is_pre_v12_creator { 100 } else { 0 }
 }
 
-fn pdu_to_lean(pdu: &conduwuit_core::PduEvent, power_level: i64) -> rezzy::LeanEvent<String> {
-	let content_val: serde_json::Value =
-		serde_json::from_str(pdu.content.get()).unwrap_or(serde_json::Value::Null);
+fn pdu_to_lean(
+	pdu: &conduwuit_core::PduEvent,
+	power_level: i64,
+) -> rezzy::LeanEvent<String, rezzy::JsonValue> {
+	let content_val =
+		rezzy::JsonValue::parse(pdu.content.get()).expect("PDU content must be valid JSON");
 	rezzy::LeanEvent {
 		event_id: pdu.event_id.to_string(),
 		event_type: pdu.kind.to_string(),
 		state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
 		power_level,
-		origin_server_ts: pdu.origin_server_ts.into(),
+		origin_server_ts: pdu.origin_server_ts,
 		sender: pdu.sender.to_string(),
 		content: content_val,
 		prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
 		auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
-		depth: u64::from(pdu.depth),
+		depth: pdu.depth,
 		..Default::default()
 	}
 }

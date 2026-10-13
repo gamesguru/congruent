@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use conduwuit_core::{Result, info, warn};
 use futures::StreamExt;
 use roaring::RoaringBitmap;
-use ruma::{EventId, OwnedEventId};
+use slipstream::{EventId, OwnedEventId};
 
 use super::Service;
 use crate::rooms::short::ShortEventId;
@@ -197,7 +197,7 @@ impl Service {
 	/// Prune fork storms down to operationally relevant tips using tail-based
 	/// recalculation. This is a convenience wrapper around
 	/// `recalculate_extremities` with standardized logging.
-	pub async fn prune_extremities(&self, room_id: &ruma::RoomId, tail: usize) {
+	pub async fn prune_extremities(&self, room_id: &slipstream::RoomId, tail: usize) {
 		match self.recalculate_extremities(room_id, true).await {
 			| Ok((true, tips)) => info!(
 				%room_id, tail, tips,
@@ -223,7 +223,7 @@ impl Service {
 	#[tracing::instrument(skip(self), level = "info")]
 	pub async fn recalculate_extremities(
 		&self,
-		room_id: &ruma::RoomId,
+		room_id: &slipstream::RoomId,
 		update_db: bool,
 	) -> Result<(bool, usize)> {
 		let state_lock = self.services.state.mutex.lock(room_id).await;
@@ -248,7 +248,36 @@ impl Service {
 				.multi_get_shortprevevents(futures::stream::iter(short_ids.clone()));
 			let all_prevs: Vec<Result<Vec<ShortEventId>>> = prevs_stream.collect().await;
 
-			for (short_id, prevs_res) in short_ids.into_iter().zip(all_prevs.into_iter()) {
+			// Batch-resolve the whole chunk's ShortEventId -> EventId and then
+			// batch-read metadata for the resolved ids. Doing these per event
+			// (as before) added two single-key RocksDB round trips per event
+			// while the room state lock was held.
+			let resolved_ids: Vec<Option<OwnedEventId>> = self
+				.services
+				.short
+				.multi_get_eventid_from_short(futures::stream::iter(short_ids.clone()))
+				.collect::<Vec<Result<OwnedEventId>>>()
+				.await
+				.into_iter()
+				.map(Result::ok)
+				.collect();
+
+			let metadata_ids: Vec<OwnedEventId> =
+				resolved_ids.iter().flatten().cloned().collect();
+			let mut metadata = self
+				.db
+				.get_event_metadata_batch(&metadata_ids)
+				.await
+				.into_iter();
+
+			// Non-outlier event ids in this chunk, deferred so their rejection/soft-fail
+			// verdicts can be batch-read below instead of two sequential single-key
+			// lookups per event.
+			let mut non_outlier_pairs: Vec<(ShortEventId, OwnedEventId)> = Vec::new();
+
+			for ((short_id, prevs_res), event_id) in
+				short_ids.into_iter().zip(all_prevs).zip(resolved_ids)
+			{
 				let prevs = match prevs_res {
 					| Ok(prevs) => prevs,
 					| Err(_) => {
@@ -261,30 +290,49 @@ impl Service {
 				};
 				raw_edges.insert(short_id, prevs);
 
-				let Ok(event_id) = self
-					.services
-					.short
-					.get_eventid_from_short::<OwnedEventId>(short_id)
-					.await
-				else {
+				let Some(event_id) = event_id else {
 					skipped_unresolved_shortids = skipped_unresolved_shortids.saturating_add(1);
 					continue;
 				};
 
-				match self.db.get_event_metadata(&event_id).await {
-					| Ok(meta) if meta.is_outlier => {
-						outlier_event_ids.insert(short_id);
-					},
-					| Ok(meta) if meta.rejected || meta.soft_failed => {
-						bridge_event_ids.insert(short_id);
-					},
-					| Ok(_) => {
-						accepted_event_ids.insert(short_id);
-					},
-					| Err(_) => {
+				// One metadata result per resolved id, consumed in order.
+				let is_outlier = match metadata.next() {
+					| Some(Ok(meta)) => meta.is_outlier,
+					| Some(Err(_)) | None => {
 						missing_metadata = missing_metadata.saturating_add(1);
 						accepted_event_ids.insert(short_id);
+						continue;
 					},
+				};
+				if is_outlier {
+					outlier_event_ids.insert(short_id);
+				} else {
+					// Defer: the verdict check is batched over the whole chunk
+					// after the inner loop.
+					non_outlier_pairs.push((short_id, event_id));
+				}
+			}
+
+			// Batch-read rejection/soft-fail verdicts for every non-outlier
+			// event in this chunk (a single amplification pass per store, run
+			// in parallel) rather than two sequential single-key lookups per
+			// event -- `recalculate_extremities` sweeps the whole room history
+			// while holding the room state lock, so per-event RocksDB reads here
+			// would substantially lengthen the lock hold.
+			let non_outlier_ids: Vec<OwnedEventId> = non_outlier_pairs
+				.iter()
+				.map(|(_, event_id)| event_id.clone())
+				.collect();
+			let flagged = self
+				.services
+				.pdu_metadata
+				.verdict_flagged_batch(&non_outlier_ids)
+				.await;
+			for (short_id, event_id) in non_outlier_pairs {
+				if flagged.contains(&event_id) {
+					bridge_event_ids.insert(short_id);
+				} else {
+					accepted_event_ids.insert(short_id);
 				}
 			}
 		}
@@ -365,7 +413,7 @@ impl Service {
 				.db
 				.get_origin_server_ts(eid)
 				.await
-				.unwrap_or_else(|_| ruma::MilliSecondsSinceUnixEpoch(0_u32.into()));
+				.unwrap_or_else(|_| slipstream::MilliSecondsSinceUnixEpoch(0_u32.into()));
 			final_ts_map.insert(eid.clone(), ts);
 		}
 
@@ -373,7 +421,7 @@ impl Service {
 			final_ts_map
 				.get(eid)
 				.copied()
-				.unwrap_or_else(|| ruma::MilliSecondsSinceUnixEpoch(0_u32.into()))
+				.unwrap_or_else(|| slipstream::MilliSecondsSinceUnixEpoch(0_u32.into()))
 		});
 
 		let num_true_extremities = final_extremities.len();
@@ -439,7 +487,7 @@ impl Service {
 #[cfg(test)]
 mod tests {
 	use HashMap;
-	use ruma::{OwnedEventId, event_id};
+	use slipstream::{OwnedEventId, event_id};
 
 	use super::*;
 
@@ -486,7 +534,7 @@ mod tests {
 
 		let sorted = vec![a, b, c, d.clone()];
 		let tips = calculate_true_extremities(&graph, &sorted);
-		let expected: Vec<&EventId> = vec![&*d];
+		let expected: Vec<&EventId> = vec![&d];
 		assert_eq!(tips, expected);
 	}
 
@@ -505,7 +553,7 @@ mod tests {
 		let mut tips = calculate_true_extremities(&graph, &sorted);
 		tips.sort();
 
-		let mut expected: Vec<&EventId> = vec![&*b, &*y];
+		let mut expected: Vec<&EventId> = vec![&b, &y];
 		expected.sort();
 
 		assert_eq!(tips, expected);
@@ -521,7 +569,7 @@ mod tests {
 
 		let sorted = vec![a.clone()];
 		let tips = calculate_true_extremities(&graph, &sorted);
-		let expected: Vec<&EventId> = vec![&*a];
+		let expected: Vec<&EventId> = vec![&a];
 		assert_eq!(tips, expected);
 	}
 
@@ -541,7 +589,7 @@ mod tests {
 		// Because B is in `sorted` and nothing in `graph` lists B as a parent, B must
 		// be a tip. A is also a tip because nothing lists it as a parent.
 		tips.sort();
-		let mut expected: Vec<&EventId> = vec![&*a, &*b];
+		let mut expected: Vec<&EventId> = vec![&a, &b];
 		expected.sort();
 
 		assert_eq!(tips, expected);
@@ -560,7 +608,7 @@ mod tests {
 		let tips = calculate_true_extremities(&graph, &sorted);
 
 		// Fallback returns the last element in `sorted`
-		let expected: Vec<&EventId> = vec![&*b];
+		let expected: Vec<&EventId> = vec![&b];
 		assert_eq!(tips, expected);
 	}
 
@@ -609,7 +657,7 @@ mod tests {
 		let sorted = vec![a, b.clone()];
 		let tips = calculate_true_extremities(&graph, &sorted);
 
-		let expected: Vec<&EventId> = vec![&*b];
+		let expected: Vec<&EventId> = vec![&b];
 		assert_eq!(tips, expected);
 	}
 
@@ -631,7 +679,7 @@ mod tests {
 
 		// Even though C was first in the array, A and B are in has_children.
 		// The algorithm correctly identifies C as the sole extremity.
-		let expected: Vec<&EventId> = vec![&*c];
+		let expected: Vec<&EventId> = vec![&c];
 		assert_eq!(tips, expected);
 	}
 
@@ -730,7 +778,7 @@ mod tests {
 		let e4 = event_id!("$4").to_owned();
 
 		// newly discovered true extremity
-		let true_exts = vec![&*e1];
+		let true_exts = vec![&e1];
 
 		// current tips in DB
 		let current_set: HashSet<OwnedEventId> = vec![e2.clone(), e3.clone(), e4.clone()]

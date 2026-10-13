@@ -4,7 +4,7 @@ mod v5;
 use std::collections::VecDeque;
 
 use conduwuit::{
-	Event, PduCount, Result, debug_warn, err, info,
+	Event, PduCount, Result, debug_warn, info,
 	matrix::pdu::PduEvent,
 	result::LogErr,
 	utils::stream::{BroadbandExt, ReadyExt, TryIgnore, WidebandExt},
@@ -12,7 +12,7 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::{StreamExt, TryStreamExt};
-use ruma::{
+use slipstream::{
 	OwnedUserId, RoomId, UserId,
 	events::TimelineEventType::{
 		self, Beacon, CallInvite, PollStart, RoomEncrypted, RoomMessage, Sticker,
@@ -25,7 +25,7 @@ pub(crate) use self::{
 };
 
 pub(crate) const DEFAULT_BUMP_TYPES: &[TimelineEventType; 6] =
-	&[CallInvite, PollStart, Beacon, RoomEncrypted, RoomMessage, Sticker];
+	&[RoomMessage, RoomEncrypted, Beacon, CallInvite, PollStart, Sticker];
 
 #[derive(Default)]
 pub(crate) struct TimelinePdus {
@@ -38,10 +38,10 @@ impl TimelinePdus {
 	pub(crate) fn members(&self) -> impl Iterator<Item = OwnedUserId> + '_ {
 		self.pdus.iter().flat_map(|(_, pdu)| {
 			let mut users = vec![pdu.sender.clone()];
-			if pdu.event_type().to_string() == "m.room.member" {
+			if pdu.event_type() == "m.room.member" {
 				if let Some(state_key) = &pdu.state_key {
 					if let Ok(user_id) = UserId::parse(state_key.as_str()) {
-						users.push(user_id.to_owned());
+						users.push(user_id);
 					}
 				}
 			}
@@ -66,28 +66,23 @@ async fn load_timeline(
 		room_id, sender_user, starting_count, ending_count, limit
 	);
 
+	// `fetch_limit` items are drained via `.take(fetch_limit)` below, then one
+	// more is peeked via `.next()` to determine `limited` when we did not already
+	// exceed `limit`. That peek only ever matters when `ready_fold` collected
+	// fewer than `fetch_limit` items -- i.e. the upstream stream is already
+	// exhausted -- so it can never actually observe a further item regardless
+	// of how far upstream is bounded; whenever a further item *does* exist,
+	// `ready_fold`'s own `.take(fetch_limit)` already fills `pdus` to
+	// `fetch_limit` (> `limit`), which short-circuits `.next()` away before it
+	// runs. Bounding the upstream to `fetch_limit` (not `fetch_limit + 1`)
+	// keeps `wide_then`'s eager `.buffered(width)` prefetch from doing a whole
+	// extra item's worth of enrichment work (add_membership_to_unsigned +
+	// add_bundled_aggregations_to_pdu) that would just be discarded unused.
+	let fetch_limit = limit.saturating_add(1);
+	let stream_limit = fetch_limit;
+
 	let mut pdu_stream = match starting_count {
 		| Some(starting_count) => {
-			let last_timeline_count = services
-				.rooms
-				.timeline
-				.last_timeline_count(room_id)
-				.await
-				.map_err(|err| {
-					err!(Database(warn!("Failed to fetch end of room timeline: {}", err)))
-				})?;
-
-			if !is_expanded_timeline && last_timeline_count <= starting_count {
-				// no messages have been sent in this room since `starting_count`
-				info!(
-					target: "timeline_debug",
-					"load_timeline early return for {}: last_timeline_count={:?} <= \
-					 starting_count={:?} sender={}",
-					room_id, last_timeline_count, starting_count, sender_user
-				);
-				return Ok(TimelinePdus::default());
-			}
-
 			// for incremental sync, stream from the DB all PDUs which were sent after
 			// `starting_count` but before `ending_count`, including `ending_count` but
 			// not `starting_count`. this code is pretty similar to the initial sync
@@ -115,6 +110,15 @@ async fn load_timeline(
 				.ready_take_while(move |&(pducount, _)| {
 					is_expanded_timeline || pducount > starting_count
 				})
+				// Bound *before* wide_then: wide_then's concurrent `.buffered(width)`
+				// (width defaults to 32, see `automatic_width`) eagerly pulls and starts
+				// up to `width` upstream items to fill its concurrency window before
+				// yielding anything, regardless of how many the caller actually wants.
+				// Left unbounded here, every sync poll for every room ran up to 32
+				// concurrent add_membership_to_unsigned + add_bundled_aggregations_to_pdu
+				// DB lookups even for a `limit=3` request, discarding all but a handful
+				// of the results.
+				.take(stream_limit)
 				.map(move |mut pdu| {
 					pdu.1.set_unsigned(Some(sender_user));
 					pdu
@@ -145,6 +149,8 @@ async fn load_timeline(
 				)
 				.inspect_err(|e| warn!("sync initial timeline pdus_rev error for {room_id}: {e}"))
 				.ignore_err()
+				// See the comment on the incremental-sync branch above -- same reasoning.
+				.take(stream_limit)
 				.map(move |mut pdu| {
 					pdu.1.set_unsigned(Some(sender_user));
 					pdu
@@ -165,9 +171,8 @@ async fn load_timeline(
 		},
 	};
 
-	// 1. Fetch one extra PDU to evaluate layout limits without shifting the window
-	let fetch_limit = limit.saturating_add(1);
-
+	// 1. `fetch_limit` (defined above) fetches one extra PDU to evaluate layout
+	//    limits without shifting the window.
 	// 2. Stream layout into a temporary sequence container
 	let mut pdus = pdu_stream
 		.by_ref()
@@ -219,10 +224,10 @@ async fn load_timeline(
 	let mut prev_batch = if limited {
 		if pdus.len() > limit {
 			pdus.get(pdus.len().saturating_sub(limit))
-				.map(|(count, _)| count.saturating_inc(ruma::api::Direction::Backward))
+				.map(|(count, _)| count.saturating_inc(slipstream::api::Direction::Backward))
 		} else {
 			pdus.front()
-				.map(|(count, _)| count.saturating_inc(ruma::api::Direction::Backward))
+				.map(|(count, _)| count.saturating_inc(slipstream::api::Direction::Backward))
 		}
 	} else {
 		ending_count
@@ -318,6 +323,18 @@ async fn load_timeline(
 		);
 	}
 
+	// If there are no PDUs in this room's sync range, `prev_batch` must be
+	// `None`. Even though a non-limited (empty) window has an obvious "current
+	// position" we could point `prev_batch` at, a set `prev_batch` makes
+	// slipstream's `Timeline::is_empty()` return false (it treats the presence of
+	// `prev_batch` as content). That in turn makes `JoinedRoom::is_empty()`
+	// false, so the incremental-sync loop in v3 always re-includes unchanged
+	// rooms like this one on every poll, violating the "unchanged room should
+	// not be in the sync" contract (complement `sync_test.go`). `prev_batch`
+	// only has meaning when there is actually a timeline to paginate, so keep
+	// it as `None` when the range is empty.
+	let prev_batch = if pdus.is_empty() { None } else { prev_batch };
+
 	Ok(TimelinePdus { pdus, prev_batch, limited })
 }
 
@@ -331,8 +348,7 @@ async fn share_encrypted_room(
 		.rooms
 		.state_cache
 		.get_shared_rooms(sender_user, user_id)
-		.ready_filter(|&room_id| Some(room_id) != ignore_room)
-		.map(ToOwned::to_owned)
+		.ready_filter(|room_id| ignore_room.is_none_or(|ignored| ignored != room_id))
 		.broad_any(|other_room_id| async move {
 			services
 				.rooms
@@ -354,7 +370,7 @@ async fn shares_a_room(
 		.rooms
 		.state_cache
 		.get_shared_rooms(sender_user, user_id)
-		.ready_any(|room_id| Some(room_id) != ignore_room)
+		.ready_any(|room_id| ignore_room.is_none_or(|ignored| *ignored != room_id))
 		.await
 }
 
@@ -380,12 +396,12 @@ pub(crate) async fn add_membership_to_unsigned(
 		// caused by the event itself... are included."
 		// For a user's own membership event, the state after the event is just the
 		// event itself.
-		serde_json::from_str::<ruma::events::room::member::RoomMemberEventContent>(
+		slipstream::codec::from_str::<slipstream::events::room::member::RoomMemberEventContent>(
 			pdu.content.get(),
 		)
-		.map_or(ruma::events::room::member::MembershipState::Leave, |c| c.membership)
+		.map_or(slipstream::events::room::member::MembershipState::Leave, |c| c.membership)
 	} else if pdu.kind == TimelineEventType::RoomCreate {
-		ruma::events::room::member::MembershipState::Leave
+		slipstream::events::room::member::MembershipState::Leave
 	} else {
 		services
 			.rooms
@@ -395,4 +411,15 @@ pub(crate) async fn add_membership_to_unsigned(
 	};
 
 	pdu.set_membership(membership.as_str()).log_err().ok();
+}
+
+/// A `200` response whose body is the given JSON value.
+pub(super) fn json_response(value: &slipstream::json::Value) -> axum::response::Response {
+	use axum::response::IntoResponse;
+
+	(
+		[(http::header::CONTENT_TYPE, "application/json")],
+		slipstream::codec::to_string(value),
+	)
+		.into_response()
 }

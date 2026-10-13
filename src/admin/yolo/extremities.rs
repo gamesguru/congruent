@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use conduwuit::{Result, matrix::Event};
 use futures::StreamExt;
-use ruma::{OwnedEventId, OwnedRoomOrAliasId};
+use slipstream::{OwnedEventId, OwnedRoomOrAliasId};
 
 use crate::admin_command;
 
@@ -15,14 +15,7 @@ pub(super) async fn view_extremities(
 ) -> Result {
 	if all || room.is_none() {
 		let mut fractured = Vec::new();
-		let rooms: Vec<_> = self
-			.services
-			.rooms
-			.metadata
-			.iter_ids()
-			.map(ToOwned::to_owned)
-			.collect()
-			.await;
+		let rooms: Vec<_> = self.services.rooms.metadata.iter_ids().collect().await;
 
 		for room_id in &rooms {
 			let count = self
@@ -112,27 +105,10 @@ pub(super) async fn view_extremities(
 }
 
 #[admin_command]
-pub(super) async fn recalculate_extremities(
-	&self,
-	room: OwnedRoomOrAliasId,
-	tail: i64,
-) -> Result {
+pub(super) async fn recalculate_extremities(&self, room: OwnedRoomOrAliasId) -> Result {
 	let room_id = self.services.rooms.alias.resolve(&room).await?;
-
-	let actual_tail = if tail < 0 {
-		usize::MAX
-	} else {
-		usize::try_from(tail).unwrap_or(usize::MAX)
-	};
-
-	let tail_str = if tail < 0 {
-		"all".to_owned()
-	} else {
-		actual_tail.to_string()
-	};
-
 	self.write_str(&format!(
-		"Recalculating forward extremities for room {room_id} using tail {tail_str}...\n"
+		"Recalculating forward extremities for room {room_id} using the full timeline...\n"
 	))
 	.await?;
 
@@ -161,7 +137,7 @@ pub(super) async fn recalculate_extremities(
 }
 
 #[admin_command]
-pub(super) async fn count_extremities(&self, room: OwnedRoomOrAliasId, _tail: i64) -> Result {
+pub(super) async fn count_extremities(&self, room: OwnedRoomOrAliasId) -> Result {
 	let room_id = self.services.rooms.alias.resolve(&room).await?;
 	let (changed, num_true) = self
 		.services

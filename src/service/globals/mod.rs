@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use conduwuit::{Result, Server, SyncRwLock, error, utils::bytes::pretty};
 use data::Data;
 use regex::RegexSet;
-use ruma::{OwnedEventId, OwnedRoomAliasId, OwnedServerName, OwnedUserId, ServerName, UserId};
+use slipstream::{
+	OwnedEventId, OwnedRoomAliasId, OwnedServerName, OwnedUserId, ServerName, UserId,
+};
 
 use crate::service;
 
@@ -18,6 +20,7 @@ pub struct Service {
 	pub server_user: OwnedUserId,
 	pub admin_alias: OwnedRoomAliasId,
 	pub turn_secret: String,
+	pub server_secret: [u8; 32],
 }
 
 type RateLimitState = (Instant, u32); // Time if last failed try, number of failed tries
@@ -40,18 +43,38 @@ impl crate::Service for Service {
 			},
 		);
 
+		let mut server_secret = [0_u8; 32];
+		match args.db["global"].get_blocking(b"server_secret") {
+			| Ok(secret) =>
+				if secret.len() == 32 {
+					server_secret.copy_from_slice(&secret);
+				} else {
+					return Err(conduwuit_core::err!(Database(
+						"server_secret in database has invalid length {} (expected 32); \
+						 database may be corrupt",
+						secret.len()
+					)));
+				},
+			| Err(e) if e.is_not_found() => {
+				use rand::Rng;
+				rand::rng().fill_bytes(&mut server_secret);
+				args.db["global"].insert(b"server_secret", server_secret);
+			},
+			| Err(e) => return Err(e),
+		}
+
 		Ok(Arc::new(Self {
 			db,
 			server: args.server.clone(),
 			bad_event_ratelimiter: Arc::new(SyncRwLock::new(HashMap::new())),
-			admin_alias: OwnedRoomAliasId::try_from(format!("#admins:{}", args.server.name))
-				.expect("#admins:server_name is valid alias name"),
+			admin_alias: OwnedRoomAliasId::parse(format!("#admins:{}", args.server.name))?,
 			server_user: UserId::parse_with_server_name(
 				String::from("conduit"),
 				&args.server.name,
 			)
 			.expect("@conduit:server_name is valid"),
 			turn_secret,
+			server_secret,
 		}))
 	}
 
@@ -59,7 +82,7 @@ impl crate::Service for Service {
 		let (ber_count, ber_bytes) = self.bad_event_ratelimiter.read().iter().fold(
 			(0_usize, 0_usize),
 			|(mut count, mut bytes), (event_id, _)| {
-				bytes = bytes.saturating_add(event_id.capacity());
+				bytes = bytes.saturating_add(event_id.as_str().len());
 				bytes = bytes.saturating_add(size_of::<RateLimitState>());
 				count = count.saturating_add(1);
 				(count, bytes)
@@ -99,6 +122,9 @@ impl crate::Service for Service {
 			}
 			if !self.server.running() {
 				break;
+			}
+			if self.server.is_maintenance() {
+				continue;
 			}
 
 			let http_success = self
@@ -341,6 +367,15 @@ impl Service {
 	pub fn current_count(&self) -> Result<u64> { Ok(self.db.current_count()) }
 
 	#[inline]
+	pub fn with_cork_and_flush<R, F>(&self, f: F) -> R
+	where
+		F: FnOnce() -> R,
+	{
+		let _cork = self.db.db.cork_and_flush();
+		f()
+	}
+
+	#[inline]
 	pub fn server_name(&self) -> &ServerName { self.server.name.as_ref() }
 
 	pub fn allow_public_room_directory_over_federation(&self) -> bool {
@@ -424,7 +459,7 @@ impl Service {
 	/// checks if `user_id` is local to us via server_name comparison
 	#[inline]
 	pub fn user_is_local(&self, user_id: &UserId) -> bool {
-		self.server_is_ours(user_id.server_name())
+		self.server_is_ours(&user_id.server_name())
 	}
 
 	#[inline]

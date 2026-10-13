@@ -1,5 +1,5 @@
 use conduwuit::{Err, Result, debug, implement, info, warn};
-use ruma::{
+use slipstream::{
 	RoomId, ServerName,
 	events::{StateEventType, room::server_acl::RoomServerAclEventContent},
 };

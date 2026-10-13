@@ -1,5 +1,5 @@
 use conduwuit::Result;
-use ruma::OwnedEventId;
+use slipstream::OwnedEventId;
 use crate::admin_command;
 
 #[admin_command]

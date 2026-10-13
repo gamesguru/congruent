@@ -4,7 +4,7 @@ use axum::extract::State;
 use conduwuit::{Err, Result, err};
 use conduwuit_service::Services;
 use futures::{FutureExt, future::try_join};
-use ruma::{
+use slipstream::{
 	UInt, UserId,
 	api::client::backup::{
 		add_backup_keys, add_backup_keys_for_room, add_backup_keys_for_session,

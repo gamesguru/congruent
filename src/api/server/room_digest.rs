@@ -2,8 +2,7 @@ use axum::extract::State;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use conduwuit::{Err, Result, err, info, utils::math::usize_from_f64};
 use futures::StreamExt;
-use ruma::OwnedEventId;
-use serde::Serialize;
+use slipstream::OwnedEventId;
 use xxhash_rust::xxh3;
 
 /// Default active window: the W most recent events by topological depth.
@@ -21,18 +20,6 @@ const BITS_PER_ELEMENT: f64 = 6.235;
 ///
 /// Returns a compact Bloom filter digest of the server's event graph for
 /// divergence detection (MSC0F01: Gossip-Based Federation Room Reconciliation).
-#[derive(Serialize)]
-pub(crate) struct RoomDigestResponse {
-	pub digest: String,
-	pub digest_type: String,
-	pub digest_bits: u32,
-	pub digest_window: u32,
-	pub event_count: u64,
-	pub extremity_event_ids: Vec<OwnedEventId>,
-	pub depth_range: (u64, u64),
-	pub origin_server_ts_range: (u64, u64),
-}
-
 /// Build an XXH3-128 double-hashed Bloom filter over a set of event IDs.
 ///
 /// Uses the construction from MSC0F01:
@@ -96,7 +83,7 @@ pub(crate) async fn get_room_digest_route(
 	State(services): State<crate::State>,
 	axum::extract::Path(room_id_str): axum::extract::Path<String>,
 ) -> Result<impl axum::response::IntoResponse> {
-	let room_id = ruma::OwnedRoomId::try_from(room_id_str)
+	let room_id = slipstream::OwnedRoomId::parse(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 
 	// Verify we participate in this room
@@ -134,8 +121,8 @@ pub(crate) async fn get_room_digest_route(
 	while let Some(Ok((_, pdu))) = pdus.next().await {
 		event_count = event_count.saturating_add(1);
 
-		let depth: u64 = pdu.depth.into();
-		let ts: u64 = u64::from(pdu.origin_server_ts);
+		let depth: u64 = pdu.depth;
+		let ts: u64 = pdu.origin_server_ts;
 
 		if depth < min_depth {
 			min_depth = depth;
@@ -179,23 +166,26 @@ pub(crate) async fn get_room_digest_route(
 	// Compute ETag for conditional request support
 	let etag = compute_etag(&mut extremity_event_ids, event_count);
 
-	let response = RoomDigestResponse {
-		digest,
-		digest_type: "xxh3_bloom".to_owned(),
-		digest_bits,
-		digest_window: u32::try_from(window_event_ids.len()).unwrap_or(u32::MAX),
-		event_count,
-		extremity_event_ids,
-		depth_range: (min_depth, max_depth),
-		origin_server_ts_range: (min_ts, max_ts),
-	};
+	let mut response = slipstream::ObjectBuilder::new();
+	response.field("digest", &digest);
+	response.field("digest_type", &"xxh3_bloom");
+	response.field("digest_bits", &digest_bits);
+	response.field("digest_window", &u32::try_from(window_event_ids.len()).unwrap_or(u32::MAX));
+	response.field("event_count", &event_count);
+	response.field("extremity_event_ids", &extremity_event_ids);
+	response.field("depth_range", &(min_depth, max_depth));
+	response.field("origin_server_ts_range", &(min_ts, max_ts));
 
-	Ok(([(http::header::ETAG, etag)], axum::Json(response)))
+	let mut response = crate::json_util::json_response(response.finish());
+	response
+		.headers_mut()
+		.insert(http::header::ETAG, etag.parse().expect("ETag must be a valid header value"));
+	Ok(response)
 }
 
 #[cfg(test)]
 mod tests {
-	use ruma::OwnedEventId;
+	use slipstream::OwnedEventId;
 
 	use super::{build_xxh3_bloom, compute_etag};
 

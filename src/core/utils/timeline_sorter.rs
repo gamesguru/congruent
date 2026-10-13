@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use ruma::OwnedEventId;
+use slipstream::OwnedEventId;
 
 use crate::PduCount;
 
@@ -38,7 +38,7 @@ pub fn sort_timeline_events<S: std::hash::BuildHasher>(
 
 #[cfg(test)]
 mod tests {
-	use ruma::event_id;
+	use slipstream::event_id;
 
 	use super::*;
 

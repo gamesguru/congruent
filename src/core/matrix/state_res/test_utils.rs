@@ -1,13 +1,16 @@
 use std::{
 	borrow::Borrow,
 	collections::{BTreeMap, HashMap, HashSet},
-	sync::atomic::{AtomicU64, Ordering::SeqCst},
+	sync::{
+		LazyLock,
+		atomic::{AtomicU64, Ordering::SeqCst},
+	},
 };
 
 use futures::future::ready;
-use ruma::{
-	EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, RoomVersionId, ServerSignatures,
-	UserId, event_id,
+use slipstream::{
+	EventId, Int, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId,
+	RoomVersionId, UInt, UserId, event_id,
 	events::{
 		TimelineEventType,
 		room::{
@@ -17,18 +20,42 @@ use ruma::{
 	},
 	int, room_id, uint, user_id,
 };
-use serde_json::{
-	json,
-	value::{RawValue as RawJsonValue, to_raw_value as to_raw_json_value},
-};
 
 use super::auth_types_for_event;
 use crate::{
 	Result, RoomVersion, info,
-	matrix::{Event, EventTypeExt, Pdu, StateMap, pdu::EventHash},
+	matrix::{
+		Event, EventTypeExt, Pdu, StateMap,
+		pdu::{EventHash, RawJson},
+	},
 };
 
 static SERVER_TIMESTAMP: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn to_raw_json_value<T: slipstream::codec::Serialize + ?Sized>(value: &T) -> RawJson {
+	RawJson::from_value(value)
+}
+
+/// `{"users": {...}}` power-level content with the given user levels.
+pub(crate) fn power_users(users: &[(&OwnedUserId, i64)]) -> slipstream::json::Value {
+	let users = users
+		.iter()
+		.map(|(user, level)| (user.to_string(), slipstream::json::Value::from(*level)))
+		.collect::<slipstream::json::Object>();
+	let mut object = slipstream::json::Object::new();
+	object.insert("users".to_owned(), slipstream::json::Value::Object(users));
+	slipstream::json::Value::Object(object)
+}
+
+/// Raw `m.room.power_levels` content with the given user levels.
+pub(crate) fn users_power_levels(users: &[(&UserId, u32)]) -> RawJson {
+	let users = users
+		.iter()
+		.map(|(user, level)| format!("\"{user}\":{level}"))
+		.collect::<Vec<_>>()
+		.join(",");
+	RawJson::from_json_string(format!("{{\"users\":{{{users}}}}}")).unwrap()
+}
 
 pub(crate) async fn do_check(
 	events: &[Pdu],
@@ -123,7 +150,7 @@ pub(crate) async fn do_check(
 
 			let event_map = &event_map;
 			let fetch = |id: OwnedEventId| ready(event_map.get(&id).cloned());
-			let exists = |id: OwnedEventId| ready(event_map.get(&id).is_some());
+			// let exists = |id: OwnedEventId| ready(event_map.get(&id).is_some());
 			let auth_chain_fetch = |events: Vec<OwnedEventId>| {
 				ready(store.auth_event_ids(room_id(), events).unwrap_or_default())
 			};
@@ -153,7 +180,7 @@ pub(crate) async fn do_check(
 			fake_event.event_type(),
 			fake_event.sender(),
 			fake_event.state_key(),
-			fake_event.content(),
+			&fake_event.content().json().unwrap(),
 			&RoomVersion::V6,
 		)
 		.unwrap();
@@ -204,10 +231,10 @@ pub(crate) async fn do_check(
 		expected_state.insert(key, node);
 	}
 
-	let start_state = state_at_event.get(event_id!("$START:foo")).unwrap();
+	let start_state = state_at_event.get(&event_id!("$START:foo")).unwrap();
 
 	let end_state = state_at_event
-		.get(event_id!("$END:foo"))
+		.get(&event_id!("$END:foo"))
 		.unwrap()
 		.iter()
 		.filter(|(k, v)| {
@@ -273,7 +300,7 @@ impl TestStore<Pdu> {
 			alice(),
 			TimelineEventType::RoomCreate,
 			Some(""),
-			to_raw_json_value(&json!({ "creator": alice() })).unwrap(),
+			to_raw_json_value(&slipstream::json!({ "creator": alice().as_str() })),
 			&[],
 			&[],
 		);
@@ -297,7 +324,7 @@ impl TestStore<Pdu> {
 			alice(),
 			TimelineEventType::RoomJoinRules,
 			Some(""),
-			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Public)).unwrap(),
+			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Public)),
 			&[cre.clone(), alice_mem.event_id().to_owned()],
 			&[alice_mem.event_id().to_owned()],
 		);
@@ -363,40 +390,37 @@ pub(crate) fn event_id(id: &str) -> OwnedEventId {
 	format!("${id}:foo").try_into().unwrap()
 }
 
-pub(crate) fn alice() -> &'static UserId { user_id!("@alice:foo") }
-
-pub(crate) fn bob() -> &'static UserId { user_id!("@bob:foo") }
-
-pub(crate) fn charlie() -> &'static UserId { user_id!("@charlie:foo") }
-
-pub(crate) fn ella() -> &'static UserId { user_id!("@ella:foo") }
-
-pub(crate) fn zara() -> &'static UserId { user_id!("@zara:foo") }
-
-pub(crate) fn room_id() -> &'static RoomId { room_id!("!test:foo") }
-
-pub(crate) fn member_content_ban() -> Box<RawJsonValue> {
-	to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Ban)).unwrap()
+macro_rules! static_id {
+	($name:ident, $ty:ty, $($make:tt)+) => {
+		pub(crate) fn $name() -> &'static $ty {
+			static ID: LazyLock<$ty> = LazyLock::new(|| $($make)+);
+			&ID
+		}
+	};
 }
 
-pub(crate) fn member_content_join() -> Box<RawJsonValue> {
-	to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Join)).unwrap()
+static_id!(alice, UserId, user_id!("@alice:foo"));
+static_id!(bob, UserId, user_id!("@bob:foo"));
+static_id!(charlie, UserId, user_id!("@charlie:foo"));
+static_id!(ella, UserId, user_id!("@ella:foo"));
+static_id!(zara, UserId, user_id!("@zara:foo"));
+static_id!(room_id, RoomId, room_id!("!test:foo"));
+
+fn member_content(state: MembershipState) -> RawJson {
+	RawJson::from_value(&RoomMemberEventContent::new(state))
 }
 
-pub(crate) fn member_content_leave() -> Box<RawJsonValue> {
-	to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Leave)).unwrap()
-}
-
-pub(crate) fn member_content_invite() -> Box<RawJsonValue> {
-	to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Invite)).unwrap()
-}
+pub(crate) fn member_content_ban() -> RawJson { member_content(MembershipState::Ban) }
+pub(crate) fn member_content_join() -> RawJson { member_content(MembershipState::Join) }
+pub(crate) fn member_content_leave() -> RawJson { member_content(MembershipState::Leave) }
+pub(crate) fn member_content_invite() -> RawJson { member_content(MembershipState::Invite) }
 
 pub(crate) fn to_init_pdu_event(
 	id: &str,
 	sender: &UserId,
 	ev_type: TimelineEventType,
 	state_key: Option<&str>,
-	content: Box<RawJsonValue>,
+	content: RawJson,
 ) -> Pdu {
 	let ts = SERVER_TIMESTAMP.fetch_add(1, SeqCst);
 	let id = if id.contains('$') {
@@ -430,7 +454,7 @@ pub(crate) fn to_pdu_event<S>(
 	sender: &UserId,
 	ev_type: TimelineEventType,
 	state_key: Option<&str>,
-	content: Box<RawJsonValue>,
+	content: RawJson,
 	auth_events: &[S],
 	prev_events: &[S],
 ) -> Pdu
@@ -483,7 +507,7 @@ pub(crate) fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			alice(),
 			TimelineEventType::RoomCreate,
 			Some(""),
-			to_raw_json_value(&json!({ "creator": alice() })).unwrap(),
+			to_raw_json_value(&slipstream::json!({ "creator": alice().as_str() })),
 			&[],
 			&[],
 		),
@@ -501,7 +525,7 @@ pub(crate) fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			alice(),
 			TimelineEventType::RoomPowerLevels,
 			Some(""),
-			to_raw_json_value(&json!({ "users": { alice(): 100 } })).unwrap(),
+			users_power_levels(&[(alice(), 100)]),
 			&["CREATE", "IMA"],
 			&["IMA"],
 		),
@@ -510,7 +534,7 @@ pub(crate) fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			alice(),
 			TimelineEventType::RoomJoinRules,
 			Some(""),
-			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Public)).unwrap(),
+			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Public)),
 			&["CREATE", "IMA", "IPOWER"],
 			&["IPOWER"],
 		),
@@ -537,7 +561,7 @@ pub(crate) fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			charlie(),
 			TimelineEventType::RoomMessage,
 			Some("dummy"),
-			to_raw_json_value(&json!({})).unwrap(),
+			to_raw_json_value(&slipstream::json!({})),
 			&[],
 			&[],
 		),
@@ -546,7 +570,7 @@ pub(crate) fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			charlie(),
 			TimelineEventType::RoomMessage,
 			Some("dummy"),
-			to_raw_json_value(&json!({})).unwrap(),
+			to_raw_json_value(&slipstream::json!({})),
 			&[],
 			&[],
 		),
@@ -564,7 +588,7 @@ pub(crate) fn INITIAL_EVENTS_CREATE_ROOM() -> HashMap<OwnedEventId, Pdu> {
 		alice(),
 		TimelineEventType::RoomCreate,
 		Some(""),
-		to_raw_json_value(&json!({ "creator": alice() })).unwrap(),
+		to_raw_json_value(&slipstream::json!({ "creator": alice().as_str() })),
 		&[],
 		&[],
 	)]

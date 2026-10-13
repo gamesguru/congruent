@@ -5,7 +5,7 @@ use conduwuit::{
 	matrix::{Event, pdu::PduEvent},
 };
 use futures::{StreamExt, future::ready};
-use ruma::{OwnedEventId, OwnedRoomOrAliasId, OwnedUserId};
+use slipstream::{OwnedEventId, OwnedRoomOrAliasId, OwnedUserId};
 
 use crate::admin_command;
 
@@ -102,7 +102,7 @@ pub(super) async fn list_outliers(
 
 		let room_id_str = pdu.room_id().map_or_else(
 			|| {
-				if pdu.kind.to_string() == "m.room.create" {
+				if pdu.kind == "m.room.create" {
 					event_id.as_str().replace('$', "!")
 				} else {
 					"unknown".to_owned()

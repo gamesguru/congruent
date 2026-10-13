@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use conduwuit::{Event, Result, debug, info, utils::ReadyExt, warn};
 use futures::{FutureExt, StreamExt};
-use ruma::OwnedServerName;
+use slipstream::OwnedServerName;
 
 use crate::service::Dep;
 
@@ -78,6 +78,45 @@ impl Service {
 		// consume the immediate first tick so we don't double-scan on startup
 		interval.tick().await;
 
+		// --- Periodic HAMT node reclamation ---
+		// A dedicated task rather than another arm on the forward-fill tick, so
+		// each keeps its own interval and either can be disabled on its own --
+		// notably, node reclamation must not stop when federation is turned off.
+		let node_sweep_interval = self
+			.services
+			.server
+			.config
+			.state_hamt_node_sweep_interval_secs;
+		if node_sweep_interval != 0 {
+			let state = self.services.state.clone();
+			let server = self.services.server.clone();
+			let delete = self.services.server.config.state_hamt_node_sweep_delete;
+			let mut shutdown = server.signal.subscribe();
+			// Clone the handle so it does not keep `server` borrowed while the
+			// task below moves it.
+			let runtime = server.runtime().clone();
+			runtime.spawn(async move {
+				let mut interval =
+					tokio::time::interval(Duration::from_secs(node_sweep_interval));
+				interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+				// consume the immediate first tick so we don't sweep on startup
+				interval.tick().await;
+
+				loop {
+					tokio::select! {
+						_ = interval.tick() => {},
+						_ = shutdown.recv() => {},
+					}
+
+					if !server.running() {
+						break;
+					}
+
+					Self::sweep_state_hamt_nodes(&state, delete).await;
+				}
+			});
+		}
+
 		loop {
 			tokio::select! {
 				_ = interval.tick() => {},
@@ -94,6 +133,50 @@ impl Service {
 
 			debug!(target: "forwardfill", "Starting periodic forward-fill sweep...");
 			self.scan_all_rooms(PERIODIC_STALE_THRESHOLD_MS).await;
+		}
+	}
+
+	/// One HAMT node reclamation pass, reporting what it did either way.
+	///
+	/// Dry run unless `state_hamt_node_sweep_delete` is set: the sweep deletes
+	/// everything no recorded root reaches, so it is only safe to trust that the
+	/// recorded root set is complete.
+	///
+	/// The grace window is one hour, comfortably longer than the interval between
+	/// a node being persisted and being linked into a root handle, so a
+	/// concurrent state update is never mistaken for an orphan.
+	async fn sweep_state_hamt_nodes(state: &crate::rooms::state::Service, delete: bool) {
+		let dry_run = !delete;
+		let grace = Duration::from_hours(1);
+
+		match state.sweep_hamt_nodes(grace, dry_run).await {
+			| Ok(report) if dry_run => {
+				info!(
+					target: "state_hamt",
+					"HAMT node sweep (dry run): {} orphaned nodes, {} bytes reclaimable",
+					report.orphaned,
+					report.bytes,
+				);
+
+				if report.orphaned > 0 {
+					warn!(
+						target: "state_hamt",
+						"{} unreachable HAMT nodes would be reclaimed; set 						 state_hamt_node_sweep_delete to enable deletion",
+						report.orphaned,
+					);
+				}
+			},
+			| Ok(report) => {
+				info!(
+					target: "state_hamt",
+					"HAMT node sweep: reclaimed {} orphaned nodes, {} bytes",
+					report.orphaned,
+					report.bytes,
+				);
+			},
+			| Err(e) => {
+				warn!(target: "state_hamt", "HAMT node sweep failed: {e}");
+			},
 		}
 	}
 
@@ -115,7 +198,6 @@ impl Service {
 		self.services
 			.state_cache
 			.server_rooms(ours)
-			.map(ToOwned::to_owned) // Copy RoomId before concurrent loop (UAF )
 			.for_each_concurrent(concurrency, |room_id| async move {
 				// Step 1: Forward-fill missing events
 				if let Err(e) = self.check_room(&room_id, stale_threshold_ms).boxed().await {
@@ -140,14 +222,12 @@ impl Service {
 
 	pub async fn check_room(
 		&self,
-		room_id: &ruma::RoomId,
+		room_id: &slipstream::RoomId,
 
 		stale_threshold_ms: u64,
 	) -> Result<()> {
 		let room_str = room_id.as_str();
-		if !room_str.bytes().all(|b| b.is_ascii_graphic())
-			|| <&ruma::RoomId>::try_from(room_str).is_err()
-		{
+		if !room_str.bytes().all(|b| b.is_ascii_graphic()) || !room_str.starts_with('!') {
 			info!(
 				target: "forwardfill",
 				"Skipping room with invalid/corrupt ID ({} bytes): {:?}",
@@ -177,7 +257,7 @@ impl Service {
 			.try_into()
 			.expect("time overflow");
 
-		if now.saturating_sub(latest_pdu.origin_server_ts().get().into()) < stale_threshold_ms {
+		if now.saturating_sub(latest_pdu.origin_server_ts().get()) < stale_threshold_ms {
 			return Ok(());
 		}
 
@@ -192,7 +272,7 @@ impl Service {
 			.services
 			.state_cache
 			.room_servers(room_id)
-			.ready_filter(|&s| {
+			.ready_filter(|s| {
 				!self.services.globals.server_is_ours(s)
 					&& !self
 						.services
@@ -201,7 +281,6 @@ impl Service {
 						.forbidden_remote_server_names
 						.is_match(s.host())
 			})
-			.map(ToOwned::to_owned)
 			.collect()
 			.await;
 
@@ -221,7 +300,7 @@ impl Service {
 				.server_name()
 				.filter(|s| !self.services.globals.server_is_ours(s))
 			{
-				let hs_owned = hs.to_owned();
+				let hs_owned = hs;
 				if all_remote.contains(&hs_owned) && !candidate_servers.contains(&hs_owned) {
 					candidate_servers.push(hs_owned);
 				}
@@ -257,7 +336,7 @@ impl Service {
 				.active_local_users_in_room(room_id)
 				.boxed();
 			match users.next().await {
-				| Some(u) => u.to_owned(),
+				| Some(u) => u.clone(),
 				| None => {
 					info!(
 						target: "forwardfill",
@@ -273,11 +352,11 @@ impl Service {
 			info!(
 				target: "forwardfill",
 				"Room {room_id} is stagnant (latest PDU was {}ms ago). Probing {target_server} for extremities via {user_id}...",
-				now.saturating_sub(latest_pdu.origin_server_ts().get().into())
+				now.saturating_sub(latest_pdu.origin_server_ts().get())
 			);
 
 			let make_join_request =
-				ruma::api::federation::membership::prepare_join_event::v1::Request {
+				slipstream::api::federation::membership::prepare_join_event::v1::Request {
 					room_id: room_id.to_owned(),
 					user_id: user_id.clone(),
 					ver: self.services.server.supported_room_versions().collect(),
@@ -299,27 +378,27 @@ impl Service {
 				},
 			};
 
-			let event_stub =
-				match serde_json::from_str::<ruma::CanonicalJsonObject>(probe_response.get()) {
-					| Ok(s) => s,
-					| Err(e) => {
-						warn!(
-							target: "forwardfill",
-							"Invalid probe template from {target_server}: {e}"
-						);
-						continue; // Try next server
-					},
-				};
+			let event_stub = match slipstream::codec::from_str::<slipstream::CanonicalJsonObject>(
+				probe_response.get(),
+			) {
+				| Ok(s) => s,
+				| Err(e) => {
+					warn!(
+						target: "forwardfill",
+						"Invalid probe template from {target_server}: {e}"
+					);
+					continue; // Try next server
+				},
+			};
 
-			let remote_latest_events: Vec<ruma::OwnedEventId> = event_stub
+			let remote_latest_events: Vec<slipstream::OwnedEventId> = event_stub
 				.get("prev_events")
 				.and_then(|v| v.as_array())
 				.map(|arr| {
 					arr.iter()
 						.filter_map(|v| {
-							v.as_str().and_then(|s| {
-								<&ruma::EventId>::try_from(s).ok().map(ToOwned::to_owned)
-							})
+							v.as_str()
+								.and_then(|id| slipstream::OwnedEventId::parse(id).ok())
 						})
 						.collect()
 				})
@@ -349,7 +428,7 @@ impl Service {
 			);
 
 			// Fetch the missing extremities via /get_missing_events
-			let earliest_events: Vec<ruma::OwnedEventId> = self
+			let earliest_events: Vec<slipstream::OwnedEventId> = self
 				.services
 				.state
 				.get_forward_extremities(room_id)
@@ -357,7 +436,7 @@ impl Service {
 				.collect()
 				.await;
 
-			let request = ruma::api::federation::event::get_missing_events::v1::Request {
+			let request = slipstream::api::federation::event::get_missing_events::v1::Request {
 				room_id: room_id.to_owned(),
 				earliest_events: earliest_events.clone(),
 				latest_events: missing_latest.clone(),

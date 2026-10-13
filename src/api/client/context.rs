@@ -13,7 +13,9 @@ use futures::{
 	FutureExt, StreamExt, TryFutureExt, TryStreamExt,
 	future::{OptionFuture, join, join3, try_join3},
 };
-use ruma::{OwnedEventId, UserId, api::client::context::get_context, events::StateEventType};
+use slipstream::{
+	OwnedEventId, UserId, api::client::context::get_context, events::StateEventType,
+};
 
 use crate::{
 	Ruma,
@@ -41,7 +43,8 @@ pub(crate) async fn get_context_route(
 	let (sender_user, sender_device) = sender;
 	let room_id = &body.room_id;
 	let event_id = &body.event_id;
-	let filter = &body.filter;
+	let default_filter = slipstream::filter::RoomEventFilter::default();
+	let filter = body.filter.as_ref().unwrap_or(&default_filter);
 
 	if !services.rooms.metadata.exists(room_id).await {
 		return Err!(Request(Forbidden("Room does not exist to this server")));
@@ -88,7 +91,7 @@ pub(crate) async fn get_context_route(
 
 	let base_count = base_id.pdu_count();
 	let base_token = TopoToken {
-		depth: u64::from(base_pdu.depth()),
+		depth: base_pdu.depth(),
 		pdu_count: base_count,
 	};
 
@@ -184,22 +187,24 @@ pub(crate) async fn get_context_route(
 		.map(ref_at!(1))
 		.map_or_else(|| body.event_id.as_ref(), |pdu| pdu.event_id.as_ref());
 
-	let state_ids = services
-		.rooms
-		.state_accessor
-		.pdu_shortstatehash(state_at)
-		.or_else(|_| services.rooms.state.get_room_shortstatehash(room_id))
-		.map_ok(|shortstatehash| {
-			services
-				.rooms
-				.state_accessor
-				.state_full_ids(shortstatehash)
-				.map(Ok)
-		})
-		.map_err(|e| err!(Database("State not found: {e}")))
-		.try_flatten_stream()
-		.try_collect()
-		.boxed();
+	let state_ids = async {
+		let root_handle = services
+			.rooms
+			.state_accessor
+			.pdu_roothandle_before_event(state_at)
+			.or_else(|_| services.rooms.state.get_room_state_hamt(room_id))
+			.map_err(|e| err!(Database("State not found: {e}")))
+			.await?;
+
+		let ids: Vec<(ShortStateKey, OwnedEventId)> = services
+			.rooms
+			.state_accessor
+			.state_full_ids_hamt(&root_handle)
+			.try_collect()
+			.await?;
+
+		Ok::<_, conduwuit::Error>(ids)
+	};
 
 	let (lazy_loading_witnessed, state_ids): (_, Result<Vec<(ShortStateKey, OwnedEventId)>>) =
 		join(lazy_loading_witnessed, state_ids).await;
@@ -217,10 +222,8 @@ pub(crate) async fn get_context_route(
 		.ready_filter_map(|((event_type, state_key), event_id)| {
 			if filter.lazy_load_options.is_enabled()
 				&& event_type == StateEventType::RoomMember
-				&& state_key
-					.as_str()
-					.try_into()
-					.is_ok_and(|user_id: &UserId| !lazy_loading_witnessed.contains(user_id))
+				&& UserId::parse(state_key)
+					.is_ok_and(|user_id| !lazy_loading_witnessed.contains(&user_id))
 			{
 				return None;
 			}
@@ -254,14 +257,14 @@ pub(crate) async fn get_context_route(
 		.map(at!(0))
 		.or(Some(base_token))
 		.as_ref()
-		.map(|t| format!("{t}"));
+		.map(ToString::to_string);
 	let end = events_after
 		.last()
 		.map(at!(0))
 		.or(next_token)
 		.or(Some(base_token))
 		.as_ref()
-		.map(|t| format!("{t}"));
+		.map(ToString::to_string);
 	info!(
 		%room_id,
 		%event_id,

@@ -1,7 +1,7 @@
 use std::future::Future;
 
 use conduwuit::debug;
-use ruma::{EventId, OwnedEventId};
+use slipstream::{EventId, OwnedEventId};
 
 /// Calculate new forward extremities after processing an incoming event.
 ///
@@ -35,7 +35,7 @@ where
 
 	for event_id in current_extremities {
 		// Remove extremities that are referenced by the incoming event's prev_events
-		if prev_events.iter().any(|&pe| pe == event_id) {
+		if prev_events.iter().any(|pe| **pe == event_id) {
 			continue;
 		}
 
@@ -70,7 +70,7 @@ where
 mod tests {
 	use std::future::ready;
 
-	use ruma::{OwnedEventId, event_id};
+	use slipstream::{OwnedEventId, event_id};
 
 	use super::*;
 
@@ -87,7 +87,7 @@ mod tests {
 
 		let result = calculate_forward_extremities(
 			vec![a.clone()],
-			b_id,
+			&b_id,
 			&[a.as_ref()],
 			false,
 			never_referenced,
@@ -109,7 +109,7 @@ mod tests {
 		// Server 1 sends B referencing A
 		let after_b = calculate_forward_extremities(
 			vec![a.clone()],
-			b_id,
+			&b_id,
 			&[a.as_ref()],
 			false,
 			never_referenced,
@@ -122,11 +122,11 @@ mod tests {
 		// Server 2 sends C also referencing A
 		// But A is already referenced (marked by B), so we simulate that
 		let c_id = event_id!("$ccc:example.org");
-		let is_referenced = |eid: &EventId| ready(eid == event_id!("$aaa:example.org"));
+		let is_referenced = |eid: &EventId| ready(*eid == event_id!("$aaa:example.org"));
 
 		let after_c = calculate_forward_extremities(
 			vec![b_id.to_owned()],
-			c_id,
+			&c_id,
 			&[a.as_ref()],
 			false,
 			is_referenced,
@@ -150,7 +150,7 @@ mod tests {
 
 		let result = calculate_forward_extremities(
 			vec![b.clone(), c.clone()],
-			d_id,
+			&d_id,
 			&[b.as_ref(), c.as_ref()],
 			false,
 			never_referenced,
@@ -171,7 +171,7 @@ mod tests {
 
 		let result = calculate_forward_extremities(
 			vec![a.clone()],
-			b_id,
+			&b_id,
 			&[a.as_ref()],
 			true, // soft_fail!
 			never_referenced,
@@ -197,7 +197,7 @@ mod tests {
 		// Simulate sequential processing: after J1, A is referenced
 		let after_j1 = calculate_forward_extremities(
 			vec![a.clone()],
-			j1_id,
+			&j1_id,
 			&[a.as_ref()],
 			false,
 			never_referenced,
@@ -207,10 +207,10 @@ mod tests {
 		assert_eq!(after_j1, vec![j1_id.to_owned()]);
 
 		// J2 also references A (which is now marked as referenced in DB)
-		let a_is_referenced = |eid: &EventId| ready(eid == event_id!("$aaa:example.org"));
+		let a_is_referenced = |eid: &EventId| ready(*eid == event_id!("$aaa:example.org"));
 		let after_j2 = calculate_forward_extremities(
 			vec![j1_id.to_owned()],
-			j2_id,
+			&j2_id,
 			&[a.as_ref()],
 			false,
 			a_is_referenced,
@@ -222,7 +222,7 @@ mod tests {
 		// J3 also references A
 		let after_j3 = calculate_forward_extremities(
 			vec![j1_id.to_owned(), j2_id.to_owned()],
-			j3_id,
+			&j3_id,
 			&[a.as_ref()],
 			false,
 			a_is_referenced,
@@ -235,8 +235,8 @@ mod tests {
 		let m_id = event_id!("$merge:example.org");
 		let result = calculate_forward_extremities(
 			vec![j1_id.to_owned(), j2_id.to_owned(), j3_id.to_owned()],
-			m_id,
-			&[j1_id, j2_id, j3_id],
+			&m_id,
+			&[&j1_id, &j2_id, &j3_id],
 			false,
 			never_referenced,
 			true,
@@ -258,7 +258,7 @@ mod tests {
 		// User renames, referencing A
 		let after_rename = calculate_forward_extremities(
 			vec![a.clone()],
-			rename_id,
+			&rename_id,
 			&[a.as_ref()],
 			false,
 			never_referenced,
@@ -268,10 +268,10 @@ mod tests {
 		assert_eq!(after_rename, vec![rename_id.to_owned()]);
 
 		// Avatar change also references A (now referenced in DB)
-		let a_referenced = |eid: &EventId| ready(eid == event_id!("$aaa:example.org"));
+		let a_referenced = |eid: &EventId| ready(*eid == event_id!("$aaa:example.org"));
 		let after_avatar = calculate_forward_extremities(
 			vec![rename_id.to_owned()],
-			avatar_id,
+			&avatar_id,
 			&[a.as_ref()],
 			false,
 			a_referenced,
@@ -283,7 +283,7 @@ mod tests {
 		// Message also references A
 		let after_msg = calculate_forward_extremities(
 			vec![rename_id.to_owned(), avatar_id.to_owned()],
-			msg_id,
+			&msg_id,
 			&[a.as_ref()],
 			false,
 			a_referenced,
@@ -300,8 +300,8 @@ mod tests {
 		let merge_id = event_id!("$merge:example.org");
 		let result = calculate_forward_extremities(
 			vec![rename_id.to_owned(), avatar_id.to_owned(), msg_id.to_owned()],
-			merge_id,
-			&[rename_id, avatar_id, msg_id],
+			&merge_id,
+			&[&rename_id, &avatar_id, &msg_id],
 			false,
 			never_referenced,
 			true,
@@ -323,7 +323,7 @@ mod tests {
 		// E references only B and C, not D
 		let result = calculate_forward_extremities(
 			vec![b.clone(), c.clone(), d.clone()],
-			e_id,
+			&e_id,
 			&[b.as_ref(), c.as_ref()],
 			false,
 			never_referenced,
@@ -344,12 +344,12 @@ mod tests {
 		let c_id = event_id!("$ccc:example.org");
 
 		// B is marked as referenced in the DB (some other event already refs it)
-		let b_is_referenced = |eid: &EventId| ready(eid == event_id!("$bbb:example.org"));
+		let b_is_referenced = |eid: &EventId| ready(*eid == event_id!("$bbb:example.org"));
 
 		// C references only A
 		let result = calculate_forward_extremities(
 			vec![a.clone(), b.clone()],
-			c_id,
+			&c_id,
 			&[a.as_ref()],
 			false,
 			b_is_referenced,
@@ -371,7 +371,7 @@ mod tests {
 
 		let first = calculate_forward_extremities(
 			vec![a.clone()],
-			b_id,
+			&b_id,
 			&[a.as_ref()],
 			false,
 			never_referenced,
@@ -382,7 +382,7 @@ mod tests {
 		// Process again with same inputs (B is now an extremity)
 		let second = calculate_forward_extremities(
 			first.clone(),
-			b_id,
+			&b_id,
 			&[a.as_ref()],
 			false,
 			never_referenced,
@@ -411,7 +411,7 @@ mod tests {
 		// Build 10 events all referencing A
 		let event_ids: Vec<OwnedEventId> = (1..=10)
 			.map(|i| format!("$e{i}:example.org"))
-			.map(|s| OwnedEventId::try_from(s).unwrap())
+			.map(|s| OwnedEventId::parse(s).unwrap())
 			.collect();
 
 		// Simulate: after all 10 are processed, all are extremities
@@ -423,7 +423,7 @@ mod tests {
 
 		let result = calculate_forward_extremities(
 			all_extremities,
-			merge_id,
+			&merge_id,
 			&prev_events,
 			false,
 			never_referenced,

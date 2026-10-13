@@ -1,14 +1,16 @@
 mod append;
 mod backfill;
+pub use backfill::PromoteOutlierOutcome;
 mod backward_extremities;
 mod build;
 mod create;
+mod dag_audit;
 mod data;
 pub mod extremities;
-mod heal;
 mod helpers;
 mod metadata;
 mod notifications;
+mod promotion_claims;
 mod reachability;
 mod rebuild_state;
 mod redact;
@@ -18,16 +20,17 @@ mod repair_unsigned;
 
 use std::{fmt::Write, ops::Bound, sync::Arc};
 
+pub use append::AppendPduContext;
 use async_trait::async_trait;
 pub use conduwuit_core::matrix::pdu::{PduId, RawPduId, ShortRoomId, TopoToken};
 /// Proof that the caller already holds `Service::mutex_insert` for a room.
-/// Threaded through `force_state`/`force_state_quiet` so their outlier
-/// demotion step can skip re-acquiring the same non-reentrant per-room lock
-/// when called from inside `append_pdu` (which holds it for the whole
-/// insert), while still self-locking when called from anywhere else.
+/// Threaded through the state-transition path so the outlier demotion step
+/// can skip re-acquiring the same non-reentrant per-room lock when called
+/// from inside `append_pdu` (which holds it for the whole insert), while
+/// still self-locking when called from anywhere else.
 pub type InsertMutexGuard = MutexMapGuard<OwnedRoomId, ()>;
 use conduwuit_core::{
-	Result, Server, SyncMutex, at, err,
+	Result, Server, at, err, info,
 	matrix::{
 		event::Event,
 		pdu::{PduCount, PduEvent},
@@ -35,64 +38,108 @@ use conduwuit_core::{
 	utils::{MutexMap, MutexMapGuard, future::TryExtExt, stream::TryIgnore},
 };
 use futures::{Future, Stream, StreamExt, TryStreamExt, pin_mut};
-use lru_cache::LruCache;
-use ruma::{
-	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId, UserId,
+use slipstream::{
+	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId,
+	codec::{DeError, Deserialize as CodecDeserialize, Serialize as CodecSerialize},
+	endpoint::body_field,
 	events::{GlobalAccountDataEventType, push_rules::PushRulesEvent, room::encrypted::Relation},
-};
-use serde::Deserialize;
-
-use self::data::Data;
-pub use self::{
-	append::AppendOptions,
-	create::pdu_fits,
-	data::{PdusIterItem, TopoIterItem},
-	heal::{HealOptions, HealResult},
-	metadata::EventMetadata,
-	reachability::LiveReachability,
-	repair_unsigned::update_unsigned_prev_content,
-};
-use crate::{
-	Dep, account_data, admin, appservice, globals, pusher, rooms,
-	rooms::short::{ShortEventId, ShortStateHash},
-	sending, server_keys, users,
+	json::Value,
 };
 
 // Update Relationships
-#[derive(Deserialize)]
 struct ExtractRelatesTo {
-	#[serde(rename = "m.relates_to")]
+	// JSON key: `m.relates_to`
 	relates_to: Relation,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 struct ExtractEventId {
 	event_id: OwnedEventId,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 struct ExtractRelatesToEventId {
-	#[serde(rename = "m.relates_to")]
+	// JSON key: `m.relates_to`
 	relates_to: ExtractEventId,
 }
 
-#[derive(Deserialize)]
 struct ExtractBody {
 	body: Option<String>,
 }
 
 /// MSC2836 threading: `content.m.relationship = { rel_type, event_id }`
 /// pointing at this event's parent. Distinct from `m.relates_to` above.
-#[derive(Deserialize)]
+#[derive(Debug)]
 pub(crate) struct Msc2836Relationship {
 	pub(crate) rel_type: String,
 	pub(crate) event_id: OwnedEventId,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug)]
 pub(crate) struct ExtractMsc2836Relationship {
-	#[serde(rename = "m.relationship")]
-	pub(crate) relationship: Option<Msc2836Relationship>,
+	// JSON key: `m.relationship`
+	relationship: Option<Msc2836Relationship>,
 }
+
+impl CodecDeserialize for ExtractRelatesTo {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			relates_to: body_field(Some(value), "m.relates_to")?,
+		})
+	}
+}
+
+impl CodecDeserialize for ExtractEventId {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			event_id: body_field(Some(value), "event_id")?,
+		})
+	}
+}
+
+impl CodecDeserialize for ExtractRelatesToEventId {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			relates_to: body_field(Some(value), "m.relates_to")?,
+		})
+	}
+}
+
+impl CodecDeserialize for ExtractBody {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self { body: body_field(Some(value), "body")? })
+	}
+}
+
+impl CodecDeserialize for Msc2836Relationship {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			rel_type: body_field(Some(value), "rel_type")?,
+			event_id: body_field(Some(value), "event_id")?,
+		})
+	}
+}
+
+impl CodecDeserialize for ExtractMsc2836Relationship {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			relationship: body_field(Some(value), "m.relationship")?,
+		})
+	}
+}
+
+use self::data::Data;
+pub use self::{
+	create::pdu_fits,
+	data::{PdusIterItem, TopoIterItem},
+	metadata::EventMetadata,
+	promotion_claims::{PromotionClaims, PromotionDisposition},
+	reachability::LiveReachability,
+	repair_unsigned::update_unsigned_prev_content,
+};
+use crate::{
+	Dep, account_data, admin, appservice, globals, pusher, rooms, rooms::short::ShortEventId,
+	sending, server_keys, users,
+};
 
 pub struct Service {
 	services: Services,
@@ -122,11 +169,21 @@ pub struct Service {
 	/// track ranges, not a single count, to stay correct. The exact-tuple
 	/// form sidesteps that while still allowing the cache to survive
 	/// unrelated writes: the room state hash is the invalidation token.
-	pub backfill_gap_free_cache:
-		moka::sync::Cache<OwnedRoomId, (ShortStateHash, TopoToken, usize)>,
-	pub next_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
-	pub prev_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
+	pub backfill_gap_free_cache: moka::sync::Cache<OwnedRoomId, (u64, TopoToken, usize)>,
+	/// Short-lived suppression for repeated unresolved backfill windows.
+	/// If the same room/window/gap signature comes back unchanged after a
+	/// failed federation attempt, re-scanning and re-requesting it again is
+	/// pure CPU/network waste. This is intentionally short TTL so a transient
+	/// remote failure can still be retried shortly after.
+	pub backfill_gap_repeat_cache: moka::sync::Cache<(OwnedRoomId, u64), ()>,
 	pub last_timeline_count_cache: moka::sync::Cache<OwnedRoomId, PduCount>,
+	/// Arbiter between outlier promotions (see
+	/// [`Self::promote_outlier_batch`]) and event rejections racing for the
+	/// same event ID -- see [`PromotionClaims`]'s doc comment (and its
+	/// module's unit tests) for the concurrency invariant this enforces and
+	/// why it has to be a single shared claim map rather than two separate
+	/// stores each checked-then-acted-on independently.
+	pub pending_promotions: PromotionClaims,
 }
 
 struct Services {
@@ -141,7 +198,6 @@ struct Services {
 	state: Dep<rooms::state::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
-	state_compressor: Dep<rooms::state_compressor::Service>,
 	pdu_metadata: Dep<rooms::pdu_metadata::Service>,
 	read_receipt: Dep<rooms::read_receipt::Service>,
 	sending: Dep<sending::Service>,
@@ -152,6 +208,7 @@ struct Services {
 	threads: Dep<rooms::threads::Service>,
 	search: Dep<rooms::search::Service>,
 	spaces: Dep<rooms::spaces::Service>,
+	state_hamt: Dep<rooms::state_hamt::Service>,
 	event_handler: Dep<rooms::event_handler::Service>,
 	outlier: Dep<rooms::outlier::Service>,
 	auth_chain: Dep<rooms::auth_chain::Service>,
@@ -163,14 +220,7 @@ pub type RoomMutexGuard = MutexMapGuard<OwnedRoomId, ()>;
 #[async_trait]
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
-		let config = &args.server.config;
-		let cache_capacity =
-			f64::from(config.shortstatehash_cache_capacity) * config.cache_capacity_modifier;
-		let cache_capacity = conduwuit_core::utils::math::usize_from_f64(cache_capacity)?;
-
 		Ok(Arc::new(Self {
-			next_shortstatehash_cache: SyncMutex::new(LruCache::new(cache_capacity / 2)),
-			prev_shortstatehash_cache: SyncMutex::new(LruCache::new(cache_capacity / 2)),
 			last_timeline_count_cache: moka::sync::Cache::builder()
 				.max_capacity(100_000)
 				.time_to_idle(std::time::Duration::from_mins(10))
@@ -178,6 +228,10 @@ impl crate::Service for Service {
 			backfill_gap_free_cache: moka::sync::Cache::builder()
 				.max_capacity(100_000)
 				.time_to_idle(std::time::Duration::from_mins(10))
+				.build(),
+			backfill_gap_repeat_cache: moka::sync::Cache::builder()
+				.max_capacity(100_000)
+				.time_to_live(std::time::Duration::from_secs(15))
 				.build(),
 			services: Services {
 				server: args.server.clone(),
@@ -192,8 +246,6 @@ impl crate::Service for Service {
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
-				state_compressor: args
-					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
 				pdu_metadata: args.depend::<rooms::pdu_metadata::Service>("rooms::pdu_metadata"),
 				read_receipt: args.depend::<rooms::read_receipt::Service>("rooms::read_receipt"),
 				sending: args.depend::<sending::Service>("sending"),
@@ -205,6 +257,7 @@ impl crate::Service for Service {
 				search: args.depend::<rooms::search::Service>("rooms::search"),
 				spaces: args.depend::<rooms::spaces::Service>("rooms::spaces"),
 				outlier: args.depend::<rooms::outlier::Service>("rooms::outlier"),
+				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				event_handler: args
 					.depend::<rooms::event_handler::Service>("rooms::event_handler"),
 				auth_chain: args.depend::<rooms::auth_chain::Service>("rooms::auth_chain"),
@@ -213,24 +266,11 @@ impl crate::Service for Service {
 			mutex_insert: RoomMutexMap::new(),
 			mutex_fetch: MutexMap::new(),
 			mutex_backfill: RoomMutexMap::new(),
+			pending_promotions: PromotionClaims::new(),
 		}))
 	}
 
 	async fn memory_usage(&self, out: &mut (dyn Write + Send)) -> Result {
-		let next_cache_len = self.next_shortstatehash_cache.lock().len();
-		let next_cache_bytes = next_cache_len.saturating_mul(
-			size_of::<(ShortRoomId, PduCount)>().saturating_add(size_of::<ShortStateHash>()),
-		);
-		let next_bytes = conduwuit_core::utils::bytes::pretty(next_cache_bytes);
-		writeln!(out, "next_shortstatehash_cache: {next_cache_len} ({next_bytes})")?;
-
-		let prev_cache_len = self.prev_shortstatehash_cache.lock().len();
-		let prev_cache_bytes = prev_cache_len.saturating_mul(
-			size_of::<(ShortRoomId, PduCount)>().saturating_add(size_of::<ShortStateHash>()),
-		);
-		let prev_bytes = conduwuit_core::utils::bytes::pretty(prev_cache_bytes);
-		writeln!(out, "prev_shortstatehash_cache: {prev_cache_len} ({prev_bytes})")?;
-
 		let mutex_insert = self.mutex_insert.len();
 		writeln!(out, "insert_mutex: {mutex_insert}")?;
 		let mutex_fetch = self.mutex_fetch.len();
@@ -239,10 +279,7 @@ impl crate::Service for Service {
 		Ok(())
 	}
 
-	async fn clear_cache(&self) {
-		self.next_shortstatehash_cache.lock().clear();
-		self.prev_shortstatehash_cache.lock().clear();
-	}
+	async fn clear_cache(&self) {}
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
@@ -250,8 +287,8 @@ impl crate::Service for Service {
 impl Service {
 	#[inline]
 	fn backfill_gap_free_cache_hit(
-		cached: Option<(ShortStateHash, TopoToken, usize)>,
-		current_statehash: ShortStateHash,
+		cached: Option<(u64, TopoToken, usize)>,
+		current_statehash: u64,
 		from: TopoToken,
 		scan_limit: usize,
 	) -> bool {
@@ -271,7 +308,7 @@ impl Service {
 		pdu_id: &RawPduId,
 		pdu: &PduEvent,
 	) {
-		use ruma::events::TimelineEventType;
+		use slipstream::events::TimelineEventType;
 		if pdu.kind == TimelineEventType::RoomMessage {
 			if let Ok(content) = pdu.get_content::<ExtractBody>() {
 				if let Some(body) = &content.body {
@@ -308,126 +345,22 @@ impl Service {
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn last_timeline_count(&self, room_id: &RoomId) -> Result<PduCount> {
 		if let Some(count) = self.last_timeline_count_cache.get(&room_id.to_owned()) {
+			info!(
+				target: "watermark_debug",
+				%room_id, ?count,
+				"last_timeline_count: cache hit"
+			);
 			return Ok(count);
 		}
 		let count = self.db.last_timeline_count(room_id).await?;
+		info!(
+			target: "watermark_debug",
+			%room_id, ?count,
+			"last_timeline_count: cache miss, read from DB"
+		);
 		self.last_timeline_count_cache
 			.insert(room_id.to_owned(), count);
 		Ok(count)
-	}
-
-	/// Returns the shortstatehash of the room at the event directly preceding
-	/// the exclusive `before` param. `before` does not have to be a valid
-	/// count or in the room.
-	#[tracing::instrument(skip(self), level = "debug")]
-	pub async fn prev_shortstatehash(
-		&self,
-		room_id: &RoomId,
-		before: PduCount,
-	) -> Result<ShortStateHash> {
-		let shortroomid: ShortRoomId = self
-			.services
-			.short
-			.get_shortroomid(room_id)
-			.await
-			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
-
-		if let Some(hash) = self
-			.prev_shortstatehash_cache
-			.lock()
-			.get_mut(&(shortroomid, before))
-		{
-			return Ok(*hash);
-		}
-
-		let before_pdu = PduId { shortroomid, shorteventid: before };
-
-		let prev_count = self.db.prev_timeline_count(&before_pdu).await?;
-		let prev_pdu = PduId { shortroomid, shorteventid: prev_count };
-
-		let shorteventid = self.get_shorteventid_from_pdu_id(&prev_pdu).await?;
-
-		let result = self.services.state.get_shortstatehash(shorteventid).await;
-
-		if let Ok(hash) = result {
-			self.prev_shortstatehash_cache
-				.lock()
-				.insert((shortroomid, before), hash);
-		}
-
-		result
-	}
-
-	/// Returns the shortstatehash of the room at the event directly following
-	/// the exclusive `after` param. `after` does not have to be a valid count
-	/// or in the room.
-	#[tracing::instrument(skip(self), level = "debug")]
-	pub async fn next_shortstatehash(
-		&self,
-		room_id: &RoomId,
-		after: PduCount,
-	) -> Result<ShortStateHash> {
-		let shortroomid: ShortRoomId = self
-			.services
-			.short
-			.get_shortroomid(room_id)
-			.await
-			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
-
-		if let Some(hash) = self
-			.next_shortstatehash_cache
-			.lock()
-			.get_mut(&(shortroomid, after))
-		{
-			return Ok(*hash);
-		}
-
-		let after_pdu = PduId { shortroomid, shorteventid: after };
-
-		let next_count = match self.db.next_timeline_count(&after_pdu).await {
-			| Ok(count) => count,
-			| Err(e) if e.is_not_found() => {
-				// Not cached: this fallback means "no PDU after `after` yet", which the
-				// next appended PDU invalidates. Caching it here would leave a stale entry
-				// with no append-time hook to evict it.
-				return self.services.state.get_room_shortstatehash(room_id).await;
-			},
-			| Err(e) => return Err(e),
-		};
-		let next_pdu = PduId { shortroomid, shorteventid: next_count };
-
-		let shorteventid = self.get_shorteventid_from_pdu_id(&next_pdu).await?;
-
-		let result = self.services.state.get_shortstatehash(shorteventid).await;
-
-		if let Ok(hash) = result {
-			self.next_shortstatehash_cache
-				.lock()
-				.insert((shortroomid, after), hash);
-		}
-
-		result
-	}
-
-	/// Returns the shortstatehash of the room at the event
-	#[tracing::instrument(skip(self), level = "debug")]
-	pub async fn get_shortstatehash(
-		&self,
-		room_id: &RoomId,
-		count: PduCount,
-	) -> Result<ShortStateHash> {
-		let shortroomid: ShortRoomId = self
-			.services
-			.short
-			.get_shortroomid(room_id)
-			.await
-			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
-
-		let pdu_id = PduId { shortroomid, shorteventid: count };
-
-		let shorteventid = self.get_shorteventid_from_pdu_id(&pdu_id).await?;
-
-		self.services.state.get_shortstatehash(shorteventid).await
 	}
 
 	/// Returns the `shorteventid` from the `pdu_id`
@@ -563,7 +496,7 @@ pub async fn copy_room_push_rules_for_upgrade(
 		.services
 		.users
 		.list_local_users()
-		.map(|user_id: &UserId| user_id.to_owned())
+		.map(|user_id: OwnedUserId| user_id)
 		.collect::<Vec<_>>()
 		.await;
 
@@ -603,7 +536,7 @@ pub async fn copy_room_push_rules_for_upgrade(
 				None,
 				&user_id,
 				GlobalAccountDataEventType::PushRules.to_string().into(),
-				&serde_json::to_value(push_rules)?,
+				&push_rules.to_json(),
 			)
 			.await?;
 	}
@@ -617,7 +550,7 @@ impl Service {
 		&'a self,
 		room_id: &'a RoomId,
 		timestamp: u64,
-		dir: ruma::api::Direction,
+		dir: slipstream::api::Direction,
 	) -> impl Stream<Item = Result<PduEvent>> + Send + 'a {
 		self.db.pdus_by_timestamp(room_id, timestamp, dir)
 	}
@@ -777,6 +710,83 @@ impl Service {
 	#[inline]
 	pub async fn get_pdu_json_from_id(&self, pdu_id: &RawPduId) -> Result<CanonicalJsonObject> {
 		self.db.get_pdu_json_from_id(pdu_id).await
+	}
+
+	/// Returns the HAMT root handle of the room at the event directly following
+	/// the exclusive `after` param. `after` does not have to be a valid count
+	/// or in the room.
+	///
+	/// Note: deliberately uncached for now.
+	#[tracing::instrument(skip(self), level = "debug")]
+	pub async fn next_root_handle(
+		&self,
+		room_id: &RoomId,
+		after: PduCount,
+	) -> Result<rezzy::hamt::RootHandle> {
+		let shortroomid: ShortRoomId = self
+			.services
+			.short
+			.get_shortroomid(room_id)
+			.await
+			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
+
+		let after_pdu = PduId { shortroomid, shorteventid: after };
+
+		let next_count = self.db.next_timeline_count(&after_pdu).await?;
+		let next_pdu = PduId { shortroomid, shorteventid: next_count };
+
+		let shorteventid = self.get_shorteventid_from_pdu_id(&next_pdu).await?;
+
+		self.services.state.get_roothandle(shorteventid).await
+	}
+
+	/// Returns the HAMT root handle of the room at the event directly preceding
+	/// the exclusive `before` param. `before` does not have to be a valid count
+	/// or in the room.
+	///
+	/// Note: deliberately uncached for now.
+	#[tracing::instrument(skip(self), level = "debug")]
+	pub async fn prev_root_handle(
+		&self,
+		room_id: &RoomId,
+		before: PduCount,
+	) -> Result<rezzy::hamt::RootHandle> {
+		let shortroomid: ShortRoomId = self
+			.services
+			.short
+			.get_shortroomid(room_id)
+			.await
+			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
+
+		let before_pdu = PduId { shortroomid, shorteventid: before };
+
+		let prev_count = self.db.prev_timeline_count(&before_pdu).await?;
+		let prev_pdu = PduId { shortroomid, shorteventid: prev_count };
+
+		let shorteventid = self.get_shorteventid_from_pdu_id(&prev_pdu).await?;
+
+		self.services.state.get_roothandle(shorteventid).await
+	}
+
+	/// Returns the HAMT root handle of the room at the given event count.
+	#[tracing::instrument(skip(self), level = "debug")]
+	pub async fn get_root_handle(
+		&self,
+		room_id: &RoomId,
+		count: PduCount,
+	) -> Result<rezzy::hamt::RootHandle> {
+		let shortroomid: ShortRoomId = self
+			.services
+			.short
+			.get_shortroomid(room_id)
+			.await
+			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
+
+		let pdu_id = PduId { shortroomid, shorteventid: count };
+
+		let shorteventid = self.get_shorteventid_from_pdu_id(&pdu_id).await?;
+
+		self.services.state.get_roothandle(shorteventid).await
 	}
 
 	/// Checks if pdu exists

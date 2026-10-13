@@ -4,9 +4,12 @@ use std::{
 	sync::Arc,
 };
 
-use conduwuit::{Err, Error, Result, error, utils, utils::hash};
+use conduwuit::{
+	Err, Error, Result, err, error, utils,
+	utils::{hash, response::LimitReadExt},
+};
 use lettre::Address;
-use ruma::{
+use slipstream::{
 	UserId,
 	api::client::{
 		error::{ErrorKind, StandardErrorBody},
@@ -16,10 +19,9 @@ use ruma::{
 		},
 	},
 };
-use serde_json::value::RawValue;
 use tokio::sync::Mutex;
 
-use crate::{Dep, config, globals, registration_tokens, threepid, users};
+use crate::{Dep, client, config, globals, registration_tokens, threepid, users};
 
 pub struct Service {
 	services: Services,
@@ -30,6 +32,7 @@ struct Services {
 	globals: Dep<globals::Service>,
 	users: Dep<users::Service>,
 	config: Dep<config::Service>,
+	client: Dep<client::Service>,
 	registration_tokens: Dep<registration_tokens::Service>,
 	threepid: Dep<threepid::Service>,
 }
@@ -44,6 +47,7 @@ impl crate::Service for Service {
 				registration_tokens: args
 					.depend::<registration_tokens::Service>("registration_tokens"),
 				threepid: args.depend::<threepid::Service>("threepid"),
+				client: args.depend::<client::Service>("client"),
 			},
 			uiaa_sessions: Mutex::new(HashMap::new()),
 		}))
@@ -51,6 +55,47 @@ impl crate::Service for Service {
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
+
+impl Service {
+	/// Verify a reCAPTCHA v3 response token against Google's `siteverify` endpoint.
+	async fn verify_recaptcha(&self, private_site_key: &str, response: &str) -> Result<()> {
+		let response = self
+			.services
+			.client
+			.default
+			.post(RECAPTCHA_SITEVERIFY_URL)
+			.form(&[("secret", private_site_key), ("response", response)])
+			.send()
+			.await?;
+
+		let status = response.status();
+		let body = response
+			.limit_read_text(RECAPTCHA_MAX_RESPONSE_SIZE)
+			.await?;
+
+		// Error responses may still carry a JSON body, so only trust the
+		// `success` flag when the HTTP status is also successful.
+		if !status.is_success() {
+			return Err(err!(BadServerResponse(
+				"ReCaptcha verification failed with status {status}"
+			)));
+		}
+
+		let response = slipstream::codec::from_str::<slipstream::json::Value>(&body)
+			.map_err(|e| err!(BadServerResponse("Invalid ReCaptcha response: {e}")))?;
+
+		if matches!(response.get("success"), Some(slipstream::json::Value::Bool(true))) {
+			Ok(())
+		} else {
+			Err(err!(BadServerResponse("ReCaptcha response was rejected")))
+		}
+	}
+}
+
+const RECAPTCHA_SITEVERIFY_URL: &str = "https://www.google.com/recaptcha/api/siteverify";
+
+/// Generous bound on the siteverify reply, which is a small JSON object.
+const RECAPTCHA_MAX_RESPONSE_SIZE: u64 = 4096;
 
 struct UiaaSession {
 	info: UiaaInfo,
@@ -125,7 +170,7 @@ impl Service {
 		&self,
 		auth: &Option<AuthData>,
 		flows: Vec<AuthFlow>,
-		params: Box<RawValue>,
+		params: slipstream::json::Value,
 		identity: Option<Identity>,
 	) -> Result<Identity> {
 		match auth.as_ref() {
@@ -168,7 +213,7 @@ impl Service {
 		self.authenticate(
 			auth,
 			vec![AuthFlow::new(vec![AuthType::Password])],
-			Box::default(),
+			slipstream::json::Value::Object(slipstream::json::Object::new()),
 			identity,
 		)
 		.await
@@ -184,7 +229,7 @@ impl Service {
 	async fn create_session(
 		&self,
 		flows: Vec<AuthFlow>,
-		params: Box<RawValue>,
+		params: slipstream::json::Value,
 		identity: Option<Identity>,
 	) -> UiaaInfo {
 		let mut uiaa_sessions = self.uiaa_sessions.lock().await;
@@ -324,10 +369,19 @@ impl Service {
 				thirdparty_id_creds: ThirdpartyIdCredentials { client_secret, sid, .. },
 				..
 			}) => {
+				let (Ok(sid), Ok(client_secret)) = (
+					slipstream::OwnedSessionId::parse(sid.as_str()),
+					slipstream::OwnedClientSecret::parse(client_secret.as_str()),
+				) else {
+					return Err(StandardErrorBody {
+						kind: ErrorKind::ThreepidAuthFailed,
+						message: "Invalid session ID or client secret".to_owned(),
+					});
+				};
 				match self
 					.services
 					.threepid
-					.consume_valid_session(sid, client_secret)
+					.consume_valid_session(&sid, &client_secret)
 					.await
 				{
 					| Ok(email) => {
@@ -435,7 +489,7 @@ impl Service {
 					});
 				};
 
-				match recaptcha_verify::verify_v3(private_site_key, response, None).await {
+				match self.verify_recaptcha(private_site_key, response).await {
 					| Ok(()) => Ok(AuthType::ReCaptcha),
 					| Err(e) => {
 						error!("ReCaptcha verification failed: {e:?}");

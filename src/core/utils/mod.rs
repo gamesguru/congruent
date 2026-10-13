@@ -37,7 +37,10 @@ pub use self::{
 	future::{BoolExt as FutureBoolExt, OptionStream, TryExtExt as TryFutureExtExt},
 	hash::sha256::delimited as calculate_hash,
 	html::Escape as HtmlEscape,
-	json::{deserialize_from_str, to_canonical_object},
+	json::{
+		OwnedEventType, SerdeValue, SerdeValueRef, clone_raw, deserialize_from_str,
+		to_canonical_object,
+	},
 	math::clamp,
 	mutex_map::{Guard as MutexMapGuard, MutexMap},
 	pdu::pdu_json_canonical_strip,
@@ -138,11 +141,27 @@ macro_rules! is_zero {
 #[macro_export]
 macro_rules! is_equal_to {
 	($val:ident) => {
-		|x| x == $val
+		|x| $val == x
 	};
 
 	($val:expr_2021) => {
-		|x| x == $val
+		|x| $val == x
+	};
+
+	($val:expr_2021,ref) => {
+		|x| $val == x
+	};
+
+	($val:expr_2021,deref) => {
+		|x| $val == *x
+	};
+
+	($val:expr_2021,deref_both) => {
+		|x| *$val == *x
+	};
+
+	($val:expr_2021,cow) => {
+		|x| $val.as_ref() == *x
 	};
 }
 

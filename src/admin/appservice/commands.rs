@@ -16,7 +16,8 @@ pub(super) async fn register(&self) -> Result {
 
 	let range = 1..checked!(body_len - 1)?;
 	let appservice_config_body = body[range].join("\n");
-	let parsed_config = serde_saphyr::from_str(&appservice_config_body);
+	let parsed_config =
+		conduwuit_service::appservice::registration_from_yaml(&appservice_config_body);
 	match parsed_config {
 		| Err(e) => return Err!("Could not parse appservice config as YAML: {e}"),
 		| Ok(registration) => match self
@@ -57,7 +58,7 @@ pub(super) async fn show_appservice_config(&self, appservice_identifier: String)
 	{
 		| None => return Err!("Appservice does not exist."),
 		| Some(config) => {
-			let config_str = serde_saphyr::to_string(&config)?;
+			let config_str = conduwuit_service::appservice::registration_to_yaml(&config)?;
 			write!(self, "Config for {appservice_identifier}:\n\n```yaml\n{config_str}\n```")
 		},
 	}

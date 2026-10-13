@@ -10,7 +10,7 @@ use conduwuit_core::{
 };
 use futures::StreamExt;
 use roaring::RoaringTreemap;
-use ruma::{OwnedEventId, RoomId};
+use slipstream::{OwnedEventId, RoomId};
 
 use super::{Service, metadata::EventMetadata};
 use crate::rooms::short::ShortEventId;
@@ -187,17 +187,13 @@ impl Service {
 						is_outlier: false,
 						origin_server_ts: pdu.origin_server_ts().0,
 						depth: pdu.depth(),
-						soft_failed: false,
-						rejected: pdu.rejected(),
 						redacted_by: pdu.redacts().map(ToOwned::to_owned),
 						short_state_hash: None,
-						deprecated_local_topo_depth: pdu.depth().into(),
+						deprecated_local_topo_depth: pdu.depth(),
 						pdu_count: match count {
 							| PduCount::Normal(x) => Some(*x),
 							| PduCount::Backfilled(_) => None,
 						},
-						soft_fail_reason: String::new(),
-						rejection_reason: String::new(),
 					};
 					if let Ok(bytes) = bincode::serialize(&meta) {
 						self.db.store_eventid_metadata(event_id.as_bytes(), bytes);
@@ -274,7 +270,7 @@ impl Service {
 				|| self
 					.services
 					.auth_chain
-					.get_cached_eventid_authchain(&[short_eid])
+					.get_cached_eventid_authchain(shortroomid, short_eid)
 					.await
 					.is_err()
 			{
@@ -288,15 +284,17 @@ impl Service {
 				}
 
 				let chain_arc = Arc::new(full_chain);
-				self.services
-					.auth_chain
-					.cache_auth_chain_bitmap(vec![short_eid], &chain_arc);
+				self.services.auth_chain.cache_auth_chain_bitmap(
+					shortroomid,
+					short_eid,
+					&chain_arc,
+				);
 				auth_chain_cache.insert(short_eid, chain_arc);
 				stats.repaired_auth_chains = stats.repaired_auth_chains.saturating_add(1);
 			} else if let Ok(existing) = self
 				.services
 				.auth_chain
-				.get_cached_eventid_authchain(&[short_eid])
+				.get_cached_eventid_authchain(shortroomid, short_eid)
 				.await
 			{
 				// Populate local cache for descendants

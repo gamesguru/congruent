@@ -3,11 +3,10 @@
 use axum::extract::State;
 use conduwuit::Result;
 use conduwuit_service::Services;
-use ruma::{
+use slipstream::{
 	RoomId, ServerName, api::federation::membership::create_leave_event,
-	events::room::member::MembershipState,
+	events::room::member::MembershipState, sswire::RawJsonValue,
 };
-use serde_json::value::RawValue as RawJsonValue;
 
 use crate::Ruma;
 
@@ -59,7 +58,7 @@ async fn create_leave_event(
 		value,
 		&room_version_id,
 	)
-		.await?;
+	.await?;
 
 	Ok(())
 }

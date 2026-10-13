@@ -11,7 +11,8 @@ use conduwuit_core::{debug_error, debug_warn};
 use conduwuit_service::Services;
 use futures::StreamExt;
 use lettre::Address;
-use ruma::{
+use service::uiaa::Identity;
+use slipstream::{
 	OwnedUserId, UserId,
 	api::client::{
 		error::ErrorKind,
@@ -30,7 +31,6 @@ use ruma::{
 		uiaa::UserIdentifier,
 	},
 };
-use service::uiaa::Identity;
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH};
 use crate::Ruma;
@@ -251,12 +251,8 @@ pub(crate) async fn login_route(
 	// TODO: Other login methods
 	let user_id = match &body.login_info {
 		#[allow(deprecated)]
-		| login::v3::LoginInfo::Password(login::v3::Password {
-			identifier,
-			password,
-			user,
-			..
-		}) => handle_login(&services, identifier.as_ref(), password, user.as_ref()).await?,
+		| login::v3::LoginInfo::Password(login::v3::Password { identifier, password, user }) =>
+			handle_login(&services, identifier.as_ref(), password, user.as_ref()).await?,
 		| login::v3::LoginInfo::Token(login::v3::Token { token }) => {
 			debug!("Got token login type");
 			if !services.server.config.login_via_existing_session {
@@ -306,10 +302,10 @@ pub(crate) async fn login_route(
 	};
 
 	// Generate new device id if the user didn't specify one
-	let device_id = body
-		.device_id
-		.clone()
-		.unwrap_or_else(|| utils::random_string(DEVICE_ID_LENGTH).into());
+	let device_id = match body.device_id.clone() {
+		| Some(device_id) => device_id,
+		| None => slipstream::OwnedDeviceId::parse(utils::random_string(DEVICE_ID_LENGTH))?,
+	};
 
 	// Generate a new token for the device (ensuring no collisions)
 	let token = services.users.generate_unique_token().await;
@@ -464,7 +460,9 @@ pub(crate) async fn logout_all_route(
 	services
 		.users
 		.all_device_ids(sender_user)
-		.for_each(|device_id| services.users.remove_device(sender_user, device_id))
+		.for_each(|device_id| async move {
+			services.users.remove_device(sender_user, &device_id).await;
+		})
 		.await;
 	services
 		.pusher

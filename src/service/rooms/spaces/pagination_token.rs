@@ -4,11 +4,10 @@ use std::{
 };
 
 use conduwuit::{Error, Result};
-use ruma::{UInt, api::client::error::ErrorKind};
+use slipstream::{UInt, api::client::error::ErrorKind};
 
 use crate::rooms::short::ShortRoomId;
 
-// TODO: perhaps use some better form of token rather than just room count
 #[derive(Debug, Eq, PartialEq)]
 pub struct PaginationToken {
 	/// Path down the hierarchy of the room to start the response at,

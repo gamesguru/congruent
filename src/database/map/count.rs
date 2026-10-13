@@ -2,7 +2,8 @@ use std::{fmt::Debug, future::Future, sync::Arc};
 
 use conduwuit::implement;
 use futures::stream::StreamExt;
-use serde::Serialize;
+
+use crate::dbkey::DbKey;
 
 /// Count the total number of entries in the map.
 #[implement(super::Map)]
@@ -21,7 +22,7 @@ pub fn count_from<'a, P>(
 	from: &P,
 ) -> impl Future<Output = usize> + Send + 'a + use<'a, P>
 where
-	P: Serialize + ?Sized + Debug + 'a,
+	P: DbKey + ?Sized + Debug + 'a,
 {
 	self.keys_from_raw(from).count()
 }
@@ -51,7 +52,7 @@ pub fn count_prefix<'a, P>(
 	prefix: &P,
 ) -> impl Future<Output = usize> + Send + 'a + use<'a, P>
 where
-	P: Serialize + ?Sized + Debug + 'a,
+	P: DbKey + ?Sized + Debug + 'a,
 {
 	self.keys_prefix_raw(prefix).count()
 }

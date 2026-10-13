@@ -21,7 +21,7 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, Stream, StreamExt};
-use ruma::{OwnedServerName, RoomId, ServerName, UserId, api::OutgoingRequest};
+use slipstream::{OwnedServerName, RoomId, ServerName, UserId, api::OutgoingRequest};
 use tokio::{task, task::JoinSet};
 
 use self::data::Data;
@@ -54,6 +54,7 @@ struct Services {
 	client: Dep<client::Service>,
 	globals: Dep<globals::Service>,
 	state: Dep<rooms::state::Service>,
+	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
 	user: Dep<rooms::user::Service>,
 	users: Dep<users::Service>,
@@ -96,13 +97,15 @@ impl crate::Service for Service {
 			stats: stats::FederationStats::default(),
 			dead_servers: std::sync::RwLock::new(std::collections::HashSet::new()),
 			next_txn_id: std::sync::atomic::AtomicU64::new(
-				ruma::MilliSecondsSinceUnixEpoch::now().get().into(),
+				slipstream::MilliSecondsSinceUnixEpoch::now().get(),
 			),
 			server: args.server.clone(),
 			services: Services {
 				client: args.depend::<client::Service>("client"),
 				globals: args.depend::<globals::Service>("globals"),
 				state: args.depend::<rooms::state::Service>("rooms::state"),
+				state_accessor: args
+					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 				user: args.depend::<rooms::user::Service>("rooms::user"),
 				users: args.depend::<users::Service>("users"),
@@ -145,6 +148,9 @@ impl crate::Service for Service {
 		let stats_task = self.server.runtime().spawn(async move {
 			loop {
 				tokio::time::sleep(Duration::from_mins(5)).await;
+				if stats_self.server.is_maintenance() {
+					continue;
+				}
 				stats_self.stats.report_and_reset();
 				stats_self.server.metrics.sending_queue_total.store(
 					stats_self
@@ -234,12 +240,10 @@ impl Service {
 	#[tracing::instrument(skip(self, servers, pdu_id), level = "debug")]
 	pub async fn send_pdu_servers<'a, S>(&self, servers: S, pdu_id: &RawPduId) -> Result<usize>
 	where
-		S: Stream<Item = &'a ServerName> + Send + 'a,
+		S: Stream<Item = OwnedServerName> + Send + 'a,
 	{
 		let requests = servers
-			.map(|server| {
-				(Destination::Federation(server.into()), SendingEvent::Pdu(pdu_id.to_owned()))
-			})
+			.map(|server| (Destination::Federation(server), SendingEvent::Pdu(pdu_id.to_owned())))
 			.collect::<Vec<_>>()
 			.await;
 
@@ -298,14 +302,11 @@ impl Service {
 	#[tracing::instrument(skip(self, servers, serialized), level = "debug")]
 	pub async fn send_edu_servers<'a, S>(&self, servers: S, serialized: EduBuf) -> Result
 	where
-		S: Stream<Item = &'a ServerName> + Send + 'a,
+		S: Stream<Item = OwnedServerName> + Send + 'a,
 	{
 		let requests = servers
 			.map(|server| {
-				(
-					Destination::Federation(server.to_owned()),
-					SendingEvent::Edu(serialized.clone()),
-				)
+				(Destination::Federation(server), SendingEvent::Edu(serialized.clone()))
 			})
 			.collect::<Vec<_>>()
 			.await;
@@ -395,10 +396,9 @@ impl Service {
 	#[tracing::instrument(skip(self, servers), level = "debug")]
 	pub async fn flush_servers<'a, S>(&self, servers: S) -> Result<()>
 	where
-		S: Stream<Item = &'a ServerName> + Send + 'a,
+		S: Stream<Item = OwnedServerName> + Send + 'a,
 	{
 		servers
-			.map(ToOwned::to_owned)
 			.map(Destination::Federation)
 			.map(Ok)
 			.ready_try_for_each(|dest| {
@@ -486,7 +486,6 @@ impl Service {
 		};
 
 		self.db.delete_all_requests_for(&destination).await;
-
 		Ok(())
 	}
 

@@ -3,10 +3,10 @@ mod data;
 use std::sync::Arc;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
-use conduwuit::{Result, debug, matrix::PduCount};
+use conduwuit::{Result, debug, matrix::PduCount, warn};
 use futures::{StreamExt, future::try_join};
-use ruma::{EventId, OwnedEventId, RoomId, UserId, api::Direction};
 use sha2::{Digest, Sha256};
+use slipstream::{EventId, OwnedEventId, RoomId, UserId, api::Direction};
 
 use self::data::Data;
 use crate::{
@@ -40,14 +40,15 @@ struct Services {
 /// free-text detail after it), and `is_retryable` is a plain match — so
 /// renaming a detail message, or adding a new call site, can't silently
 /// change retry behavior the way a fresh literal string always could.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
 pub enum RejectionCode {
 	/// Signature verification failed against the origin's keys. Permanent —
 	/// the same bytes will never verify differently.
-	SignatureVerificationFailed,
+	SignatureVerificationFailed = 0,
 	/// The PDU didn't parse into a valid `PduEvent` at all. Permanent — the
 	/// data itself is malformed.
-	InvalidPduFormat,
+	InvalidPduFormat = 1,
 	/// This event's own auth chain includes an event we've already
 	/// rejected. Permanent — deliberately *not* retryable, even though the
 	/// dependency's own rejection might itself have been resolution-related
@@ -62,47 +63,52 @@ pub enum RejectionCode {
 	/// `TestInboundFederationRejectsEventsWithRejectedAuthEvents`
 	/// exists specifically to check that cascade stays permanent — mirrors
 	/// Synapse's `AUTH_ERROR` being terminal).
-	DependsOnRejectedAuthEvent,
+	DependsOnRejectedAuthEvent = 2,
 	/// This event's prev_events point only at rejected predecessors.
 	/// Retryable — the rejection is about the event's current resolution
 	/// context, not the event bytes themselves. If the predecessor rejection
 	/// is later cleared, a fresh attempt may be able to resolve state and
 	/// auth correctly.
-	PrevEventsRejected,
+	PrevEventsRejected = 3,
 	/// We could not resolve one of this event's auth events at all (not
 	/// locally, not via `/event_auth`, not via `/state_ids`). Retryable —
 	/// this is a resolution failure, not evidence the event is invalid; a
 	/// caller with more context (a fuller state snapshot, a successful
 	/// backfill) may be able to supply the missing data.
-	MissingAuthEvent,
+	MissingAuthEvent = 4,
 	/// Two auth events share the same type+state_key. Permanent — a
 	/// structural property of the claimed auth event set that can't change
 	/// on retry.
-	DuplicateAuthEventKey,
+	DuplicateAuthEventKey = 5,
 	/// No `m.room.create` in the resolved auth events (room versions that
 	/// require one). Permanent for the same reason as above.
-	MissingCreateEvent,
+	MissingCreateEvent = 6,
 	/// The event's claimed auth events were all resolved, but the auth
 	/// check against them failed. Permanent — re-running the same check
 	/// against the same resolved auth events can't change the outcome.
-	AuthCheckFailed,
+	AuthCheckFailed = 7,
 	/// A `/get_missing_events` response contained a prev_event that failed
 	/// canonical-JSON validation. Retryable — a different server, or a
 	/// retry of the same server, may return well-formed data.
-	StructurallyInvalidInGetMissingEvents,
+	StructurallyInvalidInGetMissingEvents = 8,
 	/// At least one of this event's prev_events was still unknown after the
 	/// `/state_ids` fetch used to recover state (and a follow-up single-hop
 	/// `/event` fetch) both failed to resolve it. Retryable — a subsequent
 	/// attempt (e.g. once a sibling event fills in the gap, or federation
 	/// recovers) may succeed where this one didn't.
-	PrevEventUnknownStateIdsFailed,
+	PrevEventUnknownStateIdsFailed = 9,
 	/// Every prev_event was present/known, but `/state_ids`-based state
 	/// recovery still failed to produce a resolvable state snapshot (as
 	/// opposed to [`Self::PrevEventUnknownStateIdsFailed`], which is about a
 	/// prev_event that never got resolved at all). Retryable — this is a
 	/// resolution failure, not evidence the event is invalid; a later
 	/// attempt with a fuller state snapshot may succeed.
-	StateResolutionFailedWithPrevsPresent,
+	StateResolutionFailedWithPrevsPresent = 10,
+	/// A rejection reason string persisted before [`Self`] was typed that no
+	/// longer maps to a known variant. Treated as permanent (not retryable),
+	/// and never written fresh — only produced during `EventMetadata`
+	/// migration of legacy rows.
+	Unknown = 11,
 }
 
 impl RejectionCode {
@@ -126,6 +132,7 @@ impl RejectionCode {
 			| Self::PrevEventUnknownStateIdsFailed => "prev_event_unknown_state_ids_failed",
 			| Self::StateResolutionFailedWithPrevsPresent =>
 				"state_resolution_failed_with_prevs_present",
+			| Self::Unknown => "unknown",
 		}
 	}
 
@@ -177,6 +184,103 @@ impl RejectionCode {
 		]
 		.into_iter()
 		.find(|code| code.tag() == tag)
+	}
+
+	#[must_use]
+	pub const fn to_u8(self) -> u8 {
+		match self {
+			| Self::SignatureVerificationFailed => 0,
+			| Self::InvalidPduFormat => 1,
+			| Self::DependsOnRejectedAuthEvent => 2,
+			| Self::PrevEventsRejected => 3,
+			| Self::MissingAuthEvent => 4,
+			| Self::DuplicateAuthEventKey => 5,
+			| Self::MissingCreateEvent => 6,
+			| Self::AuthCheckFailed => 7,
+			| Self::StructurallyInvalidInGetMissingEvents => 8,
+			| Self::PrevEventUnknownStateIdsFailed => 9,
+			| Self::StateResolutionFailedWithPrevsPresent => 10,
+			| Self::Unknown => 11,
+		}
+	}
+
+	#[must_use]
+	pub fn from_u8(val: u8) -> Self {
+		match val {
+			| 0 => Self::SignatureVerificationFailed,
+			| 1 => Self::InvalidPduFormat,
+			| 2 => Self::DependsOnRejectedAuthEvent,
+			| 3 => Self::PrevEventsRejected,
+			| 4 => Self::MissingAuthEvent,
+			| 5 => Self::DuplicateAuthEventKey,
+			| 6 => Self::MissingCreateEvent,
+			| 7 => Self::AuthCheckFailed,
+			| 8 => Self::StructurallyInvalidInGetMissingEvents,
+			| 9 => Self::PrevEventUnknownStateIdsFailed,
+			| 10 => Self::StateResolutionFailedWithPrevsPresent,
+			| _ => Self::Unknown,
+		}
+	}
+}
+
+/// Machine-checkable classification of why an event was soft-failed, in the
+/// same spirit as [`RejectionCode`] — a typed tag persisted via
+/// `mark_event_soft_failed` instead of arbitrary free-text prose, so admin
+/// tooling and future logic match on a stable identifier rather than
+/// substring-matching human wording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+pub enum SoftFailCode {
+	/// The event failed the auth check against the current resolved room
+	/// state during timeline upgrade.
+	AuthCheckFailed = 0,
+	/// The event was imported with a pre-existing soft-fail marker.
+	Imported = 1,
+	/// An operator soft-failed the event via the admin `manage-rejected`
+	/// command.
+	Manual = 2,
+	/// A soft-fail reason string persisted before [`Self`] was typed that no
+	/// longer maps to a known variant. Only produced during migration.
+	Unknown = 3,
+}
+
+impl SoftFailCode {
+	#[must_use]
+	pub const fn to_u8(self) -> u8 {
+		match self {
+			| Self::AuthCheckFailed => 0,
+			| Self::Imported => 1,
+			| Self::Manual => 2,
+			| Self::Unknown => 3,
+		}
+	}
+
+	#[must_use]
+	pub fn from_u8(val: u8) -> Self {
+		match val {
+			| 0 => Self::AuthCheckFailed,
+			| 1 => Self::Imported,
+			| 2 => Self::Manual,
+			| _ => Self::Unknown,
+		}
+	}
+
+	#[must_use]
+	pub const fn tag(self) -> &'static str {
+		match self {
+			| Self::AuthCheckFailed => "auth_check_failed",
+			| Self::Imported => "imported",
+			| Self::Manual => "manual",
+			| Self::Unknown => "unknown",
+		}
+	}
+
+	#[must_use]
+	pub fn parse(reason: &str) -> Option<Self> {
+		let tag = reason.split(':').next().unwrap_or(reason).trim();
+		[Self::AuthCheckFailed, Self::Imported, Self::Manual]
+			.into_iter()
+			.find(|code| code.tag() == tag)
 	}
 }
 
@@ -298,8 +402,8 @@ impl Service {
 
 	#[inline]
 	#[tracing::instrument(skip(self), level = "debug")]
-	pub fn mark_event_soft_failed(&self, event_id: &EventId, reason: &str) {
-		self.db.mark_event_soft_failed(event_id, reason);
+	pub fn mark_event_soft_failed(&self, event_id: &EventId, code: SoftFailCode) {
+		self.db.mark_event_soft_failed(event_id, code);
 	}
 
 	pub async fn get_soft_fail_reason(&self, event_id: &EventId) -> Option<String> {
@@ -316,19 +420,24 @@ impl Service {
 		self.db.is_event_rejected(event_id).await
 	}
 
+	/// Returns the subset of `event_ids` carrying a rejection or soft-fail
+	/// marker. Batch-reads both verdict stores so callers scanning many
+	/// events (e.g. `recalculate_extremities` during monitor sweeps) don't
+	/// issue two sequential single-key lookups per event while holding the
+	/// room lock.
+	pub async fn verdict_flagged_batch(
+		&self,
+		event_ids: &[OwnedEventId],
+	) -> std::collections::HashSet<OwnedEventId> {
+		self.db.verdict_flagged_batch(event_ids).await
+	}
+
 	pub async fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {
-		// Only protect events that are truly on the timeline (have a PduCount
-		// ordering entry), not outliers. The eventid_pdu table is shared by
-		// both timeline and outlier paths, so pdu_exists would incorrectly
-		// prevent rejection of outliers that were just added.
-		if self.is_event_visible_to_clients(event_id).await {
-			conduwuit::warn!(
-				%event_id,
-				%reason,
-				"refusing to reject timeline event (already passed auth)"
-			);
-			return;
-		}
+		self.db.mark_event_rejected(event_id, reason);
+	}
+
+	/// Directly marks an event as rejected, bypassing timeline checks.
+	pub fn mark_event_rejected_skip_visibility_check(&self, event_id: &EventId, reason: &str) {
 		self.db.mark_event_rejected(event_id, reason);
 	}
 
@@ -343,7 +452,11 @@ impl Service {
 	/// Returns true if the event is not rejected. Soft-failed events ARE
 	/// accepted for auth purposes (used in federation/state-res contexts).
 	pub async fn is_event_accepted(&self, event_id: &EventId) -> bool {
-		!self.db.is_event_rejected(event_id).await
+		self.db
+			.get_rejection_code(event_id)
+			.await
+			.unwrap_or_default()
+			.is_none()
 	}
 
 	/// Returns true if the event is in the timeline and should be visible
@@ -354,7 +467,11 @@ impl Service {
 	}
 
 	pub async fn get_rejection_reason(&self, event_id: &EventId) -> Option<String> {
-		self.db.get_rejection_reason(event_id).await
+		self.db
+			.get_rejection_code(event_id)
+			.await
+			.unwrap_or_default()
+			.map(|code| code.tag().to_owned())
 	}
 
 	/// Returns true if the event is rejected for a reason that should
@@ -372,17 +489,17 @@ impl Service {
 	/// of a bare `is_event_rejected` check, or a purely transient rejection
 	/// on the dependency permanently poisons every event that depends on it.
 	pub async fn is_event_permanently_rejected(&self, event_id: &EventId) -> bool {
-		// A single read: `get_rejection_reason` already returns `None` for
-		// anything not currently rejected (see its impl in `data.rs`), so a
-		// separate `is_event_rejected` pre-check only opens a TOCTOU window --
-		// a concurrent retry (`take_retry_if_rejection_retryable`) clearing the
-		// rejection between the two reads would make this method fall through
-		// to `!retryable == true` on a stale `None` reason, i.e. report a
-		// no-longer-rejected event as *permanently* rejected.
-		let Some(reason) = self.get_rejection_reason(event_id).await else {
-			return false;
-		};
-		!is_retryable_rejection_reason(&reason)
+		// A single read: `get_rejection_code` returns `None` for anything not
+		// rejected, and the retryability check is combined with that one read,
+		// so there's no TOCTOU window between an `is_event_rejected` check and a
+		// later reason read (a concurrent `take_retry_if_rejection_retryable`
+		// clearing the rejection can't make us fall through to `!retryable ==
+		// true` on a stale reason).
+		self.db
+			.get_rejection_code(event_id)
+			.await
+			.unwrap_or_default()
+			.is_some_and(|code| !code.is_retryable())
 	}
 
 	/// Returns true if the event is marked rejected specifically because
@@ -405,10 +522,10 @@ impl Service {
 	/// problem.
 	pub async fn is_event_pending_auth_resolution(&self, event_id: &EventId) -> bool {
 		matches!(
-			self.get_rejection_reason(event_id)
+			self.db
+				.get_rejection_code(event_id)
 				.await
-				.as_deref()
-				.and_then(RejectionCode::parse),
+				.unwrap_or_default(),
 			Some(RejectionCode::MissingAuthEvent)
 		)
 	}
@@ -430,17 +547,130 @@ impl Service {
 		// Single read for the same reason as `is_event_permanently_rejected`:
 		// avoid a TOCTOU window between an `is_event_rejected` check and a
 		// separate `get_rejection_reason` read.
-		let Some(reason) = self.get_rejection_reason(event_id).await else {
+		let Some(code) = self
+			.db
+			.get_rejection_code(event_id)
+			.await
+			.unwrap_or_default()
+		else {
 			return false;
 		};
-		let retryable = is_retryable_rejection_reason(&reason);
-		if retryable {
+		if code.is_retryable() {
 			self.unmark_event_rejected(event_id);
+			true
+		} else {
+			false
 		}
-		retryable
 	}
 
 	pub fn clear_pdu_markers(&self, event_id: &EventId) { self.db.clear_pdu_markers(event_id); }
+
+	/// Like [`Self::take_retry_if_rejection_retryable`], but for callers that
+	/// are about to promote a stored outlier straight into the timeline
+	/// *without* re-running auth (`promote_outlier`/`promote_outlier_batch`
+	/// skip all auth checks on the assumption their input already passed
+	/// them). A single fresh read decides whether it's safe to queue the
+	/// event for promotion:
+	///
+	/// - not currently rejected at all -> safe, returns `true`
+	/// - rejected with [`RejectionCode::MissingAuthEvent`] -> this event's own
+	///   auth chain never finished resolving, so there is no validated verdict
+	///   to trust here; force-promoting it would be an auth bypass, not a
+	///   legitimate retry (see [`Self::is_event_pending_auth_resolution`]'s doc
+	///   comment). Leaves the marker in place and returns `false`.
+	/// - rejected with any other retryable code -> clears the marker (so a
+	///   later `promote_outlier_batch`'s `is_event_rejected` recheck doesn't
+	///   silently skip the write while the caller still counts the event as
+	///   promoted) and returns `true`.
+	/// - rejected with a permanent code -> leaves the marker in place and
+	///   returns `false`.
+	///
+	/// Using a single fresh read (rather than a caller-held stale snapshot)
+	/// matters here specifically because the decision to clear and the
+	/// decision to queue must agree on the *same* rejection state.
+	pub async fn take_retry_if_rejection_retryable_for_promotion(
+		&self,
+		event_id: &EventId,
+	) -> bool {
+		let Some(code) = self
+			.db
+			.get_rejection_code(event_id)
+			.await
+			.unwrap_or_default()
+		else {
+			return true;
+		};
+		match code {
+			| RejectionCode::MissingAuthEvent => false,
+			| code if code.is_retryable() => {
+				self.unmark_event_rejected(event_id);
+				true
+			},
+			| _ => false,
+		}
+	}
+
+	/// Finalizes an outlier promotion's rejection/soft-fail markers with a
+	/// single read of the current rejection state, then either clears them
+	/// (event is now fully accepted) or leaves them in place (a concurrent
+	/// writer rejected the event for a non-retryable reason in the meantime).
+	///
+	/// Must be called only *after* the promotion's PDU write has already
+	/// landed (e.g. after the caller applies the batch from
+	/// `promote_outlier_batch`) -- calling it before risks a stale
+	/// `soft_failed`/`rejected` snapshot captured in that pending batch
+	/// silently overwriting the clear once the batch is applied.
+	///
+	/// `MissingAuthEvent` is intentionally preserved here: it means the event
+	/// still lacks a validated auth chain, so promotion must not erase that
+	/// marker just because the reason is retryable in general.
+	///
+	/// Like [`Self::take_retry_if_rejection_retryable`], this narrows the
+	/// TOCTOU window against a `mark_event_rejected` landing between the
+	/// read and the write below. `mark_event_rejected` also checks
+	/// `timeline::Service::is_promotion_pending` in addition to
+	/// `is_event_visible_to_clients`, so between them they cover the entire
+	/// window from `promote_outlier_batch`'s reservation through
+	/// `finish_promote_outlier` releasing it -- see `mark_event_rejected`'s
+	/// and `finish_promote_outlier`'s (`backfill.rs`) doc comments for what's
+	/// left uncovered (sub-instruction-timing only) and why it's surfaced
+	/// loudly rather than silently patched here.
+	pub async fn finish_promotion(&self, event_id: &EventId) -> bool {
+		// A read error other than NotFound means the rejection state is
+		// unknown, not "not rejected". Clearing the markers (or reporting
+		// success) on such a failed read would erase or wrongly accept a
+		// rejection whose state we never actually observed.
+		let code = match self.db.get_rejection_code(event_id).await {
+			| Ok(code) => code,
+			| Err(e) if e.is_not_found() => {
+				debug!(%event_id, "No rejection marker found after promotion; treating event as accepted");
+				None
+			},
+			| Err(e) => {
+				warn!(
+					%event_id,
+					"Failed to read rejection state while finishing promotion; leaving markers intact: {e}"
+				);
+				return false;
+			},
+		};
+		// Only the rejection marker is cleared on acceptance: soft-fail markers
+		// are intentional verdicts that must persist (promotion refuses
+		// soft-failed events up front, see `promote_outlier`).
+		let Some(code) = code else {
+			// No rejection verdict -- clear any stale rejection and accept.
+			self.unmark_event_rejected(event_id);
+			return true;
+		};
+		match code {
+			| RejectionCode::MissingAuthEvent => false,
+			| code if code.is_retryable() => {
+				self.unmark_event_rejected(event_id);
+				true
+			},
+			| _ => false,
+		}
+	}
 
 	/// MSC2836: record that `child` relates to `parent` via `rel_type`
 	/// (`content.m.relationship`).

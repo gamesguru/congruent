@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{Error, Result};
-use ruma::{
+use slipstream::{
 	api::{
 		client::error::ErrorKind,
 		federation::directory::{get_public_rooms, get_public_rooms_filtered},

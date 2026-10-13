@@ -1,4 +1,0 @@
-{"Action":"pass","Test":"TestMSC4499Key"}
-{"Action":"pass","Test":"TestMSC4499Key/LostKeyPublicationHistoricalVerification"}
-{"Action":"pass","Test":"TestMSC4499Key/LostKeyPublicationHistoricalVerification/FullyLostKeyRemainsUnverifiableToColdPeers"}
-{"Action":"pass","Test":"TestMSC4499Key_PersistentFirstSeenWinsAcrossRestart"}

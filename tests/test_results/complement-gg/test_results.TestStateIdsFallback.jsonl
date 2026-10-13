@@ -1,2 +1,0 @@
-{"Action":"pass","Test":"TestStateIdsFallbackFetchesFullAuthChain"}
-{"Action":"pass","Test":"TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse"}

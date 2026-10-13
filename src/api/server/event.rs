@@ -1,6 +1,6 @@
 use axum::extract::State;
 use conduwuit::{Err, Event, Result, err, info};
-use ruma::{MilliSecondsSinceUnixEpoch, api::federation::event::get_event};
+use slipstream::{MilliSecondsSinceUnixEpoch, api::federation::event::get_event};
 
 use super::AccessCheck;
 use crate::Ruma;
@@ -61,9 +61,11 @@ pub(crate) async fn get_event_route(
 	Ok(get_event::v1::Response {
 		origin: services.globals.server_name().to_owned(),
 		origin_server_ts: MilliSecondsSinceUnixEpoch::now(),
-		pdu: services
-			.sending
-			.convert_to_outgoing_federation_event(event_json)
-			.await,
+		pdus: vec![
+			services
+				.sending
+				.convert_to_outgoing_federation_event(event_json)
+				.await,
+		],
 	})
 }

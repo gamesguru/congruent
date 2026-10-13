@@ -18,6 +18,7 @@ pub mod state_accessor;
 pub mod state_cache;
 pub mod state_compressor;
 pub mod state_partial;
+pub mod state_hamt;
 pub mod threads;
 pub mod timeline;
 pub mod typing;
@@ -43,7 +44,7 @@ pub struct Service {
 	pub state: Arc<state::Service>,
 	pub state_accessor: Arc<state_accessor::Service>,
 	pub state_cache: Arc<state_cache::Service>,
-	pub state_compressor: Arc<state_compressor::Service>,
+	pub state_hamt: Arc<state_hamt::Service>,
 	pub threads: Arc<threads::Service>,
 	pub timeline: Arc<timeline::Service>,
 	pub typing: Arc<typing::Service>,

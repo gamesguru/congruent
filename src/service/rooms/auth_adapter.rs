@@ -2,7 +2,7 @@
 //! `LeanEvent` and `StateProvider` interfaces.
 //!
 //! This enables using `rezzy::auth::check_auth` as a drop-in replacement
-//! for ruma's `state_res::event_auth::auth_check` throughout the codebase.
+//! for slipstream's `state_res::event_auth::auth_check` throughout the codebase.
 //!
 //! `Pdu` implements `rezzy::RawEvent` directly (in `pdu.rs`), so
 //! `ParsedEvent::new(&pdu)` gives you `DagNode + EventLike` with zero
@@ -12,9 +12,9 @@ use std::collections::HashMap;
 
 use conduwuit_core::matrix::{Event, PduEvent, state_key::StateKey, state_res::RoomVersion};
 use rezzy::{LeanEvent, StateResVersion, auth::StateProvider};
-use ruma::{RoomVersionId, events::StateEventType};
+use slipstream::{RoomVersionId, events::StateEventType};
 
-/// Map a ruma `RoomVersionId` to rezzy's `StateResVersion`.
+/// Map a slipstream `RoomVersionId` to rezzy's `StateResVersion`.
 ///
 /// Delegates to `RoomVersion::new()` which already has the canonical
 /// version→state_res mapping, then converts to rezzy's enum.
@@ -41,16 +41,18 @@ pub fn to_state_res_version(room_version_id: &RoomVersionId) -> StateResVersion 
 /// auth checking and state resolution APIs.
 #[must_use]
 pub fn pdu_to_lean<E: Event>(pdu: &E) -> LeanEvent<String> {
+	let content =
+		rezzy::JsonValue::parse(pdu.content().get()).expect("PDU content must be valid JSON");
 	LeanEvent {
 		event_id: pdu.event_id().to_string(),
 		event_type: pdu.kind().to_string(),
 		sender: pdu.sender().to_string(),
 		state_key: pdu.state_key().map(str::to_owned),
-		content: pdu.get_content_as_value(),
+		content,
 		prev_events: pdu.prev_events().map(|id| format!("{id}")).collect(),
 		auth_events: pdu.auth_events().map(|id| format!("{id}")).collect(),
-		origin_server_ts: pdu.origin_server_ts().get().into(),
-		depth: pdu.depth().into(),
+		origin_server_ts: pdu.origin_server_ts().get(),
+		depth: pdu.depth(),
 		..Default::default()
 	}
 }
@@ -70,7 +72,7 @@ impl PduStateProvider {
 	/// Build a state provider from a HashMap keyed by `(StateEventType,
 	/// StateKey)`.
 	///
-	/// This is the format used by ruma's auth_check callsites.
+	/// This is the format used by slipstream's auth_check callsites.
 	#[must_use]
 	pub fn from_ruma_map(auth_events: &HashMap<(StateEventType, StateKey), PduEvent>) -> Self {
 		let events = auth_events
@@ -126,7 +128,7 @@ impl PduStateProvider {
 	/// checks (e.g. `rezzy::auth::user::user_can_invite`) where a pre-built
 	/// auth events map is not available.
 	pub async fn from_room_state(
-		room_id: &ruma::RoomId,
+		room_id: &slipstream::RoomId,
 		state_accessor: &crate::rooms::state_accessor::Service,
 	) -> Self {
 		let mut events = HashMap::new();
@@ -173,7 +175,7 @@ impl StateProvider<String> for PduStateProvider {
 /// continuwuity-compatible `Result<bool>`.
 ///
 /// Returns `Ok(true)` if the event passes auth, `Ok(false)` if it fails.
-/// This matches ruma's `auth_check` return signature for drop-in
+/// This matches slipstream's `auth_check` return signature for drop-in
 /// compatibility.
 pub fn rezzy_auth_check<S: StateProvider<String>>(
 	pdu: &PduEvent,
@@ -206,7 +208,7 @@ impl RoomStateProvider {
 	/// Returns an error if the room version cannot be determined (missing
 	/// create event, DB corruption, or nonexistent room).
 	pub async fn new(
-		room_id: &ruma::RoomId,
+		room_id: &slipstream::RoomId,
 		state_accessor: &crate::rooms::state_accessor::Service,
 	) -> conduwuit_core::Result<Self> {
 		let provider = PduStateProvider::from_room_state(room_id, state_accessor).await;
@@ -232,7 +234,7 @@ mod tests {
 			event_type: event_type.to_owned(),
 			sender: sender.to_owned(),
 			state_key: state_key.map(str::to_owned),
-			content: serde_json::json!({}),
+			content: rezzy::JsonValue::Object(Default::default()),
 			prev_events: vec![],
 			auth_events: vec![],
 			origin_server_ts: 1_000_000,
@@ -270,7 +272,7 @@ mod tests {
 
 	// -----------------------------------------------------------------
 	// Regression: rezzy_auth_check must return false (not panic) on
-	// completely empty state — matching the old ruma .unwrap_or(false)
+	// completely empty state — matching the old slipstream .unwrap_or(false)
 	// -----------------------------------------------------------------
 	// When check_current_state_auth encounters an error building the
 	// state provider (e.g. room version lookup fails during federation
@@ -282,20 +284,6 @@ mod tests {
 
 		// A non-create event with no auth state should fail auth, not panic
 		let lean = make_lean("m.room.message", None, "@alice:example.org");
-		let _pdu_json = serde_json::to_string(&serde_json::json!({
-			"event_id": lean.event_id,
-			"type": lean.event_type,
-			"sender": lean.sender,
-			"room_id": "!test:example.org",
-			"origin_server_ts": lean.origin_server_ts,
-			"depth": lean.depth,
-			"prev_events": lean.prev_events,
-			"auth_events": lean.auth_events,
-			"content": lean.content,
-			"hashes": {"sha256": "test"},
-			"signatures": {},
-		}))
-		.unwrap();
 
 		// We can't easily construct a PduEvent here without the full
 		// deserialization pipeline, but we CAN verify the StateProvider +

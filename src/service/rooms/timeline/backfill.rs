@@ -1,5 +1,6 @@
 use std::{
-	collections::HashSet,
+	collections::{HashMap, HashSet, hash_map::DefaultHasher},
+	hash::{Hash, Hasher},
 	iter::once,
 	sync::{
 		Arc,
@@ -7,9 +8,9 @@ use std::{
 	},
 };
 
-use conduwuit::{Err, Error, PduEvent, RoomVersion};
+use conduwuit::{Err, Error, PduEvent, RoomVersion, matrix::pdu::RawJson as RawJsonValue};
 use conduwuit_core::{
-	Result, debug, debug_warn, err, implement, info,
+	Result, debug, debug_warn, err, error, implement, info,
 	matrix::{
 		event::Event,
 		pdu::{PduCount, PduId, RawPduId},
@@ -18,22 +19,17 @@ use conduwuit_core::{
 	validated, warn,
 };
 use futures::{FutureExt, StreamExt};
-use ruma::{
-	CanonicalJsonObject, CanonicalJsonValue, EventId, Int, OwnedEventId, RoomId, RoomVersionId,
-	ServerName, UInt,
+use slipstream::{
+	CanonicalJsonObject, CanonicalJsonValue, EventId, Int, OwnedEventId, RoomId, ServerName,
+	UInt,
 	api::federation,
 	events::{
 		StateEventType,
 		room::{create::RoomCreateEventContent, power_levels::RoomPowerLevelsEventContent},
 	},
 };
-use serde_json::value::RawValue as RawJsonValue;
 
-use super::TopoToken;
-use crate::rooms::{
-	pdu_metadata::{RejectionCode, is_retryable_rejection_reason},
-	short::ShortStateKey,
-};
+use super::{PromotionClaims, TopoToken};
 
 /// Maximum number of prev_event hops [`materialize_remote_history_limited`]
 /// (and, transitively, [`get_remote_pdu_limited`]'s recursive remote
@@ -104,7 +100,7 @@ pub async fn backfill_if_required(
 		.services
 		.state_cache
 		.room_servers(room_id)
-		.ready_any(|server| !self.services.globals.server_is_ours(server))
+		.ready_any(|server| !self.services.globals.server_is_ours(&server))
 		.await;
 
 	info!(
@@ -137,15 +133,24 @@ pub async fn backfill_if_required(
 	// window covers this request too, but only while the room state hash still
 	// matches the one observed during the scan.
 	let scan_limit_u32: u32 = limit.clamp(100, 500).try_into().unwrap_or(100);
-	let current_shortstatehash = self
+	// Fingerprint the room's current state with the leading bytes of its HAMT
+	// root handle structural hash, so the gap-free cache is invalidated when
+	// the room state transitions.
+	let current_state_fingerprint = self
 		.services
 		.state
-		.get_room_shortstatehash(room_id)
+		.get_room_state_hamt(room_id)
 		.await
-		.unwrap_or(0);
+		.map_or(0, |root_handle| {
+			u64::from_be_bytes(
+				root_handle.structural_hash[..8]
+					.try_into()
+					.expect("structural hash is at least 8 bytes"),
+			)
+		});
 	if Self::backfill_gap_free_cache_hit(
 		self.backfill_gap_free_cache.get(&room_id.to_owned()),
-		current_shortstatehash,
+		current_state_fingerprint,
 		from,
 		usize::try_from(scan_limit_u32).unwrap_or(100),
 	) {
@@ -185,27 +190,30 @@ pub async fn backfill_if_required(
 		}
 	}
 
-	let room_mods = users.iter().filter_map(|(user_id, level)| {
-		let remote_powered =
-			level > &power_levels.users_default && !self.services.globals.user_is_local(user_id);
-		let creator = if room_version.explicitly_privilege_room_creators {
-			create_event.sender() == user_id
-				|| create_event_content
-					.additional_creators
-					.as_ref()
-					.is_some_and(|c| c.contains(user_id))
-		} else {
-			false
-		};
+	let room_mods: Vec<slipstream::OwnedServerName> = users
+		.iter()
+		.filter_map(|(user_id, level)| {
+			let remote_powered = level > &power_levels.users_default
+				&& !self.services.globals.user_is_local(user_id);
+			let creator = if room_version.explicitly_privilege_room_creators {
+				create_event.sender() == user_id
+					|| create_event_content
+						.additional_creators
+						.as_ref()
+						.is_some_and(|c| c.contains(user_id))
+			} else {
+				false
+			};
 
-		if remote_powered || creator {
-			debug!(%remote_powered, %creator, "User {user_id} can backfill in room {room_id}");
-			Some(user_id.server_name())
-		} else {
-			debug!(%remote_powered, %creator, "User {user_id} cannot backfill in room {room_id}");
-			None
-		}
-	});
+			if remote_powered || creator {
+				debug!(%remote_powered, %creator, "User {user_id} can backfill in room {room_id}");
+				Some(user_id.server_name())
+			} else {
+				debug!(%remote_powered, %creator, "User {user_id} cannot backfill in room {room_id}");
+				None
+			}
+		})
+		.collect();
 
 	// Iterative backfill loop: after each successful /backfill response, re-scan
 	// for new backward extremities created by the newly inserted events'
@@ -215,12 +223,23 @@ pub async fn backfill_if_required(
 	let mut saw_extra_timeline_pdu = false;
 	let mut verify_after_promotion = false;
 	let mut budget = 5_u32;
+	// `backfill_gap_repeat_cache` below (keyed on this same fingerprint) is
+	// meant to short-circuit a repeat of the identical unresolved gap, but was
+	// observed in production logs not doing so: the same gap/fingerprint
+	// repeated 5 times within one call (budget 4->0), each round asking the
+	// same server and getting back the same response that didn't resolve it,
+	// before finally falling through to "budget exhausted". The cache's TTL
+	// (15s) is far longer than that ~3s loop, so expiry isn't why, and the
+	// actual reason wasn't tracked down. Track the fingerprint locally as
+	// well so this call can short-circuit on its own re-entering with the
+	// same unresolved fingerprint, independent of whatever the cache's issue
+	// turns out to be.
+	let mut last_repeat_fingerprint: Option<u64> = None;
 
 	loop {
 		// Phase 1: Collect scanned PDUs into an event map. With `impl DagNode
 		// for Pdu`, rezzy operates directly on PduEvent — no LeanEvent conversion.
-		let mut event_map: std::collections::HashMap<OwnedEventId, PduEvent> =
-			std::collections::HashMap::new();
+		let mut event_map: HashMap<OwnedEventId, PduEvent> = HashMap::new();
 		let mut scanned = 0_usize;
 		let mut pdus = self
 			.topo_pdus_rev(room_id, Some(from))
@@ -283,9 +302,9 @@ pub async fn backfill_if_required(
 				continue;
 			}
 
-			if current_shortstatehash != 0 {
+			if current_state_fingerprint != 0 {
 				self.backfill_gap_free_cache
-					.insert(room_id.to_owned(), (current_shortstatehash, from, scan_limit));
+					.insert(room_id.to_owned(), (current_state_fingerprint, from, scan_limit));
 			}
 			return Ok(());
 		}
@@ -298,10 +317,40 @@ pub async fn backfill_if_required(
 		let mut backwards_extremities: Vec<OwnedEventId> =
 			gaps.iter().map(|gap| gap.event_id.clone()).collect();
 		backwards_extremities.sort_unstable();
-		let unique_missing: HashSet<&EventId> = gaps
+		let mut unique_missing: Vec<&EventId> = gaps
 			.iter()
 			.flat_map(|gap| gap.missing_prev_events.iter().map(AsRef::as_ref))
 			.collect();
+		unique_missing.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+		unique_missing.dedup();
+
+		let mut repeat_hasher = DefaultHasher::new();
+		room_id.as_str().hash(&mut repeat_hasher);
+		from.to_string().hash(&mut repeat_hasher);
+		scan_limit_u32.hash(&mut repeat_hasher);
+		for extremity in &backwards_extremities {
+			extremity.as_str().hash(&mut repeat_hasher);
+		}
+		for missing in &unique_missing {
+			missing.as_str().hash(&mut repeat_hasher);
+		}
+		let repeat_fingerprint = repeat_hasher.finish();
+
+		if last_repeat_fingerprint == Some(repeat_fingerprint)
+			|| self
+				.backfill_gap_repeat_cache
+				.get(&(room_id.to_owned(), repeat_fingerprint))
+				.is_some()
+		{
+			debug!(
+				%room_id, %from, %scan_limit_u32, %repeat_fingerprint,
+				"backfill: suppressing repeated unresolved gap window"
+			);
+			return Ok(());
+		}
+		self.backfill_gap_repeat_cache
+			.insert((room_id.to_owned(), repeat_fingerprint), ());
+		last_repeat_fingerprint = Some(repeat_fingerprint);
 
 		if budget == 0 {
 			info!(
@@ -328,7 +377,7 @@ pub async fn backfill_if_required(
 		);
 
 		let mut servers = self
-			.get_backfill_servers(room_id, room_mods.clone())
+			.get_backfill_servers(room_id, room_mods.iter().map(AsRef::as_ref))
 			.await
 			.boxed();
 		let mut federated_room = false;
@@ -375,7 +424,7 @@ pub async fn backfill_if_required(
 					// server's tiebreak need not match ours. Left untreated, that drift
 					// becomes a permanent wrong position for one event, which then falls
 					// outside a `/messages` page boundary and looks like a dropped event.
-					let pdus = topo_sort_backfill_batch(&pdus);
+					let pdus = topo_sort_backfill_batch(pdus);
 
 					// Handle timeline events newest-first (maintain timeline integrity)
 					for pdu in pdus {
@@ -413,7 +462,6 @@ pub async fn backfill_if_required(
 
 #[implement(super::Service)]
 async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
-	let room_version = self.services.state.get_room_version(room_id).await?;
 	let state_pdus = self
 		.services
 		.state_accessor
@@ -431,70 +479,70 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 	let mut outlier_state_event_ids = Vec::new();
 	for (pdu, metadata) in state_pdus.into_iter().zip(state_metadata) {
 		let event_id = pdu.event_id().to_owned();
-		match metadata {
-			| Ok(meta) if meta.rejected => {
-				// Retryable rejections are recovery markers, not permanent
-				// evidence that the event is invalid. Let them back through
-				// promotion after clearing the retryable marker so a later
-				// retry path does not treat the stored outlier as already
-				// settled -- but `promote_outlier` skips all auth checks on
-				// the assumption its input already passed them, so this must
-				// exclude `MissingAuthEvent` specifically: that reason means
-				// *this event's own* auth chain never finished resolving, so
-				// there's no validated auth verdict to trust here at all
-				// (contrast e.g. `StateResolutionFailedWithPrevsPresent`,
-				// which is attached only after this event's own auth check
-				// already succeeded -- see `is_event_pending_auth_resolution`'s
-				// doc comment). Force-promoting an unvalidated event would be
-				// an auth bypass, not a legitimate retry. Leave it rejected;
-				// it can only be safely revalidated by a real
-				// `handle_outlier_pdu` re-run, not by this promotion pass.
-				let pending_auth_resolution = matches!(
-					RejectionCode::parse(&meta.rejection_reason),
-					Some(RejectionCode::MissingAuthEvent)
-				);
-				if meta.is_outlier
-					&& !pending_auth_resolution
-					&& is_retryable_rejection_reason(&meta.rejection_reason)
-				{
-					if self
-						.services
-						.pdu_metadata
-						.take_retry_if_rejection_retryable(&event_id)
-						.await
-					{
-						outlier_state_event_ids.push(event_id);
-					}
-				}
-			},
-			| Ok(meta) if meta.is_outlier => outlier_state_event_ids.push(event_id),
-			| Ok(_) => continue,
+		let is_outlier = match metadata {
+			| Ok(meta) => meta.is_outlier,
 			| Err(_) => {
 				// No batch metadata to inspect here (the batch lookup itself
-				// failed) -- fall back to the narrower live check so this
-				// path doesn't force-promote an event whose own auth chain
-				// never finished resolving. See the comment above.
-				if self
+				// failed) -- fall back to the same live check-and-clear as
+				// the branch below, so this path neither force-promotes an
+				// event whose own auth chain never finished resolving nor
+				// queues a still (permanently) rejected event without
+				// clearing its marker.
+				if !self
 					.services
 					.pdu_metadata
-					.is_event_pending_auth_resolution(&event_id)
+					.take_retry_if_rejection_retryable_for_promotion(&event_id)
 					.await
 				{
 					continue;
 				}
-				if self
-					.services
-					.pdu_metadata
-					.take_retry_if_rejection_retryable(&event_id)
-					.await
-				{
-					outlier_state_event_ids.push(event_id);
-				} else if self.non_outlier_pdu_exists(&event_id).await {
+				if self.non_outlier_pdu_exists(&event_id).await {
 					continue;
-				} else {
-					outlier_state_event_ids.push(event_id);
 				}
+				outlier_state_event_ids.push(event_id);
+				continue;
 			},
+		};
+
+		// Outlier-ness comes from `EventMetadata`; rejection now lives in the
+		// authoritative `eventid_rejections` store. Retryable rejections are
+		// recovery markers, not permanent evidence that the event is invalid.
+		// Route the decision through
+		// `take_retry_if_rejection_retryable_for_promotion`, which does a
+		// *fresh* read of the current rejection reason and -- unless it's
+		// `MissingAuthEvent` (this event's own auth chain never finished
+		// resolving, so there is no validated verdict to trust;
+		// `promote_outlier` skips all auth checks and force-promoting it
+		// would be an auth bypass, not a legitimate retry -- see
+		// `is_event_pending_auth_resolution`'s doc comment) -- atomically
+		// clears the marker before we queue the event.
+		//
+		// The atomicity here matters: `promote_outlier_batch` re-checks
+		// `is_event_rejected` under its insert lock before writing, so
+		// queueing an event whose *current* marker was never actually cleared
+		// makes that recheck silently skip the write while
+		// `promote_outliers_sorted`'s caller still counts it as promoted --
+		// leaving the event permanently invisible despite looking
+		// successfully promoted.
+		if !is_outlier {
+			continue;
+		}
+		// A single fresh read (via
+		// `take_retry_if_rejection_retryable_for_promotion`) decides both
+		// whether the event is safe to promote *and* clears any retryable
+		// marker, atomically. Calling it unconditionally avoids the TOCTOU
+		// where a retryable rejection is recorded *after*
+		// `is_event_rejected` returned false here but before
+		// `promote_outlier_batch` re-checks it under its insert lock -- in
+		// that window the old two-read branch would queue the event without
+		// clearing the marker, so promotion would silently skip it.
+		if self
+			.services
+			.pdu_metadata
+			.take_retry_if_rejection_retryable_for_promotion(&event_id)
+			.await
+		{
+			outlier_state_event_ids.push(event_id);
 		}
 	}
 
@@ -502,7 +550,7 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 		return Ok(0);
 	}
 
-	self.promote_outliers_sorted(room_id, &outlier_state_event_ids, &room_version)
+	self.promote_outliers_sorted(room_id, &outlier_state_event_ids)
 		.await
 }
 
@@ -535,8 +583,8 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 /// aborting the whole reorder -- `backfill_pdu` already tolerates and
 /// skips individual bad events without failing the batch, so this matches
 /// existing behavior.
-fn topo_sort_backfill_batch(pdus: &[Box<RawJsonValue>]) -> Vec<Box<RawJsonValue>> {
-	let mut keyed: Vec<(u64, Box<RawJsonValue>)> = Vec::with_capacity(pdus.len());
+fn topo_sort_backfill_batch(pdus: Vec<RawJsonValue>) -> Vec<RawJsonValue> {
+	let mut keyed: Vec<(u64, RawJsonValue)> = Vec::with_capacity(pdus.len());
 
 	for pdu in pdus {
 		// Deliberately not `parse_incoming_pdu` here: this pass only ever reads
@@ -552,13 +600,12 @@ fn topo_sort_backfill_batch(pdus: &[Box<RawJsonValue>]) -> Vec<Box<RawJsonValue>
 		// syntactically-broken event here just can't contribute a depth, so it
 		// sorts as depth 0 and gets caught (and logged) by backfill_pdu's own
 		// parse when it's inserted.
-		let depth = serde_json::from_str::<CanonicalJsonObject>(pdu.get())
+		let depth = slipstream::codec::from_str::<CanonicalJsonObject>(pdu.get())
 			.ok()
-			.and_then(|value| value.get("depth").and_then(CanonicalJsonValue::as_integer))
-			.and_then(|d| u64::try_from(i64::from(d)).ok())
+			.and_then(|value| value.get("depth").and_then(CanonicalJsonValue::as_u64))
 			.unwrap_or_default();
 
-		keyed.push((depth, pdu.clone()));
+		keyed.push((depth, pdu));
 	}
 
 	// Newest-first (descending depth): `backfill_pdu` hands out
@@ -615,7 +662,7 @@ async fn get_remote_pdu_limited(
 		.services
 		.state_cache
 		.room_servers(room_id)
-		.ready_any(|server| !self.services.globals.server_is_ours(server))
+		.ready_any(|server| !self.services.globals.server_is_ours(&server))
 		.await;
 
 	if !has_remote_servers
@@ -638,16 +685,25 @@ async fn get_remote_pdu_limited(
 		.await
 		.unwrap_or_default();
 
-	let room_mods = power_levels.users.iter().filter_map(|(user_id, level)| {
-		if level > &power_levels.users_default && !self.services.globals.user_is_local(user_id) {
-			Some(user_id.server_name())
-		} else {
-			None
-		}
-	});
+	let room_mods: Vec<slipstream::OwnedServerName> = power_levels
+		.users
+		.iter()
+		.filter_map(|(user_id, level)| {
+			if level > &power_levels.users_default
+				&& !self.services.globals.user_is_local(user_id)
+			{
+				Some(user_id.server_name())
+			} else {
+				None
+			}
+		})
+		.collect();
 
 	let room_version_id = self.services.state.get_room_version(room_id).await?;
-	let mut servers = self.get_backfill_servers(room_id, room_mods).await.boxed();
+	let mut servers = self
+		.get_backfill_servers(room_id, room_mods.iter().map(AsRef::as_ref))
+		.await
+		.boxed();
 
 	while let Some(ref backfill_server) = servers.next().await {
 		info!("Asking {backfill_server} for event {}", event_id);
@@ -660,7 +716,10 @@ async fn get_remote_pdu_limited(
 			})
 			.await
 			.and_then(|response| {
-				serde_json::from_str::<CanonicalJsonObject>(response.pdu.get()).map_err(|e| {
+				let raw_pdu = response.pdus.first().ok_or_else(|| {
+					err!(BadServerResponse("Empty pdus from {backfill_server}"))
+				})?;
+				slipstream::codec::from_str::<CanonicalJsonObject>(raw_pdu.get()).map_err(|e| {
 					err!(BadServerResponse(debug_warn!(
 						"Error parsing incoming event {e:?} from {backfill_server}"
 					)))
@@ -675,7 +734,7 @@ async fn get_remote_pdu_limited(
 				// materialize their predecessor chain into the backfilled
 				// timeline so they keep their historical position instead of
 				// becoming new forward timeline/extremity events.
-				.handle_incoming_pdu(backfill_server, room_id, event_id, value, false, &room_version_id)
+				.handle_incoming_pdu(backfill_server, room_id, event_id, value, false, Some(&room_version_id))
 				.boxed()
 				.await
 			{
@@ -756,7 +815,7 @@ async fn materialize_remote_history_limited(
 pub async fn backfill_pdu(
 	&self,
 	origin: &ServerName,
-	pdu: Box<RawJsonValue>,
+	pdu: RawJsonValue,
 	count: Option<u64>,
 ) -> Result<()> {
 	let (room_id, event_id, value) = self.services.event_handler.parse_incoming_pdu(&pdu).await?;
@@ -814,6 +873,21 @@ pub async fn backfill_pdu(
 		},
 	};
 
+	// Compute the event's genuine state-at-event via real state resolution
+	// BEFORE acquiring insert_lock. This can involve federation I/O
+	// (/state_ids or single-hop /event fallback if local resolution can't
+	// determine state-at-event) and must not run inside mutex_insert's
+	// room-wide critical section -- otherwise one slow backfilled event
+	// serializes every other concurrent insert into this room, live /send
+	// included.
+	if let Err(e) = self
+		.associate_resolved_state(&room_id, &pdu_event, origin)
+		.await
+	{
+		warn!(target: "backfill_debug", %event_id, "backfill_pdu: associate_resolved_state FAILED: {e}");
+		return Err(e);
+	}
+
 	let shortroomid = self
 		.services
 		.short
@@ -823,7 +897,11 @@ pub async fn backfill_pdu(
 	let insert_lock = self.mutex_insert.lock(&room_id).await;
 
 	// Re-check after acquiring insert lock to prevent TOCTOU races
-	// with concurrent /send transactions inserting the same event.
+	// with concurrent /send transactions inserting the same event. If a
+	// concurrent insert won this race, the state association written above
+	// is harmless (redundant, not wrong -- state resolution is deterministic
+	// and reads only from already-persisted ancestors) and we still skip the
+	// actual timeline insert.
 	if self.non_outlier_pdu_exists(&event_id).await {
 		warn!(
 			target: "backfill_debug",
@@ -854,10 +932,6 @@ pub async fn backfill_pdu(
 	self.db
 		.prepend_backfill_pdu(&pdu_id, &event_id, &json_value, &pdu_event)
 		.await;
-	if let Err(e) = self.associate_current_state(&room_id, &event_id).await {
-		warn!(target: "backfill_debug", %event_id, count, "backfill_pdu: associate_current_state FAILED: {e}");
-		return Err(e);
-	}
 
 	info!(target: "backfill_debug", %event_id, count, "backfill_pdu: insert complete");
 
@@ -874,18 +948,93 @@ pub async fn backfill_pdu(
 /// This skips all auth checks — the caller is responsible for ensuring
 /// the event is valid (e.g. it came from a send_join response).
 #[implement(super::Service)]
-pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
+pub async fn promote_outlier(
+	&self,
+	room_id: &RoomId,
+	event_id: &EventId,
+) -> Result<PromoteOutlierOutcome> {
+	let mut batch = database::Batch::new();
+	let outcome = self
+		.promote_outlier_batch(&mut batch, room_id, event_id)
+		.await?;
+	if matches!(outcome, PromoteOutlierOutcome::Queued) {
+		self.db_apply_batch(batch);
+		self.finish_promote_outlier(room_id, event_id).await;
+	}
+	Ok(outcome)
+}
+
+/// See [`PromotionClaims::try_claim_promotion`].
+#[implement(super::Service)]
+fn try_claim_promotion(&self, event_id: &EventId) -> bool {
+	self.pending_promotions.try_claim_promotion(event_id)
+}
+
+/// Whether [`Service::promote_outlier_batch`] queued a write into the
+/// caller's batch, or found nothing to do.
+pub enum PromoteOutlierOutcome {
+	/// Nothing was queued: already in the timeline, already reserved by a
+	/// concurrent/duplicate call, or rejected before promotion began.
+	Skipped,
+	/// A write was queued into `batch`. The caller must apply the batch and
+	/// then call [`Service::finish_promote_outlier`] with the same
+	/// `room_id`/`event_id` to release the reservation and finalize
+	/// rejection markers.
+	Queued,
+}
+
+struct PendingPromotionGuard<'a> {
+	pending_promotions: &'a PromotionClaims,
+	event_id: &'a EventId,
+	armed: bool,
+}
+
+impl<'a> PendingPromotionGuard<'a> {
+	fn new(pending_promotions: &'a PromotionClaims, event_id: &'a EventId) -> Self {
+		Self {
+			pending_promotions,
+			event_id,
+			armed: true,
+		}
+	}
+
+	fn disarm(&mut self) { self.armed = false; }
+}
+
+impl Drop for PendingPromotionGuard<'_> {
+	fn drop(&mut self) {
+		if self.armed {
+			self.pending_promotions
+				.release_promotion_claim(self.event_id);
+		}
+	}
+}
+
+/// Batched variant of [`Self::promote_outlier`]. The caller owns the
+/// `Batch` and is responsible for applying it (typically once per chunk of
+/// events, mirroring [`Self::force_insert_pdu_batch`]) so bulk promotions
+/// don't fire one DB commit -- and one `/sync` wake -- per event.
+///
+/// On [`PromoteOutlierOutcome::Queued`], the caller must apply `batch` and
+/// then call [`Self::finish_promote_outlier`] -- see that method's docs for
+/// why the two steps can't be collapsed here.
+#[implement(super::Service)]
+pub async fn promote_outlier_batch<'a>(
+	&'a self,
+	batch: &mut database::Batch<'a>,
+	room_id: &RoomId,
+	event_id: &EventId,
+) -> Result<PromoteOutlierOutcome> {
 	// Skip if already in timeline
 	if self.non_outlier_pdu_exists(event_id).await {
-		return Ok(());
+		return Ok(PromoteOutlierOutcome::Skipped);
 	}
 
 	let value = self.get_outlier_pdu_json(event_id).await?;
 
-	let pdu: PduEvent = serde_json::from_value(
-		serde_json::to_value(&value).map_err(|e| err!(Database("Bad outlier JSON: {e:?}")))?,
-	)
-	.map_err(|e| err!(Database("Bad outlier PDU: {e:?}")))?;
+	let pdu: PduEvent =
+		slipstream::codec::from_value(&slipstream::json::Value::Object(value.clone()))
+			.map_err(|e| err!(Database("Bad outlier PDU: {e:?}")))?;
 
 	let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
 
@@ -894,17 +1043,23 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 	// Re-check after acquiring insert lock to prevent TOCTOU races with a
 	// concurrent backfill_pdu/append_pdu/force_insert_pdu inserting the
 	// same event (see docs/development-gg/backfill-append-toctou-race.md).
-	if self.non_outlier_pdu_exists(event_id).await {
+	//
+	// The DB-existence check alone isn't enough here: a batched promotion
+	// queued into another (not-yet-applied) batch won't show up as an
+	// existing row yet, so also consult the pending-reservation set --
+	// see `Service::pending_promotions`'s doc comment.
+	if self.non_outlier_pdu_exists(event_id).await || !self.try_claim_promotion(event_id) {
 		warn!(
 			target: "backfill_debug",
 			%event_id,
 			%room_id,
-			"promote_outlier: event already in timeline under the insert lock -- \
+			"promote_outlier: event already in timeline or already queued -- \
 			 skipping redundant insert (TOCTOU race caught)"
 		);
 		drop(insert_lock);
-		return Ok(());
+		return Ok(PromoteOutlierOutcome::Skipped);
 	}
+	let mut reservation_guard = PendingPromotionGuard::new(&self.pending_promotions, event_id);
 
 	// A concurrent retry may have rejected this event after the caller's
 	// earlier metadata check but before we acquired the insertion lock.
@@ -917,7 +1072,26 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 			"promote_outlier: event was rejected before insert-lock promotion, skipping"
 		);
 		drop(insert_lock);
-		return Ok(());
+		return Ok(PromoteOutlierOutcome::Skipped);
+	}
+
+	// Likewise never promote a soft-failed event: it failed auth against the
+	// current room state and must stay out of the visible timeline. Admin
+	// rescue clears the marker explicitly before promoting.
+	if self
+		.services
+		.pdu_metadata
+		.is_event_soft_failed(event_id)
+		.await
+	{
+		warn!(
+			target: "backfill_debug",
+			%event_id,
+			%room_id,
+			"promote_outlier: event is soft-failed, skipping"
+		);
+		drop(insert_lock);
+		return Ok(PromoteOutlierOutcome::Skipped);
 	}
 
 	// Use backfill (negative) PDU count — these are historical events
@@ -930,10 +1104,10 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 	}
 	.into();
 
-	self.db
-		.prepend_backfill_pdu(&pdu_id, event_id, &value, &pdu)
-		.await;
 	self.associate_current_state(room_id, event_id).await?;
+	self.db
+		.prepend_backfill_pdu_batch(batch, &pdu_id, event_id, &value, &pdu)
+		.await;
 
 	drop(insert_lock);
 
@@ -941,37 +1115,151 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 
 	// Remove from outlier room index
 	self.clear_outlier_flag(event_id);
-	self.services.pdu_metadata.clear_pdu_markers(event_id);
+	reservation_guard.disarm();
 
+	Ok(PromoteOutlierOutcome::Queued)
+}
+
+/// Completes a [`Self::promote_outlier_batch`] promotion after the caller
+/// has applied its batch: releases the `pending_promotions` reservation and
+/// finalizes rejection/soft-fail markers.
+///
+/// This must run *after* the batch write lands, not before: the queued
+/// write carries a `soft_failed`/`rejected` snapshot taken when the batch
+/// was built, so clearing markers first would just be silently overwritten
+/// back to their stale values once the batch is applied.
+///
+/// Rejection during promotion: Rejection decisions write directly to flat
+/// atomic single-key storage (`mark_event_rejected`). If a rejection lands
+/// before or during outlier promotion, the rejection status is persisted
+/// atomically. the marker to paper over that, or evicting the just-landed row
+/// (which would need a safe "remove PDU from timeline" primitive -- search
+/// index, state associations, etc. all need unwinding too -- that doesn't exist
+/// yet), would both be worse than surfacing it. So this stays `error!`
+/// rather than a silent `warn!`: if it ever fires, it should page someone
+/// rather than scroll past in a debug-level log.
+#[implement(super::Service)]
+pub async fn finish_promote_outlier(&self, room_id: &RoomId, event_id: &EventId) {
+	self.pending_promotions.release_promotion_claim(event_id);
+
+	if !self.services.pdu_metadata.finish_promotion(event_id).await {
+		error!(
+			target: "backfill_debug",
+			%event_id,
+			%room_id,
+			"promote_outlier: event was rejected during promotion; event is now visible on \
+			 the timeline despite a permanent rejection marker (residual TOCTOU, see \
+			 finish_promote_outlier's doc comment) -- needs manual investigation"
+		);
+	}
+}
+
+/// Associate a backfilled event with its genuine state-at-event, computed via
+/// real state resolution over the event's own `prev_events` -- the same
+/// pipeline live federation `/send` events use
+/// (`event_handler::state_at_incoming_degree_one`/`state_at_incoming_resolved`,
+/// normally reached through `upgrade_outlier_to_timeline_pdu`'s
+/// `is_forward_extremity: false` branch).
+///
+/// This replaces a previous implementation that stamped the room's *current*
+/// live state onto the backfilled event unmodified -- which silently
+/// dropped every backfilled state event's own effect (a member join never
+/// showing up as joined, a superseded `join_rules` never actually
+/// superseding) because it never folded the event's own `(type, state_key)`
+/// into the snapshot it wrote. See
+/// docs/development-gg/backfill-state-association-bug.md.
+///
+/// Only writes the per-event state association (`set_event_roothandle`) --
+/// never merges into the room's live current state, matching backfilled
+/// events' semantics (they are historical, not the tip).
+///
+/// `origin` should be the actual server this event was backfilled from
+/// (`backfill_pdu`'s own `origin` parameter) wherever the caller has one --
+/// it's used as the `/state_ids`/`/event` fallback target if local
+/// resolution can't determine state-at-event from events we already have,
+/// and the backfill source is the right server to ask, not necessarily the
+/// event's sender's homeserver.
+#[implement(super::Service)]
+async fn associate_resolved_state(
+	&self,
+	room_id: &RoomId,
+	pdu: &PduEvent,
+	origin: &ServerName,
+) -> Result<()> {
+	let create_event = self
+		.services
+		.state_accessor
+		.room_state_get(room_id, &StateEventType::RoomCreate, "")
+		.await?;
+	let room_version_id = self.services.state.get_room_version(room_id).await?;
+
+	// Resolve the state-at-event purely from the event's own `prev_events`
+	// (never folding in the room's current live tip -- this is historical
+	// data). Must run before acquiring any state.mutex guard for this room:
+	// resolution can perform federation I/O and thousands of short-ID
+	// lookups.
+	let state_at_event = if pdu.prev_events().count() == 1 {
+		self.services
+			.event_handler
+			.state_at_incoming_degree_one(pdu, room_id)
+			.await?
+	} else {
+		self.services
+			.event_handler
+			.state_at_incoming_resolved(pdu, room_id, &room_version_id)
+			.await?
+	};
+
+	let state_at_event = match state_at_event {
+		| Some(state) => state,
+		| None => self
+			.services
+			.event_handler
+			.fetch_state(origin, &create_event, room_id, pdu.event_id(), false)
+			.await?
+			.ok_or_else(|| err!("Could not resolve state at backfilled event"))?,
+	};
+
+	// The stored per-event root is the state *after* the event (see
+	// `pdu_roothandle_after_event`), so a state event must include its own
+	// change; otherwise membership/join-rule changes vanish from historical
+	// reads and `pdu_roothandle_before_event` skips this event for descendants.
+	let mut state_at_event = state_at_event;
+	if let Some(state_key) = pdu.state_key() {
+		let shortstatekey = self
+			.services
+			.short
+			.get_or_create_shortstatekey(&pdu.kind().to_string().into(), state_key)
+			.await;
+		state_at_event.insert(shortstatekey, pdu.event_id().to_owned());
+	}
+
+	let root_handle = self
+		.services
+		.event_handler
+		.state_map_to_root_handle(room_id, &state_at_event)
+		.await?;
+
+	self.services
+		.state
+		.set_event_roothandle(pdu.event_id(), &root_handle)
+		.await?;
 	Ok(())
 }
 
 #[implement(super::Service)]
 async fn associate_current_state(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
-	let shortstatehash = self.services.state.get_room_shortstatehash(room_id).await?;
-	let state_ids: Vec<(ShortStateKey, OwnedEventId)> = self
-		.services
-		.state_accessor
-		.state_full_ids::<OwnedEventId>(shortstatehash)
-		.collect::<Vec<_>>()
-		.await;
-	let compressed: crate::rooms::state_compressor::CompressedState = self
-		.services
-		.state_compressor
-		.compress_state_events(state_ids.iter().map(|(key, id)| (key, id.as_ref())))
-		.collect()
-		.await;
-
+	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 	self.services
 		.state
-		.set_event_state(event_id, room_id, Arc::new(compressed))
+		.set_event_roothandle(event_id, &root_handle)
 		.await?;
 	Ok(())
 }
 
 /// Promote a batch of outlier events into the backfilled timeline in
-/// topological order (ancestors before descendants). Uses rezzy's Kahn sort
-/// to order events by their DAG structure.
+/// topological order (ancestors before descendants), using event depth as the
+/// ordering key for the fetched batch.
 ///
 /// This is called during `/send_join` to make auth chain + state events
 /// visible when users scroll up. Events already in the timeline are skipped.
@@ -980,7 +1268,6 @@ pub async fn promote_outliers_sorted(
 	&self,
 	room_id: &RoomId,
 	event_ids: &[OwnedEventId],
-	room_version: &RoomVersionId,
 ) -> Result<usize> {
 	use conduwuit_core::debug;
 
@@ -989,7 +1276,8 @@ pub async fn promote_outliers_sorted(
 	}
 
 	// Build LeanEvent map from outlier PDUs for topo sort
-	let mut events_map: rezzy::HashMap<String, rezzy::LeanEvent> = rezzy::HashMap::new();
+	let mut events_map: HashMap<String, rezzy::LeanEvent<String, rezzy::JsonValue>> =
+		HashMap::new();
 
 	for event_id in event_ids {
 		// Skip events already in the timeline
@@ -1006,12 +1294,13 @@ pub async fn promote_outliers_sorted(
 			event_type: pdu.kind.to_string(),
 			sender: pdu.sender.to_string(),
 			state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
-			content: serde_json::from_str(pdu.content.get()).unwrap_or(serde_json::Value::Null),
-			origin_server_ts: u64::from(pdu.origin_server_ts),
+			content: rezzy::JsonValue::parse(pdu.content.get())
+				.expect("PDU content must be valid JSON"),
+			origin_server_ts: pdu.origin_server_ts,
 			auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
 			prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
 			power_level: 0,
-			depth: u64::from(pdu.depth),
+			depth: pdu.depth,
 			..Default::default()
 		};
 		events_map.insert(event_id.to_string(), lean);
@@ -1021,29 +1310,14 @@ pub async fn promote_outliers_sorted(
 		return Ok(0);
 	}
 
-	// Find the create event for the sort
-	let create_ev = events_map
-		.values()
-		.find(|ev| ev.event_type == "m.room.create");
-
-	// Topo sort: ancestors first (create → PL → joins → messages)
-	let state_res_version = {
-		use ruma::RoomVersionId::*;
-		match room_version {
-			| V1 | V2 | V3 | V4 | V5 | V6 | V7 | V8 | V9 | V10 | V11 =>
-				rezzy::StateResVersion::V2,
-			| V12 => rezzy::StateResVersion::V2_1,
-			| ver => return Err!(Database("Unsupported room version for topo sort: {ver}")),
-		}
-	};
-	let mut pl_cache = std::collections::HashMap::new();
-	let sorted_ids = rezzy::resolve::sorting::lean_kahn_sort(
-		&events_map,
-		&events_map, // auth context is the same set
-		create_ev,
-		state_res_version,
-		&mut pl_cache,
-	);
+	// Depth is the reliable ordering key for a fetched timeline batch.
+	let mut sorted_ids: Vec<String> = events_map.keys().cloned().collect();
+	sorted_ids.sort_by(|a, b| {
+		events_map[a]
+			.depth
+			.cmp(&events_map[b].depth)
+			.then_with(|| a.cmp(b))
+	});
 
 	debug!(
 		"Promoting {} outliers to timeline in room {} ({} sorted)",
@@ -1054,13 +1328,15 @@ pub async fn promote_outliers_sorted(
 
 	let mut promoted = 0_usize;
 	for event_id_str in &sorted_ids {
-		let Ok(event_id) = <&EventId>::try_from(event_id_str.as_str()) else {
+		let Ok(event_id) = OwnedEventId::parse(event_id_str.as_str()) else {
 			continue;
 		};
+		let event_id = event_id.as_ref();
 		match self.promote_outlier(room_id, event_id).await {
-			| Ok(()) => {
+			| Ok(PromoteOutlierOutcome::Queued) => {
 				promoted = promoted.saturating_add(1);
 			},
+			| Ok(PromoteOutlierOutcome::Skipped) => {},
 			| Err(e) => {
 				debug!("Could not promote {event_id} to timeline: {e}");
 			},
@@ -1069,6 +1345,148 @@ pub async fn promote_outliers_sorted(
 
 	debug!("Promoted {promoted}/{} outliers in {room_id}", sorted_ids.len());
 	Ok(promoted)
+}
+
+/// Repair derived data (topological index + search index) for events that
+/// are already in the timeline (non-outliers), scoped to an explicit list.
+///
+/// Used by `admin/yolo heal rescue-room --timeline-limit`, which passes a
+/// bounded window of recent timeline PDUs for re-processing. These events
+/// can't go through [`Self::promote_outliers_sorted`] (it's outlier-only and
+/// deliberately skips anything already in the timeline), but the caller
+/// still wants their derived data repaired -- mirroring what the removed
+/// `heal_room` helper did for non-outlier events in its non-outlier branch
+/// (`clear_pdu_markers` + `reindex_topo` + `index_pdu_search`; marker
+/// clearing is handled separately by the caller's own `--force` handling).
+///
+/// Events not already present as timeline (non-outlier) PDUs are silently
+/// skipped -- this function only repairs, it does not promote outliers.
+#[implement(super::Service)]
+pub async fn reindex_timeline_events(
+	&self,
+	room_id: &RoomId,
+	event_ids: &[OwnedEventId],
+) -> Result<usize> {
+	use conduwuit_core::debug;
+
+	let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
+	let mut repaired = 0_usize;
+
+	// Fetch every non-outlier event up front. This lets us both build a
+	// same-batch dependency graph and avoid a duplicate lookup in the loop
+	// below.
+	let mut pdus: HashMap<OwnedEventId, (RawPduId, PduEvent)> = HashMap::new();
+	for event_id in event_ids {
+		if !self.non_outlier_pdu_exists(event_id).await {
+			continue;
+		}
+		let Ok(pdu_id) = self.get_pdu_id(event_id).await else {
+			continue;
+		};
+		let Ok(pdu) = self.get_pdu_in_room(Some(room_id), event_id).await else {
+			continue;
+		};
+		pdus.insert(event_id.clone(), (pdu_id, pdu));
+	}
+
+	// Depth is recomputed from local prev_events metadata, and that
+	// metadata is only up to date for a prev_event once *this* pass has
+	// already reindexed it. So a parent must always be visited before any
+	// child that names it in `prev_events`, regardless of what order the
+	// caller passed `event_ids` in (heal.rs's --timeline-limit pulls from
+	// `pdus_rev`, which is newest-first; other callers may not be ordered
+	// at all). Topologically sort the batch instead of trusting caller
+	// order. Edges to events outside the batch are left alone -- those
+	// resolve against already-stored metadata, same as before.
+	let ordered = topo_sort_by_prev_events(&pdus);
+
+	for event_id in ordered {
+		let (pdu_id, pdu) = &pdus[&event_id];
+
+		// Recompute topo depth from local prev_events metadata, same as
+		// `heal_room` did. If none of the prev_events have local metadata (a
+		// gap we can't reconstruct from), leave the stored depth alone rather
+		// than writing a wrong one (e.g. depth 1, jamming the event to the
+		// front of the room's topological order).
+		let mut max_depth = None;
+		for prev_id in pdu.prev_events() {
+			if let Ok(meta) = self.get_event_metadata(prev_id).await {
+				max_depth = Some(max_depth.unwrap_or(0).max(meta.deprecated_local_topo_depth));
+			}
+		}
+
+		if let Some(max_depth) = max_depth {
+			let new_topo_depth = max_depth.saturating_add(1);
+			let mut batch = database::Batch::new();
+			self.db
+				.reindex_topo_batch(&mut batch, pdu_id, &event_id, new_topo_depth);
+			self.db_apply_batch(batch);
+		}
+
+		self.index_pdu_search(shortroomid, pdu_id, pdu);
+		repaired = repaired.saturating_add(1);
+	}
+
+	debug!("Reindexed {repaired}/{} already-timeline events in {room_id}", event_ids.len());
+	Ok(repaired)
+}
+
+/// Topologically sorts `pdus` by `prev_events` (parents before children),
+/// restricted to edges within the batch itself. Falls back to appending
+/// any events left over by a cycle (shouldn't happen for a real DAG, but
+/// this is healing already-corrupted rooms) in their original `pdus`
+/// iteration order rather than dropping them.
+fn topo_sort_by_prev_events(
+	pdus: &HashMap<OwnedEventId, (RawPduId, PduEvent)>,
+) -> Vec<OwnedEventId> {
+	use std::collections::VecDeque;
+
+	let mut children: HashMap<&OwnedEventId, Vec<&OwnedEventId>> = HashMap::new();
+	let mut in_degree: HashMap<&OwnedEventId, usize> = pdus.keys().map(|id| (id, 0)).collect();
+
+	for (event_id, (_, pdu)) in pdus {
+		for prev_id in pdu.prev_events() {
+			if let Some(count) = in_degree.get_mut(prev_id) {
+				*count = count.saturating_add(1);
+				children.entry(prev_id).or_default().push(event_id);
+			}
+		}
+	}
+
+	let mut queue: VecDeque<&OwnedEventId> = in_degree
+		.iter()
+		.filter_map(|(id, count)| (*count == 0).then_some(*id))
+		.collect();
+
+	let mut ordered = Vec::with_capacity(pdus.len());
+	let mut visited: HashSet<&OwnedEventId> = HashSet::with_capacity(pdus.len());
+	while let Some(event_id) = queue.pop_front() {
+		if !visited.insert(event_id) {
+			continue;
+		}
+		ordered.push(event_id.to_owned());
+		for child in children.get(event_id).into_iter().flatten() {
+			if let Some(count) = in_degree.get_mut(child) {
+				*count = count.saturating_sub(1);
+				if *count == 0 {
+					queue.push_back(child);
+				}
+			}
+		}
+	}
+
+	if ordered.len() < pdus.len() {
+		// A cycle within the batch (shouldn't happen for a valid DAG, but
+		// this code exists to heal already-corrupted rooms). Append whatever
+		// is left over so nothing is silently dropped.
+		for event_id in pdus.keys() {
+			if !visited.contains(event_id) {
+				ordered.push(event_id.clone());
+			}
+		}
+	}
+
+	ordered
 }
 
 /// Force-insert a PDU directly into the timeline, bypassing all auth checks.
@@ -1167,7 +1585,7 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 	&'a self,
 	room_id: &'a RoomId,
 	room_mods: I,
-) -> impl futures::Stream<Item = ruma::OwnedServerName> + Send + 'a {
+) -> impl futures::Stream<Item = slipstream::OwnedServerName> + Send + 'a {
 	let canonical_room_alias_server = once(
 		self.services
 			.state_accessor
@@ -1175,7 +1593,7 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 			.await,
 	)
 	.filter_map(Result::ok)
-	.map(|alias| alias.server_name().to_owned())
+	.map(|alias| alias.server_name())
 	.stream();
 
 	room_mods
@@ -1191,12 +1609,7 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 				.map(ToOwned::to_owned)
 				.stream(),
 		)
-		.chain(
-			self.services
-				.state_cache
-				.room_servers(room_id)
-				.map(ToOwned::to_owned),
-		)
+		.chain(self.services.state_cache.room_servers(room_id))
 		.ready_filter(|server_name| {
 			!self.services.globals.server_is_ours(server_name)
 				&& !self

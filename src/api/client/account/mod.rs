@@ -8,7 +8,8 @@ use conduwuit::{
 use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt};
 use lettre::{Address, message::Mailbox};
-use ruma::{
+use service::{mailer::messages, uiaa::Identity};
+use slipstream::{
 	OwnedRoomId, OwnedUserId, UserId,
 	api::client::{
 		account::{
@@ -26,7 +27,6 @@ use ruma::{
 		},
 	},
 };
-use service::{mailer::messages, uiaa::Identity};
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH, join_room_by_id_helper};
 use crate::Ruma;
@@ -122,7 +122,7 @@ pub(crate) async fn change_password_route(
 			.authenticate(
 				&body.auth,
 				vec![AuthFlow::new(vec![AuthType::Password])],
-				Box::default(),
+				slipstream::json::Value::Object(slipstream::json::Object::new()),
 				Some(Identity::from_user_id(user_id)),
 			)
 			.await?
@@ -137,7 +137,7 @@ pub(crate) async fn change_password_route(
 			.authenticate(
 				&body.auth,
 				vec![AuthFlow::new(vec![AuthType::EmailIdentity])],
-				Box::default(),
+				slipstream::json::Value::Object(slipstream::json::Object::new()),
 				None,
 			)
 			.await?
@@ -161,7 +161,10 @@ pub(crate) async fn change_password_route(
 			.users
 			.all_device_ids(&sender_user)
 			.ready_filter(|id| *id != body.sender_device())
-			.for_each(|id| services.users.remove_device(&sender_user, id))
+			.for_each(|id| {
+				let sender_user = sender_user.clone();
+				async move { services.users.remove_device(&sender_user, &id).await }
+			})
 			.await;
 
 		// Remove all pushers except the ones associated with this session
@@ -225,12 +228,13 @@ pub(crate) async fn request_password_change_token_via_email_route(
 				user_id: &user_id,
 				verification_link,
 			},
-			&body.client_secret,
+			&slipstream::OwnedClientSecret::parse(&body.client_secret)
+				.map_err(|_| err!(Request(InvalidParam("Invalid client_secret"))))?,
 			body.send_attempt.try_into().unwrap(),
 		)
 		.await?;
 
-	Ok(request_password_change_token_via_email::v3::Response::new(session))
+	Ok(request_password_change_token_via_email::v3::Response { sid: session.to_string() })
 }
 
 /// # `GET /_matrix/client/v3/account/whoami`
@@ -248,10 +252,11 @@ pub(crate) async fn whoami_route(
 		.await
 		.map_err(|_| {
 			err!(Request(Forbidden("Application service has not registered this user.")))
-		})? && body.appservice_info.is_none();
+		})?
+		&& body.appservice_info.is_none();
 	Ok(whoami::v3::Response {
 		user_id: body.sender_user().to_owned(),
-		device_id: body.sender_device.clone(),
+		device_id: body.sender_device_opt().cloned(),
 		is_guest,
 	})
 }
@@ -355,8 +360,11 @@ pub async fn full_user_deactivate(
 	services
 		.users
 		.all_profile_keys(user_id)
-		.ready_for_each(|(profile_key, _)| {
-			services.users.set_profile_key(user_id, &profile_key, None);
+		.for_each(async |(profile_key, _)| {
+			services
+				.users
+				.set_profile_key(user_id, &profile_key, None)
+				.await;
 		})
 		.await;
 
@@ -390,12 +398,13 @@ pub async fn full_user_deactivate(
 				.is_some_and(|power_levels_content| {
 					RoomPowerLevels::from(power_levels_content.clone())
 						.user_can_change_user_power_level(user_id, user_id)
-				}) || services
-				.rooms
-				.state_accessor
-				.room_state_get(room_id, &StateEventType::RoomCreate, "")
-				.await
-				.is_ok_and(|event| event.sender() == user_id);
+				})
+				|| services
+					.rooms
+					.state_accessor
+					.room_state_get(room_id, &StateEventType::RoomCreate, "")
+					.await
+					.is_ok_and(|event| event.sender() == user_id);
 
 		if user_can_demote_self {
 			let mut power_levels_content = room_power_levels.unwrap_or_default();

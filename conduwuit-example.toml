@@ -212,10 +212,6 @@
 
 # This item is undocumented. Please contribute documentation for it.
 #
-#shortstatehash_cache_capacity = varies by system
-
-# This item is undocumented. Please contribute documentation for it.
-#
 #statekeyshort_cache_capacity = varies by system
 
 # This item is undocumented. Please contribute documentation for it.
@@ -225,6 +221,11 @@
 # This item is undocumented. Please contribute documentation for it.
 #
 #stateinfo_cache_capacity = varies by system
+
+# Maximum entries in the LtHash lattice cache (MSC4500).
+# Each entry is 2 KiB; default 512 ≈ 1 MiB.
+#
+#lthash_cache_capacity = 512
 
 # This item is undocumented. Please contribute documentation for it.
 #
@@ -666,6 +667,26 @@
 # Set to 0 to completely disable the periodic sweep.
 #
 #forwardfill_sweep_interval_secs = 14400 (4 hours)
+
+# How often the HAMT node reclamation sweep runs, in seconds. Set to 0 to
+# disable it.
+#
+# The sweep walks every recorded root handle and deletes HAMT nodes that no
+# root can reach. It is a dry run by default: it reports what it would
+# reclaim without deleting, because reclaiming requires trusting that the
+# recorded root set really is complete. Enable
+# `state_hamt_node_sweep_delete` only once a dry run has shown the report
+# is sane.
+#
+#state_hamt_node_sweep_interval_secs = 21600
+
+# Whether the periodic HAMT node sweep actually deletes unreachable nodes.
+#
+# While false, the sweep is a dry run that only logs its report. A root
+# handle missing from the live set makes genuinely reachable nodes look
+# like orphans, so deletion is opt-in rather than the default.
+#
+#state_hamt_node_sweep_delete = false
 
 # Allows federation requests to be made to itself
 #
@@ -2281,6 +2302,17 @@
 # MSC4222: state_after in sync v2
 #
 #msc4222_enabled = false
+
+# MSC4500: State Accumulators
+#
+#msc4500_enabled = true
+
+# MSC4500: also commit the labelled state-resolution input set
+# (`resolution-inputs-blake3-v1`) in outbound `state_hashes`. This walks
+# the auth closure of every `prev_events` state per PDU, so it is off by
+# default.
+#
+#msc4500_resolution_inputs = false
 
 #[global.smtp]
 

@@ -12,11 +12,12 @@ pub(super) type Maps = BTreeMap<MapsKey, MapsVal>;
 pub(super) type MapsKey = &'static str;
 pub(super) type MapsVal = Arc<Map>;
 
-pub(super) fn open(db: &Arc<Engine>) -> Result<Maps> {
-	let descriptors = active_descriptors();
-	open_list(db, descriptors)
-}
+pub(super) fn open(db: &Arc<Engine>) -> Result<Maps> { open_list(db, &descriptors()) }
 
+/// All descriptors in open order: active maps first, then legacy/deprecated
+/// maps. Deprecated maps stay in the slice so `Engine::open` creates their CFs
+/// and `maps::open` opens them into the maps table, keeping migration-by-name
+/// lookups working unchanged.
 pub(super) fn descriptors() -> Vec<Descriptor> {
 	let capacity = ACTIVE_MAPS.len().saturating_add(DEPRECATED_MAPS.len());
 	let mut descriptors = Vec::with_capacity(capacity);
@@ -25,14 +26,17 @@ pub(super) fn descriptors() -> Vec<Descriptor> {
 	descriptors
 }
 
-pub(super) fn active_descriptors() -> &'static [Descriptor] { ACTIVE_MAPS }
-
 #[tracing::instrument(name = "maps", level = "debug", skip_all)]
 pub(super) fn open_list(db: &Arc<Engine>, maps: &[Descriptor]) -> Result<Maps> {
 	maps.iter()
 		.map(|desc| Ok((desc.name, Map::open(db, desc.name)?)))
 		.collect()
 }
+
+// Encoded `rezzy::hamt::RootHandle`: codec_version, routing_version,
+// routing_params, structural_hash, state_group_id. Must stay in sync with
+// `rooms::state::root_handle_to_bytes`; this crate cannot import it.
+const ROOT_HANDLE_LEN: usize = 1 + 1 + 4 + 32 + 32;
 
 pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 	Descriptor {
@@ -78,6 +82,26 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 	Descriptor {
 		name: "eventid_metadata",
 		val_size_hint: Some(128),
+		..descriptor::RANDOM_SMALL
+	},
+	// Kept as a live CF: `db_lt_19` and `db_lt_21` write/read it during
+	// upgrade before folding its contents into `eventid_rejections` /
+	// `eventid_softfailed`. No runtime code uses it anymore, and it must stay
+	// described so pre-v21 upgrades can open it (dropping the descriptor would
+	// break the `<19` write path and restart-after-drop consistency).
+	Descriptor {
+		name: "eventid_status",
+		val_size_hint: Some(2),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "eventid_rejections",
+		val_size_hint: Some(1),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "eventid_softfailed",
+		val_size_hint: Some(1),
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
@@ -179,6 +203,10 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		..descriptor::RANDOM
 	},
 	Descriptor {
+		name: "fallbackkeyid_fallbackkey",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
 		name: "openidtoken_expiresatuserid",
 		..descriptor::RANDOM_SMALL
 	},
@@ -266,8 +294,13 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
-		name: "roomid_shortstatehash",
-		val_size_hint: Some(8),
+		name: "roomid_roothandle",
+		val_size_hint: Some(ROOT_HANDLE_LEN),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "shorteventid_roothandle",
+		val_size_hint: Some(ROOT_HANDLE_LEN),
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
@@ -400,10 +433,14 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		name: "serverroomids",
 		..descriptor::RANDOM_SMALL
 	},
+	// TODO: Re-evaluate locality for the short-event maps below. Their keys are
+	// currently short-ID based; room-local or composite room/short-ID prefixes
+	// may improve scoped scans and repair/reindex work without changing the
+	// logical mappings. Do not change the on-disk schema without a migration.
 	Descriptor {
 		name: "shorteventid_authchain",
 		cache_disp: CacheDisp::Unique,
-		key_size_hint: Some(8),
+		key_size_hint: Some(16),
 		..descriptor::SEQUENTIAL
 	},
 	Descriptor {
@@ -426,19 +463,6 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		..descriptor::SEQUENTIAL_SMALL
 	},
 	Descriptor {
-		name: "shorteventid_shortstatehash",
-		key_size_hint: Some(8),
-		val_size_hint: Some(8),
-		block_size: 512,
-		index_size: 512,
-		..descriptor::SEQUENTIAL
-	},
-	Descriptor {
-		name: "shortstatehash_statediff",
-		key_size_hint: Some(8),
-		..descriptor::SEQUENTIAL_SMALL
-	},
-	Descriptor {
 		name: "shortstatekey_statekey",
 		cache_disp: CacheDisp::Unique,
 		key_size_hint: Some(8),
@@ -449,6 +473,27 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		name: "statehash_shortstatehash",
 		val_size_hint: Some(8),
 		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "state_hamt_nodes",
+		cache_disp: CacheDisp::Unique,
+		key_size_hint: Some(16),
+		val_size_hint: Some(512),
+		block_size: 1024,
+		index_size: 512,
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "state_hamt_root_lattices",
+		key_size_hint: Some(16),
+		val_size_hint: Some(2048),
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "state_hamt_node_mtimes",
+		key_size_hint: Some(16),
+		val_size_hint: Some(8),
+		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
 		name: "statekey_shortstatekey",
@@ -574,6 +619,10 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 	},
 	Descriptor {
 		name: "useridprofilekey_value",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userprofileupdate_value",
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {

@@ -4,7 +4,7 @@ use bytes::BytesMut;
 use conduwuit::{
 	Err, Result, debug_error, err, implement, trace, utils, utils::response::LimitReadExt, warn,
 };
-use ruma::api::{
+use slipstream::api::{
 	IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken, appservice::Registration,
 };
 

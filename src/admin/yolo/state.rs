@@ -6,17 +6,18 @@ use std::{
 
 use conduwuit::{
 	Err, PduCount, Result, err, info,
-	matrix::{Event, pdu::PduEvent},
+	matrix::{Event, StateKey, pdu::PduEvent},
+	utils::IterStream,
 	warn,
 };
 use conduwuit_database::Batch;
-use futures::{StreamExt, pin_mut};
-use ruma::{
-	OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId,
-	api::federation::event::get_room_state,
+use futures::{StreamExt, TryStreamExt, pin_mut};
+use slipstream::{
+	OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomVersionId,
+	api::federation::event::{get_event, get_room_state, get_room_state_ids},
 	events::{StateEventType, TimelineEventType},
+	json::Value as JsonValue,
 };
-use serde_json::Value as JsonValue;
 
 use super::dag::format_ts;
 use crate::admin_command;
@@ -29,11 +30,10 @@ pub(super) async fn compare_room_state(
 	at_event: Option<OwnedEventId>,
 	conflict: Option<OwnedUserId>,
 	summary: bool,
+	get_missing: bool,
 	skip_sig_verify: bool,
 ) -> Result {
 	use std::fmt::Write;
-
-	use ruma::api::federation::event::get_room_state;
 
 	if servers.is_empty() {
 		return Err!(Request(InvalidParam("Provide at least one server to compare against.")));
@@ -67,7 +67,7 @@ pub(super) async fn compare_room_state(
 	let response = match self
 		.services
 		.sending
-		.send_federation_request(server, get_room_state::v1::Request {
+		.send_federation_request(server, get_room_state_ids::v1::Request {
 			room_id: room_id.clone(),
 			event_id: at_event_id.clone(),
 		})
@@ -101,36 +101,120 @@ pub(super) async fn compare_room_state(
 		.as_ref()
 		.map(|u| ("m.room.member".to_owned(), u.to_string()));
 	let mut conflict_entries: Vec<(String, String, u64, String, String, String)> = Vec::new();
+	let mut remote_state_ids: HashSet<OwnedEventId> = HashSet::new();
+	let mut local_state_ids: HashSet<OwnedEventId> = HashSet::new();
 
-	for pdu_raw in &response.pdus {
-		let (event_id, value) = if skip_sig_verify {
-			match conduwuit::matrix::event::gen_event_id_canonical_json(pdu_raw, &room_version) {
-				| Ok((eid, val)) => (eid, val),
-				| Err(e) => {
-					warn!("Skipping PDU, canonicalization failed: {e}");
-					skipped = skipped.saturating_add(1);
-					continue;
-				},
+	let load_state_event_for_compare = |server: OwnedServerName, event_id: OwnedEventId| {
+		let room_version = room_version.clone();
+		let room_id = room_id.clone();
+		async move {
+			if let Ok(pdu) = self.services.rooms.timeline.get_pdu(&event_id).await {
+				return Ok::<Option<(PduEvent, bool)>, conduwuit::Error>(Some((pdu, false)));
 			}
-		} else {
-			match self
+
+			if let Ok(json) = self
 				.services
-				.server_keys
-				.validate_and_add_event_id(pdu_raw, &room_version)
+				.rooms
+				.outlier
+				.get_outlier_pdu_json(&event_id)
+				.await
+			{
+				let pdu_res = slipstream::codec::from_value::<PduEvent>(
+					&slipstream::json::Value::Object(json),
+				)
+				.map_err(|e| e.to_string());
+				match pdu_res {
+					| Ok(pdu) => return Ok(Some((pdu, false))),
+					| Err(e) => {
+						warn!(
+							"compare_room_state: failed to parse local outlier {event_id}: {e}"
+						);
+						return Ok(None);
+					},
+				}
+			}
+
+			if !get_missing {
+				return Ok(None);
+			}
+
+			let response = match self
+				.services
+				.sending
+				.send_federation_request(
+					&server,
+					get_event::v1::Request::new(event_id.clone(), None),
+				)
 				.await
 			{
 				| Ok(r) => r,
 				| Err(e) => {
-					// Persist as rejected outlier so the event is available for
-					// auth chain lookups and state resolution context
-					match conduwuit::matrix::event::gen_event_id_canonical_json(
-						pdu_raw,
+					warn!("compare_room_state: failed to fetch {event_id} from {server}: {e}");
+					return Ok(None);
+				},
+			};
+			let Some(raw_pdu) = response.pdus.first() else {
+				warn!("compare_room_state: empty pdus for {event_id} from {server}");
+				return Ok(None);
+			};
+			let legacy_state_event_id =
+				if matches!(room_version, RoomVersionId::V1 | RoomVersionId::V2) {
+					slipstream::codec::from_str::<JsonValue>(raw_pdu.get())
+						.ok()
+						.and_then(|json| {
+							json.get("event_id")
+								.and_then(JsonValue::as_str)
+								.map(ToOwned::to_owned)
+						})
+				} else {
+					None
+				};
+
+			let (fetched_event_id, value, sig_failed) = if skip_sig_verify {
+				match conduwuit::matrix::event::gen_event_id_canonical_json(
+					raw_pdu,
+					&room_version,
+				) {
+					| Ok((eid, val)) => (
+						legacy_state_event_id
+							.as_deref()
+							.and_then(|legacy| OwnedEventId::parse(legacy).ok())
+							.unwrap_or(eid),
+						val,
+						false,
+					),
+					| Err(e) => {
+						warn!("compare_room_state: canonicalization failed for {event_id}: {e}");
+						return Ok(None);
+					},
+				}
+			} else {
+				match self
+					.services
+					.server_keys
+					.validate_and_add_event_id(raw_pdu, &room_version)
+					.await
+				{
+					| Ok((eid, val)) => (
+						legacy_state_event_id
+							.as_deref()
+							.and_then(|legacy| OwnedEventId::parse(legacy).ok())
+							.unwrap_or(eid),
+						val,
+						false,
+					),
+					| Err(e) => match conduwuit::matrix::event::gen_event_id_canonical_json(
+						raw_pdu,
 						&room_version,
 					) {
 						| Ok((eid, val)) => {
+							let eid = legacy_state_event_id
+								.as_deref()
+								.and_then(|legacy| OwnedEventId::parse(legacy).ok())
+								.unwrap_or(eid);
 							warn!(
-								"PDU {eid} failed signature verification, storing as rejected \
-								 outlier: {e}"
+								"compare_room_state: PDU {eid} failed verification, storing as \
+								 rejected outlier: {e}"
 							);
 							self.services
 								.rooms
@@ -145,89 +229,63 @@ pub(super) async fn compare_room_state(
 									"signature verification failed in compare-room-state",
 								)
 								.await;
-							// Still count membership for the remote's totals —
-							// the remote sent this as part of their state.
-							if let Ok(pdu) =
-								PduEvent::from_id_val(&eid, val, Some(room_id.as_ref()))
-							{
-								if pdu.kind == TimelineEventType::RoomMember {
-									if let Some(state_key) = &pdu.state_key {
-										let content: JsonValue = pdu.get_content_as_value();
-										let membership = content
-											.get("membership")
-											.and_then(|v| v.as_str())
-											.unwrap_or("unknown");
-										match membership {
-											| "join" => {
-												remote_joined.insert(state_key.to_string());
-												remote_invited.remove(state_key.as_str());
-												remote_left.remove(state_key.as_str());
-											},
-											| "invite" => {
-												remote_invited.insert(state_key.to_string());
-												remote_joined.remove(state_key.as_str());
-												remote_left.remove(state_key.as_str());
-											},
-											| "leave" => {
-												remote_left.insert(state_key.to_string());
-												remote_joined.remove(state_key.as_str());
-												remote_invited.remove(state_key.as_str());
-											},
-											| _ => {
-												remote_joined.remove(state_key.as_str());
-												remote_invited.remove(state_key.as_str());
-												remote_left.remove(state_key.as_str());
-											},
-										}
-									}
-								}
-								if let Some(state_key) = &pdu.state_key {
-									remote_state.insert(
-										(pdu.kind.to_string(), state_key.to_string()),
-										eid.clone(),
-									);
-								}
-								event_timestamps
-									.insert(eid.clone(), u64::from(pdu.origin_server_ts));
-								let content: JsonValue = pdu.get_content_as_value();
-								let membership = content
-									.get("membership")
-									.and_then(|v| v.as_str())
-									.unwrap_or("")
-									.to_owned();
-								event_meta
-									.insert(eid.clone(), (membership, pdu.sender().to_string()));
-							}
-							skipped = skipped.saturating_add(1);
-							continue;
+							(eid, val, true)
 						},
 						| Err(e2) => {
-							warn!("Skipping PDU, canonicalization failed: {e2}");
-							skipped = skipped.saturating_add(1);
-							continue;
+							warn!(
+								"compare_room_state: canonicalization failed for {event_id}: \
+								 {e2}"
+							);
+							return Ok(None);
 						},
-					}
-				},
-			}
-		};
+					},
+				}
+			};
 
-		let pdu = match PduEvent::from_id_val(&event_id, value, Some(room_id.as_ref())) {
-			| Ok(pdu) => pdu,
-			| Err(e) => {
+			if fetched_event_id != event_id {
 				warn!(
-					"Skipping PDU {event_id}, deserialization failed (likely oversized ID): {e}"
+					"compare_room_state: response ID mismatch for {event_id}: got \
+					 {fetched_event_id}"
 				);
-				skipped = skipped.saturating_add(1);
-				continue;
-			},
+				return Ok(None);
+			}
+
+			let pdu =
+				match PduEvent::from_id_val(&fetched_event_id, value, Some(room_id.as_ref())) {
+					| Ok(pdu) => pdu,
+					| Err(e) => {
+						warn!(
+							"compare_room_state: failed to parse state event \
+							 {fetched_event_id}: {e}"
+						);
+						return Ok(None);
+					},
+				};
+
+			Ok(Some((pdu, sig_failed)))
+		}
+	};
+
+	for state_event_id in &response.pdu_ids {
+		remote_state_ids.insert(state_event_id.clone());
+		let Some((pdu, sig_failed)) =
+			load_state_event_for_compare(server.clone(), state_event_id.clone()).await?
+		else {
+			skipped = skipped.saturating_add(1);
+			continue;
 		};
-		event_timestamps.insert(event_id.clone(), u64::from(pdu.origin_server_ts));
+		if sig_failed {
+			skipped = skipped.saturating_add(1);
+		}
+
+		let event_id = pdu.event_id().to_owned();
+		event_timestamps.insert(event_id.clone(), pdu.origin_server_ts);
 		if let Some(state_key) = &pdu.state_key {
 			remote_state.insert((pdu.kind.to_string(), state_key.to_string()), event_id.clone());
 		}
 		// Store metadata for richer diff output
 		{
-			let content: JsonValue = pdu.get_content_as_value();
+			let content: JsonValue = crate::utils::content_value(&pdu);
 			let membership = content
 				.get("membership")
 				.and_then(|v| v.as_str())
@@ -238,7 +296,7 @@ pub(super) async fn compare_room_state(
 
 		if pdu.kind == TimelineEventType::RoomMember {
 			if let Some(state_key) = &pdu.state_key {
-				let content: JsonValue = pdu.get_content_as_value();
+				let content: JsonValue = crate::utils::content_value(&pdu);
 				let membership = content
 					.get("membership")
 					.and_then(|v| v.as_str())
@@ -278,7 +336,7 @@ pub(super) async fn compare_room_state(
 							.and_then(|v| v.as_str())
 							.unwrap_or("(none)")
 							.to_owned();
-						let ts = u64::from(pdu.origin_server_ts);
+						let ts = pdu.origin_server_ts;
 						conflict_entries.push((
 							server.to_string(),
 							event_id.to_string(),
@@ -293,11 +351,11 @@ pub(super) async fn compare_room_state(
 		}
 	}
 
-	let local_state_hash = self
+	let local_root_handle = self
 		.services
 		.rooms
 		.state
-		.get_room_shortstatehash(&room_id)
+		.get_room_state_hamt(&room_id)
 		.await?;
 
 	// Inject tip event into remote state (uses cached tip_pdu_opt)
@@ -310,7 +368,7 @@ pub(super) async fn compare_room_state(
 				);
 
 				if tip_pdu.kind == TimelineEventType::RoomMember {
-					let content: JsonValue = tip_pdu.get_content_as_value();
+					let content: JsonValue = crate::utils::content_value(&tip_pdu);
 					match content.get("membership").and_then(|v| v.as_str()) {
 						| Some("join") => {
 							remote_joined.insert(state_key.to_string());
@@ -348,15 +406,16 @@ pub(super) async fn compare_room_state(
 			.services
 			.rooms
 			.state_accessor
-			.state_full(local_state_hash);
+			.state_full_hamt(local_root_handle.clone());
 		pin_mut!(state_full);
 		while let Some(((event_type, state_key), pdu)) = state_full.next().await {
 			let eid = pdu.event_id().to_owned();
-			event_timestamps.insert(eid.clone(), pdu.origin_server_ts().0.into());
+			local_state_ids.insert(eid.clone());
+			event_timestamps.insert(eid.clone(), pdu.origin_server_ts().0);
 			local_state.insert((event_type.to_string(), state_key.to_string()), eid.clone());
 			// Store metadata for richer diff output
 			{
-				let content: JsonValue = pdu.get_content_as_value();
+				let content: JsonValue = crate::utils::content_value(&pdu);
 				let membership = content
 					.get("membership")
 					.and_then(|v| v.as_str())
@@ -366,7 +425,7 @@ pub(super) async fn compare_room_state(
 			};
 
 			if event_type == StateEventType::RoomMember {
-				let content: JsonValue = pdu.get_content_as_value();
+				let content: JsonValue = crate::utils::content_value(&pdu);
 				let membership = content
 					.get("membership")
 					.and_then(|v| v.as_str())
@@ -394,7 +453,7 @@ pub(super) async fn compare_room_state(
 							.and_then(|v| v.as_str())
 							.unwrap_or("(none)")
 							.to_owned();
-						let ts: u64 = pdu.origin_server_ts().0.into();
+						let ts: u64 = pdu.origin_server_ts().0;
 						conflict_entries.push((
 							"local".to_owned(),
 							eid.to_string(),
@@ -416,12 +475,21 @@ pub(super) async fn compare_room_state(
 				tip_pdu_opt
 					.as_ref()
 					.filter(|tip| tip.event_id() == event_id)
-					.map_or(0, |tip| u64::from(tip.origin_server_ts))
+					.map_or(0, |tip| tip.origin_server_ts)
 			});
 			let extra = fmt_event_meta(&key.0, event_id, &event_meta);
 			missing_locally
 				.push((ts, format!("{event_id} ({} {}) {}{extra}", key.0, key.1, format_ts(ts))));
 		}
+	}
+	missing_locally.sort_by_key(|(ts, _)| *ts);
+
+	for event_id in remote_state_ids.difference(&local_state_ids) {
+		if event_meta.contains_key(event_id) {
+			continue;
+		}
+		let ts = event_timestamps.get(event_id).copied().unwrap_or(0);
+		missing_locally.push((ts, format!("{event_id} (???? ?????) ??????")));
 	}
 	missing_locally.sort_by_key(|(ts, _)| *ts);
 
@@ -432,12 +500,21 @@ pub(super) async fn compare_room_state(
 				tip_pdu_opt
 					.as_ref()
 					.filter(|tip| tip.event_id() == event_id)
-					.map_or(0, |tip| u64::from(tip.origin_server_ts))
+					.map_or(0, |tip| tip.origin_server_ts)
 			});
 			let extra = fmt_event_meta(&key.0, event_id, &event_meta);
 			extra_locally
 				.push((ts, format!("{event_id} ({} {}) {}{extra}", key.0, key.1, format_ts(ts))));
 		}
+	}
+	extra_locally.sort_by_key(|(ts, _)| *ts);
+
+	for event_id in local_state_ids.difference(&remote_state_ids) {
+		if event_meta.contains_key(event_id) {
+			continue;
+		}
+		let ts = event_timestamps.get(event_id).copied().unwrap_or(0);
+		extra_locally.push((ts, format!("{event_id} (???? ?????) ??????")));
 	}
 	extra_locally.sort_by_key(|(ts, _)| *ts);
 
@@ -481,7 +558,7 @@ pub(super) async fn compare_room_state(
 		extra_locally.len()
 	)?;
 	writeln!(out)?;
-	writeln!(out, "Room SSH:        {local_state_hash}")?;
+	writeln!(out, "Room root:       {}", fmt_root_handle(&local_root_handle))?;
 	writeln!(out, "Extremities:     {extremity_count}")?;
 	writeln!(
 		out,
@@ -518,7 +595,7 @@ pub(super) async fn compare_room_state(
 			let response = match self
 				.services
 				.sending
-				.send_federation_request(cmp_server, get_room_state::v1::Request {
+				.send_federation_request(cmp_server, get_room_state_ids::v1::Request {
 					room_id: room_id.clone(),
 					event_id: at_event_id.clone(),
 				})
@@ -537,113 +614,26 @@ pub(super) async fn compare_room_state(
 			let mut cmp_joined: HashSet<String> = HashSet::new();
 			let mut cmp_invited: HashSet<String> = HashSet::new();
 			let mut cmp_left: HashSet<String> = HashSet::new();
-			for pdu_raw in &response.pdus {
-				let (event_id, value) = match if skip_sig_verify {
-					conduwuit::matrix::event::gen_event_id_canonical_json(pdu_raw, &room_version)
-				} else {
-					self.services
-						.server_keys
-						.validate_and_add_event_id(pdu_raw, &room_version)
-						.await
-				} {
-					| Ok(r) => r,
-					| Err(e) => {
-						if let Ok((eid, val)) =
-							conduwuit::matrix::event::gen_event_id_canonical_json(
-								pdu_raw,
-								&room_version,
-							) {
-							warn!(
-								"compare_room_state: PDU {eid} failed verification, storing as \
-								 rejected outlier: {e}"
-							);
-							self.services
-								.rooms
-								.outlier
-								.add_pdu_outlier(&eid, &val, Some(&room_id))
-								.await;
-							self.services
-								.rooms
-								.pdu_metadata
-								.mark_event_rejected(
-									&eid,
-									"signature verification failed in compare-room-state",
-								)
-								.await;
-							// Still count membership — remote sent this as
-							// part of their state.
-							if let Ok(pdu) =
-								PduEvent::from_id_val(&eid, val, Some(room_id.as_ref()))
-							{
-								event_timestamps
-									.insert(eid.clone(), u64::from(pdu.origin_server_ts));
-								if let Some(state_key) = &pdu.state_key {
-									server_state.insert(
-										(pdu.kind.to_string(), state_key.to_string()),
-										eid.clone(),
-									);
-									if !event_meta.contains_key(&eid) {
-										let content: JsonValue = pdu.get_content_as_value();
-										let membership = content
-											.get("membership")
-											.and_then(|v| v.as_str())
-											.unwrap_or("")
-											.to_owned();
-										event_meta.insert(
-											eid.clone(),
-											(membership, pdu.sender().to_string()),
-										);
-									}
-								}
-								if pdu.kind == TimelineEventType::RoomMember {
-									if let Some(state_key) = &pdu.state_key {
-										let content: JsonValue = pdu.get_content_as_value();
-										let membership = content
-											.get("membership")
-											.and_then(|v| v.as_str())
-											.unwrap_or("unknown");
-										match membership {
-											| "join" => {
-												cmp_joined.insert(state_key.to_string());
-												cmp_invited.remove(state_key.as_str());
-												cmp_left.remove(state_key.as_str());
-											},
-											| "invite" => {
-												cmp_invited.insert(state_key.to_string());
-												cmp_joined.remove(state_key.as_str());
-												cmp_left.remove(state_key.as_str());
-											},
-											| "leave" => {
-												cmp_left.insert(state_key.to_string());
-												cmp_joined.remove(state_key.as_str());
-												cmp_invited.remove(state_key.as_str());
-											},
-											| _ => {
-												cmp_joined.remove(state_key.as_str());
-												cmp_invited.remove(state_key.as_str());
-												cmp_left.remove(state_key.as_str());
-											},
-										}
-									}
-								}
-							}
-						}
-						verify_errors = verify_errors.saturating_add(1);
-						continue;
-					},
-				};
-				let Ok(pdu) = PduEvent::from_id_val(&event_id, value, Some(room_id.as_ref()))
+			for state_event_id in &response.pdu_ids {
+				let Some((pdu, sig_failed)) =
+					load_state_event_for_compare(cmp_server.clone(), state_event_id.clone())
+						.await?
 				else {
+					verify_errors = verify_errors.saturating_add(1);
 					continue;
 				};
-				event_timestamps.insert(event_id.clone(), u64::from(pdu.origin_server_ts));
+				if sig_failed {
+					verify_errors = verify_errors.saturating_add(1);
+				}
+				let event_id = pdu.event_id().to_owned();
+				event_timestamps.insert(event_id.clone(), pdu.origin_server_ts);
 				if let Some(state_key) = &pdu.state_key {
 					server_state
 						.insert((pdu.kind.to_string(), state_key.to_string()), event_id.clone());
 
 					// Store metadata for richer diff output
 					if !event_meta.contains_key(&event_id) {
-						let content: JsonValue = pdu.get_content_as_value();
+						let content: JsonValue = crate::utils::content_value(&pdu);
 						let membership = content
 							.get("membership")
 							.and_then(|v| v.as_str())
@@ -654,7 +644,7 @@ pub(super) async fn compare_room_state(
 					}
 
 					if pdu.kind == TimelineEventType::RoomMember {
-						let content: JsonValue = pdu.get_content_as_value();
+						let content: JsonValue = crate::utils::content_value(&pdu);
 						let membership = content
 							.get("membership")
 							.and_then(|v| v.as_str())
@@ -694,7 +684,7 @@ pub(super) async fn compare_room_state(
 									.and_then(|v| v.as_str())
 									.unwrap_or("(none)")
 									.to_owned();
-								let ts = u64::from(pdu.origin_server_ts);
+								let ts = pdu.origin_server_ts;
 								conflict_entries.push((
 									cmp_server.to_string(),
 									event_id.to_string(),
@@ -713,7 +703,7 @@ pub(super) async fn compare_room_state(
 				server_state.insert(key.clone(), at_event_id.clone());
 				if let Some(ref tip_pdu) = tip_pdu_opt {
 					if tip_pdu.kind == TimelineEventType::RoomMember {
-						let content: JsonValue = tip_pdu.get_content_as_value();
+						let content: JsonValue = crate::utils::content_value(&tip_pdu);
 						match content.get("membership").and_then(|v| v.as_str()) {
 							| Some("join") => {
 								cmp_joined.insert(key.1.clone());
@@ -747,7 +737,7 @@ pub(super) async fn compare_room_state(
 						tip_pdu_opt
 							.as_ref()
 							.filter(|tip| tip.event_id() == event_id)
-							.map_or(0, |tip| u64::from(tip.origin_server_ts))
+							.map_or(0, |tip| tip.origin_server_ts)
 					});
 					let extra = fmt_event_meta(&key.0, event_id, &event_meta);
 					only_on_first.push((
@@ -765,7 +755,7 @@ pub(super) async fn compare_room_state(
 						tip_pdu_opt
 							.as_ref()
 							.filter(|tip| tip.event_id() == event_id)
-							.map_or(0, |tip| u64::from(tip.origin_server_ts))
+							.map_or(0, |tip| tip.origin_server_ts)
 					});
 					let extra = fmt_event_meta(&key.0, event_id, &event_meta);
 					only_on_cmp.push((
@@ -847,6 +837,15 @@ fn fmt_event_meta(
 	}
 }
 
+/// Renders a HAMT `RootHandle`'s cross-server `state_group_id` as lowercase hex.
+fn fmt_root_handle(handle: &rezzy::hamt::RootHandle) -> String {
+	let mut out = String::with_capacity(64);
+	for byte in handle.state_group_id {
+		write!(out, "{byte:02x}").expect("writing to a String cannot fail");
+	}
+	out
+}
+
 #[admin_command]
 pub(super) async fn set_state_event(
 	&self,
@@ -855,8 +854,6 @@ pub(super) async fn set_state_event(
 	event_id: OwnedEventId,
 	state_key: String,
 ) -> Result {
-	use conduwuit_service::rooms::state_compressor::CompressedState;
-
 	self.bail_restricted()?;
 
 	// TODO: transactionalize this whole function for safety & idempotency
@@ -874,10 +871,8 @@ pub(super) async fn set_state_event(
 				.get_outlier_pdu_json(&event_id)
 				.await
 				.map_err(|_| err!(Request(NotFound("Event {event_id} not found locally"))))?;
-			serde_json::from_value::<PduEvent>(
-				serde_json::to_value(&json).map_err(|e| err!(Request(InvalidParam("{e}"))))?,
-			)
-			.map_err(|e| err!(Request(InvalidParam("Failed to parse outlier: {e}"))))?
+			slipstream::codec::from_value::<PduEvent>(&slipstream::json::Value::Object(json))
+				.map_err(|e| err!(Request(InvalidParam("Failed to parse outlier: {e}"))))?
 		},
 	};
 
@@ -908,12 +903,13 @@ pub(super) async fn set_state_event(
 
 	let state_lock = self.services.rooms.state.mutex.lock(&room_id).await;
 
-	// Get current state
-	let current_shortstatehash = self
+	// Current room state root (HAMT). The target event is overlaid onto the
+	// resolved state below and persisted via `set_event_state_with_root`.
+	let current_root = self
 		.services
 		.rooms
 		.state
-		.get_room_shortstatehash(&room_id)
+		.get_room_state_hamt(&room_id)
 		.await
 		.map_err(|_| err!(Request(NotFound("Room has no state"))))?;
 
@@ -922,11 +918,10 @@ pub(super) async fn set_state_event(
 		.services
 		.rooms
 		.state_accessor
-		.state_full_ids(current_shortstatehash)
-		.collect()
-		.await;
+		.state_full_ids_hamt(&current_root)
+		.try_collect()
+		.await?;
 
-	// Build new compressed state
 	let target_shortstatekey = self
 		.services
 		.rooms
@@ -934,61 +929,84 @@ pub(super) async fn set_state_event(
 		.get_or_create_shortstatekey(&event_type, &state_key)
 		.await;
 
-	let mut new_state = CompressedState::new();
+	// Replace (or insert) the target (type, state_key) entry.
+	let mut new_state = current_state;
+	new_state.insert(target_shortstatekey, event_id.clone());
 
-	for (shortstatekey, eid) in &current_state {
-		if *shortstatekey == target_shortstatekey {
-			// Replace with our target event
-			let compressed = self
-				.services
-				.rooms
-				.state_compressor
-				.compress_state_event(*shortstatekey, &event_id)
-				.await;
-			new_state.insert(compressed);
-		} else {
-			let compressed = self
-				.services
-				.rooms
-				.state_compressor
-				.compress_state_event(*shortstatekey, eid)
-				.await;
-			new_state.insert(compressed);
+	// Build the HAMT root for the new state, resolving short IDs so the
+	// lattice can be reconstructed from the entries.
+	let mut lattice = rezzy::state::LtHash::default();
+	let mut entries = Vec::with_capacity(new_state.len());
+	let mut short_state_keys = Vec::with_capacity(new_state.len());
+	let mut event_ids = Vec::with_capacity(new_state.len());
+	for (&shortstatekey, eid) in &new_state {
+		short_state_keys.push(shortstatekey);
+		event_ids.push(eid.clone());
+	}
+
+	let string_keys: Vec<Result<(StateEventType, StateKey)>> = self
+		.services
+		.rooms
+		.short
+		.multi_get_statekey_from_short(short_state_keys.iter().copied().stream())
+		.collect()
+		.await;
+
+	for ((shortstatekey, eid), key_result) in
+		short_state_keys.into_iter().zip(event_ids).zip(string_keys)
+	{
+		let shorteventid = self
+			.services
+			.rooms
+			.short
+			.get_or_create_shorteventid(&eid)
+			.await;
+		entries.push((shortstatekey, shorteventid));
+
+		if let Ok((ty, sk)) = key_result {
+			lattice.insert(ty.to_string().as_str(), sk.as_str(), eid.as_str());
 		}
 	}
 
-	// If the (type, state_key) wasn't in the current state, add it
-	if !current_state.contains_key(&target_shortstatekey) {
-		let compressed = self
-			.services
-			.rooms
-			.state_compressor
-			.compress_state_event(target_shortstatekey, &event_id)
-			.await;
-		new_state.insert(compressed);
-	}
+	let structural_key = conduwuit_service::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		&room_id,
+	);
+	let (new_root, root_node) =
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
 
-	// Save the new state
-	let new_state = std::sync::Arc::new(new_state);
-	let new_shortstatehash = self
-		.services
+	// Persist the root node, then record the event's post-event root and commit
+	// the new root as the room's current state. This mirrors the legacy
+	// `set_event_state` + `set_room_state` pair: the event is associated with
+	// the new snapshot, but the room's derived caches are not recomputed here
+	// (the membership cache is updated explicitly below for member events).
+	self.services.globals.with_cork_and_flush(|| {
+		self.services
+			.rooms
+			.state_hamt
+			.store
+			.persist_node_recursive(root_node);
+	});
+
+	self.services
 		.rooms
 		.state
-		.set_event_state(&event_id, &room_id, new_state)
+		.set_event_roothandle(&event_id, &new_root)
 		.await?;
 
 	self.services
 		.rooms
 		.state
-		.set_room_state(&room_id, new_shortstatehash, &state_lock);
+		.set_room_state_hamt(&room_id, &new_root, &state_lock);
 
 	// Rebuild membership cache if this is a member event
 	if event_type == StateEventType::RoomMember {
-		if let Ok(user_id) = ruma::UserId::parse(&state_key) {
+		if let Ok(user_id) = slipstream::UserId::parse(&state_key) {
 			self.services
 				.rooms
 				.state_cache
-				.update_membership(&room_id, user_id, &pdu, false)
+				.update_membership(&room_id, &user_id, &pdu, false)
 				.await?;
 		}
 		self.services
@@ -1001,9 +1019,9 @@ pub(super) async fn set_state_event(
 	let membership = if event_type == StateEventType::RoomMember {
 		pdu.content
 			.get()
-			.parse::<serde_json::Value>()
+			.parse::<slipstream::json::Value>()
 			.ok()
-			.and_then(|c: serde_json::Value| {
+			.and_then(|c: slipstream::json::Value| {
 				c.get("membership")
 					.and_then(|m| m.as_str().map(String::from))
 			})
@@ -1073,7 +1091,7 @@ pub(super) async fn audit_membership(
 			continue;
 		};
 
-		let content: JsonValue = pdu.get_content_as_value();
+		let content: JsonValue = crate::utils::content_value(&pdu);
 		let membership = content
 			.get("membership")
 			.and_then(|v| v.as_str())
@@ -1082,7 +1100,7 @@ pub(super) async fn audit_membership(
 
 		let event_id = pdu.event_id().to_string();
 
-		if let Ok(user_id) = OwnedUserId::try_from(state_key) {
+		if let Ok(user_id) = OwnedUserId::parse(state_key) {
 			timeline_membership.insert(user_id, (membership, event_id));
 		}
 
@@ -1095,14 +1113,18 @@ pub(super) async fn audit_membership(
 		timeline_scan_started.elapsed()
 	);
 
-	let state_hash = self
+	let state_root = self
 		.services
 		.rooms
 		.state
-		.get_room_shortstatehash(&room_id)
+		.get_room_state_hamt(&room_id)
 		.await?;
 
-	let state = self.services.rooms.state_accessor.state_full(state_hash);
+	let state = self
+		.services
+		.rooms
+		.state_accessor
+		.state_full_hamt(state_root.clone());
 
 	let state_scan_started = Instant::now();
 	pin_mut!(state);
@@ -1113,7 +1135,7 @@ pub(super) async fn audit_membership(
 			continue;
 		}
 
-		let content: JsonValue = pdu.get_content_as_value();
+		let content: JsonValue = crate::utils::content_value(&pdu);
 		let membership = content
 			.get("membership")
 			.and_then(|v| v.as_str())
@@ -1122,7 +1144,7 @@ pub(super) async fn audit_membership(
 
 		let event_id = pdu.event_id().to_string();
 
-		if let Ok(user_id) = OwnedUserId::try_from(state_key.as_str()) {
+		if let Ok(user_id) = OwnedUserId::parse(state_key.as_str()) {
 			state_membership.insert(user_id, (membership, event_id));
 		}
 	}
@@ -1165,7 +1187,7 @@ pub(super) async fn audit_membership(
 				.unwrap_or("leave")
 				.to_owned();
 			let event_id = pdu.event_id().to_string();
-			if let Ok(user_id) = OwnedUserId::try_from(state_key) {
+			if let Ok(user_id) = OwnedUserId::parse(state_key) {
 				tl_membership_pass.insert(user_id, (membership, event_id));
 			}
 		}
@@ -1186,7 +1208,7 @@ pub(super) async fn audit_membership(
 			};
 
 			if is_divergent && clean {
-				if let Ok(event_id) = OwnedEventId::try_from(tl_event.as_str()) {
+				if let Ok(event_id) = OwnedEventId::parse(tl_event.as_str()) {
 					// Demote timeline -> outlier atomically under the room's insert
 					// lock. add_pdu_outlier's "already in timeline" guard checks the
 					// *existing* eventid_metadata entry, which for an event still in
@@ -1211,19 +1233,21 @@ pub(super) async fn audit_membership(
 					if let Ok(pdu_json) =
 						self.services.rooms.timeline.get_pdu_json(&event_id).await
 					{
-						let mut batch = Batch::new();
+						// Demotion is atomic: remove timeline pointers and write outlier metadata
+						// in a single database batch using add_pdu_outlier_batch_demote.
+						let mut demote_batch = Batch::new();
 						self.services
 							.rooms
 							.timeline
-							.remove_timeline_pointers_batch(&mut batch, &event_id)
+							.remove_timeline_pointers_batch(&mut demote_batch, &event_id)
 							.await;
-						self.services.rooms.outlier.add_pdu_outlier_batch(
-							&mut batch,
+						self.services.rooms.outlier.add_pdu_outlier_batch_demote(
+							&mut demote_batch,
 							&event_id,
 							&pdu_json,
 							Some(&room_id),
 						);
-						self.services.rooms.timeline.apply_batch(batch);
+						self.services.rooms.timeline.apply_batch(demote_batch);
 					} else {
 						// No PDU JSON to demote to; fall back to the old
 						// delete-everything behavior for this unrecoverable event.
@@ -1394,7 +1418,6 @@ pub(super) async fn audit_membership(
 		.rooms
 		.state_cache
 		.room_members(&room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 	info!(
@@ -1408,7 +1431,6 @@ pub(super) async fn audit_membership(
 		.rooms
 		.state_cache
 		.room_members_invited(&room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 	info!(
@@ -1585,7 +1607,12 @@ pub(super) async fn audit_membership(
 					.services
 					.rooms
 					.state_accessor
-					.state_get(state_hash, &StateEventType::RoomMember, user_id.as_str())
+					.state_get_in_room_hamt(
+						&room_id,
+						&state_root,
+						&StateEventType::RoomMember,
+						user_id.as_str(),
+					)
 					.await
 				{
 					if self
@@ -1700,7 +1727,7 @@ pub(super) async fn audit_membership(
 					}
 
 					if let Some(state_key) = pdu.state_key() {
-						let content: JsonValue = pdu.get_content_as_value();
+						let content: JsonValue = crate::utils::content_value(&pdu);
 						let membership = content
 							.get("membership")
 							.and_then(|v| v.as_str())
@@ -1717,7 +1744,7 @@ pub(super) async fn audit_membership(
 				{
 					if tip_pdu.kind == TimelineEventType::RoomMember {
 						if let Some(state_key) = tip_pdu.state_key() {
-							let content: JsonValue = tip_pdu.get_content_as_value();
+							let content: JsonValue = crate::utils::content_value(&tip_pdu);
 
 							let membership = content
 								.get("membership")
@@ -1777,7 +1804,7 @@ pub(super) async fn audit_membership(
 									.await
 									.ok()
 									.map_or(u64::MAX, |p| {
-										let ms = u64::from(p.origin_server_ts);
+										let ms = p.origin_server_ts;
 										now_secs.saturating_sub(ms / 1000)
 									})
 							} else {
@@ -1821,7 +1848,7 @@ pub(super) async fn audit_membership(
 								.await
 								.ok()
 								.map_or(u64::MAX, |p| {
-									let ms = u64::from(p.origin_server_ts);
+									let ms = p.origin_server_ts;
 									now_secs.saturating_sub(ms / 1000)
 								})
 						} else {
@@ -1889,7 +1916,7 @@ pub(super) async fn audit_membership(
 mod tests {
 	use std::collections::HashMap;
 
-	use ruma::event_id;
+	use slipstream::event_id;
 
 	use super::*;
 

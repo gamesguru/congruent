@@ -17,7 +17,7 @@ use conduwuit_core::{
 	matrix::{event::Event, pdu::PduCount},
 };
 use futures::{StreamExt, pin_mut};
-use ruma::{
+use slipstream::{
 	EventId, RoomId, UserId,
 	events::{
 		GlobalAccountDataEventType, StateEventType, push_rules::PushRulesEvent,

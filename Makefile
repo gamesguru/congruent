@@ -4,6 +4,17 @@ SHELL=/bin/bash
 # [CONFIG] Suppresses annoying "make[1]: Entering directory" messages
 MAKEFLAGS += --no-print-directory
 
+# [CONFIG] Force the toolchain pinned in rust-toolchain.toml's `channel`,
+# unconditionally overriding any `RUSTUP_TOOLCHAIN` a caller's shell happens
+# to have exported (a bad or misspelled one - e.g. missing the `nightly-`
+# prefix - otherwise breaks every `cargo`/`rustc` invocation below with a
+# confusing error, or silently points them at the wrong compiler). `:=` (not
+# `?=`) is required: Make auto-imports already-exported shell variables as if
+# they were `?=`-defined, so a plain `?=` would keep a bad inherited value
+# instead of replacing it. Bump this in lockstep with rust-toolchain.toml.
+RUSTUP_TOOLCHAIN ?=
+export RUSTUP_TOOLCHAIN
+
 # [CONFIG] source .env if it exists
 ifneq (,$(wildcard ./.env))
 	include .env
@@ -52,7 +63,6 @@ doctor: ##H Output version info for required tools
 	rustup --version
 	cargo +nightly fmt --version
 	cargo fmt --version
-	cargo +nightly clippy --version
 	cargo clippy --version
 	pre-commit --version
 	pkg-config --version
@@ -82,7 +92,7 @@ vars: ##H Print debug info
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
 		printf "$(STYLE_CYAN)%-25s$(STYLE_RESET) %s\n" "VERSION" \
-		"$$(cargo run $(CARGO_FLAGS) -p conduwuit_build_metadata --bin version --quiet)"
+		"$$(cargo run $(CARGO_FLAGS) -p conduwuit_git_info --bin version --quiet)"
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -92,6 +102,7 @@ vars: ##H Print debug info
 PROFILE ?=
 p ?=
 CRATE ?=
+NO_SCCACHE ?=
 CARGO_SCOPE ?= $(if $(p),-p $(p),$(if $(CRATE),-p $(CRATE),--workspace))
 CARGO_FLAGS ?= $(if $(PROFILE),--profile $(PROFILE),) --config Cargo.custom.toml
 
@@ -148,6 +159,20 @@ format: ##H Run pre-commit hooks/formatters
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
 		cargo fix $(CARGO_SCOPE) $(CARGO_FLAGS) --features default --allow-dirty --allow-no-vcs
 
+.PHONY: check
+check:   ##H Run cargo check
+	@echo "Run cargo check? PROFILE='$(PROFILE)'"
+	@$(MAKE) _confirm
+	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
+		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
+		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
+		cargo check $(CARGO_SCOPE) --locked $(CARGO_FLAGS)
+
+.PHONY: macro
+macro: ##H See macro expansion costs
+	cargo +nightly rustc -- -Zmacro-stats 2>&1 | awk -f scripts/macro_totals.awk
+
+
 .PHONY: lint
 lint:   ##H Lint code
 	@echo "Lint code? PROFILE='$(PROFILE)'"
@@ -155,13 +180,9 @@ lint:   ##H Lint code
 	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
-		AWS_LC_SYS_LDFLAGS="-L$(PREFIX)/lib -lssl -lcrypto" \
-		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
-		AWS_LC_RS_NO_BUNDLE=1 \
-		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
 		CC=gcc \
 		CFLAGS="$$(gcc -Wunterminated-string-initialization -x c -c /dev/null -o /dev/null 2>/dev/null && echo '-Wno-error=unterminated-string-initialization')" \
-		cargo +nightly clippy $(CARGO_SCOPE) --features full --locked --no-deps $(CARGO_FLAGS) -- $(if $(CI),-D warnings)
+		cargo clippy $(CARGO_SCOPE) --features full --locked --no-deps $(CARGO_FLAGS) -- $(if $(CI),-D warnings)
 
 .PHONY: test
 test:   ##H Run tests
@@ -170,21 +191,14 @@ test:   ##H Run tests
 	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
-		AWS_LC_SYS_LDFLAGS="-L$(PREFIX)/lib -lssl -lcrypto" \
-		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
-		AWS_LC_RS_NO_BUNDLE=1 \
-		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
-		cargo test --locked --all-targets $(if $(p),,$(if $(CRATE),,--features full)) --timings $(CARGO_SCOPE) $(CARGO_FLAGS)
+		NO_SCCACHE=$(NO_SCCACHE) \
+		cargo test --locked --all-targets $(if $(p),,$(if $(CRATE),,--features full)) --timings $(CARGO_SCOPE) $(CARGO_FLAGS) -- --nocapture
 
 .PHONY: cov
 cov:    ##H Run tests with llvm-cov coverage (text summary)
 	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
-		AWS_LC_SYS_LDFLAGS="-L$(PREFIX)/lib -lssl -lcrypto" \
-		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
-		AWS_LC_RS_NO_BUNDLE=1 \
-		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
 		cargo +nightly llvm-cov --lib --all-features \
 			--ignore-filename-regex 'src/admin|/tests\.rs' \
 			$(CARGO_SCOPE)
@@ -194,10 +208,6 @@ cov/html:       ##H Run tests with llvm-cov and open HTML report
 	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
-		AWS_LC_SYS_LDFLAGS="-L$(PREFIX)/lib -lssl -lcrypto" \
-		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
-		AWS_LC_RS_NO_BUNDLE=1 \
-		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
 		cargo +nightly llvm-cov --lib --all-features \
 			--ignore-filename-regex 'src/admin|/tests\.rs' \
 			--html --open \
@@ -222,10 +232,6 @@ build:  ##H Build with selected profile
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
 		LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LIBRARY_PATH \
-		AWS_LC_SYS_LDFLAGS="-L$(PREFIX)/lib -lssl -lcrypto" \
-		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
-		AWS_LC_RS_NO_BUNDLE=1 \
-		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
 		ROCKSDB_STATIC=$(ROCKSDB_STATIC) \
 		ROCKSDB_LIB_STATIC=$(ROCKSDB_LIB_STATIC) \
 # 		RUSTFLAGS="-L $(ROCKSDB_LIB_DIR) -l z -l bz2 -l lz4 -l snappy -l zstd -l uring -l stdc++ $$RUSTFLAGS" \
@@ -258,10 +264,6 @@ build-cross: ##H Cross-compile for specific glibc and CPU (uses cargo-zigbuild)
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
 		LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LIBRARY_PATH \
-		AWS_LC_SYS_LDFLAGS="-L$(PREFIX)/lib -lssl -lcrypto" \
-		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
-		AWS_LC_RS_NO_BUNDLE=1 \
-		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
 		RUSTFLAGS="-C target-cpu=$(CPU_TARGET) -C link-arg=-L/usr/lib -C link-arg=-L/usr/local/lib $$RUSTFLAGS" \
 		cargo zigbuild --target x86_64-unknown-linux-gnu.$(GLIBC_VERSION) --features $(FEATURES) --locked $(CARGO_FLAGS)
 
@@ -305,10 +307,6 @@ build-docs:     ##H Regenerate docs (admin commands, etc.)
 	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
-		AWS_LC_SYS_LDFLAGS="-L$(PREFIX)/lib -lssl -lcrypto" \
-		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
-		AWS_LC_RS_NO_BUNDLE=1 \
-		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
 		cargo run -p xtask $(CARGO_FLAGS) -- generate-docs
 
 
@@ -351,16 +349,16 @@ complement/docker: ##H Build docker image from existing binary
 
 .PHONY: complement/stats
 complement/stats: ##H Check local test stats
-	@test -f "tests/test_results/complement/test_results.jsonl" || (echo "ERROR: tests/test_results/complement/test_results.jsonl does not exist" && exit 1)
+	@test -f "tests/complement/results.jsonl" || (echo "ERROR: tests/complement/results.jsonl does not exist" && exit 1)
 	@echo "Parsing Complement test results..."
-	@PASS=$$(jq -s '[.[] | select(.Action == "pass")] | length' tests/test_results/complement/test_results.jsonl); \
-	FAIL=$$(jq -s '[.[] | select(.Action == "fail")] | length' tests/test_results/complement/test_results.jsonl); \
-	SKIP=$$(jq -s '[.[] | select(.Action == "skip")] | length' tests/test_results/complement/test_results.jsonl); \
+	@PASS=$$(jq -s '[.[] | select(.Action == "pass")] | length' tests/complement/results.jsonl); \
+	FAIL=$$(jq -s '[.[] | select(.Action == "fail")] | length' tests/complement/results.jsonl); \
+	SKIP=$$(jq -s '[.[] | select(.Action == "skip")] | length' tests/complement/results.jsonl); \
 	TOTAL=$$((PASS + FAIL + SKIP)); \
 	echo ""; \
 	if [ "$$FAIL" -gt 0 ] && [ "$$VERBOSE" = "1" ]; then \
 		echo "Failed Tests:"; \
-		jq -r 'select(.Action == "fail") | .Test' tests/test_results/complement/test_results.jsonl | sort -u; \
+		jq -r 'select(.Action == "fail") | .Test' tests/complement/results.jsonl | sort -u; \
 		echo ""; \
 	fi; \
 	echo "=== Complement Test Stats ==="; \
@@ -370,8 +368,8 @@ complement/stats: ##H Check local test stats
 	echo "---------------------------"; \
 	echo "Σ Total:   $$TOTAL"; \
 	echo ""; \
-	echo "JSON file (on main) last modified by: "; \
-	git log -1 --format="%an (%ad) %H" origin/main -- tests/test_results/complement/test_results.jsonl
+	echo "JSON file (on this branch) last modified by: "; \
+	git log -1 --format="%an (%ad) %H" -- tests/complement/results.jsonl
 
 .PHONY: complement/diff
 complement/diff: ##H Diff local results against branch baseline (requires REF=git-ref)
@@ -383,7 +381,7 @@ complement/diff: ##H Diff local results against branch baseline (requires REF=gi
 		echo "ERROR: could not find results for $$SHA (or $${SHA:0:8}) in origin/_metadata/badges"; \
 		exit 1; \
 	fi; \
-	diff -u --color tests/test_results/complement/test_results.jsonl <(git show origin/_metadata/badges:$$FILE)
+	diff -u --color tests/complement/results.jsonl <(git show origin/_metadata/badges:$$FILE)
 
 
 

@@ -4,13 +4,14 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use conduwuit::{Result, debug, err, warn};
 use futures::Stream;
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedUserId, RoomId, UserId,
+	codec::Serialize as CodecSerialize,
 	events::{
 		AnySyncEphemeralRoomEvent, SyncEphemeralRoomEvent,
 		receipt::{ReceiptEvent, ReceiptEventContent},
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use self::data::{Data, ReceiptItem};
@@ -45,7 +46,7 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		user_id: &UserId,
-		target_thread: Option<&ruma::events::receipt::ReceiptThread>,
+		target_thread: Option<&slipstream::events::receipt::ReceiptThread>,
 	) -> Option<OwnedEventId> {
 		self.db
 			.readreceipt_get(room_id, user_id, target_thread)
@@ -76,9 +77,7 @@ impl Service {
 		let result = self.db.private_read_get(room_id, user_id).await?;
 
 		if let Some((_, event)) = result {
-			let raw_event =
-				serde_json::value::to_raw_value(&event).expect("receipt created manually");
-			Ok(Raw::from_json(raw_event))
+			Ok(Raw::from_json_string(slipstream::codec::to_string(&event.to_json()))?)
 		} else {
 			Err(err!(Database(warn!("No private read receipt was set in {room_id}"))))
 		}
@@ -118,7 +117,7 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		user_id: &UserId,
-		thread: Option<&ruma::events::receipt::ReceiptThread>,
+		thread: Option<&slipstream::events::receipt::ReceiptThread>,
 	) -> Result<u64> {
 		self.db
 			.private_read_get_count(room_id, user_id, thread)
@@ -137,8 +136,8 @@ fn aggregate_receipts<I>(
 ) -> BTreeMap<
 	OwnedEventId,
 	BTreeMap<
-		ruma::events::receipt::ReceiptType,
-		BTreeMap<OwnedUserId, ruma::events::receipt::Receipt>,
+		slipstream::events::receipt::ReceiptType,
+		BTreeMap<OwnedUserId, slipstream::events::receipt::Receipt>,
 	>,
 >
 where
@@ -146,13 +145,13 @@ where
 {
 	let mut json: BTreeMap<OwnedEventId, BTreeMap<_, BTreeMap<OwnedUserId, _>>> = BTreeMap::new();
 	let mut user_locations: BTreeMap<
-		(OwnedUserId, ruma::events::receipt::ReceiptType, Option<String>),
+		(OwnedUserId, slipstream::events::receipt::ReceiptType, Option<String>),
 		OwnedEventId,
 	> = BTreeMap::new();
 
 	for value in receipts {
-		let receipt = serde_json::from_str::<SyncEphemeralRoomEvent<ReceiptEventContent>>(
-			value.json().get(),
+		let receipt = slipstream::codec::from_str::<SyncEphemeralRoomEvent<ReceiptEventContent>>(
+			value.get(),
 		);
 		match receipt {
 			| Ok(value) => {
@@ -161,12 +160,12 @@ where
 						for (user_id, new_receipt) in new_users {
 							let is_unthreaded = matches!(
 								new_receipt.thread,
-								ruma::events::receipt::ReceiptThread::Unthreaded
+								slipstream::events::receipt::ReceiptThread::Unthreaded
 							);
 
 							let location_key = (
 								user_id.clone(),
-								receipt_type.clone(),
+								receipt_type,
 								new_receipt.thread.as_str().map(ToOwned::to_owned),
 							);
 
@@ -203,7 +202,7 @@ where
 							let event_receipts =
 								json.entry(event_id.clone()).or_insert_with(BTreeMap::new);
 							let users = event_receipts
-								.entry(receipt_type.clone())
+								.entry(receipt_type)
 								.or_insert_with(BTreeMap::new);
 
 							// MSC4102: "When a server is combining receipts into an EDU, if there
@@ -248,13 +247,13 @@ where
 
 	conduwuit::trace!(
 		target: "read_receipt_debug",
-		"Packed {} read receipts into EDU", content.len()
+		"Packed {} read receipts into EDU", content.0.len()
 	);
 	conduwuit::trace!(?content);
-	let json_val = serde_json::json!({
-		"type": "m.receipt",
-		"content": content,
-	});
+	let mut object = slipstream::ObjectBuilder::new();
+	object.field("type", &"m.receipt");
+	object.field("content", &content);
+	let json_val = object.finish();
 
 	conduwuit::trace!(
 		target: "read_receipt_debug",
@@ -262,7 +261,7 @@ where
 		"pack_receipts output JSON"
 	);
 
-	Raw::from_json(serde_json::value::to_raw_value(&json_val).expect("received valid json"))
+	Raw::from_json_text(&slipstream::codec::to_string(&json_val)).expect("received valid json")
 }
 
 #[must_use]
@@ -277,13 +276,14 @@ where
 		let mut content_map = BTreeMap::new();
 		content_map.insert(event_id, event_receipts);
 		let content = ReceiptEventContent::from_iter(content_map);
-		let json_val = serde_json::json!({
-			"type": "m.receipt",
-			"content": content,
-		});
-		events.push(Raw::from_json(
-			serde_json::value::to_raw_value(&json_val).expect("received valid json"),
-		));
+		let mut object = slipstream::ObjectBuilder::new();
+		object.field("type", &"m.receipt");
+		object.field("content", &content);
+		let json_val = object.finish();
+		events.push(
+			Raw::from_json_text(&slipstream::codec::to_string(&json_val))
+				.expect("received valid json"),
+		);
 	}
 
 	events

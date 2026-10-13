@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::HashMap, iter::once, sync::Arc, time::Duration};
+use std::{borrow::Borrow, collections::HashMap, iter::once, time::Duration};
 
 use axum::extract::State;
 use axum_client_ip::ClientIp;
@@ -13,9 +13,14 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, StreamExt};
-use ruma::{
-	CanonicalJsonObject, CanonicalJsonValue, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId,
-	RoomVersionId, UserId,
+use service::{
+	Services,
+	appservice::RegistrationInfo,
+	rooms::{state::RoomMutexGuard, timeline::pdu_fits},
+};
+use slipstream::{
+	CanonicalJsonObject, CanonicalJsonValue, OwnedRoomAliasId, OwnedRoomId, OwnedServerName,
+	OwnedUserId, RoomId, RoomVersionId, UserId,
 	api::{
 		client::{
 			error::ErrorKind,
@@ -24,6 +29,7 @@ use ruma::{
 		federation::{self, event::event_relationships as federation_event_relationships},
 	},
 	canonical_json::to_canonical_value,
+	codec,
 	events::{
 		StateEventType,
 		room::{
@@ -31,15 +37,7 @@ use ruma::{
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	},
-};
-use service::{
-	Services,
-	appservice::RegistrationInfo,
-	rooms::{
-		state::RoomMutexGuard,
-		state_compressor::{CompressedState, HashSetCompressStateEvent},
-		timeline::{AppendOptions, pdu_fits},
-	},
+	sswire::Raw,
 };
 use tokio::join;
 
@@ -72,7 +70,7 @@ pub(crate) async fn join_room_by_id_route(
 		&services,
 		sender_user,
 		Some(&body.room_id),
-		body.room_id.server_name(),
+		body.room_id.server_name().as_ref(),
 		client,
 	)
 	.await?;
@@ -82,7 +80,6 @@ pub(crate) async fn join_room_by_id_route(
 		.rooms
 		.state_cache
 		.servers_invite_via(&body.room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 	servers.extend(
@@ -93,13 +90,13 @@ pub(crate) async fn join_room_by_id_route(
 			.await
 			.unwrap_or_default()
 			.iter()
-			.filter_map(|event| event.get_field("sender").ok().flatten())
-			.filter_map(|sender: &str| UserId::parse(sender).ok())
-			.map(|user| user.server_name().to_owned()),
+			.filter_map(|event| event.get_field::<String>("sender").ok().flatten())
+			.filter_map(|sender| UserId::parse(&sender).ok())
+			.map(|user| user.server_name()),
 	);
 
 	if let Some(server) = body.room_id.server_name() {
-		servers.push(server.into());
+		servers.push(server);
 	}
 
 	servers.sort_unstable();
@@ -143,13 +140,13 @@ pub(crate) async fn join_room_by_id_or_alias_route(
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
 
-	let (servers, room_id) = match OwnedRoomId::try_from(body.room_id_or_alias.clone()) {
+	let (servers, room_id) = match OwnedRoomId::parse(body.room_id_or_alias.clone()) {
 		| Ok(room_id) => {
 			banned_room_check(
 				&services,
 				sender_user,
 				Some(&room_id),
-				room_id.server_name(),
+				room_id.server_name().as_ref(),
 				client,
 			)
 			.boxed()
@@ -166,14 +163,17 @@ pub(crate) async fn join_room_by_id_or_alias_route(
 
 			(servers, room_id)
 		},
-		| Err(room_alias) => {
+		| Err(_) => {
+			let room_alias = OwnedRoomAliasId::parse(body.room_id_or_alias.clone())
+				.map_err(|_| err!(Request(InvalidParam("Invalid room alias."))))?;
 			let (room_id, servers) = services.rooms.alias.resolve_alias(&room_alias).await?;
+			let alias_server_name = room_alias.server_name();
 
 			banned_room_check(
 				&services,
 				sender_user,
 				Some(&room_id),
-				Some(room_alias.server_name()),
+				Some(&alias_server_name),
 				client,
 			)
 			.await?;
@@ -263,7 +263,7 @@ pub async fn join_room_by_id_helper(
 		&& services
 			.rooms
 			.state
-			.get_room_shortstatehash(room_id)
+			.get_room_state_hamt(room_id)
 			.await
 			.is_err()
 	{
@@ -370,7 +370,7 @@ async fn join_room_by_id_helper_remote(
 	}
 
 	let mut join_event_stub: CanonicalJsonObject =
-		serde_json::from_str(make_join_response.event.get()).map_err(|e| {
+		codec::from_str(make_join_response.event.get()).map_err(|e| {
 			err!(BadServerResponse(warn!(
 				"Invalid make_join event json received from server: {e:?}"
 			)))
@@ -393,18 +393,14 @@ async fn join_room_by_id_helper_remote(
 			.and_then(|s| s.as_object())
 			.and_then(|o| o.get("join_authorised_via_users_server"))
 			.and_then(|v| v.as_str())
-			.and_then(|s| OwnedUserId::try_from(s).ok())
+			.and_then(|s| OwnedUserId::parse(s).ok())
 	} else {
 		None
 	};
 
 	join_event_stub.insert(
 		"origin_server_ts".to_owned(),
-		CanonicalJsonValue::Integer(
-			utils::millis_since_unix_epoch()
-				.try_into()
-				.expect("Timestamp is valid js_int value"),
-		),
+		CanonicalJsonValue::Number(utils::millis_since_unix_epoch().into()),
 	);
 	let mut content = to_canonical_value(RoomMemberEventContent {
 		displayname: services.users.displayname(sender_user).boxed().await.ok(),
@@ -462,7 +458,6 @@ async fn join_room_by_id_helper_remote(
 		pdu: services
 			.sending
 			.convert_to_outgoing_federation_event(join_event.clone())
-			.boxed()
 			.await,
 	};
 
@@ -544,14 +539,14 @@ async fn join_room_by_id_helper_remote(
 		.boxed()
 		.await;
 
-	let remote_latest_events: Vec<ruma::OwnedEventId> = join_event
+	let remote_latest_events: Vec<slipstream::OwnedEventId> = join_event
 		.get("prev_events")
 		.and_then(|v| v.as_array())
 		.map(|arr| {
 			arr.iter()
 				.filter_map(|v| {
 					v.as_str()
-						.and_then(|s| <&ruma::EventId>::try_from(s).ok().map(ToOwned::to_owned))
+						.and_then(|id| <slipstream::EventId>::parse(id).ok())
 				})
 				.collect()
 		})
@@ -581,10 +576,10 @@ async fn join_room_by_id_helper_remote_process(
 	room_version_id: RoomVersionId,
 	remote_server: OwnedServerName,
 	join_event: CanonicalJsonObject,
-	event_id: ruma::OwnedEventId,
-	mut state_lock: RoomMutexGuard,
+	event_id: slipstream::OwnedEventId,
+	state_lock: RoomMutexGuard,
 	send_join_response: federation::membership::create_join_event::v2::Response,
-	remote_latest_events: Vec<ruma::OwnedEventId>,
+	remote_latest_events: Vec<slipstream::OwnedEventId>,
 ) -> Result {
 	info!("Parsing join event");
 	let parsed_join_pdu = Box::new(
@@ -604,7 +599,7 @@ async fn join_room_by_id_helper_remote_process(
 
 	info!("Going through send_join response room_state");
 	let cork = services.db.cork_and_flush();
-	let mut outlier_event_ids: Vec<ruma::OwnedEventId> = Vec::new();
+	let mut outlier_event_ids: Vec<slipstream::OwnedEventId> = Vec::new();
 	let state = services
 		.server_keys
 		.concurrent_validate_and_add_events(send_join_response.room_state.state, &room_version_id)
@@ -659,6 +654,19 @@ async fn join_room_by_id_helper_remote_process(
 
 	let (state, mut state_eids) = state;
 	outlier_event_ids.append(&mut state_eids);
+
+	let mut lattice = rezzy::state::LtHash::default();
+	for (&shortstatekey, event_id) in &state {
+		if let Ok((kind, state_key)) = services
+			.rooms
+			.short
+			.get_statekey_from_short(shortstatekey)
+			.await
+		{
+			lattice.insert(kind.as_ref(), state_key.as_str(), event_id.as_str());
+		}
+	}
+
 	// Capture this before promoting send_join state/auth outliers. Promotion makes
 	// a fresh room look non-empty and otherwise misclassifies first joins as
 	// rejoins.
@@ -679,7 +687,7 @@ async fn join_room_by_id_helper_remote_process(
 
 	info!("Going through send_join response auth_chain");
 	let cork = services.db.cork_and_flush();
-	let auth_eids: Vec<ruma::OwnedEventId> = services
+	let auth_eids: Vec<slipstream::OwnedEventId> = services
 		.server_keys
 		.concurrent_validate_and_add_events(
 			send_join_response.room_state.auth_chain,
@@ -756,37 +764,59 @@ async fn join_room_by_id_helper_remote_process(
 		return Err!(Request(Forbidden("Auth check failed")));
 	}
 
-	info!("Compressing state from send_join ({} state events)", state.len());
-	let compressed: CompressedState = services
-		.rooms
-		.state_compressor
-		.compress_state_events(state.iter().map(|(ssk, eid)| (ssk, eid.borrow())))
-		.collect()
-		.boxed()
-		.await;
+	let mut entries = Vec::with_capacity(state.len());
+	for (&shortstatekey, event_id) in &state {
+		let shorteventid = services
+			.rooms
+			.short
+			.get_or_create_shorteventid(event_id)
+			.await;
+		entries.push((shortstatekey, shorteventid));
+	}
 	drop(state);
 
-	info!("Saving compressed state ({} compressed events)", compressed.len());
-	let HashSetCompressStateEvent {
-		shortstatehash: statehash_before_join,
-		added,
-		removed,
-	} = services
-		.rooms
-		.state_compressor
-		.save_state_as_root(room_id, Arc::new(compressed))
-		.boxed()
-		.await?;
+	let structural_key =
+		service::rooms::state_hamt::room_structural_key(&services.globals.server_secret, room_id);
+	let (root_handle, root_node) =
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+			.map_err(|e| err!(error!("Failed to build HAMT root for join: {e:?}")))?;
 
-	info!("Forcing state for new room (shortstatehash={statehash_before_join})");
-	Box::pin(services.rooms.state.force_state(
+	services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive(root_node);
+
+	// Sample the joining user's membership *before* the `/send_join` state root is
+	// installed. That state includes the joiner's own membership, so reading the
+	// cache after installation always reports them as already joined, which would
+	// suppress the device-list notification for a genuine first join.
+	let was_joined_before_state_install = services
+		.rooms
+		.state_cache
+		.is_joined(sender_user, room_id)
+		.await;
+
+	debug!("Registering joined members for new room");
+	// Register the room's joined members/servers (including remote users such as
+	// the room creator) in the participation cache. The legacy `force_state`
+	// path did this from the `added`/`removed` state delta; `set_room_state_hamt`
+	// only advances the HAMT root without touching derived caches, so without
+	// this the remote server would never appear in `roomserverids` and outbound
+	// events would not be fanned out to it.
+	Box::pin(services.rooms.state.update_caches_for_state_delta_between(
 		room_id,
-		statehash_before_join,
-		added,
-		removed,
-		&state_lock,
+		None,
+		&root_handle,
 	))
 	.await?;
+
+	// Install the root only after the derived caches were updated successfully,
+	// so a cache failure never exposes new state with stale caches.
+	services
+		.rooms
+		.state
+		.set_room_state_hamt(room_id, &root_handle, &state_lock);
 
 	// Promote auth chain + state outliers to the backfilled timeline.
 	// This makes the room's origin events (create, initial joins, power
@@ -800,7 +830,7 @@ async fn join_room_by_id_helper_remote_process(
 		match services
 			.rooms
 			.timeline
-			.promote_outliers_sorted(room_id, &outlier_event_ids, &room_version_id)
+			.promote_outliers_sorted(room_id, &outlier_event_ids)
 			.await
 		{
 			| Ok(count) => info!("Promoted {count} outliers to timeline in {room_id}"),
@@ -831,14 +861,8 @@ async fn join_room_by_id_helper_remote_process(
 	drop(state_lock);
 
 	if !send_join_response.room_state.members_omitted && !remote_latest_events.is_empty() {
-		handle_missing_join_extremities(
-			services,
-			room_id,
-			&room_version_id,
-			&remote_server,
-			remote_latest_events,
-		)
-		.await;
+		handle_missing_join_extremities(services, room_id, &remote_server, remote_latest_events)
+			.await?;
 	}
 
 	// Re-acquire the state lock before appending our join event
@@ -847,53 +871,40 @@ async fn join_room_by_id_helper_remote_process(
 	// First joins do not eagerly fetch missing extremities here. The client-driven
 	// relationship/backfill request must remain the source of that history; eager
 	// federation requests race the expected request sequence and duplicate work.
+	let previous_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
 	// We append to state before appending the pdu, so we don't have a moment in
 	// time with the pdu without its state. Both append_to_state and append_pdu
 	// can indeed fail, in which case the local membership cache may be left in an
 	// inconsistent state (where the user appears joined in the cache but the join
 	// PDU is not persisted).
-	// TODO: unify the state write, timeline write, and membership-cache update
-	// behind a single durable operation so partial failure cannot strand cache
-	// state ahead of the persisted join event.
-	let statehash_after_join = services
+	let (state_root_handle, state_node) = services
 		.rooms
 		.state
-		.append_to_state(&parsed_join_pdu, room_id)
-		.boxed()
+		.append_to_state(&parsed_join_pdu, room_id, &state_lock, None)
 		.await?;
+	services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive(state_node);
 
 	info!("Appending new room join event");
-	services
-		.rooms
-		.timeline
-		.append_pdu(
-			&parsed_join_pdu,
-			join_event,
-			once(parsed_join_pdu.event_id.clone()),
-			AppendOptions { resolved_state: None, soft_fail: false },
-			false,
-			&state_lock,
+	Box::pin(services.rooms.timeline.append_pdu(
+		&parsed_join_pdu,
+		join_event,
+		once(parsed_join_pdu.event_id.borrow()),
+		false,
+		service::rooms::timeline::AppendPduContext {
+			state_lock: &state_lock,
 			room_id,
-		)
-		.boxed()
-		.await?;
-
-	let post_append_count = services
-		.rooms
-		.state_cache
-		.room_joined_count(room_id)
-		.await
-		.unwrap_or(0);
-	info!("join: after append_pdu for {room_id}: joined_count={post_append_count}");
-
-	info!("Setting final room state for new room");
-	// We set the room state after inserting the pdu, so that we never have a moment
-	// in time where events in the current room state do not exist
-	services
-		.rooms
-		.state
-		.set_room_state(room_id, statehash_after_join, &state_lock);
+			state_root_handle: Some(state_root_handle),
+			prev_state_root_handle: previous_root_handle,
+			advance_current_state: false,
+			was_joined_before_state_install: Some((sender_user, was_joined_before_state_install)),
+		},
+	))
+	.await?;
 
 	// Deal with partial joins
 	if send_join_response.room_state.members_omitted {
@@ -910,10 +921,9 @@ async fn join_room_by_id_helper_remote_process(
 async fn handle_missing_join_extremities(
 	services: &Services,
 	room_id: &RoomId,
-	room_version_id: &RoomVersionId,
 	remote_server: &OwnedServerName,
-	remote_latest_events: Vec<ruma::OwnedEventId>,
-) {
+	remote_latest_events: Vec<slipstream::OwnedEventId>,
+) -> Result<()> {
 	let mut missing_latest = Vec::new();
 	for event_id in &remote_latest_events {
 		if !services.rooms.timeline.pdu_exists(event_id).await {
@@ -921,7 +931,7 @@ async fn handle_missing_join_extremities(
 		}
 	}
 	if missing_latest.is_empty() {
-		return;
+		return Ok(());
 	}
 
 	info!(
@@ -932,13 +942,13 @@ async fn handle_missing_join_extremities(
 	);
 
 	for event_id in missing_latest {
-		if let Err(e) =
-			fetch_missing_extremity(services, remote_server, room_id, room_version_id, &event_id)
-				.await
+		if let Err(e) = fetch_missing_extremity(services, remote_server, room_id, &event_id).await
 		{
-			warn!("Failed to handle extremity {event_id}: {e}");
+			warn!("Failed to fetch missing extremity {event_id}: {e}");
 		}
 	}
+
+	Ok(())
 }
 
 #[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_local", level = "info")]
@@ -1092,13 +1102,12 @@ async fn join_room_by_id_helper_local(
 		..RoomMemberEventContent::new(MembershipState::Join)
 	};
 
-	let mut content = serde_json::to_value(content).expect("failed to serialize member event");
+	let mut content = codec::to_value(&content);
 	if let Some(CanonicalJsonValue::Object(custom)) = json_body {
-		if let serde_json::Value::Object(ref mut map) = content {
+		if let slipstream::json::Value::Object(ref mut map) = content {
 			for (k, v) in custom {
 				if !["reason", "third_party_signed", "server_name"].contains(&k.as_str()) {
-					map.entry(k.clone())
-						.or_insert_with(|| serde_json::to_value(v).expect("valid json"));
+					map.entry(k.clone()).or_insert_with(|| v.clone());
 				}
 			}
 		}
@@ -1106,7 +1115,7 @@ async fn join_room_by_id_helper_local(
 
 	let builder = PduBuilder {
 		event_type: StateEventType::RoomMember.into(),
-		content: serde_json::value::to_raw_value(&content).expect("valid JSON"),
+		content: Raw::from_value(&content),
 		state_key: Some(sender_user.to_string().into()),
 		..Default::default()
 	};
@@ -1127,19 +1136,33 @@ async fn join_room_by_id_helper_local(
 		.state_cache
 		.room_servers(room_id)
 		.ready_filter(|server| !services.globals.server_is_ours(server))
-		.map(ToOwned::to_owned)
 		.collect::<Vec<_>>()
 		.await;
 
+	// Wait briefly for the join PDU to be delivered over federation, but treat
+	// an unreachable co-member server as best-effort. The local join is already
+	// committed; if a remote server is offline the PDU stays queued and is
+	// retried by the sending worker, so we must not hard-fail the join request
+	// here -- and we must not stall the whole request on a known-unreachable
+	// server (reachable servers accept the transaction in milliseconds, so a
+	// short bound only trims the offline-server stall). (Heals
+	// TestNewUserCannotGetKeysForOfflineServer which pauses hs2.)
 	services
 		.sending
 		.wait_for_pdu_servers(
 			remote_servers,
 			&pdu_id,
-			Duration::from_secs(15),
+			Duration::from_secs(5),
 			"Timed out waiting for outbound federation to deliver join event.",
 		)
-		.await?;
+		.await
+		.inspect_err(|e| {
+			warn!(
+				"Federation delivery of join event {event_id} to a remote server is pending \
+				 (will be retried): {e}"
+			);
+		})
+		.ok();
 
 	info!("Joined room locally");
 	Ok(())
@@ -1174,7 +1197,6 @@ async fn join_restricted_via_remote(
 			.state_cache
 			.room_servers(room_id)
 			.ready_filter(|server| !services.globals.server_is_ours(server))
-			.map(ToOwned::to_owned)
 			.collect::<Vec<_>>()
 			.await;
 
@@ -1344,7 +1366,7 @@ fn deprioritize(
 
 #[cfg(test)]
 mod tests {
-	use ruma::OwnedServerName;
+	use slipstream::OwnedServerName;
 
 	use super::*;
 
@@ -1385,8 +1407,7 @@ async fn fetch_missing_extremity(
 	services: &Services,
 	remote_server: &OwnedServerName,
 	room_id: &RoomId,
-	room_version_id: &RoomVersionId,
-	event_id: &ruma::OwnedEventId,
+	event_id: &slipstream::OwnedEventId,
 ) -> Result<()> {
 	info!(
 		%room_id,
@@ -1427,14 +1448,7 @@ async fn fetch_missing_extremity(
 			services
 				.rooms
 				.event_handler
-				.handle_incoming_pdu(
-					remote_server,
-					room_id,
-					&parsed_event_id,
-					value,
-					true,
-					room_version_id,
-				)
+				.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true, None)
 				.await?;
 			return Ok(());
 		}
@@ -1454,10 +1468,13 @@ async fn fetch_missing_extremity(
 			return Err(e);
 		},
 	};
+	let Some(raw_pdu) = response.pdus.first() else {
+		return Err!(Request(NotFound("Remote server returned no PDU for extremity")));
+	};
 	let (parsed_room_id, parsed_event_id, value) = services
 		.rooms
 		.event_handler
-		.parse_incoming_pdu(&response.pdu)
+		.parse_incoming_pdu(raw_pdu)
 		.await
 		.map_err(|e| err!("Failed to parse extremity {event_id}: {e}"))?;
 	if parsed_room_id != room_id {
@@ -1470,14 +1487,7 @@ async fn fetch_missing_extremity(
 	services
 		.rooms
 		.event_handler
-		.handle_incoming_pdu(
-			remote_server,
-			room_id,
-			&parsed_event_id,
-			value,
-			true,
-			room_version_id,
-		)
+		.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true, None)
 		.await?;
 
 	Ok(())

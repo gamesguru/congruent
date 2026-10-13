@@ -10,7 +10,7 @@ use futures::{
 	FutureExt, StreamExt, TryStreamExt,
 	future::{join, join3, join4},
 };
-use ruma::{
+use slipstream::{
 	OwnedMxcUri, OwnedRoomId, UserId,
 	api::{
 		client::profile::{
@@ -38,7 +38,7 @@ pub(crate) async fn set_displayname_route(
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
 
-	if *sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot update the profile of another user")));
 	}
 
@@ -46,7 +46,6 @@ pub(crate) async fn set_displayname_route(
 		.rooms
 		.state_cache
 		.rooms_joined(&body.user_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 
@@ -80,7 +79,7 @@ pub(crate) async fn get_displayname_route(
 		if let Ok(response) = services
 			.sending
 			.send_federation_request(
-				body.user_id.server_name(),
+				&body.user_id.server_name(),
 				federation::query::get_profile_information::v1::Request {
 					user_id: body.user_id.clone(),
 					field: None, // we want the full user's profile to update locally too
@@ -94,7 +93,8 @@ pub(crate) async fn get_displayname_route(
 
 			services
 				.users
-				.set_displayname(&body.user_id, response.displayname.clone());
+				.set_displayname(&body.user_id, response.displayname.clone())
+				.await;
 			services
 				.users
 				.set_avatar_url(&body.user_id, response.avatar_url.clone());
@@ -131,7 +131,7 @@ pub(crate) async fn set_avatar_url_route(
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
 
-	if *sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot update the profile of another user")));
 	}
 
@@ -139,7 +139,6 @@ pub(crate) async fn set_avatar_url_route(
 		.rooms
 		.state_cache
 		.rooms_joined(&body.user_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 
@@ -179,7 +178,7 @@ pub(crate) async fn get_avatar_url_route(
 		if let Ok(response) = services
 			.sending
 			.send_federation_request(
-				body.user_id.server_name(),
+				&body.user_id.server_name(),
 				federation::query::get_profile_information::v1::Request {
 					user_id: body.user_id.clone(),
 					field: None, // we want the full user's profile to update locally as well
@@ -193,7 +192,8 @@ pub(crate) async fn get_avatar_url_route(
 
 			services
 				.users
-				.set_displayname(&body.user_id, response.displayname.clone());
+				.set_displayname(&body.user_id, response.displayname.clone())
+				.await;
 			services
 				.users
 				.set_avatar_url(&body.user_id, response.avatar_url.clone());
@@ -239,7 +239,7 @@ pub(crate) async fn get_profile_route(
 		if let Ok(response) = services
 			.sending
 			.send_federation_request(
-				body.user_id.server_name(),
+				&body.user_id.server_name(),
 				federation::query::get_profile_information::v1::Request {
 					user_id: body.user_id.clone(),
 					field: None,
@@ -253,7 +253,8 @@ pub(crate) async fn get_profile_route(
 
 			services
 				.users
-				.set_displayname(&body.user_id, response.displayname.clone());
+				.set_displayname(&body.user_id, response.displayname.clone())
+				.await;
 			services
 				.users
 				.set_avatar_url(&body.user_id, response.avatar_url.clone());
@@ -262,11 +263,10 @@ pub(crate) async fn get_profile_route(
 				.set_blurhash(&body.user_id, response.blurhash.clone());
 
 			for (profile_key, profile_key_value) in &response.custom_profile_fields {
-				services.users.set_profile_key(
-					&body.user_id,
-					profile_key,
-					Some(profile_key_value.clone()),
-				);
+				services
+					.users
+					.set_profile_key(&body.user_id, profile_key, Some(profile_key_value.clone()))
+					.await;
 			}
 
 			return Ok(get_profile::v3::Response {
@@ -317,7 +317,10 @@ pub async fn update_displayname(
 		return;
 	}
 
-	services.users.set_displayname(user_id, displayname.clone());
+	services
+		.users
+		.set_displayname(user_id, displayname.clone())
+		.await;
 
 	// Send a new join membership event into all joined rooms
 	let avatar_url = &current_avatar_url;
@@ -409,11 +412,13 @@ pub async fn update_all_rooms(
 ) {
 	for (pdu_builder, room_id) in all_joined_rooms {
 		let state_lock = services.rooms.state.mutex.lock(room_id).await;
-		if let Err(e) = services
-			.rooms
-			.timeline
-			.build_and_append_pdu(pdu_builder, user_id, Some(room_id), &state_lock)
-			.await
+		if let Err(e) = Box::pin(services.rooms.timeline.build_and_append_pdu(
+			pdu_builder,
+			user_id,
+			Some(room_id),
+			&state_lock,
+		))
+		.await
 		{
 			warn!(%user_id, %room_id, "Failed to update/send new profile join membership update in room: {e}");
 		}

@@ -15,7 +15,7 @@ pub enum TesterCommand {
 #[admin_command]
 #[allow(clippy::unused_async_trait_impl)]
 async fn panic(&self) -> Result {
-
+	std::future::ready(()).await;
 	panic!("panicked")
 }
 
@@ -23,7 +23,7 @@ async fn panic(&self) -> Result {
 #[admin_command]
 #[allow(clippy::unused_async_trait_impl)]
 async fn failure(&self) -> Result {
-
+	std::future::ready(()).await;
 	Err!("failed")
 }
 

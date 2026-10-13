@@ -1,9 +1,7 @@
-//! one true function for returning the conduwuit version with the necessary
-//! CONDUWUIT_VERSION_EXTRA env variables used if specified
+//! one true function for returning the conduwuit version.
 //!
-//! Set the environment variable `CONDUWUIT_VERSION_EXTRA` to any UTF-8 string
-//! to include it in parenthesis after the SemVer version. A common value are
-//! git commit hashes.
+//! The git tag/extra comes from `info::git`, which the binary fills in at
+//! startup; core itself has no build-time dependency on git state.
 
 use std::sync::OnceLock;
 
@@ -39,11 +37,11 @@ fn init_user_agent_media() -> String {
 }
 
 fn init_version_ua() -> String {
-	conduwuit_build_metadata::version_tag()
+	super::git::version_tag()
 		.map_or_else(|| SEMANTIC.to_owned(), |extra| format!("{SEMANTIC}+{extra}"))
 }
 
 fn init_version() -> String {
-	conduwuit_build_metadata::version_tag()
+	super::git::version_tag()
 		.map_or_else(|| SEMANTIC.to_owned(), |extra| format!("{SEMANTIC} ({extra})"))
 }

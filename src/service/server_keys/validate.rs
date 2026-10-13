@@ -7,8 +7,8 @@ const MAX_JSON_SCAN_DEPTH: usize = 128;
 /// MSC4499: Scan raw JSON bytes for duplicate keys within `verify_keys` and
 /// `old_verify_keys` objects. Returns Err if any duplicate keys are found.
 ///
-/// This must run on the raw bytes BEFORE `serde_json` deserialization, because
-/// `serde_json` silently deduplicates (last-key-wins). Without this pre-scan,
+/// This must run on the raw bytes BEFORE JSON deserialization, because
+/// JSON parsers silently deduplicates (last-key-wins). Without this pre-scan,
 /// a payload with `{"verify_keys": {"ed25519:foo": ..., "ed25519:foo": ...}}`
 /// would be silently accepted with the second value winning.
 pub(super) fn check_no_duplicate_json_keys(raw: &str, strict: bool) -> Result {
@@ -55,7 +55,18 @@ pub(super) fn check_no_duplicate_json_keys(raw: &str, strict: bool) -> Result {
 		conduwuit::warn!("MSC4499 (Observation Mode): {msg} — allowing payload");
 	}
 
-	let value: serde_json::Value = match serde_json::from_str(raw) {
+	// MSC4499: a repeated key is malformed at any depth, not only directly in
+	// the verify_keys maps. The pre-scan above covers those; this catches the
+	// rest (e.g. two `key` members inside one key object).
+	if slipstream::json::Value::parse_strict(raw) == Err(slipstream::json::Error::DuplicateKey) {
+		let msg = "Duplicate JSON key in key response";
+		if strict {
+			return Err!(BadServerResponse("{msg}"));
+		}
+		conduwuit::warn!("MSC4499 (Observation Mode): {msg} — allowing payload");
+	}
+
+	let value: slipstream::json::Value = match slipstream::codec::from_str(raw) {
 		| Ok(val) => val,
 		| Err(e) =>
 			if strict {
@@ -351,6 +362,17 @@ mod tests {
 		let json =
 			r#"{"verify_keys": {"ed25519:a": {"key": "AAA"}, "ed25519:a": {"key": "BBB"}}}"#;
 		assert!(check_no_duplicate_json_keys(json, true).is_err());
+	}
+
+	#[test]
+	fn duplicate_member_deep_inside_a_key_object_is_rejected() {
+		let json = r#"{"verify_keys": {"ed25519:a": {"key": "AAA", "key": "AAA"}}}"#;
+		assert!(check_no_duplicate_json_keys(json, true).is_err());
+		// Observation mode only warns.
+		assert!(check_no_duplicate_json_keys(json, false).is_ok());
+
+		let old = r#"{"old_verify_keys": {"ed25519:a": {"key": "AAA", "key": "AAA", "expired_ts": 1}}}"#;
+		assert!(check_no_duplicate_json_keys(old, true).is_err());
 	}
 
 	#[test]

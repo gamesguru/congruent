@@ -11,7 +11,7 @@ use futures::{
 	FutureExt, TryFutureExt, TryStreamExt,
 	future::{OptionFuture, try_join4},
 };
-use ruma::{
+use slipstream::{
 	CanonicalJsonValue, EventId, OwnedEventId, OwnedUserId, RoomId, ServerName, UserId,
 	events::{
 		StateEventType,
@@ -22,6 +22,18 @@ use tracing::debug;
 
 use super::handle_outlier_pdu::AuthRecoveryStage;
 use crate::rooms::timeline::{RawPduId, pdu_fits};
+
+/// [`super::fetch_prev`]'s full return tuple, threaded from the
+/// `MissingAuthEvents` retry path (which fetches this event's own
+/// prev_events just to pick a `/state_ids` anchor) through to
+/// [`process_timeline_upgrade`] so a successful retry doesn't repeat the
+/// exact same federation fetch a second time immediately after.
+type PrefetchedPrev = (
+	Vec<OwnedEventId>,
+	HashMap<OwnedEventId, BTreeMap<String, CanonicalJsonValue>>,
+	Option<OwnedEventId>,
+	bool,
+);
 
 async fn should_rescind_invite(
 	services: &crate::rooms::event_handler::Services,
@@ -62,7 +74,7 @@ async fn should_rescind_invite(
 	// Does the target user have a pending invite?
 	let Ok(pending_invite_state) = services
 		.state_cache
-		.invite_state(target_user_id, room_id)
+		.invite_state(&target_user_id, room_id)
 		.await
 	else {
 		return Ok(false); // No pending invite, so nothing to rescind
@@ -129,7 +141,7 @@ pub async fn handle_incoming_pdu<'a>(
 	event_id: &'a EventId,
 	value: BTreeMap<String, CanonicalJsonValue>,
 	is_timeline_event: bool,
-	room_version: &'a ruma::RoomVersionId,
+	room_version_override: Option<&'a slipstream::RoomVersionId>,
 ) -> Result<Option<RawPduId>> {
 	// Prepare outlier value in case we need to soft-fail on timeout
 	let mut outlier_value = value.clone();
@@ -142,7 +154,7 @@ pub async fn handle_incoming_pdu<'a>(
 		event_id,
 		value,
 		is_timeline_event,
-		room_version,
+		room_version_override,
 	);
 
 	let pdu_timeout = self.services.server.config.pdu_receive_timeout;
@@ -179,8 +191,12 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	event_id: &'a EventId,
 	value: BTreeMap<String, CanonicalJsonValue>,
 	is_timeline_event: bool,
-	room_version: &'a ruma::RoomVersionId,
+	room_version_override: Option<&'a slipstream::RoomVersionId>,
 ) -> Result<Option<RawPduId>> {
+	let room_version = match room_version_override {
+		| Some(version) => version.clone(),
+		| None => self.services.state.get_room_version(room_id).await?,
+	};
 	// Skip if it's already an accepted timeline event.
 	if let Ok(pdu_id) = self.services.timeline.get_pdu_id(event_id).await {
 		if self.services.pdu_metadata.is_event_accepted(event_id).await {
@@ -258,6 +274,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					&create_event,
 					origin,
 					room_id,
+					None,
 				))
 				.await;
 			}
@@ -291,15 +308,16 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	let origin_acl_check = self.acl_check(origin, room_id);
 
 	// Check room ACL on sender's server name
-	let sender: &UserId = value
+	let sender = value
 		.get("sender")
-		.try_into()
-		.map_err(|e| err!(Request(InvalidParam("PDU does not have a valid sender key: {e}"))))?;
+		.and_then(CanonicalJsonValue::as_str)
+		.and_then(|sender| OwnedUserId::parse(sender).ok())
+		.ok_or_else(|| err!(Request(InvalidParam("PDU does not have a valid sender key"))))?;
+	let sender = &sender;
 
-	let sender_acl_check: OptionFuture<_> = sender
-		.server_name()
-		.ne(origin)
-		.then(|| self.acl_check(sender.server_name(), room_id))
+	let sender_server = sender.server_name();
+	let sender_acl_check: OptionFuture<_> = (sender_server != origin)
+		.then(|| self.acl_check(&sender_server, room_id))
 		.into();
 
 	let (meta_exists, is_disabled, (), ()) = try_join4(
@@ -332,14 +350,14 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					.get("state_key")
 					.and_then(|v| v.as_str())
 					.unwrap_or_default();
-				let target_user = UserId::parse(state_key).unwrap_or(sender);
+				let target_user = UserId::parse(state_key).unwrap_or_else(|_| sender.clone());
 				debug_info!(
 					"Invite to {room_id} appears to have been rescinded by {sender}, marking \
 					 target {target_user} as left"
 				);
 				self.services
 					.state_cache
-					.mark_as_left(target_user, room_id, None)
+					.mark_as_left(&target_user, room_id, None)
 					.await;
 				// Store the leave/ban as an outlier so the remote server's
 				// retry finds it and doesn't loop with 404s.
@@ -392,6 +410,13 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 		.room_state_get(room_id, &StateEventType::RoomCreate, "")
 		.await?);
 
+	// Populated by the `MissingAuthEvents` retry branch below if it already
+	// fetched this event's own prev_events over federation while picking a
+	// `/state_ids` anchor. `process_timeline_upgrade` needs that same fetch
+	// (full prev PDUs, not just an anchor) for a successful retry -- passing
+	// it through here means it doesn't repeat the round-trip.
+	let mut prefetched_prev: Option<PrefetchedPrev> = None;
+
 	let (incoming_pdu, val) = match Box::pin(self.handle_outlier_pdu(
 		origin,
 		Some(create_event),
@@ -400,7 +425,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 		value.clone(),
 		false,
 		false,
-		room_version,
+		Some(&room_version),
 		AuthRecoveryStage::BeforeStateIds,
 	))
 	.await
@@ -480,7 +505,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					room_id,
 					event_id,
 					pdu.prev_events(),
-					Some(pdu.sender().server_name()),
+					Some(&pdu.sender().server_name()),
 				))
 				.await
 				{
@@ -491,8 +516,27 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					// upcoming /state_ids retry there instead, since that's the
 					// point the sending server can actually provide a snapshot
 					// for.
-					| Ok((_, _, Some(deeper_anchor), _)) => {
-						state_ids_anchor = deeper_anchor;
+					// Only cache when `fetch_prev` actually produced candidates. Its
+					// `Some(deeper_anchor)` case implies candidates were fetched (a
+					// deeper anchor is only derived once a candidate exists), so
+					// `!sorted.is_empty()` is the right gate for both.
+					//
+					// An *empty* `Ok` here is ambiguous: `fetch_prev` returns
+					// `Ok((Vec::new(), HashMap::new(), None, false))` both when every
+					// prev_event was already known/satisfied AND when every
+					// /get_missing_events federation call failed (transient). Caching
+					// either as `prefetched_prev` would make `process_timeline_upgrade`
+					// skip its own `fetch_prev` retry and strand the event without
+					// predecessor repair on the failure path. Leaving it uncached lets
+					// that retry happen: a harmless no-op for the already-satisfied
+					// case, and a genuine second attempt for the failed one.
+					| Ok((sorted, fetched, deeper_anchor, invalid))
+						if !sorted.is_empty() || invalid =>
+					{
+						if let Some(anchor) = &deeper_anchor {
+							state_ids_anchor = anchor.clone();
+						}
+						prefetched_prev = Some((sorted, fetched, deeper_anchor, invalid));
 					},
 					| Ok(_) => {},
 					| Err(e) => {
@@ -533,7 +577,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					}
 					inline_fetches = inline_fetches.saturating_add(1);
 
-					let request = ruma::api::federation::event::get_event::v1::Request {
+					let request = slipstream::api::federation::event::get_event::v1::Request {
 						event_id: missing_id.to_owned(),
 						include_unredacted_content: None,
 					};
@@ -546,10 +590,13 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					else {
 						continue;
 					};
+					let Some(raw_pdu) = response.pdus.first() else {
+						continue;
+					};
 
 					let Ok((parsed_id, value)) =
 						conduwuit::matrix::event::gen_event_id_canonical_json(
-							&response.pdu,
+							raw_pdu,
 							&room_version_id,
 						)
 					else {
@@ -592,7 +639,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					value.clone(),
 					false,
 					false,
-					room_version,
+					Some(&room_version),
 					AuthRecoveryStage::AfterStateIds,
 				))
 				.await
@@ -677,8 +724,15 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	// We no longer need an MPSC worker because state resolution lockups (the V2.1
 	// drain trap) are fixed, so this runs blazingly fast without starving EDUs or
 	// OCC storms!
-	Box::pin(self.process_timeline_upgrade(incoming_pdu, val, create_event, origin, room_id))
-		.await
+	Box::pin(self.process_timeline_upgrade(
+		incoming_pdu,
+		val,
+		create_event,
+		origin,
+		room_id,
+		prefetched_prev,
+	))
+	.await
 }
 
 #[implement(super::Service)]
@@ -695,6 +749,11 @@ pub async fn process_timeline_upgrade(
 	create_event: &conduwuit::PduEvent,
 	origin: &ServerName,
 	room_id: &RoomId,
+	// Already-fetched result of `fetch_prev(.., incoming_pdu.prev_events(), ..)`
+	// for this exact event, if the caller's `MissingAuthEvents` retry path
+	// already made that federation call while picking a `/state_ids` anchor.
+	// Reused below instead of repeating the same fetch.
+	prefetched_prev: Option<PrefetchedPrev>,
 ) -> Result<Option<RawPduId>> {
 	let event_id = incoming_pdu.event_id().to_owned();
 
@@ -709,20 +768,49 @@ pub async fn process_timeline_upgrade(
 
 	// Fetch any missing prev events before taking the write cork so remote I/O
 	// does not suppress unrelated WAL flushes across the whole server.
-	// These are timeline events.
+	// These are timeline events. Skipped entirely if the caller already did
+	// this exact fetch (see `prefetched_prev`'s doc comment).
 	let (
 		sorted_prev_events,
 		fetched_prev_events,
-		prev_fetch_deeper_anchor,
+		_prev_fetch_deeper_anchor,
 		prev_fetch_had_invalid_data,
-	) = Box::pin(self.fetch_prev(
-		origin,
-		room_id,
-		event_id.as_ref(),
-		incoming_pdu.prev_events(),
-		Some(incoming_pdu.sender().server_name()),
-	))
-	.await?;
+	) = if let Some(prefetched) = prefetched_prev {
+		prefetched
+	} else {
+		Box::pin(self.fetch_prev(
+			origin,
+			room_id,
+			event_id.as_ref(),
+			incoming_pdu.prev_events(),
+			Some(&incoming_pdu.sender().server_name()),
+		))
+		.await?
+	};
+	let fetched_prev_ids = &fetched_prev_events;
+	let all_prevs_unknown = futures::StreamExt::all(
+		futures::stream::iter(incoming_pdu.prev_events()),
+		|prev_id| async move {
+			!fetched_prev_ids.contains_key(prev_id)
+				&& !self.services.timeline.pdu_exists(prev_id).await
+		},
+	)
+	.await;
+	if prev_fetch_had_invalid_data && all_prevs_unknown {
+		warn!(
+			%event_id,
+			"prev_events fetch contained structurally invalid data; storing as outlier and rejecting"
+		);
+		self.services.outlier.add_pdu_outlier(&event_id, &val, Some(room_id)).await;
+		self.services.pdu_metadata.mark_event_rejected(
+			&event_id,
+			&crate::rooms::pdu_metadata::RejectionCode::StructurallyInvalidInGetMissingEvents
+				.with_detail("prev_event contained structurally invalid data"),
+		).await;
+		return Err(err!(Request(InvalidParam(
+			"prev_event contained structurally invalid data"
+		))));
+	}
 	self.processed_pdu_cache.insert(event_id.clone(), ());
 
 	debug!(events = ?sorted_prev_events, "Handling previous events");
@@ -773,41 +861,50 @@ pub async fn process_timeline_upgrade(
 	self.services
 		.timeline
 		.with_cork_and_flush(|| async move {
-			sorted_prev_events
+			let predecessors_were_recovered = sorted_prev_events
 				.iter()
 				.try_stream()
 				.map_ok(AsRef::as_ref)
-				.try_for_each(|prev_id| {
-					self.handle_prev_pdu(
-						origin,
-						event_id.as_ref(),
-						room_id,
-						eventid_info.remove(prev_id),
-						create_event,
-						first_ts_in_room,
-						prev_id,
-					)
-					.inspect_err(move |e| {
-						warn!("Prev {prev_id} failed: {e}");
-						match self
-							.services
-							.globals
-							.bad_event_ratelimiter
-							.write()
-							.entry(prev_id.into())
-						{
-							| hash_map::Entry::Vacant(e) => {
-								e.insert((Instant::now(), 1));
-							},
-							| hash_map::Entry::Occupied(mut e) => {
-								let tries = e.get().1.saturating_add(1);
-								*e.get_mut() = (Instant::now(), tries);
-							},
-						}
-					})
-					.map(|_| self.services.server.check_running())
+				.try_fold(false, |recovered_any, prev_id| {
+					let event_id = event_id.clone();
+					let event_info = eventid_info.remove(prev_id);
+					async move {
+						let recovered = self
+							.handle_prev_pdu(
+								origin,
+								event_id.as_ref(),
+								room_id,
+								event_info,
+								create_event,
+								first_ts_in_room,
+								prev_id,
+							)
+							.inspect_err(move |e| {
+								warn!("Prev {prev_id} failed: {e}");
+								match self
+									.services
+									.globals
+									.bad_event_ratelimiter
+									.write()
+									.entry(prev_id.into())
+								{
+									| hash_map::Entry::Vacant(e) => {
+										e.insert((Instant::now(), 1));
+									},
+									| hash_map::Entry::Occupied(mut e) => {
+										let tries = e.get().1.saturating_add(1);
+										*e.get_mut() = (Instant::now(), tries);
+									},
+								}
+							})
+							.await
+							// A failed predecessor is logged and rate-limited above; it must
+							// not prevent the incoming event from being handled.
+							.unwrap_or(false);
+						self.services.server.check_running()?;
+						Ok::<bool, conduwuit::Error>(recovered_any || recovered)
+					}
 				})
-				.boxed()
 				.await?;
 
 			// Done with prev events, now handling the incoming event
@@ -830,13 +927,11 @@ pub async fn process_timeline_upgrade(
 				create_event,
 				origin,
 				room_id,
-				false,
 				true,
-				prev_fetch_had_invalid_data,
-				prev_fetch_deeper_anchor,
-				true,
+				predecessors_were_recovered,
 			))
 			.await
+			.map(|(pdu_id, _)| pdu_id)
 		})
 		.await
 }

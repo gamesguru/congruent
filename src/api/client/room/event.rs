@@ -1,7 +1,7 @@
 use axum::extract::State;
 use conduwuit::{Err, Event, Result, debug_warn, err};
 use futures::{FutureExt, TryFutureExt, future::try_join};
-use ruma::api::client::room::get_room_event;
+use slipstream::api::client::room::get_room_event;
 
 use crate::{
 	Ruma,
@@ -30,7 +30,7 @@ pub(crate) async fn get_room_event_route(
 		.user_can_see_event(body.sender_user(), room_id, event_id)
 		.map(Ok);
 
-	let (mut event, visible) = try_join(event, visible).await?;
+	let (mut event, visible) = Box::pin(try_join(event, visible)).await?;
 
 	if !visible
 		|| is_ignored_pdu(services, &event, body.sender_user()).await?
@@ -52,8 +52,8 @@ pub(crate) async fn get_room_event_route(
 		debug_warn!("Failed to add bundled aggregations to event: {e}");
 	}
 
-	event.set_unsigned(body.sender_user.as_deref());
-	if let Some(sender_user) = body.sender_user.as_deref() {
+	event.set_unsigned(body.sender_user_opt());
+	if let Some(sender_user) = body.sender_user_opt() {
 		add_membership_to_unsigned(services, sender_user, &mut event).await;
 	}
 

@@ -8,8 +8,8 @@ use conduwuit::{
 	matrix::{Event, pdu::PduEvent},
 	warn,
 };
-use futures::StreamExt;
-use ruma::{
+use futures::{StreamExt, TryStreamExt};
+use slipstream::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
 	RoomVersionId,
 	api::federation::event::{get_event, get_missing_events},
@@ -30,16 +30,36 @@ pub(super) async fn get_room_dag(
 	outliers: bool,
 	segments: bool,
 	merge_outliers: bool,
+	topo: bool,
 ) -> Result {
 	let room_id = self.services.rooms.alias.resolve(&room_id).await?;
-	let pdu_ids: Vec<OwnedEventId> = self
-		.services
-		.rooms
-		.timeline
-		.all_pdus(&room_id)
-		.map(|(_, pdu)| pdu.event_id().to_owned())
-		.collect()
-		.await;
+	let pdu_ids: Vec<OwnedEventId> = if topo {
+		use futures::TryStreamExt;
+		self.services
+			.rooms
+			.timeline
+			.topo_pdus(&room_id, None)
+			.filter_map(|res: Result<(_, PduEvent)>| {
+				futures::future::ready(match res {
+					| Ok((_, pdu)) => Some(Ok(pdu.event_id().to_owned())),
+					| Err(conduwuit::Error::SerdeDe(_) | conduwuit::Error::CanonicalJson(_)) => {
+						warn!("get_room_dag --topo: skipping undecodable topo row");
+						None
+					},
+					| Err(e) => Some(Err(e)),
+				})
+			})
+			.try_collect()
+			.await?
+	} else {
+		self.services
+			.rooms
+			.timeline
+			.all_pdus(&room_id)
+			.map(|(_, pdu)| pdu.event_id().to_owned())
+			.collect()
+			.await
+	};
 
 	let actual_start = if start < 0 {
 		let offset = usize::try_from(start.unsigned_abs()).unwrap_or(usize::MAX);
@@ -90,8 +110,8 @@ pub(super) async fn get_room_dag(
 			if let Ok(pdu_json) = self.services.rooms.timeline.get_pdu_json(&event_id).await {
 				let pdu_result = self.services.rooms.timeline.get_pdu(&event_id).await;
 				if let Ok(ref pdu) = pdu_result {
-					let ts: u64 = pdu.origin_server_ts().0.into();
-					let depth: u64 = pdu.depth.into();
+					let ts: u64 = pdu.origin_server_ts().0;
+					let depth: u64 = pdu.depth;
 					if let Some(pts) = prev_ts {
 						if ts < pts {
 							chronological_breaks.push((i, event_id.clone(), ts, pts));
@@ -219,20 +239,29 @@ pub(super) async fn get_room_dag(
 		(0, 0)
 	};
 
-	let room_ssh = self
+	let room_root = self
 		.services
 		.rooms
 		.state
-		.get_room_shortstatehash(&room_id)
+		.get_room_state_hamt(&room_id)
 		.await
 		.ok();
+
+	let room_ssh = room_root.as_ref().map(|root| {
+		u64::from_be_bytes(
+			root.structural_hash[..8]
+				.try_into()
+				.expect("structural hash is at least 8 bytes"),
+		)
+	});
 
 	let tip_match = match (stats.last_ssh, room_ssh) {
 		| (Some(tip), Some(room)) if tip == room => "✓ tip matches room state".to_owned(),
 		| (Some(tip), Some(room)) if stats.last_is_state_event => {
-			// pdu_shortstatehash is the state BEFORE the tip event; room SSH is
-			// the state AFTER. Verify the room state actually contains the tip
-			// event's state change — look up (type, state_key) in room state.
+			// The exported fingerprint is the tip event's state root; the room
+			// fingerprint is the room's current state root. Verify the room
+			// state actually contains the tip event's state change — look up
+			// (type, state_key) in room state.
 			if let (Some(last_eid), Some(last_type), Some(last_sk)) =
 				(&stats.last_event_id, &stats.last_event_type, &stats.last_state_key)
 			{
@@ -240,7 +269,12 @@ pub(super) async fn get_room_dag(
 					.services
 					.rooms
 					.state_accessor
-					.state_get_id::<Box<EventId>>(room, &last_type.to_string().into(), last_sk)
+					.state_get_id_hamt::<EventId>(
+						&room_id,
+						room_root.as_ref().expect("room fingerprint implies a root"),
+						&last_type.to_string().into(),
+						last_sk,
+					)
 					.await
 					.is_ok_and(|eid| *eid == **last_eid);
 
@@ -369,8 +403,9 @@ pub(super) async fn get_remote_dag(
 	extra_servers: Vec<OwnedServerName>,
 	gap_fill: bool,
 	import: bool,
-	_skip_auth: bool,
+	skip_auth: bool,
 	reorder: bool,
+	no_fallback: bool,
 ) -> Result {
 	use futures::StreamExt;
 
@@ -457,7 +492,7 @@ pub(super) async fn get_remote_dag(
 	}
 
 	let safe_room_id = room_id.to_string().replace('!', "").replace(':', "_");
-	let server_str = server.as_ref().map_or("auto", |s| s.as_str());
+	let server_str = server.as_ref().map_or("auto", |s| s);
 	let path = format!("/tmp/remote-dag-{safe_room_id}-v{room_version}-{server_str}.jsonl");
 	let file = tokio::fs::File::create(&path)
 		.await
@@ -475,7 +510,7 @@ pub(super) async fn get_remote_dag(
 	let mut max_depth = 0_u64;
 	let mut consecutive_errors = 0_usize;
 	let mut last_fetched_event: Option<OwnedEventId> = None;
-	let batch_size = ruma::uint!(500);
+	let batch_size = 500;
 	let start_time = tokio::time::Instant::now();
 
 	let server_list_str = pool.display();
@@ -509,7 +544,7 @@ pub(super) async fn get_remote_dag(
 			continue;
 		};
 
-		let request = ruma::api::federation::backfill::get_backfill::v1::Request {
+		let request = slipstream::api::federation::backfill::get_backfill::v1::Request {
 			room_id: room_id.clone(),
 			v: request_v.clone(),
 			limit: batch_size,
@@ -596,6 +631,16 @@ pub(super) async fn get_remote_dag(
 				queue.push_front(id);
 			}
 
+			if no_fallback {
+				info!(
+					"get-remote-dag: --no-fallback specified; stopping on empty /backfill \
+					 response"
+				);
+				self.write_str("Stopping on empty /backfill response (--no-fallback enabled).\n")
+					.await?;
+				break;
+			}
+
 			if !pool.all_exhausted() {
 				continue; // Try another server
 			}
@@ -622,8 +667,10 @@ pub(super) async fn get_remote_dag(
 								 primary server didn't have"
 							);
 						}
-						fallback_pdus.push(res.pdu);
-						break;
+						if let Some(pdu) = res.pdus.into_iter().next() {
+							fallback_pdus.push(pdu);
+							break;
+						}
 					}
 				}
 			}
@@ -635,9 +682,9 @@ pub(super) async fn get_remote_dag(
 				continue;
 			}
 			info!("get-remote-dag: recovered {} PDUs via /event/ fallback!", fallback_pdus.len());
-			response = ruma::api::federation::backfill::get_backfill::v1::Response {
+			response = slipstream::api::federation::backfill::get_backfill::v1::Response {
 				origin: active_server.clone(),
-				origin_server_ts: ruma::MilliSecondsSinceUnixEpoch::now(),
+				origin_server_ts: slipstream::MilliSecondsSinceUnixEpoch::now(),
 				pdus: fallback_pdus,
 			};
 		}
@@ -648,9 +695,9 @@ pub(super) async fn get_remote_dag(
 				async move {
 					// BYPASS signature verification to make get-remote-dag BLAZING fast!
 					// Just generate the ID and canonical JSON without fetching keys over network.
-					let res =
-						conduwuit::matrix::event::gen_event_id_canonical_json(&raw_pdu, &rv);
-					(raw_pdu, res)
+					// raw_pdu itself is dropped here -- the canonical `value` returned below
+					// is what both the PduEvent and the export line are built from.
+					conduwuit::matrix::event::gen_event_id_canonical_json(&raw_pdu, &rv)
 				}
 			})
 			.buffered(500);
@@ -659,7 +706,7 @@ pub(super) async fn get_remote_dag(
 		let mut batch_pdus = Vec::new();
 		let mut batch_event_ids = HashSet::new();
 
-		while let Some((raw_pdu, validation_res)) = verifications.next().await {
+		while let Some(validation_res) = verifications.next().await {
 			let (event_id, mut value) = match validation_res {
 				| Ok((eid, val)) => (eid, val),
 				| Err(e) => {
@@ -672,32 +719,26 @@ pub(super) async fn get_remote_dag(
 
 			value.insert(
 				"event_id".to_owned(),
-				ruma::CanonicalJsonValue::String(event_id.as_str().to_owned()),
+				slipstream::CanonicalJsonValue::String(event_id.as_str().to_owned()),
 			);
 
-			batch_pdus.push((event_id, value, raw_pdu));
+			batch_pdus.push((event_id, value));
 		}
 
-		for (event_id, value, raw_pdu) in batch_pdus {
+		for (event_id, value) in batch_pdus {
 			if seen.contains(&event_id) {
 				continue;
 			}
 			seen.insert(event_id.clone());
 
-			let Ok(pdu) = PduEvent::from_id_val(&event_id, value.clone(), Some(room_id.as_ref()))
-			else {
+			let json = Some(slipstream::codec::to_string(&slipstream::json::Value::Object(
+				value.clone(),
+			)));
+			let Ok(pdu) = PduEvent::from_id_val(&event_id, value, Some(room_id.as_ref())) else {
 				continue;
 			};
 
-			let mut export_val: serde_json::Map<String, serde_json::Value> =
-				serde_json::from_str(raw_pdu.get()).unwrap_or_default();
-			if !export_val.contains_key("event_id") {
-				export_val.insert(
-					"event_id".to_owned(),
-					serde_json::Value::String(event_id.to_string()),
-				);
-			}
-			if let Ok(json) = serde_json::to_string(&export_val) {
+			if let Some(json) = json {
 				if writer.write_all(json.as_bytes()).await.is_ok() {
 					let _ = writer.write_all(b"\n").await;
 				}
@@ -708,7 +749,7 @@ pub(super) async fn get_remote_dag(
 
 			total_prev_events = total_prev_events
 				.saturating_add(u64::try_from(pdu.prev_events().count()).unwrap_or(0));
-			let depth: u64 = pdu.depth.into();
+			let depth: u64 = pdu.depth;
 			min_depth = min_depth.min(depth);
 			max_depth = max_depth.max(depth);
 			total = total.saturating_add(1);
@@ -745,6 +786,28 @@ pub(super) async fn get_remote_dag(
 		.flush()
 		.await
 		.map_err(|e| err!(Database("Failed to flush writer: {e:?}")))?;
+
+	if !queue.is_empty() {
+		let frontier_path = format!("/tmp/remote-dag-frontier-{safe_room_id}.jsonl");
+		if let Ok(f) = tokio::fs::File::create(&frontier_path).await {
+			use tokio::io::AsyncWriteExt;
+			let mut f_writer = tokio::io::BufWriter::new(f);
+			for eid in &queue {
+				let _ = f_writer.write_all(format!("{eid}\n").as_bytes()).await;
+			}
+			let _ = f_writer.flush().await;
+			info!(
+				"get-remote-dag: wrote {} unresolved frontier IDs to {frontier_path}",
+				queue.len()
+			);
+			let _ = self
+				.write_str(&format!(
+					"Unresolved frontier ({} IDs) saved to {frontier_path}\n",
+					queue.len()
+				))
+				.await;
+		}
+	}
 
 	let elapsed = start_time.elapsed();
 	let (bf_whole, bf_frac) = if total > 0 {
@@ -799,17 +862,48 @@ pub(super) async fn get_remote_dag(
 	))
 	.await?;
 
-	// Pipeline hint
 	if import {
+		self.write_str(&format!("\nImporting {total} PDUs from {display_path}...\n"))
+			.await?;
+		// The crawl above never verified signatures (bypassed for crawl speed),
+		// so importing must also skip verification -- there's nothing more
+		// trustworthy to check against at this point than at crawl time.
+		Box::pin(self.import_pdus(
+			display_path.clone(),
+			Some(room_id.clone()),
+			skip_auth,
+			true,
+			false,
+			Some(room_version.clone()),
+		))
+		.await?;
+
+		if reorder {
+			self.write_str(&format!("Reordering timeline for {room_id}...\n"))
+				.await?;
+			Box::pin(
+				self.services
+					.rooms
+					.timeline
+					.reorder_timeline(&room_id, false, false, false),
+			)
+			.await?;
+		}
+	} else {
+		// Pipeline hint -- only meaningful when the caller didn't ask us to
+		// run it ourselves.
 		self.write_str(&format!(
 			"\nTo import: `yolo import-pdus {display_path} --skip-sig-verify`\n"
 		))
 		.await?;
-	}
 
-	if reorder {
-		self.write_str(&format!("To reorder: `yolo reorder-timeline {room_id}`\n"))
+		if reorder {
+			self.write_str(
+				"Note: --reorder has no effect without --import (nothing was persisted to \
+				 reorder).\n",
+			)
 			.await?;
+		}
 	}
 
 	Ok(())
@@ -874,10 +968,11 @@ pub(super) async fn dag_merge_base(
 					)
 					.await
 					.ok()?;
+				let raw_pdu = response.pdus.first()?;
 				let (validated_id, value) = self
 					.services
 					.server_keys
-					.validate_and_add_event_id(&response.pdu, &room_version)
+					.validate_and_add_event_id(raw_pdu, &room_version)
 					.await
 					.ok()?;
 				let pdu =
@@ -928,11 +1023,10 @@ pub(super) async fn dag_merge_base(
 				.boxed()
 				.next()
 				.await
-				.ok_or_else(|| err!("No active local users in room {room_id}"))?
-				.to_owned();
+				.ok_or_else(|| err!("No active local users in room {room_id}"))?;
 
 			let make_join_request =
-				ruma::api::federation::membership::prepare_join_event::v1::Request {
+				slipstream::api::federation::membership::prepare_join_event::v1::Request {
 					room_id: room_id.clone(),
 					user_id,
 					ver: self.services.server.supported_room_versions().collect(),
@@ -947,18 +1041,16 @@ pub(super) async fn dag_merge_base(
 
 			let event_stub_raw = response.event;
 
-			let event_stub: CanonicalJsonObject = serde_json::from_str(event_stub_raw.get())
-				.map_err(|e| err!("Invalid make_join template from {server}: {e}"))?;
+			let event_stub: CanonicalJsonObject =
+				slipstream::codec::from_str(event_stub_raw.get())
+					.map_err(|e| err!("Invalid make_join template from {server}: {e}"))?;
 
 			let remote_tips: Vec<OwnedEventId> = event_stub
 				.get("prev_events")
 				.and_then(|v| v.as_array())
 				.map(|arr| {
 					arr.iter()
-						.filter_map(|v| {
-							v.as_str()
-								.and_then(|s| <&EventId>::try_from(s).ok().map(ToOwned::to_owned))
-						})
+						.filter_map(|v| v.as_str().and_then(|s| EventId::parse(s).ok()))
 						.collect()
 				})
 				.unwrap_or_default();
@@ -1028,7 +1120,7 @@ pub(super) async fn dag_merge_base(
 				| Some(p) => Some(p),
 				| None if federate => {
 					fetched_events = fetched_events.saturating_add(1);
-					let srv = server.as_deref().map_or("local", |s| s.as_str());
+					let srv = server.as_deref().map_or("local", |s| s);
 					info!(
 						"dag-merge-base: fetching {current} from {srv} (A-side, \
 						 #{fetched_events})"
@@ -1065,7 +1157,7 @@ pub(super) async fn dag_merge_base(
 				| Some(p) => Some(p),
 				| None if federate => {
 					fetched_events = fetched_events.saturating_add(1);
-					let srv = server.as_deref().map_or("local", |s| s.as_str());
+					let srv = server.as_deref().map_or("local", |s| s);
 					info!(
 						"dag-merge-base: fetching {current} from {srv} (B-side, \
 						 #{fetched_events})"
@@ -1182,8 +1274,8 @@ pub(super) async fn dag_merge_base(
 
 		let max_len = path_a.len().max(path_b.len());
 		for i in 0..max_len {
-			let left = path_a.get(i).map(|id| short(id)).unwrap_or_default();
-			let right = path_b.get(i).map(|id| short(id)).unwrap_or_default();
+			let left = path_a.get(i).map(&short).unwrap_or_default();
+			let right = path_b.get(i).map(&short).unwrap_or_default();
 
 			// Check if this is the merge base
 			let is_mb_left = path_a.get(i).is_some_and(|id| id == mb);
@@ -1321,17 +1413,17 @@ pub(super) async fn audit_auth_chain(
 			.services
 			.rooms
 			.state
-			.get_room_shortstatehash(&room_id)
+			.get_room_state_hamt(&room_id)
 			.await
 		{
-			| Ok(sstatehash) =>
+			| Ok(room_root) =>
 				self.services
 					.rooms
 					.state_accessor
-					.state_full_ids(sstatehash)
-					.map(|(_, id)| id)
-					.collect()
-					.await,
+					.state_full_ids_hamt(&room_root)
+					.map_ok(|(_, id)| id)
+					.try_collect()
+					.await?,
 			| Err(_) =>
 				self.services
 					.rooms
@@ -1354,7 +1446,6 @@ pub(super) async fn audit_auth_chain(
 		state_ids.extend(outlier_ids);
 	}
 
-	let mut state_ids = state_ids;
 	if state_ids.is_empty() {
 		if let Ok(latest) = self
 			.services
@@ -1613,7 +1704,7 @@ pub(super) async fn fetch_missing_events(
 						if let Ok((event_id, value)) = self
 							.services
 							.server_keys
-							.validate_and_add_event_id(raw.as_ref(), &room_version)
+							.validate_and_add_event_id(&raw, &room_version)
 							.await
 						{
 							if self
@@ -1622,12 +1713,8 @@ pub(super) async fn fetch_missing_events(
 								.outlier
 								.get_pdu_outlier(&event_id)
 								.await
-								.is_err() && !self
-								.services
-								.rooms
-								.timeline
-								.pdu_exists(&event_id)
-								.await
+								.is_err()
+								&& !self.services.rooms.timeline.pdu_exists(&event_id).await
 							{
 								self.services
 									.rooms
@@ -1650,12 +1737,13 @@ pub(super) async fn fetch_missing_events(
 											.outlier
 											.get_pdu_outlier(prev)
 											.await
-											.is_err() && !self
-											.services
-											.rooms
-											.timeline
-											.pdu_exists(prev)
-											.await
+											.is_err()
+											&& !self
+												.services
+												.rooms
+												.timeline
+												.pdu_exists(prev)
+												.await
 										{
 											next_targets.insert(prev.to_owned());
 										}
@@ -1751,7 +1839,7 @@ pub(super) async fn dedup_room(&self, room_id: OwnedRoomId, dry_run: bool) -> Re
 		};
 
 		// Only strip event_id (DB events include it, federation events don't).
-		// ruma's reference_hash handles redaction + stripping signatures/unsigned
+		// slipstream's reference_hash handles redaction + stripping signatures/unsigned
 		// per the room version spec.
 		let mut hashable = json.clone();
 		hashable.remove("event_id");

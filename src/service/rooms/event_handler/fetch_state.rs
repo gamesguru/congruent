@@ -9,7 +9,7 @@ use conduwuit::{
 	warn,
 };
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	EventId, OwnedEventId, RoomId, ServerName, api::federation::event::get_room_state_ids,
 	events::StateEventType,
 };
@@ -25,7 +25,7 @@ use crate::rooms::short::ShortStateKey;
 	skip_all,
 	fields(%origin),
 )]
-pub(super) async fn fetch_state<Pdu>(
+pub(crate) async fn fetch_state<Pdu>(
 	&self,
 	origin: &ServerName,
 	create_event: &Pdu,
@@ -50,7 +50,7 @@ where
 
 	let (state_pdu_ids, fetched_unknown_events): (
 		Vec<OwnedEventId>,
-		Vec<(OwnedEventId, Box<serde_json::value::RawValue>)>,
+		Vec<(OwnedEventId, conduwuit::matrix::pdu::RawJson)>,
 	) = 'found: {
 		while let Some(server) = pool.next_scored(weights) {
 			let req = self.services.sending.send_federation_request(
@@ -89,8 +89,12 @@ where
 				.chain(state_ids_res.pdu_ids.iter());
 
 			for id in all_ids {
-				if !self.services.timeline.pdu_exists(id).await {
-					missing_ids.push(id.clone());
+				let Ok(id) = OwnedEventId::parse(id.as_str()) else {
+					conduwuit::debug_warn!("Skipping invalid event ID in remote state response");
+					continue;
+				};
+				if !self.services.timeline.pdu_exists(&id).await {
+					missing_ids.push(id);
 				} else {
 					known_count = known_count.saturating_add(1);
 				}
@@ -110,8 +114,8 @@ where
 			let fetch_futures = missing_ids.into_iter().map(|eid| {
 				let server = server.clone();
 				async move {
-					let req = ruma::api::federation::event::get_event::v1::Request::new(
-						(*eid).to_owned(),
+					let req = slipstream::api::federation::event::get_event::v1::Request::new(
+						eid.clone(),
 						None,
 					);
 					match self
@@ -120,20 +124,36 @@ where
 						.send_federation_request(&server, req)
 						.await
 					{
-						| Ok(res) => Ok::<_, (OwnedEventId, conduwuit::Error)>((
-							(*eid).to_owned(),
-							res.pdu,
-						)),
-						| Err(e) => Err(((*eid).to_owned(), e)),
+						| Ok(res) => match res.pdus.into_iter().next() {
+							| Some(pdu) =>
+								Ok::<_, (OwnedEventId, conduwuit::Error)>((eid.clone(), pdu)),
+							| None => Err((
+								eid.clone(),
+								err!(Request(NotFound("Empty pdus in get_event response"))),
+							)),
+						},
+						| Err(e) => Err((eid.clone(), e)),
 					}
 				}
 			});
 
 			let mut fetch_stream = futures::stream::iter(fetch_futures).buffer_unordered(20);
-			let mut fetched_events: Vec<(OwnedEventId, Box<serde_json::value::RawValue>)> =
+			let mut fetched_events: Vec<(OwnedEventId, conduwuit::matrix::pdu::RawJson)> =
 				Vec::new();
-			let mut failed_event = None;
+			let mut failed_ids: Vec<OwnedEventId> = Vec::new();
 
+			// A single unfetchable event (e.g. an old member event whose
+			// origin server never shared it, or a permanently corrupted
+			// branch of the auth chain) must not sink the entire /state_ids
+			// response. Matches Synapse's `_get_state_ids_after_missing_prev_event`,
+			// which treats a partial fetch failure as a warning, not a
+			// blocker: it builds the state map from whatever it *did* manage
+			// to fetch, and lets normal auth-checking reject just the
+			// specific events that end up depending on what's missing.
+			// Aborting the whole ladder here on the first 404 previously
+			// caused this exact PDU's state resolution to nondeterministically
+			// hard-fail depending on unrelated fetch-completion ordering
+			// (see TestCorruptedAuthChain).
 			while let Some(result) = fetch_stream.next().await {
 				match result {
 					| Ok((eid, raw_json)) => {
@@ -141,16 +161,23 @@ where
 					},
 					| Err((eid, e)) => {
 						info!(%server, "fetch_state /event/{eid} failed: {e}");
-						failed_event = Some(e);
-						break;
+						failed_ids.push(eid);
 					},
 				}
 			}
 
-			if let Some(e) = failed_event {
-				pool.record_error(&server);
-				last_err = e;
-				continue;
+			if !failed_ids.is_empty() {
+				// A large /state_ids response can make `failed_ids` huge; only log a
+				// bounded sample of the offending event IDs (distinct from the total
+				// count) instead of serializing the whole vector into this warn.
+				let failed_sample: Vec<_> = failed_ids.iter().take(10).collect();
+				warn!(
+					%server,
+					count = failed_ids.len(),
+					missing = ?failed_sample,
+					"fetch_state: failed to fetch some referenced events; proceeding with \
+					 partial state, dependents will be rejected by normal auth checks"
+				);
 			}
 
 			pool.record_success(&server);
@@ -191,13 +218,13 @@ where
 	);
 
 	// Concurrently parse and verify signatures (Pure CPU and network keys fetch)
-	let mut verified_events: HashMap<OwnedEventId, (PduEvent, ruma::CanonicalJsonObject)> =
+	let mut verified_events: HashMap<OwnedEventId, (PduEvent, slipstream::CanonicalJsonObject)> =
 		unknown_events
 			.into_iter()
 			.stream()
 			.broad_filter_map({
 				let room_version_id = room_version_id.clone();
-				move |(eid, mut val): (OwnedEventId, ruma::CanonicalJsonObject)| {
+				move |(eid, mut val): (OwnedEventId, slipstream::CanonicalJsonObject)| {
 					let room_version_id = room_version_id.clone();
 					async move {
 						let stashed_unsigned = val.remove("unsigned");
@@ -210,7 +237,7 @@ where
 								.bypassed_signature_events
 								.contains(&eid)
 						{
-							Ok(ruma::signatures::Verified::All)
+							Ok(slipstream::signatures::Verified::All)
 						} else {
 							self.services
 								.server_keys
@@ -224,14 +251,14 @@ where
 
 						match verification_result {
 							| Ok(
-								ruma::signatures::Verified::All
-								| ruma::signatures::Verified::Signatures,
+								slipstream::signatures::Verified::All
+								| slipstream::signatures::Verified::Signatures,
 							) => {
 								if matches!(
 									verification_result,
-									Ok(ruma::signatures::Verified::Signatures)
+									Ok(slipstream::signatures::Verified::Signatures)
 								) {
-									if let Err(e) = ruma::canonical_json::redact_in_place(
+									if let Err(e) = slipstream::canonical_json::redact_in_place(
 										&mut val,
 										&room_version_id,
 										None,
@@ -247,7 +274,7 @@ where
 											.await;
 										val.insert(
 											"event_id".to_owned(),
-											ruma::CanonicalJsonValue::String(
+											slipstream::CanonicalJsonValue::String(
 												eid.as_str().to_owned(),
 											),
 										);
@@ -260,20 +287,23 @@ where
 								}
 
 								// Re-attach unsigned for completeness
-								if let Some(ruma::CanonicalJsonValue::Object(unsigned_obj)) =
-									stashed_unsigned
+								if let Some(slipstream::CanonicalJsonValue::Object(
+									unsigned_obj,
+								)) = stashed_unsigned
 								{
 									if !unsigned_obj.is_empty() {
 										val.insert(
 											"unsigned".to_owned(),
-											ruma::CanonicalJsonValue::Object(unsigned_obj),
+											slipstream::CanonicalJsonValue::Object(unsigned_obj),
 										);
 									}
 								}
 
 								val.insert(
 									"event_id".to_owned(),
-									ruma::CanonicalJsonValue::String(eid.as_str().to_owned()),
+									slipstream::CanonicalJsonValue::String(
+										eid.as_str().to_owned(),
+									),
 								);
 
 								if let Ok(pdu) =
@@ -299,7 +329,9 @@ where
 									.await;
 								val.insert(
 									"event_id".to_owned(),
-									ruma::CanonicalJsonValue::String(eid.as_str().to_owned()),
+									slipstream::CanonicalJsonValue::String(
+										eid.as_str().to_owned(),
+									),
 								);
 								self.services
 									.outlier
@@ -319,8 +351,7 @@ where
 	let mut entries = HashMap::new();
 	for (eid, (pdu, _)) in &verified_events {
 		graph.insert(eid.clone(), pdu.auth_events().map(ToOwned::to_owned).collect());
-		entries
-			.insert(eid.clone(), (0_u64.into(), pdu.depth().into(), pdu.origin_server_ts.into()));
+		entries.insert(eid.clone(), (0_u64.into(), pdu.depth(), pdu.origin_server_ts));
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);
 
@@ -351,31 +382,67 @@ where
 		HashMap::with_capacity(state_pdu_ids.len());
 	for eid in state_pdu_ids {
 		// Read from our outlier store or timeline
-		let pdu = self.services.timeline.get_pdu(&eid).await;
-		if let Ok(pdu) = pdu {
-			let state_key = pdu
-				.state_key()
-				.ok_or_else(|| err!(Database("Found non-state pdu in state events.")))?;
-
-			let shortstatekey = self
-				.services
-				.short
-				.get_or_create_shortstatekey(&pdu.kind().to_string().into(), state_key)
-				.await;
-
-			match state.entry(shortstatekey) {
-				| hash_map::Entry::Vacant(v) => {
-					v.insert(eid.clone());
-				},
-				| hash_map::Entry::Occupied(_) => {
-					return Err!(Database(
-						"State event's type and state_key combination exists multiple times: \
-						 {}, {}",
-						pdu.kind(),
-						state_key
-					));
-				},
+		let Ok(pdu) = self.services.timeline.get_pdu(&eid).await else {
+			continue;
+		};
+		let Some(state_key) = pdu.state_key() else {
+			if self.services.pdu_metadata.is_event_rejected(&eid).await {
+				continue;
 			}
+			return Err!(Database("Found non-state pdu in state events."));
+		};
+
+		// A rejected outlier (e.g. missing auth events from a corrupted auth
+		// chain) must never represent resolved room state. If we have a valid
+		// local prior state event for this slot, use the local event ID;
+		// otherwise skip the slot completely.
+		let target_eid = if self.services.pdu_metadata.is_event_rejected(&eid).await
+			&& !self
+				.services
+				.pdu_metadata
+				.is_event_visible_to_clients(&eid)
+				.await
+		{
+			let local_eid = match self.services.state.get_room_state_hamt(room_id).await {
+				| Ok(room_root) => self
+					.services
+					.state_accessor
+					.state_get_in_room_hamt(
+						room_id,
+						&room_root,
+						&pdu.kind().to_string().into(),
+						state_key,
+					)
+					.await
+					.ok()
+					.map(|local_pdu| local_pdu.event_id().to_owned()),
+				| Err(_) => None,
+			};
+			let Some(local_eid) = local_eid else {
+				continue;
+			};
+			local_eid
+		} else {
+			eid
+		};
+
+		let shortstatekey = self
+			.services
+			.short
+			.get_or_create_shortstatekey(&pdu.kind().to_string().into(), state_key)
+			.await;
+
+		match state.entry(shortstatekey) {
+			| hash_map::Entry::Vacant(v) => {
+				v.insert(target_eid);
+			},
+			| hash_map::Entry::Occupied(_) => {
+				return Err!(Database(
+					"State event's type and state_key combination exists multiple times: {}, {}",
+					pdu.kind(),
+					state_key
+				));
+			},
 		}
 	}
 

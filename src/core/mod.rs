@@ -15,12 +15,11 @@ pub mod utils;
 
 pub use ::arrayvec;
 pub use ::http;
-pub use ::ruma;
+pub use ::slipstream;
 pub use ::smallstr;
 pub use ::smallvec;
 pub use ::toml;
 pub use ::tracing;
-pub use conduwuit_build_metadata as build_metadata;
 pub use config::Config;
 pub use error::Error;
 pub use info::{

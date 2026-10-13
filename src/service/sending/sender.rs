@@ -6,16 +6,14 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use conduwuit::info;
+use bytes::BufMut;
+use conduwuit::{debug, info};
 use conduwuit_core::{
 	Error, Event, Result, debug_info, err,
+	matrix::pdu::RawJson as RawJsonValue,
 	result::LogErr,
 	trace,
-	utils::{
-		ReadyExt, calculate_hash, continue_exponential_backoff_secs,
-		future::TryExtExt,
-		stream::{BroadbandExt, IterStream, WidebandExt},
-	},
+	utils::{ReadyExt, calculate_hash, continue_exponential_backoff_secs, stream::BroadbandExt},
 	warn,
 };
 use futures::{
@@ -24,9 +22,9 @@ use futures::{
 	join, pin_mut,
 	stream::FuturesUnordered,
 };
-use ruma::{
-	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedDeviceId, OwnedRoomId, OwnedServerName,
-	OwnedUserId, RoomId, RoomVersionId, ServerName, UInt,
+use slipstream::{
+	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedDeviceId, OwnedEventId, OwnedRoomId,
+	OwnedServerName, OwnedUserId, RoomId, RoomVersionId, ServerName, UInt,
 	api::{
 		appservice::event::push_events::v1::EphemeralData,
 		federation::transactions::{
@@ -43,12 +41,14 @@ use ruma::{
 		receipt::ReceiptType,
 	},
 	push,
-	serde::Raw,
+	sswire::Raw,
 	uint,
 };
-use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
 
 use super::{Destination, EduBuf, EduVec, Msg, SendingEvent, Service, data::QueueItem};
+use crate::rooms::state_accessor::{
+	ALGORITHM, ALGORITHM_WITH_INPUTS, InputCache, StateHashEntry, StateHashes,
+};
 
 #[derive(Debug)]
 enum TransactionStatus {
@@ -56,6 +56,105 @@ enum TransactionStatus {
 	Failed(u32, Instant), // number of times failed, time of last failure
 	Retrying(u32),        // number of times failed
 	Cooldown(Instant),
+}
+
+#[derive(Debug)]
+struct Msc4500SendTransactionRequest {
+	inner: send_transaction_message::v1::Request,
+	state_hashes: Option<StateHashes>,
+}
+
+impl slipstream::api::OutgoingRequest for Msc4500SendTransactionRequest {
+	type EndpointError =
+		<send_transaction_message::v1::Request as slipstream::api::OutgoingRequest>::EndpointError;
+	type IncomingResponse =
+		<send_transaction_message::v1::Request as slipstream::api::OutgoingRequest>::IncomingResponse;
+
+	const METADATA: slipstream::api::Metadata =
+		<send_transaction_message::v1::Request as slipstream::api::OutgoingRequest>::METADATA;
+
+	fn try_into_http_request<T: Default + BufMut>(
+		self,
+		base_url: &str,
+		access_token: slipstream::api::SendAccessToken<'_>,
+		considering_versions: &'_ [slipstream::api::MatrixVersion],
+	) -> core::result::Result<http::Request<T>, slipstream::api::error::IntoHttpError> {
+		let req = self.inner.try_into_http_request::<Vec<u8>>(
+			base_url,
+			access_token,
+			considering_versions,
+		)?;
+		let (mut parts, body) = req.into_parts();
+
+		let body_text = std::str::from_utf8(&body)
+			.map_err(|e| slipstream::api::error::IntoHttpError(e.to_string()))?;
+		let mut json = slipstream::json::Value::parse(body_text)
+			.map_err(|e| slipstream::api::error::IntoHttpError(e.to_string()))?;
+
+		if let Some(obj) = json.as_object_mut() {
+			if let Some(state_hashes) = self.state_hashes {
+				obj.insert(
+					"tk.nutra.msc4500.state_hashes".to_owned(),
+					slipstream::codec::Serialize::to_json(&state_hashes),
+				);
+			}
+		}
+
+		let new_body_bytes = slipstream::codec::to_string(&json).into_bytes();
+
+		if let Some(cl) = parts.headers.get_mut(http::header::CONTENT_LENGTH) {
+			*cl = http::HeaderValue::from(new_body_bytes.len());
+		}
+
+		let mut new_body_t = T::default();
+		new_body_t.put_slice(&new_body_bytes);
+
+		Ok(http::Request::from_parts(parts, new_body_t))
+	}
+}
+
+async fn compute_outbound_state_hashes(
+	services: &super::Services,
+	experimental: &conduwuit::config::ExperimentalConfig,
+	pdus: &[(OwnedEventId, CanonicalJsonObject)],
+) -> Option<StateHashes> {
+	if pdus.is_empty() || !experimental.msc4500_enabled {
+		return None;
+	}
+
+	let with_inputs = experimental.msc4500_resolution_inputs;
+	let algorithm = if with_inputs { ALGORITHM_WITH_INPUTS } else { ALGORITHM };
+
+	// Transactions always carry an entry for every PDU; a PDU whose DAG point
+	// cannot be resolved exactly is an explicit `limited` deferral, never a
+	// guessed digest.
+	let mut inputs_cache = InputCache::new();
+	let mut entries = BTreeMap::new();
+	for (event_id, _) in pdus {
+		let entry = match services.state_accessor.msc4500_pdu_digests(event_id).await {
+			| None => StateHashEntry::limited(with_inputs),
+			| Some(digests) => {
+				let inputs = if with_inputs {
+					let pdu = services.timeline.get_pdu(event_id).await.ok();
+					let digest = match pdu {
+						| Some(pdu) =>
+							services
+								.state_accessor
+								.msc4500_resolution_inputs_digest(&pdu, &mut inputs_cache)
+								.await,
+						| None => None,
+					};
+					Some(digest)
+				} else {
+					None
+				};
+				StateHashEntry::asserting(digests, inputs)
+			},
+		};
+		entries.insert(event_id.clone(), entry);
+	}
+
+	Some(StateHashes { algorithm: algorithm.to_owned(), entries })
 }
 
 type SendingError = Box<(Destination, Error)>;
@@ -77,8 +176,8 @@ impl Service {
 	pub(super) async fn sender(self: Arc<Self>, id: usize) -> Result {
 		// In maintenance mode (listening=false), skip all outbound federation.
 		// Queued transactions are preserved and will drain on normal boot.
-		if !self.server.config.listening {
-			info!("sender[{id}]: maintenance mode, skipping outbound federation");
+		if self.server.is_maintenance() {
+			debug!("sender[{id}]: maintenance mode, skipping outbound federation");
 			return Ok(());
 		}
 
@@ -291,13 +390,13 @@ impl Service {
 			if let Destination::Federation(server_name) = dest {
 				let since = self.db.get_latest_educount(server_name).await;
 				let since_upper = self.services.globals.current_count().unwrap_or(0);
-				info!(
+				debug!(
 					target: "receipt_debug",
 					%server_name, since, since_upper,
 					"handle_response_ok: empty transaction, checking for pending edus"
 				);
 				if since < since_upper {
-					info!(
+					debug!(
 						target: "receipt_debug",
 						%server_name, since, since_upper,
 						"handle_response_ok: since behind since_upper, rescheduling immediate flush"
@@ -306,7 +405,7 @@ impl Service {
 					self.reschedule_flush(dest.clone(), Duration::from_millis(0));
 					return;
 				}
-				info!(
+				debug!(
 					target: "receipt_debug",
 					%server_name, since, since_upper,
 					"handle_response_ok: since caught up, not rescheduling"
@@ -363,6 +462,11 @@ impl Service {
 			// Flush was rejected (e.g., backoff still active). Re-schedule
 			// at the remaining backoff time to avoid hot-polling the channel.
 			let delay = self.remaining_backoff(&msg.dest, statuses);
+			debug!(
+				target: "presence_debug",
+				dest = ?msg.dest, status = ?statuses.get(&msg.dest), ?delay,
+				"flush rejected by sender status"
+			);
 			if delay > Duration::ZERO {
 				self.reschedule_flush(msg.dest, delay);
 			}
@@ -579,17 +683,24 @@ impl Service {
 		statuses
 			.entry(dest.clone()) // TODO: can we avoid cloning?
 			.and_modify(|e| match e {
-				TransactionStatus::Failed(tries, time) => {
+				| TransactionStatus::Failed(tries, time) => {
 					// Fail if a request has failed recently (exponential backoff)
 					let min = self.server.config.sender_retry_backoff_base;
 					let max = self.server.config.sender_retry_backoff_limit;
-					if continue_exponential_backoff_secs(min, max, time.elapsed(), tries.saturating_sub(1))
-						&& !matches!(dest, Destination::Appservice(_))
+					if continue_exponential_backoff_secs(
+						min,
+						max,
+						time.elapsed(),
+						tries.saturating_sub(1),
+					) && !matches!(dest, Destination::Appservice(_))
 					{
 						allow = false;
 
-						let min_dur = Duration::from_secs(min)
-							.saturating_mul(1_u32.checked_shl(tries.saturating_sub(1)).unwrap_or(u32::MAX));
+						let min_dur = Duration::from_secs(min).saturating_mul(
+							1_u32
+								.checked_shl(tries.saturating_sub(1))
+								.unwrap_or(u32::MAX),
+						);
 						let min_dur = std::cmp::min(min_dur, Duration::from_secs(max));
 						let remaining = min_dur.saturating_sub(time.elapsed());
 						self.reschedule_flush(dest.clone(), remaining);
@@ -598,10 +709,10 @@ impl Service {
 						*e = TransactionStatus::Retrying(*tries);
 					}
 				},
-				TransactionStatus::Running | TransactionStatus::Retrying(_) => {
+				| TransactionStatus::Running | TransactionStatus::Retrying(_) => {
 					allow = false; // already running
 				},
-				TransactionStatus::Cooldown(time) => {
+				| TransactionStatus::Cooldown(time) => {
 					if !has_pdu && time.elapsed() < Duration::from_millis(300) {
 						allow = false;
 					} else {
@@ -651,7 +762,7 @@ impl Service {
 		let since_upper = self.services.globals.current_count()?;
 		let batch = (since, since_upper);
 		debug_assert!(batch.0 <= batch.1, "since range must not be negative");
-		info!(
+		debug!(
 			target: "receipt_debug",
 			%server_name, since = batch.0, since_upper = batch.1,
 			"select_edus: window"
@@ -681,7 +792,7 @@ impl Service {
 
 		// The safe global cursor is the minimum of all processed bounds
 		let last_count = device_max.min(receipt_max).min(presence_max);
-		info!(
+		debug!(
 			target: "receipt_debug",
 			%server_name, device_max, receipt_max, presence_max, last_count,
 			receipt_found = receipts.is_some(),
@@ -722,7 +833,7 @@ impl Service {
 			.services
 			.users
 			.last_device_key_update_count
-			.load(Ordering::Relaxed);
+			.load(Ordering::Acquire);
 
 		if since.0 == 0 && since.0 >= last_update {
 			// New server with no previous sync token AND no recent device key
@@ -745,7 +856,7 @@ impl Service {
 			let keys_changed = self
 				.services
 				.users
-				.room_keys_changed(room_id, Some(since.0), None)
+				.room_keys_changed(&room_id, Some(since.0), None)
 				.ready_filter(|(user_id, _)| self.services.globals.user_is_local(user_id));
 
 			pin_mut!(keys_changed);
@@ -754,7 +865,7 @@ impl Service {
 				if count > since.1 {
 					break;
 				}
-				all_changes.entry(count).or_default().insert(user_id.into());
+				all_changes.entry(count).or_default().insert(user_id);
 			}
 		}
 
@@ -762,13 +873,8 @@ impl Service {
 		for users in all_changes.values() {
 			for user_id in users {
 				if !user_devices.contains_key(user_id) {
-					let devices: Vec<OwnedDeviceId> = self
-						.services
-						.users
-						.all_device_ids(user_id)
-						.map(ToOwned::to_owned)
-						.collect()
-						.await;
+					let devices: Vec<OwnedDeviceId> =
+						self.services.users.all_device_ids(user_id).collect().await;
 					user_devices.insert(user_id.clone(), devices);
 				}
 			}
@@ -797,7 +903,6 @@ impl Service {
 			.services
 			.state_cache
 			.server_rooms(server_name)
-			.map(ToOwned::to_owned)
 			.broad_filter_map(|room_id| {
 				let num = Arc::clone(&num);
 				async move {
@@ -820,8 +925,7 @@ impl Service {
 		let receipt_content = Edu::Receipt(ReceiptContent { receipts });
 
 		let mut buf = EduBuf::new();
-		serde_json::to_writer(&mut buf, &receipt_content)
-			.expect("Failed to serialize Receipt EDU to JSON vec");
+		buf.extend_from_slice(slipstream::codec::to_string(&receipt_content).as_bytes());
 
 		(Some(buf), since.1)
 	}
@@ -834,7 +938,7 @@ impl Service {
 		since: (u64, u64),
 		num: &std::sync::atomic::AtomicUsize,
 	) -> ReceiptMap {
-		info!(
+		debug!(
 			target: "receipt_debug",
 			%room_id, since_lower = since.0, since_upper = since.1,
 			"select_edus_receipts_room: scanning"
@@ -862,7 +966,7 @@ impl Service {
 			}
 			if self.services.globals.user_is_local(&user_id) {
 				let Ok(event) =
-					serde_json::from_str::<AnySyncEphemeralRoomEvent>(read_receipt.json().get())
+					slipstream::codec::from_str::<AnySyncEphemeralRoomEvent>(read_receipt.get())
 				else {
 					continue;
 				};
@@ -875,17 +979,12 @@ impl Service {
 				let Ok(event_count) = self.services.timeline.get_pdu_count(event_id).await else {
 					continue;
 				};
-				collected.push((
-					user_id,
-					count,
-					read_receipt.json().get().to_owned(),
-					event_count,
-				));
+				collected.push((user_id, count, read_receipt.get().to_owned(), event_count));
 			}
 		}
 
 		collected.sort_by_key(|(_, stream_count, _, event_count)| (*event_count, *stream_count));
-		info!(
+		debug!(
 			target: "receipt_debug",
 			%room_id, collected = collected.len(),
 			"select_edus_receipts_room: done scanning"
@@ -921,6 +1020,12 @@ impl Service {
 			return (None, since.1);
 		}
 
+		debug!(
+			target: "presence_debug",
+			%server_name, users = users.len(),
+			"select_edus_presence: pending presence for server"
+		);
+
 		let mut presence_updates = Vec::with_capacity(users.len().min(SELECT_PRESENCE_LIMIT));
 		let mut attempted_users = Vec::with_capacity(SELECT_PRESENCE_LIMIT);
 		let mut loop_count = 0_usize;
@@ -937,6 +1042,11 @@ impl Service {
 				.await
 				.log_err()
 			else {
+				info!(
+					target: "presence_debug",
+					%server_name, %user_id,
+					"select_edus_presence: skipping user, presence lookup failed"
+				);
 				attempted_users.push(user_id.clone());
 				continue;
 			};
@@ -950,6 +1060,11 @@ impl Service {
 				.server_sees_user(server_name, &user_id)
 				.await
 			{
+				info!(
+					target: "presence_debug",
+					%server_name, %user_id,
+					"select_edus_presence: dropping user, server no longer sees them"
+				);
 				continue;
 			}
 
@@ -958,10 +1073,7 @@ impl Service {
 				presence: presence_event.content.presence,
 				currently_active: presence_event.content.currently_active.unwrap_or(false),
 				status_msg: presence_event.content.status_msg,
-				last_active_ago: presence_event
-					.content
-					.last_active_ago
-					.unwrap_or_else(|| uint!(0)),
+				last_active_ago: presence_event.content.last_active_ago.unwrap_or(uint!(0)),
 			};
 
 			presence_updates.push(update);
@@ -986,6 +1098,12 @@ impl Service {
 				.extend(users);
 		}
 
+		debug!(
+			target: "presence_debug",
+			%server_name, updates = presence_updates.len(),
+			"select_edus_presence: built presence EDU"
+		);
+
 		if presence_updates.is_empty() {
 			return (None, since.1);
 		}
@@ -997,8 +1115,7 @@ impl Service {
 		let presence_content = Edu::Presence(PresenceContent { push: presence_updates });
 
 		let mut buf = EduBuf::new();
-		serde_json::to_writer(&mut buf, &presence_content)
-			.expect("failed to serialize Presence EDU to JSON");
+		buf.extend_from_slice(slipstream::codec::to_string(&presence_content).as_bytes());
 
 		(Some(buf), since.1)
 	}
@@ -1064,7 +1181,7 @@ impl Service {
 				},
 				| SendingEvent::Edu(edu) =>
 					if appservice.receive_ephemeral {
-						if let Ok(edu) = serde_json::from_slice(edu) {
+						if let Ok(edu) = database::from_json_slice(edu) {
 							edu_jsons.push(edu);
 						}
 					},
@@ -1086,9 +1203,10 @@ impl Service {
 		match self
 			.send_appservice_request(
 				appservice,
-				ruma::api::appservice::event::push_events::v1::Request {
+				slipstream::api::appservice::event::push_events::v1::Request {
 					events: pdu_jsons,
-					txn_id: txn_id.into(),
+					txn_id: slipstream::OwnedTransactionId::parse(txn_id)
+						.expect("base64 transaction hash is a valid transaction ID"),
 					ephemeral: edu_jsons,
 					to_device: Vec::new(), // TODO
 				},
@@ -1172,8 +1290,6 @@ impl Service {
 					.notification_count(&user_id, &room_id)
 					.await
 					.saturating_add(thread_total_notifications)
-					.try_into()
-					.expect("notification count can't go that high")
 			} else {
 				uint!(0)
 			};
@@ -1195,17 +1311,37 @@ impl Service {
 		events: Vec<SendingEvent>,
 		edu_count: Option<u64>,
 	) -> SendingResult {
-		let pdus: Vec<_> = events
-			.iter()
-			.filter_map(|pdu| match pdu {
-				| SendingEvent::Pdu(pdu) => Some(pdu),
-				| _ => None,
-			})
-			.stream()
-			.wide_filter_map(|pdu_id| self.services.timeline.get_pdu_json_from_id(pdu_id).ok())
-			.wide_then(|pdu| self.convert_to_outgoing_federation_event(pdu))
-			.collect()
-			.await;
+		let mut source_pdus: Vec<(OwnedEventId, CanonicalJsonObject)> = Vec::new();
+		for event in &events {
+			let SendingEvent::Pdu(pdu_id) = event else {
+				continue;
+			};
+
+			let Ok(pdu) = self.services.timeline.get_pdu_json_from_id(pdu_id).await else {
+				continue;
+			};
+			let Some(event_id) = pdu
+				.get("event_id")
+				.and_then(|id| id.as_str())
+				.and_then(|id| OwnedEventId::parse(id).ok())
+			else {
+				continue;
+			};
+
+			source_pdus.push((event_id, pdu));
+		}
+
+		let state_hashes = compute_outbound_state_hashes(
+			&self.services,
+			&self.server.config.experimental_features,
+			&source_pdus,
+		)
+		.await;
+
+		let mut outbound_pdus: Vec<RawJsonValue> = Vec::with_capacity(source_pdus.len());
+		for (_, pdu) in source_pdus {
+			outbound_pdus.push(self.convert_to_outgoing_federation_event(pdu).await);
+		}
 
 		let edus: Vec<Raw<Edu>> = events
 			.iter()
@@ -1214,7 +1350,7 @@ impl Service {
 				| _ => None,
 			})
 			.map(|edu_buf| {
-				let res = serde_json::from_slice(edu_buf);
+				let res = database::from_json_slice(edu_buf);
 				if let Err(ref e) = res {
 					tracing::error!(
 						"Failed to deserialize EDU: {} - JSON: {}",
@@ -1227,7 +1363,7 @@ impl Service {
 			.filter_map(Result::ok)
 			.collect();
 
-		if pdus.is_empty() && edus.is_empty() {
+		if outbound_pdus.is_empty() && edus.is_empty() {
 			if let Some(count) = edu_count {
 				info!(
 					target: "receipt_debug",
@@ -1271,7 +1407,7 @@ impl Service {
 		// Track federation stats
 		self.stats
 			.outgoing_pdus
-			.fetch_add(pdus.len().try_into().unwrap_or(u64::MAX), Ordering::Relaxed);
+			.fetch_add(outbound_pdus.len().try_into().unwrap_or(u64::MAX), Ordering::Relaxed);
 		self.stats.outgoing_txns.fetch_add(1, Ordering::Relaxed);
 
 		let now = MilliSecondsSinceUnixEpoch::now();
@@ -1283,18 +1419,21 @@ impl Service {
 		// identify a transaction).
 		let txn_id = self.next_txn_id.fetch_add(1, Ordering::Relaxed).to_string();
 		let request = send_transaction_message::v1::Request {
-			transaction_id: txn_id.clone().into(),
+			transaction_id: slipstream::OwnedTransactionId::parse(&txn_id)
+				.expect("numeric transaction counter is a valid transaction ID"),
 			origin: self.server.name.clone(),
 			origin_server_ts: now,
-			pdus,
+			pdus: outbound_pdus,
 			edus,
 		};
 
-		tracing::info!(target: "federation_debug", dest = ?server, "Sending federation request to server!");
+		tracing::debug!(target: "federation_debug", dest = ?server, "Sending federation request to server!");
+		let msc4500_req = Msc4500SendTransactionRequest { inner: request, state_hashes };
+
 		let result = self
-			.send_federation_request_on(&self.services.client.sender, &server, request)
+			.send_federation_request_on(&self.services.client.sender, &server, msc4500_req)
 			.await;
-		tracing::info!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
+		tracing::debug!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
 
 		for (event_id, result) in result.iter().flat_map(|resp| resp.pdus.iter()) {
 			if let Err(e) = result {
@@ -1324,7 +1463,7 @@ impl Service {
 			},
 			| Ok(_) => {
 				if let Some(count) = edu_count {
-					info!(
+					debug!(
 						target: "receipt_debug",
 						%server, count,
 						"send_events: transaction delivered, advancing educount watermark"
@@ -1336,11 +1475,11 @@ impl Service {
 		}
 	}
 
-	/// This does not return a full `Pdu` it is only to satisfy ruma's types.
+	/// This does not return a full `Pdu` it is only to satisfy slipstream's types.
 	pub async fn convert_to_outgoing_federation_event(
 		&self,
 		mut pdu_json: CanonicalJsonObject,
-	) -> Box<RawJsonValue> {
+	) -> Raw<slipstream::json::Value> {
 		if let Some(unsigned) = pdu_json
 			.get_mut("unsigned")
 			.and_then(|val| val.as_object_mut())
@@ -1353,7 +1492,7 @@ impl Service {
 			.get("room_id")
 			.and_then(|val| RoomId::parse(val.as_str()?).ok())
 		{
-			match self.services.state.get_room_version(room_id).await {
+			match self.services.state.get_room_version(&room_id).await {
 				| Ok(room_version_id) => match room_version_id {
 					| RoomVersionId::V1 | RoomVersionId::V2 => {},
 					| _ => _ = pdu_json.remove("event_id"),
@@ -1366,12 +1505,9 @@ impl Service {
 
 		// TODO: another option would be to convert it to a canonical string to validate
 		// size and return a Result<Raw<...>>
-		// serde_json::from_str::<Raw<_>>(
-		//     ruma::serde::to_canonical_json_string(pdu_json).expect("CanonicalJson is
-		// valid serde_json::Value"), )
-		// .expect("Raw::from_value always works")
+		// `Raw::from_value` accepts the Slipstream JSON value directly.
 
-		to_raw_value(&pdu_json).expect("CanonicalJson is valid serde_json::Value")
+		Raw::from_value(&pdu_json)
 	}
 }
 
@@ -1407,15 +1543,14 @@ pub(crate) fn build_device_list_edus(
 						user_id: user_id.clone(),
 						device_id: device_id.clone(),
 						device_display_name: Some("Placeholder".to_owned()),
-						stream_id: UInt::try_from(count).unwrap_or_else(|_| uint!(1)),
+						stream_id: UInt::try_from(count).unwrap_or(uint!(1)),
 						prev_id: Vec::new(),
 						deleted: None,
 						keys: None,
 					});
 
 					let mut buf = EduBuf::new();
-					serde_json::to_writer(&mut buf, &edu)
-						.expect("failed to serialize device list update to JSON");
+					buf.extend_from_slice(slipstream::codec::to_string(&edu).as_bytes());
 
 					events.push(buf);
 				}
@@ -1441,15 +1576,14 @@ pub(crate) fn build_device_list_edus(
 					user_id,
 					device_id: device_id!("placeholder").to_owned(),
 					device_display_name: Some("Placeholder".to_owned()),
-					stream_id: UInt::try_from(count).unwrap_or_else(|_| uint!(1)),
+					stream_id: UInt::try_from(count).unwrap_or(uint!(1)),
 					prev_id: Vec::new(),
 					deleted: None,
 					keys: None,
 				});
 
 				let mut buf = EduBuf::new();
-				serde_json::to_writer(&mut buf, &edu)
-					.expect("failed to serialize device list update to JSON");
+				buf.extend_from_slice(slipstream::codec::to_string(&edu).as_bytes());
 
 				events.push(buf);
 			}
@@ -1485,7 +1619,8 @@ pub(crate) fn build_receipt_map(
 			continue;
 		}
 
-		let Ok(event) = serde_json::from_str::<AnySyncEphemeralRoomEvent>(&read_receipt_json)
+		let Ok(event) =
+			slipstream::codec::from_str::<AnySyncEphemeralRoomEvent>(&read_receipt_json)
 		else {
 			continue;
 		};
@@ -1509,7 +1644,7 @@ pub(crate) fn build_receipt_map(
 		};
 
 		let is_unthreaded =
-			matches!(receipt.thread, ruma::events::receipt::ReceiptThread::Unthreaded);
+			matches!(receipt.thread, slipstream::events::receipt::ReceiptThread::Unthreaded);
 		let receipt_data = ReceiptData {
 			data: receipt,
 			event_ids: vec![event_id.clone()],
@@ -1554,7 +1689,7 @@ mod tests {
 		sync::atomic::AtomicUsize,
 	};
 
-	use ruma::user_id;
+	use slipstream::user_id;
 
 	use super::*;
 
@@ -1649,7 +1784,7 @@ mod tests {
 	fn test_build_receipt_map_under_limit() {
 		let mut receipts = Vec::new();
 		let user_id = user_id!("@alice:example.com").to_owned();
-		let json = serde_json::json!({
+		let json = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1676,8 +1811,8 @@ mod tests {
 		let mut receipts = Vec::new();
 		for i in 1..=5 {
 			let user_id_str = format!("@user{i}:example.com");
-			let user_id = <OwnedUserId as TryFrom<&str>>::try_from(user_id_str.as_str()).unwrap();
-			let json = serde_json::json!({
+			let user_id = OwnedUserId::parse(user_id_str.as_str()).unwrap();
+			let json = slipstream::json!({
 				"type": "m.receipt",
 				"content": {
 					"$event1": {
@@ -1689,7 +1824,11 @@ mod tests {
 					}
 				}
 			});
-			receipts.push((user_id, 10 + u64::try_from(i).unwrap(), json.to_string()));
+			receipts.push((
+				user_id,
+				10 + u64::try_from(i).unwrap(),
+				slipstream::codec::to_string(&json),
+			));
 		}
 
 		let since = (10, 20);
@@ -1707,7 +1846,7 @@ mod tests {
 		let user_id = user_id!("@alice:example.com").to_owned();
 
 		// 1. Threaded receipt
-		let json_threaded = serde_json::json!({
+		let json_threaded = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1723,7 +1862,7 @@ mod tests {
 		receipts.push((user_id.clone(), 11, json_threaded.to_string()));
 
 		// 2. Unthreaded receipt
-		let json_unthreaded = serde_json::json!({
+		let json_unthreaded = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1745,8 +1884,11 @@ mod tests {
 		assert_eq!(num.load(Ordering::Relaxed), 1);
 
 		let data = &map.read[&user_id];
-		assert!(matches!(data.data.thread, ruma::events::receipt::ReceiptThread::Unthreaded));
-		assert_eq!(data.data.ts.map(|t| t.0.into()), Some(12345_u64));
+		assert!(matches!(
+			data.data.thread,
+			slipstream::events::receipt::ReceiptThread::Unthreaded
+		));
+		assert_eq!(data.data.ts, Some(12345_u64));
 	}
 
 	#[test]
@@ -1755,7 +1897,7 @@ mod tests {
 		let user_id = user_id!("@alice:example.com").to_owned();
 
 		// 1. Unthreaded receipt
-		let json_unthreaded = serde_json::json!({
+		let json_unthreaded = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1770,7 +1912,7 @@ mod tests {
 		receipts.push((user_id.clone(), 11, json_unthreaded.to_string()));
 
 		// 2. Threaded receipt
-		let json_threaded = serde_json::json!({
+		let json_threaded = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1793,8 +1935,11 @@ mod tests {
 		assert_eq!(num.load(Ordering::Relaxed), 1);
 
 		let data = &map.read[&user_id];
-		assert!(matches!(data.data.thread, ruma::events::receipt::ReceiptThread::Unthreaded));
-		assert_eq!(data.data.ts.map(|t| t.0.into()), Some(12345_u64));
+		assert!(matches!(
+			data.data.thread,
+			slipstream::events::receipt::ReceiptThread::Unthreaded
+		));
+		assert_eq!(data.data.ts, Some(12345_u64));
 	}
 
 	#[test]
@@ -1803,7 +1948,7 @@ mod tests {
 		let user_id = user_id!("@alice:example.com").to_owned();
 
 		// An out-of-order receipt with a higher stream count comes first.
-		let json_late = serde_json::json!({
+		let json_late = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1818,7 +1963,7 @@ mod tests {
 		receipts.push((user_id.clone(), 30, json_late.to_string()));
 
 		// The in-range receipt should still be considered even though it appears later.
-		let json_in_range = serde_json::json!({
+		let json_in_range = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event2": {

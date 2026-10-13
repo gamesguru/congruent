@@ -15,8 +15,8 @@ use conduwuit::{
 };
 use futures::{FutureExt, StreamExt};
 use lettre::Address;
-use ruma::{
-	OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, UserId,
+use slipstream::{
+	OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId,
 	events::{
 		RoomAccountDataEventType, StateEventType,
 		room::{
@@ -92,7 +92,8 @@ pub(super) async fn create_user(&self, username: String, password: Option<String
 
 	self.services
 		.users
-		.set_displayname(&user_id, Some(displayname));
+		.set_displayname(&user_id, Some(displayname))
+		.await;
 
 	// Initial account data
 	self.services
@@ -100,14 +101,14 @@ pub(super) async fn create_user(&self, username: String, password: Option<String
 		.update(
 			None,
 			&user_id,
-			ruma::events::GlobalAccountDataEventType::PushRules
+			slipstream::events::GlobalAccountDataEventType::PushRules
 				.to_string()
 				.into(),
-			&serde_json::to_value(ruma::events::push_rules::PushRulesEvent {
-				content: ruma::events::push_rules::PushRulesEventContent {
-					global: ruma::push::Ruleset::server_default(&user_id),
+			&slipstream::codec::to_value(&slipstream::events::push_rules::PushRulesEvent {
+				content: slipstream::events::push_rules::PushRulesEventContent {
+					global: slipstream::push::Ruleset::server_default(&user_id),
 				},
-			})?,
+			}),
 		)
 		.await?;
 
@@ -140,10 +141,7 @@ pub(super) async fn create_user(&self, username: String, password: Option<String
 					&user_id,
 					&room_id,
 					Some("Automatically joining this room upon registration".to_owned()),
-					&[
-						self.services.globals.server_name().to_owned(),
-						room_server_name.to_owned(),
-					],
+					&[self.services.globals.server_name().to_owned(), room_server_name.clone()],
 					&None,
 					None,
 				)
@@ -293,7 +291,12 @@ pub(super) async fn reset_password(
 		self.services
 			.users
 			.all_device_ids(&user_id)
-			.for_each(|device_id| self.services.users.remove_device(&user_id, device_id))
+			.for_each(|device_id: slipstream::OwnedDeviceId| {
+				let user_id = &user_id;
+				async move {
+					self.services.users.remove_device(user_id, &device_id).await;
+				}
+			})
 			.await;
 		write!(self, "\nAll existing sessions have been logged out.").await?;
 	}
@@ -438,7 +441,7 @@ pub(super) async fn list_joined_rooms(&self, user_id: String) -> Result {
 		.rooms
 		.state_cache
 		.rooms_joined(&user_id)
-		.then(|room_id| get_room_info(self.services, room_id))
+		.then(|room_id| async move { get_room_info(self.services, &room_id).await })
 		.collect()
 		.await;
 
@@ -507,7 +510,7 @@ pub(super) async fn force_join_list_of_local_users(
 		.rooms
 		.state_cache
 		.room_members(&room_id)
-		.ready_any(|user_id| server_admins.contains(&user_id.to_owned()))
+		.ready_any(|user_id| server_admins.contains(&user_id))
 		.await
 	{
 		return Err!("There is not a single server admin in the room.",);
@@ -622,7 +625,7 @@ pub(super) async fn force_join_all_local_users(
 		.rooms
 		.state_cache
 		.room_members(&room_id)
-		.ready_any(|user_id| server_admins.contains(&user_id.to_owned()))
+		.ready_any(|user_id| server_admins.contains(&user_id))
 		.await
 	{
 		return Err!("There is not a single server admin in the room.",);
@@ -635,7 +638,6 @@ pub(super) async fn force_join_all_local_users(
 		.services
 		.users
 		.list_local_users()
-		.map(UserId::to_owned)
 		.collect::<Vec<_>>()
 		.await
 	{
@@ -773,13 +775,14 @@ pub(super) async fn force_demote(&self, user_id: String, room_id: OwnedRoomOrAli
 		.is_some_and(|power_levels_content| {
 			RoomPowerLevels::from(power_levels_content.clone())
 				.user_can_change_user_power_level(&user_id, &user_id)
-		}) || self
-		.services
-		.rooms
-		.state_accessor
-		.room_state_get(&room_id, &StateEventType::RoomCreate, "")
-		.await
-		.is_ok_and(|event| event.sender() == user_id);
+		})
+		|| self
+			.services
+			.rooms
+			.state_accessor
+			.room_state_get(&room_id, &StateEventType::RoomCreate, "")
+			.await
+			.is_ok_and(|event| *event.sender() == user_id);
 
 	if !user_can_demote_self {
 		return Err!("User is not allowed to modify their own power levels in the room.",);
@@ -788,17 +791,13 @@ pub(super) async fn force_demote(&self, user_id: String, room_id: OwnedRoomOrAli
 	let mut power_levels_content = room_power_levels.unwrap_or_default();
 	power_levels_content.users.remove(&user_id);
 
-	let event_id = self
-		.services
-		.rooms
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &power_levels_content),
-			&user_id,
-			Some(&room_id),
-			&state_lock,
-		)
-		.await?;
+	let event_id = Box::pin(self.services.rooms.timeline.build_and_append_pdu(
+		PduBuilder::state(String::new(), &power_levels_content),
+		&user_id,
+		Some(&room_id),
+		&state_lock,
+	))
+	.await?;
 
 	self.write_str(&format!(
 		"User {user_id} demoted themselves to the room default power level in {room_id} - \
@@ -854,7 +853,7 @@ pub(super) async fn put_room_tag(
 			Some(&room_id),
 			&user_id,
 			RoomAccountDataEventType::Tag,
-			&serde_json::to_value(tags_event).expect("to json value always works"),
+			&slipstream::codec::to_value(&tags_event),
 		)
 		.await?;
 
@@ -890,7 +889,7 @@ pub(super) async fn delete_room_tag(
 			Some(&room_id),
 			&user_id,
 			RoomAccountDataEventType::Tag,
-			&serde_json::to_value(tags_event).expect("to json value always works"),
+			&slipstream::codec::to_value(&tags_event),
 		)
 		.await?;
 
@@ -950,22 +949,19 @@ pub(super) async fn redact_event(&self, event_id: OwnedEventId) -> Result {
 	let redaction_event_id = {
 		let state_lock = self.services.rooms.state.mutex.lock(&room_id).await;
 
-		self.services
-			.rooms
-			.timeline
-			.build_and_append_pdu(
-				PduBuilder {
+		Box::pin(self.services.rooms.timeline.build_and_append_pdu(
+			PduBuilder {
+				redacts: Some(event.event_id().to_owned()),
+				..PduBuilder::timeline(&RoomRedactionEventContent {
 					redacts: Some(event.event_id().to_owned()),
-					..PduBuilder::timeline(&RoomRedactionEventContent {
-						redacts: Some(event.event_id().to_owned()),
-						reason: Some(reason),
-					})
-				},
-				event.sender(),
-				Some(&room_id),
-				&state_lock,
-			)
-			.await?
+					reason: Some(reason),
+				})
+			},
+			event.sender(),
+			Some(&room_id),
+			&state_lock,
+		))
+		.await?
 	};
 
 	self.write_str(&format!(
@@ -1089,7 +1085,12 @@ pub(super) async fn logout(&self, user_id: String) -> Result {
 	self.services
 		.users
 		.all_device_ids(&user_id)
-		.for_each(|device_id| self.services.users.remove_device(&user_id, device_id))
+		.for_each(|device_id| {
+			let user_id = &user_id;
+			async move {
+				self.services.users.remove_device(user_id, &device_id).await;
+			}
+		})
 		.await;
 	self.write_str(&format!("User {user_id} has been logged out from all devices."))
 		.await
@@ -1257,7 +1258,7 @@ pub(super) async fn bump_device_lists(&self, user_id: String) -> Result {
 		let users: Vec<_> = self.services.users.list_local_users().collect().await;
 		let count = users.len();
 		for user in users {
-			self.services.users.mark_device_key_update(user).await;
+			self.services.users.mark_device_key_update(&user).await;
 		}
 		self.write_str(&format!("Bumped device list updates for all {count} local users."))
 			.await

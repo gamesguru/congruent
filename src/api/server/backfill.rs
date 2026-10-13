@@ -7,7 +7,7 @@ use conduwuit::{
 	utils::{IterStream, ReadyExt, stream::TryTools},
 };
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use ruma::{MilliSecondsSinceUnixEpoch, api::federation::backfill::get_backfill};
+use slipstream::{MilliSecondsSinceUnixEpoch, api::federation::backfill::get_backfill};
 
 use super::AccessCheck;
 use crate::Ruma;

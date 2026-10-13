@@ -37,8 +37,9 @@ yolo reorder-timeline <room_id>
 # All rooms (deploy-wide heal)
 yolo reorder-timeline --all
 
-# Only last N events (fast path)
-yolo reorder-timeline <room_id> --tail 500
+# Disruptive: renumber the immutable stream order to match the DAG
+# (limited to rooms with <= 25k events; clients must re-sync)
+yolo reorder-timeline <room_id> --force-reindex
 ```
 
 After reorder, clients must clear cache and re-sync.
@@ -98,8 +99,12 @@ extremities.
 
 ### `reorder-timeline`
 
-Re-sorts all timeline PDUs by `origin_server_ts`. Does NOT fetch missing events or
-fix extremities. Optionally rebuilds state snapshots (unless `--no-compute-state`).
+Rebuilds the room's local topological index by DAG order (Kahn sort over
+`prev_events`, parents before children), tie-breaking concurrent events on
+`origin_server_ts`, `depth`, then `event_id`. Does NOT fetch missing events: it
+aborts on missing parent edges unless `--allow-incomplete` is passed (which only
+guarantees causality within the collected set). It DOES recompute forward
+extremities, and rebuilds state snapshots unless `--no-compute-state`.
 
 ### `rescue-room`
 
@@ -147,7 +152,7 @@ using the shared `ServerPool` abstraction:
 | Component                   | File                                                           | What It Does                         |
 | --------------------------- | -------------------------------------------------------------- | ------------------------------------ |
 | `rescue-room`               | `src/admin/yolo/heal.rs`                                       | Promotes outliers, heals state       |
-| `reorder-timeline`          | `src/admin/yolo/timeline.rs`                                   | Re-sorts PDUs by timestamp           |
+| `reorder-timeline`          | `src/admin/yolo/timeline.rs`                                   | Rebuilds topological (DAG) order     |
 | `repair-unsigned`           | `src/admin/yolo/timeline.rs`                                   | Fixes unsigned metadata              |
 | `fetch_prev`                | `src/service/rooms/event_handler/fetch_prev.rs`                | Fetches prev_events during ingest    |
 | `fetch_state`               | `src/service/rooms/event_handler/fetch_state.rs`               | Fetches state for auth during ingest |

@@ -1,14 +1,12 @@
-use axum::{extract::State, response::Json};
+use axum::extract::State;
 use conduwuit::{
 	Err, Event, Pdu, PduCount, Result, err, info,
-	utils::{
-		future::TryExtExt,
-		stream::{BroadbandExt, ReadyExt},
-	},
+	utils::{future::TryExtExt, stream::BroadbandExt},
 };
-use futures::{StreamExt, future::join};
-use ruma::{
-	OwnedEventId,
+use conduwuit_service::rooms::state::root_handle_fingerprint;
+use futures::{StreamExt, TryStreamExt, future::join};
+use slipstream::{
+	OwnedEventId, OwnedUserId,
 	api::client::membership::{
 		get_member_events::{self, v3::MembershipEventFilter},
 		joined_members,
@@ -66,52 +64,54 @@ pub(crate) async fn get_member_events_route(
 			return Err!(Request(NotFound("Point in time not found in timeline.")));
 		};
 
-		let shortstatehash = services
+		let root_handle = services
 			.rooms
 			.state_accessor
-			.pdu_shortstatehash(pdu.event_id())
+			.pdu_roothandle_after_event(pdu.event_id())
 			.await?;
 
-		let chunk: Vec<_> = services
+		// Collect into Vec<Pdu> to avoid HRTB/opaque-type conflicts with
+		// room_state_full's impl Event stream used later in this function.
+		let all_pdus: Vec<Pdu> = services
 			.rooms
 			.state_accessor
-			.state_keys_with_ids::<OwnedEventId>(shortstatehash, &StateEventType::RoomMember)
-			.broadn_filter_map(256, |(_, event_id)| async move {
-				services.rooms.timeline.get_pdu(&event_id).await.ok()
-			})
-			.ready_filter_map(|pdu| {
-				let pdu: Pdu = pdu.into_pdu();
-				membership_filter(pdu, membership, not_membership)
-			})
+			.state_full_pdus_hamt_strict(root_handle)
+			.try_collect()
+			.await?;
+
+		let chunk = all_pdus
+			.into_iter()
+			.filter(|pdu| *pdu.kind() == slipstream::events::TimelineEventType::RoomMember)
+			.filter_map(|pdu| membership_filter(pdu, membership, not_membership))
 			.map(Event::into_format)
-			.collect()
-			.await;
+			.collect();
 
 		return Ok(get_member_events::v3::Response { chunk });
 	}
 
 	// For departed users, use state snapshot at the time of departure.
-	// Note: pdu_shortstatehash stores state BEFORE the event, so for the
-	// leave event the user still appears as "join". We collect the leave_pdu
-	// separately and overlay it on the snapshot results.
-	let (shortstatehash, leave_pdu) = if !is_joined {
+	// Note: the state-at-event snapshot stores state BEFORE the event, so for
+	// the leave event the user still appears as "join". We collect the
+	// leave_pdu separately and overlay it on the snapshot results.
+	let (leave_root, leave_pdu) = if !is_joined {
 		if let Ok(Some(leave_pdu)) = services
 			.rooms
 			.state_cache
 			.left_state(sender_user, room_id)
 			.await
 		{
-			let ssh = services
+			let root = services
 				.rooms
 				.state_accessor
-				.pdu_shortstatehash(leave_pdu.event_id())
+				.pdu_roothandle_before_event(leave_pdu.event_id())
 				.await
 				.ok();
 			info!(
 				target: "membership_debug",
-				"/members: departed user {sender_user} in {room_id}, leave_ssh={ssh:?}"
+				"/members: departed user {sender_user} in {room_id}, leave_root={:?}",
+				root.as_ref().map(root_handle_fingerprint)
 			);
-			(ssh, Some(leave_pdu))
+			(root, Some(leave_pdu))
 		} else {
 			(None, None)
 		}
@@ -119,20 +119,15 @@ pub(crate) async fn get_member_events_route(
 		(None, None)
 	};
 
-	let shortstatehash = match shortstatehash {
-		| Some(ssh) => ssh,
-		| None =>
-			services
-				.rooms
-				.state
-				.get_room_shortstatehash(room_id)
-				.await?,
+	let leave_root = match leave_root {
+		| Some(root) => root,
+		| None => services.rooms.state.get_room_state_hamt(room_id).await?,
 	};
 
 	let mut members: Vec<Pdu> = services
 		.rooms
 		.state_accessor
-		.state_keys_with_ids::<OwnedEventId>(shortstatehash, &StateEventType::RoomMember)
+		.state_keys_with_ids_hamt::<OwnedEventId>(leave_root, &StateEventType::RoomMember)
 		.broadn_filter_map(256, |(_, event_id)| async move {
 			services.rooms.timeline.get_pdu(&event_id).await.ok()
 		})
@@ -141,8 +136,8 @@ pub(crate) async fn get_member_events_route(
 		.await;
 
 	// Overlay the leave PDU: replace the user's "join" entry with their
-	// actual leave event so the membership is correct (pdu_shortstatehash
-	// stores state BEFORE the event, so the leave isn't reflected yet).
+	// actual leave event so the membership is correct (the state-at-event
+	// snapshot stores state BEFORE the event, so the leave isn't reflected yet).
 	if let Some(leave_pdu) = leave_pdu {
 		let leave_pdu: Pdu = leave_pdu.into_pdu();
 		if let Some(leave_sk) = leave_pdu.state_key.as_deref() {
@@ -175,7 +170,7 @@ pub(crate) async fn get_member_events_route(
 pub(crate) async fn joined_members_route(
 	State(services): State<crate::State>,
 	body: Ruma<joined_members::v3::Request>,
-) -> Result<Json<Response>> {
+) -> Result<axum::response::Response> {
 	if !services
 		.rooms
 		.state_cache
@@ -185,11 +180,10 @@ pub(crate) async fn joined_members_route(
 		return Err!(Request(Forbidden("You don't have permission to view this room.")));
 	}
 
-	let room_members = services
+	let room_members: Vec<(OwnedUserId, RoomMemberResponse)> = services
 		.rooms
 		.state_cache
 		.room_members(&body.room_id)
-		.map(ToOwned::to_owned)
 		.broad_then(|user_id| async move {
 			let (display_name, avatar_url) = join(
 				services.users.displayname(&user_id).ok(),
@@ -202,18 +196,21 @@ pub(crate) async fn joined_members_route(
 		.collect()
 		.await;
 
-	Ok(Json(Response { joined: room_members }))
+	let mut joined = slipstream::json::Object::new();
+	for (user_id, member) in room_members {
+		let mut value = slipstream::ObjectBuilder::new();
+		value.field("display_name", &member.display_name);
+		value.field("avatar_url", &member.avatar_url);
+		joined.insert(user_id.to_string(), value.finish());
+	}
+	let mut response = slipstream::ObjectBuilder::new();
+	response.field("joined", &joined);
+	Ok(crate::json_util::json_response(response.finish()))
 }
 
-#[derive(serde::Serialize)]
-pub(crate) struct RoomMemberResponse {
-	pub(crate) display_name: Option<String>,
-	pub(crate) avatar_url: Option<ruma::OwnedMxcUri>,
-}
-
-#[derive(serde::Serialize)]
-pub(crate) struct Response {
-	pub(crate) joined: std::collections::BTreeMap<ruma::OwnedUserId, RoomMemberResponse>,
+struct RoomMemberResponse {
+	display_name: Option<String>,
+	avatar_url: Option<slipstream::OwnedMxcUri>,
 }
 
 fn membership_filter<Pdu: Event>(

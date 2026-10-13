@@ -2,15 +2,14 @@ use std::sync::Arc;
 
 use conduwuit::{Result, implement};
 use futures::{Stream, StreamExt};
-use serde::Deserialize;
 
 use super::stream::is_cached;
-use crate::{keyval, keyval::Key};
+use crate::{dbkey::DbDe, keyval, keyval::Key};
 
 #[implement(super::Map)]
 pub fn keys<'a, K>(self: &'a Arc<Self>) -> impl Stream<Item = Result<Key<'a, K>>> + Send
 where
-	K: Deserialize<'a> + Send,
+	K: DbDe<'a> + Send,
 {
 	self.raw_keys().map(keyval::result_deserialize_key::<K>)
 }

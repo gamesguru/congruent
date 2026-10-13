@@ -5,7 +5,7 @@ use std::{
 
 use conduwuit::utils;
 use lettre::Address;
-use ruma::{ClientSecret, OwnedClientSecret, OwnedSessionId, SessionId};
+use slipstream::{ClientSecret, OwnedClientSecret, OwnedSessionId, SessionId};
 
 #[derive(Default)]
 pub(super) struct ValidationSessions {

@@ -4,8 +4,10 @@ use conduwuit::{
 	Result,
 	matrix::{Event, pdu::PduEvent},
 };
-use ruma::{CanonicalJsonObject, EventId, OwnedEventId, events::TimelineEventType};
-use serde_json::Value as JsonValue;
+use slipstream::{
+	CanonicalJsonObject, EventId, OwnedEventId, events::TimelineEventType,
+	json::Value as JsonValue,
+};
 use tokio::io::AsyncWriteExt;
 
 pub(super) struct DagExportStats {
@@ -56,9 +58,8 @@ pub(super) async fn decorate_pdu_for_export(
 	pdu_json: &CanonicalJsonObject,
 	pdu_opt: Option<&PduEvent>,
 	is_outlier: bool,
-) -> Result<(serde_json::Map<String, JsonValue>, bool, Option<u64>)> {
-	let mut obj: serde_json::Map<String, JsonValue> =
-		serde_json::from_value(serde_json::to_value(pdu_json)?)?;
+) -> Result<(slipstream::json::Object, bool, Option<u64>)> {
+	let mut obj: slipstream::json::Object = pdu_json.clone();
 
 	if is_outlier {
 		obj.insert("__outlier".to_owned(), JsonValue::Bool(true));
@@ -92,13 +93,20 @@ pub(super) async fn decorate_pdu_for_export(
 		}
 
 		if !is_separated {
-			if let Ok(ssh) = ctx
+			if let Ok(root_handle) = ctx
 				.services
 				.rooms
 				.state_accessor
-				.pdu_shortstatehash(pdu.event_id())
+				.pdu_roothandle_after_event(pdu.event_id())
 				.await
 			{
+				// Diagnostic-only: a stable 64-bit fingerprint of the event's
+				// HAMT root, used to group exported events by state.
+				let ssh = u64::from_be_bytes(
+					root_handle.structural_hash[..8]
+						.try_into()
+						.expect("structural hash is at least 8 bytes"),
+				);
 				obj.insert("__shortstatehash".to_owned(), JsonValue::from(ssh));
 				shortstatehash = Some(ssh);
 			}
@@ -118,8 +126,14 @@ pub(super) async fn decorate_pdu_for_export(
 				"__local_topo_depth".to_owned(),
 				JsonValue::from(meta_bytes.deprecated_local_topo_depth),
 			);
-			obj.insert("__soft_failed".to_owned(), JsonValue::from(meta_bytes.soft_failed));
-			obj.insert("__rejected".to_owned(), JsonValue::from(meta_bytes.rejected));
+			let is_soft_failed = ctx
+				.services
+				.rooms
+				.pdu_metadata
+				.is_event_soft_failed(pdu.event_id())
+				.await;
+			obj.insert("__soft_failed".to_owned(), JsonValue::from(is_soft_failed));
+			obj.insert("__rejected".to_owned(), JsonValue::from(is_rejected));
 		}
 
 		// Stream ordering position (what /sync uses to iterate)
@@ -183,7 +197,7 @@ impl DagExportStats {
 					self.last_is_state_event = false;
 				}
 
-				self.last_event_id = Some(pdu.event_id().into());
+				self.last_event_id = Some(Box::new(pdu.event_id().to_owned()));
 				let eid = pdu.event_id().to_owned();
 				self.all_event_ids.insert(eid.clone());
 				let mut prevs = Vec::new();
@@ -192,13 +206,13 @@ impl DagExportStats {
 					prevs.push(prev.to_owned());
 				}
 				self.all_events_prevs.insert(eid, prevs);
-				let d: u64 = pdu.depth.into();
+				let d: u64 = pdu.depth;
 				self.max_depth = self.max_depth.max(d);
 				self.min_depth = self.min_depth.min(d);
 			}
 		}
 
-		let json = serde_json::to_string(&obj)?;
+		let json = slipstream::codec::to_string(&slipstream::json::Value::Object(obj.clone()));
 
 		if is_separated {
 			outliers_file.write_all(json.as_bytes()).await?;

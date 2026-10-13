@@ -19,12 +19,16 @@ use conduwuit::{
 };
 use conduwuit_service::{
 	Services,
+	rooms::state_accessor::{InputCache, StateHashes},
 	sending::{EDU_LIMIT, PDU_LIMIT},
 };
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use http::StatusCode;
 use itertools::Itertools;
-use ruma::{
+use service::transactions::{
+	FederationTxnState, TransactionError, TxnKey, WrappedTransactionResponse,
+};
+use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId,
 	RoomId, ServerName, UInt, UserId,
 	api::{
@@ -41,14 +45,13 @@ use ruma::{
 			},
 		},
 	},
+	codec,
 	encryption::DeviceKeys,
 	events::receipt::{ReceiptEvent, ReceiptEventContent, ReceiptType},
 	int,
-	serde::Raw,
+	json::Value,
+	sswire::{JsonObject, Raw},
 	to_device::DeviceIdOrAllDevices,
-};
-use service::transactions::{
-	FederationTxnState, TransactionError, TxnKey, WrappedTransactionResponse,
 };
 use tokio::sync::watch::{Receiver, Sender};
 use tracing::Instrument;
@@ -65,8 +68,8 @@ pub(crate) async fn send_transaction_message_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<send_transaction_message::v1::Request>,
-) -> Result<send_transaction_message::v1::Response> {
-	if body.origin() != body.body.origin {
+) -> Result<axum::response::Response> {
+	if *body.origin() != body.body.origin {
 		return Err!(Request(Forbidden(
 			"Not allowed to send transactions on behalf of other servers"
 		)));
@@ -93,7 +96,7 @@ pub(crate) async fn send_transaction_message_route(
 	{
 		| Ok(FederationTxnState::Cached(response)) => {
 			// Already responded
-			Ok(response)
+			Ok(crate::json_util::json_response(response))
 		},
 		| Ok(FederationTxnState::Active(receiver)) => {
 			// Another thread is processing
@@ -132,8 +135,8 @@ pub(crate) async fn send_transaction_message_route(
 				services.server.runtime().spawn(async move {
 					let edus_stream = edus
 						.into_iter()
-						.map(|edu| edu.into_json().get().to_owned())
-						.map(|json_str| serde_json::from_str(&json_str))
+						.map(|edu| edu.get().to_owned())
+						.map(|json_str| codec::from_str::<Edu>(&json_str))
 						.filter_map(Result::ok)
 						.stream();
 
@@ -152,7 +155,7 @@ pub(crate) async fn send_transaction_message_route(
 
 async fn wait_for_result(
 	mut recv: Receiver<WrappedTransactionResponse>,
-) -> Result<send_transaction_message::v1::Response> {
+) -> Result<axum::response::Response> {
 	if tokio::time::timeout(Duration::from_secs(50), recv.changed())
 		.await
 		.is_err()
@@ -165,7 +168,7 @@ async fn wait_for_result(
 	}
 	let value = recv.borrow_and_update();
 	match value.clone() {
-		| Some(Ok(response)) => Ok(response),
+		| Some(Ok(response)) => Ok(crate::json_util::json_response(response)),
 		| Some(Err(err)) => Err(transaction_error_to_response(&err)),
 		| None => Err(Error::Request(
 			ErrorKind::Unknown,
@@ -194,8 +197,8 @@ async fn process_inbound_transaction(
 	let edus = body
 		.edus
 		.iter()
-		.map(|edu| edu.json().get())
-		.map(serde_json::from_str)
+		.map(Raw::get)
+		.map(codec::from_str::<Edu>)
 		.filter_map(Result::ok)
 		.collect::<Vec<_>>()
 		.into_iter()
@@ -204,7 +207,7 @@ async fn process_inbound_transaction(
 	let pdu_ids: Vec<_> = body
 		.pdus
 		.iter()
-		.filter_map(|pdu| serde_json::from_str::<serde_json::Value>(pdu.get()).ok())
+		.filter_map(|pdu| codec::from_str::<Value>(pdu.get()).ok())
 		.filter_map(|pdu| {
 			pdu.get("event_id")
 				.and_then(|e| e.as_str())
@@ -335,16 +338,157 @@ async fn process_inbound_transaction(
 	}
 
 	// Bundle response
-	let response = send_transaction_message::v1::Response {
-		pdus: results
-			.into_iter()
-			.map(|(e, r)| (e, r.map_err(error::sanitized_message)))
-			.collect(),
-	};
+	let pdus = results
+		.into_iter()
+		.map(|(e, r)| {
+			let mut obj = slipstream::json::Object::new();
+			if let Err(err) = r {
+				obj.insert("error".to_owned(), Value::String(error::sanitized_message(err)));
+			}
+			(e.to_string(), Value::Object(obj))
+		})
+		.collect::<slipstream::json::Object>();
+	let mut response_builder = slipstream::ObjectBuilder::new();
+	response_builder.field("pdus", &pdus);
+	let mut response_json = response_builder.finish();
+
+	inject_state_hash_mismatches(&services, &body, &mut response_json).await;
 
 	services
 		.transactions
-		.finish_federation_txn(txn_key, sender, response);
+		.finish_federation_txn(txn_key, sender, response_json);
+}
+
+async fn inject_state_hash_mismatches(
+	services: &crate::State,
+	body: &Ruma<send_transaction_message::v1::Request>,
+	response_json: &mut Value,
+) {
+	let Some(json) = &body.json_body else { return };
+	let Some(obj) = json.as_object() else { return };
+	let Some(hashes) = obj
+		.get("state_hashes")
+		.or_else(|| obj.get("tk.nutra.msc4500.state_hashes"))
+	else {
+		return;
+	};
+
+	let Ok(state_hashes) = codec::from_value::<StateHashes>(hashes) else {
+		return;
+	};
+
+	// One algorithm governs the whole transaction. An unrecognized one defers
+	// validation of every entry rather than skipping them one at a time.
+	if !state_hashes.is_known_algorithm() {
+		info!(
+			target: "state_hashes",
+			algorithm = %state_hashes.algorithm,
+			"skipping state hash validation for unrecognized algorithm"
+		);
+		return;
+	}
+
+	let Some(pdus_obj) = response_json
+		.get_mut("pdus")
+		.and_then(|p| p.as_object_mut())
+	else {
+		return;
+	};
+
+	// Only compute the (costly) input closure when this server also opted in.
+	let check_inputs = state_hashes.has_resolution_inputs()
+		&& services
+			.server
+			.config
+			.experimental_features
+			.msc4500_resolution_inputs;
+	let mut inputs_cache = InputCache::new();
+
+	for (event_id, entry) in &state_hashes.entries {
+		let Some(pdu_res) = pdus_obj
+			.get_mut(event_id.as_str())
+			.and_then(|p| p.as_object_mut())
+		else {
+			continue;
+		};
+		if pdu_res.contains_key("error") {
+			continue;
+		}
+
+		// `limited` is an explicit deferral. An entry missing a required digest is
+		// malformed: it is not an assertion that the overlay is empty, and it is
+		// not a mismatch either.
+		let Some((_, after, _, redactions_after)) = entry.required_digests() else {
+			if !entry.limited {
+				warn!(
+					target: "state_hashes",
+					%event_id,
+					"state_hashes entry is missing a required digest; deferring"
+				);
+			}
+			continue;
+		};
+
+		// An unresolved DAG point is deferred rather than reported as a mismatch.
+		let Some(local) = services
+			.rooms
+			.state_accessor
+			.msc4500_pdu_digests(event_id)
+			.await
+		else {
+			continue;
+		};
+
+		// Absent and `null` both mean the sender made no input assertion. Compute
+		// the local value anyway so mismatch diagnostics retain the expected
+		// digest; the comparison below only treats two present values as a
+		// mismatch.
+		let received_inputs = entry.resolution_inputs();
+		let local_inputs = if check_inputs {
+			match services.rooms.timeline.get_pdu(event_id).await {
+				| Ok(pdu) =>
+					services
+						.rooms
+						.state_accessor
+						.msc4500_resolution_inputs_digest(&pdu, &mut inputs_cache)
+						.await,
+				| Err(_) => None,
+			}
+		} else {
+			None
+		};
+		let inputs_differ = matches!(
+			(received_inputs, local_inputs.as_deref()),
+			(Some(received), Some(local)) if received != local
+		);
+
+		let after_differs = local.after.primary != after;
+		let redactions_differ = local.after.redactions != redactions_after;
+		if !after_differs && !redactions_differ && !inputs_differ {
+			continue;
+		}
+
+		let mut mismatch_builder = slipstream::ObjectBuilder::new();
+		mismatch_builder.field("algorithm", &state_hashes.algorithm);
+		mismatch_builder.field("expected_after", &local.after.primary);
+		mismatch_builder.field("received_after", &after);
+		mismatch_builder.field("expected_redactions_after", &local.after.redactions);
+		mismatch_builder.field("received_redactions_after", &redactions_after);
+		let mut mismatch = mismatch_builder.finish();
+		if check_inputs {
+			if let Value::Object(object) = &mut mismatch {
+				object.insert(
+					"expected_resolution_inputs_before".to_owned(),
+					codec::to_value(&local_inputs),
+				);
+				object.insert(
+					"received_resolution_inputs_before".to_owned(),
+					codec::to_value(&received_inputs),
+				);
+			}
+		}
+		pdu_res.insert("state_hash_mismatch".to_owned(), mismatch);
+	}
 }
 
 /// Handles a failed federation transaction by sending the error through
@@ -463,7 +607,7 @@ async fn build_local_dag(
 		dag.insert(event_id.clone(), prev_events);
 		let origin_server_ts = value
 			.get("origin_server_ts")
-			.and_then(ruma::CanonicalJsonValue::as_integer)
+			.and_then(rezzy::JsonValue::as_i64)
 			.unwrap_or_default();
 		id_origin_ts.insert(event_id.clone(), origin_server_ts);
 	}
@@ -480,7 +624,7 @@ async fn build_local_dag(
 			.to_string()
 			.parse::<u64>()
 			.ok()
-			.and_then(UInt::new)
+			.and_then(|value| UInt::try_from(value).ok())
 			.unwrap_or_default();
 		Ok((int!(0), MilliSecondsSinceUnixEpoch(ts)))
 	})
@@ -742,12 +886,13 @@ async fn handle_edu_receipt_room_user(
 		.rooms
 		.state_cache
 		.server_in_room(origin, room_id)
-		.await && !services
-		.rooms
-		.state_partial
-		.is_partial_from_server(room_id, origin)
 		.await
-		.unwrap_or(false)
+		&& !services
+			.rooms
+			.state_partial
+			.is_partial_from_server(room_id, origin)
+			.await
+			.unwrap_or(false)
 	{
 		debug_warn!(
 			%user_id, %room_id, %origin,
@@ -794,7 +939,7 @@ async fn handle_edu_typing(
 	if services
 		.rooms
 		.event_handler
-		.acl_check(typing.user_id.server_name(), &typing.room_id)
+		.acl_check(&typing.user_id.server_name(), &typing.room_id)
 		.await
 		.is_err()
 	{
@@ -809,12 +954,13 @@ async fn handle_edu_typing(
 		.rooms
 		.state_cache
 		.is_joined(&typing.user_id, &typing.room_id)
-		.await && !services
-		.rooms
-		.state_partial
-		.is_partial_from_server(&typing.room_id, typing.user_id.server_name())
 		.await
-		.unwrap_or(false)
+		&& !services
+			.rooms
+			.state_partial
+			.is_partial_from_server(&typing.room_id, typing.user_id.server_name())
+			.await
+			.unwrap_or(false)
 	{
 		debug_warn!(
 			%typing.user_id, %typing.room_id, %origin,
@@ -871,7 +1017,7 @@ async fn handle_edu_device_list_update(
 
 	info!(%user_id, %origin, "Received DeviceListUpdate event");
 
-	let incoming_stream_id = u64::from(stream_id);
+	let incoming_stream_id = stream_id;
 	let last_seen_stream_id = services.users.remote_device_list_stream_id(&user_id).await;
 
 	if incoming_stream_id <= last_seen_stream_id {
@@ -880,7 +1026,7 @@ async fn handle_edu_device_list_update(
 
 	if prev_id
 		.iter()
-		.map(|prev| u64::from(*prev))
+		.copied()
 		.any(|prev| prev > last_seen_stream_id && prev != incoming_stream_id)
 	{
 		// TODO: Synapse keeps a richer pending-update pipeline keyed by prev_id, which
@@ -921,7 +1067,7 @@ async fn handle_edu_device_list_update(
 
 		let Ok(response) = services
 			.sending
-			.send_federation_request(user_id.server_name(), request)
+			.send_federation_request(&user_id.server_name(), request)
 			.await
 		else {
 			// The EDU only carried a stream position, so we need a follow-up
@@ -939,7 +1085,7 @@ async fn handle_edu_device_list_update(
 			return;
 		};
 
-		let fetched_stream_id = u64::from(response.stream_id);
+		let fetched_stream_id = response.stream_id;
 		if fetched_stream_id <= last_seen_stream_id {
 			return;
 		}
@@ -985,7 +1131,8 @@ async fn handle_edu_device_list_update(
 		return;
 	};
 
-	let incoming_keys = inject_device_display_name(incoming_keys, device_display_name.as_ref());
+	let incoming_keys =
+		inject_device_display_name(incoming_keys.cast(), device_display_name.as_ref());
 
 	let existing_keys = services
 		.users
@@ -1014,8 +1161,7 @@ fn inject_device_display_name(
 	mut keys: Raw<DeviceKeys>,
 	display_name: Option<&String>,
 ) -> Raw<DeviceKeys> {
-	let Ok(mut object) = keys.deserialize_as::<serde_json::Map<String, serde_json::Value>>()
-	else {
+	let Ok(mut object) = keys.deserialize_as::<JsonObject>() else {
 		return keys;
 	};
 
@@ -1024,9 +1170,9 @@ fn inject_device_display_name(
 	match display_name {
 		| Some(name) => {
 			let unsigned = object
-				.entry("unsigned")
-				.or_insert_with(|| serde_json::json!({}));
-			if let serde_json::Value::Object(unsigned_object) = unsigned {
+				.entry("unsigned".to_owned())
+				.or_insert_with(|| Value::Object(JsonObject::new()));
+			if let Value::Object(unsigned_object) = unsigned {
 				if unsigned_object
 					.get("device_display_name")
 					.and_then(|v| v.as_str())
@@ -1037,19 +1183,16 @@ fn inject_device_display_name(
 				}
 			}
 		},
-		| None => {
-			if let Some(serde_json::Value::Object(unsigned_object)) = object.get_mut("unsigned") {
+		| None =>
+			if let Some(Value::Object(unsigned_object)) = object.get_mut("unsigned") {
 				if unsigned_object.remove("device_display_name").is_some() {
 					modified = true;
 				}
-			}
-		},
+			},
 	}
 
 	if modified {
-		if let Ok(raw) = serde_json::value::to_raw_value(&object) {
-			keys = Raw::from_json(raw);
-		}
+		keys = Raw::from_value(&object);
 	}
 
 	keys
@@ -1061,8 +1204,8 @@ fn remote_device_keys_differ(
 ) -> bool {
 	match (existing_keys.deserialize(), incoming_keys.deserialize()) {
 		| (Ok(existing_keys), Ok(incoming_keys)) =>
-			serde_json::to_value(existing_keys).ok() != serde_json::to_value(incoming_keys).ok(),
-		| _ => existing_keys.json().get() != incoming_keys.json().get(),
+			codec::to_value(&existing_keys) != codec::to_value(&incoming_keys),
+		| _ => existing_keys.get() != incoming_keys.get(),
 	}
 }
 
@@ -1098,7 +1241,7 @@ async fn handle_edu_direct_to_device(
 	}
 
 	// process messages concurrently for different users
-	let ev_type = ev_type.to_string();
+	let ev_type = ev_type.clone();
 	messages
 		.into_iter()
 		.stream()
@@ -1162,7 +1305,7 @@ async fn handle_edu_direct_to_device_event(
 	sender: &UserId,
 	target_device_id_maybe: DeviceIdOrAllDevices,
 	ev_type: &str,
-	event: serde_json::Value,
+	event: Value,
 ) {
 	match target_device_id_maybe {
 		| DeviceIdOrAllDevices::DeviceId(ref target_device_id) => {
@@ -1177,13 +1320,19 @@ async fn handle_edu_direct_to_device_event(
 				.users
 				.all_device_ids(target_user_id)
 				.for_each(|target_device_id| {
-					services.users.add_to_device_event(
-						sender,
-						target_user_id,
-						target_device_id,
-						ev_type,
-						event.clone(),
-					)
+					let event = event.clone();
+					async move {
+						services
+							.users
+							.add_to_device_event(
+								sender,
+								target_user_id,
+								&target_device_id,
+								ev_type,
+								event,
+							)
+							.await;
+					}
 				})
 				.await;
 		},
@@ -1208,7 +1357,13 @@ async fn handle_edu_signing_key_update(
 
 	services
 		.users
-		.add_cross_signing_keys(&user_id, &master_key, &self_signing_key, &None, true)
+		.add_cross_signing_keys(
+			&user_id,
+			&master_key.as_ref().map(Raw::cast),
+			&self_signing_key.as_ref().map(Raw::cast),
+			&None,
+			true,
+		)
 		.await
 		.log_err()
 		.ok();

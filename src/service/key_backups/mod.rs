@@ -6,10 +6,10 @@ use conduwuit::{
 };
 use database::{Deserialized, Ignore, Interfix, Json, Map};
 use futures::StreamExt;
-use ruma::{
-	OwnedRoomId, RoomId, UserId,
+use slipstream::{
+	OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::client::backup::{BackupAlgorithm, KeyBackupData, RoomKeyBackup},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::{Dep, globals};
@@ -96,21 +96,21 @@ pub async fn update_backup<'a>(
 	self.db.backupid_etag.put(key, count);
 	self.db
 		.backupid_algorithm
-		.put_raw(key, backup_metadata.json().get());
+		.put_raw(key, backup_metadata.get());
 
 	Ok(version)
 }
 
 #[implement(Service)]
 pub async fn get_latest_backup_version(&self, user_id: &UserId) -> Result<String> {
-	type Key<'a> = (&'a UserId, &'a str);
+	type Key<'a> = (OwnedUserId, &'a str);
 
 	let last_possible_key = (user_id, u64::MAX);
 	self.db
 		.backupid_algorithm
 		.rev_keys_from(&last_possible_key)
 		.ignore_err()
-		.ready_take_while(|(user_id_, _): &Key<'_>| *user_id_ == user_id)
+		.ready_take_while(|(user_id_, _): &Key<'_>| user_id_ == user_id)
 		.map(|(_, version): Key<'_>| version.to_owned())
 		.next()
 		.await
@@ -122,7 +122,7 @@ pub async fn get_latest_backup(
 	&self,
 	user_id: &UserId,
 ) -> Result<(String, Raw<BackupAlgorithm>)> {
-	type Key<'a> = (&'a UserId, &'a str);
+	type Key<'a> = (OwnedUserId, &'a str);
 	type KeyVal<'a> = (Key<'a>, Raw<BackupAlgorithm>);
 
 	let last_possible_key = (user_id, u64::MAX);
@@ -161,9 +161,7 @@ pub async fn add_key(
 	self.db.backupid_etag.put(key, count);
 
 	let key = (user_id, version, room_id, session_id);
-	self.db
-		.backupkeyid_backup
-		.put_raw(key, key_data.json().get());
+	self.db.backupkeyid_backup.put_raw(key, key_data.get());
 
 	Ok(())
 }
@@ -197,7 +195,7 @@ pub async fn get_all(
 	user_id: &UserId,
 	version: &str,
 ) -> BTreeMap<OwnedRoomId, RoomKeyBackup> {
-	type Key<'a> = (Ignore, Ignore, &'a RoomId, &'a str);
+	type Key<'a> = (Ignore, Ignore, OwnedRoomId, &'a str);
 	type KeyVal<'a> = (Key<'a>, Raw<KeyBackupData>);
 
 	let mut rooms = BTreeMap::<OwnedRoomId, RoomKeyBackup>::new();
@@ -210,7 +208,7 @@ pub async fn get_all(
 		.ignore_err()
 		.ready_for_each(|((_, _, room_id, session_id), key_backup_data): KeyVal<'_>| {
 			rooms
-				.entry(room_id.into())
+				.entry(room_id)
 				.or_insert_with(default)
 				.sessions
 				.insert(session_id.into(), key_backup_data);

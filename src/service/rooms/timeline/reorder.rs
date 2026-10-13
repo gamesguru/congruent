@@ -5,7 +5,7 @@ use conduwuit_core::{
 	matrix::pdu::{PduCount, PduId, RawPduId},
 	warn,
 };
-use ruma::{OwnedEventId, RoomId};
+use slipstream::{OwnedEventId, RoomId};
 
 use super::Service;
 
@@ -18,20 +18,21 @@ impl Service {
 	///
 	/// Reads all PDUs, builds the DAG from `prev_events`, performs a
 	/// topological sort (parents before children, Kahn's algorithm with
-	/// chronological tiebreaking), then rebuilds the
-	/// `roomid_topologicalorder_pducount` index with correct
-	/// `deprecated_local_topo_depth` values computed as
-	/// `max(parent_depths) + 1`. Stream order
-	/// (`room_pducount_eventid`) is NEVER modified — it is immutable
-	/// arrival-time ordering.
+	/// `(origin_server_ts, matrix depth, event_id)` tiebreaking), then rebuilds
+	/// the `roomid_topologicalorder_pducount` index with
+	/// `deprecated_local_topo_depth` values set to the event's 1-based position
+	/// in that sort. Stream order (`room_pducount_eventid`) is NEVER modified —
+	/// it is immutable arrival-time ordering.
 	///
-	/// Optionally recomputes state snapshots incrementally and repairs
-	/// `unsigned.prev_content` on state events.
+	/// Optionally recomputes state snapshots incrementally (unless
+	/// `no_compute_state`). It does not repair `unsigned.prev_content`; use
+	/// `repair-unsigned` for that.
 	pub async fn reorder_timeline(
 		&self,
 		room_id: &RoomId,
 		no_compute_state: bool,
 		force_reindex: bool,
+		allow_incomplete: bool,
 	) -> Result<usize> {
 		let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
 		let insert_lock = self.mutex_insert.lock(room_id).await;
@@ -53,8 +54,25 @@ impl Service {
 		}
 
 		// Retain only edges within our event set for both topo sort and extremities.
+		let mut dropped_parent_edges = 0_usize;
 		for parents in graph.values_mut() {
+			let len_before = parents.len();
 			parents.retain(|prev_id| entries.contains_key(prev_id));
+			dropped_parent_edges =
+				dropped_parent_edges.saturating_add(len_before.saturating_sub(parents.len()));
+		}
+		if dropped_parent_edges > 0 {
+			warn!(
+				"reorder_timeline: dropped {dropped_parent_edges} missing parent edges for room \
+				 {room_id} (incomplete DAG history)"
+			);
+			if !allow_incomplete {
+				return Err!(Request(InvalidParam(
+					"reorder_timeline: aborted because {dropped_parent_edges} missing parent \
+					 edges were detected (incomplete DAG history). Pass --allow-incomplete to \
+					 override."
+				)));
+			}
 		}
 
 		// Topological sort: parents before children (Kahn's algorithm).
@@ -255,23 +273,23 @@ impl Service {
 		if self
 			.services
 			.state
-			.get_room_shortstatehash(room_id)
+			.get_room_state_hamt(room_id)
 			.await
 			.is_err()
 		{
 			if let Some(latest_eid) = sorted.last() {
-				if let Ok(ssh) = self
+				if let Ok(root_handle) = self
 					.services
 					.state_accessor
-					.pdu_shortstatehash(latest_eid)
+					.pdu_roothandle_after_event(latest_eid)
 					.await
 				{
 					let state_lock = self.services.state.mutex.lock(room_id).await;
 					self.services
 						.state
-						.set_room_state(room_id, ssh, &state_lock);
+						.set_room_state_hamt(room_id, &root_handle, &state_lock);
 					info!(
-						"reorder_timeline: bootstrapped room state to shortstatehash {ssh} from \
+						"reorder_timeline: bootstrapped room state to latest root handle from \
 						 latest event {latest_eid}"
 					);
 				}
@@ -294,7 +312,7 @@ mod tests {
 
 	use conduwuit::utils::timeline_sorter::sort_timeline_events;
 	use conduwuit_core::PduCount;
-	use ruma::{OwnedEventId, event_id};
+	use slipstream::{OwnedEventId, event_id};
 
 	/// Compute position-based depths from a Kahn's sort result.
 	/// This mirrors the logic in reorder_timeline /

@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use conduwuit::{Result, info, pdu::PduBuilder};
 use futures::FutureExt;
-use ruma::{
-	RoomId, RoomVersionId,
+use slipstream::{
+	RoomVersionId,
 	events::room::{
 		canonical_alias::RoomCanonicalAliasEventContent,
 		create::RoomCreateEventContent,
@@ -25,7 +25,7 @@ use crate::Services;
 /// Users in this room are considered admins by conduwuit, and the room can be
 /// used to issue admin commands by talking to the server user inside it.
 pub async fn create_admin_room(services: &Services) -> Result {
-	let room_id = RoomId::new(services.globals.server_name());
+	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let room_version = &RoomVersionId::V11;
 
 	let _short_id = services
@@ -76,7 +76,7 @@ pub async fn create_admin_room(services: &Services) -> Result {
 		.timeline
 		.build_and_append_pdu(
 			PduBuilder::state(
-				String::from(server_user),
+				server_user.to_string(),
 				&RoomMemberEventContent::new(MembershipState::Join),
 			),
 			server_user,
