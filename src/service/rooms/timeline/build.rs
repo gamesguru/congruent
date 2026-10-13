@@ -231,6 +231,20 @@ pub async fn build_and_append_pdu(
 		info!("Sending to federation");
 	}
 
+	// Our member list is incomplete until the resync finishes; send this event to
+	// the remaining servers then.
+	if self
+		.services
+		.state_partial
+		.partial_server(&room_id)
+		.await
+		.is_ok_and(|s| s.is_some())
+	{
+		self.services
+			.state_partial
+			.record_partial_send(&room_id, pdu_id, servers);
+	}
+
 	trace!("Event {} in room {:?} has been appended", pdu.event_id(), room_id);
 	Ok(pdu.event_id().to_owned())
 }

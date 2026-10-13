@@ -19,6 +19,14 @@ pub struct Service {
 	/// Rooms with a resync task currently running.
 	active: Mutex<HashSet<OwnedRoomId>>,
 	/// Wakes the resync worker when a room is newly marked partial.
+	/// PDUs sent while a room was partial, with the servers already sent to; once
+	/// the full member list is known they are also sent to the remaining servers.
+	pending_sends: Mutex<
+		std::collections::HashMap<
+			OwnedRoomId,
+			Vec<(rooms::timeline::RawPduId, HashSet<OwnedServerName>)>,
+		>,
+	>,
 	/// Woken whenever a room's partial state is resolved.
 	resolved: tokio::sync::Notify,
 	/// Global count at which each room's partial state was resolved.
@@ -50,6 +58,7 @@ impl crate::Service for Service {
 		let (resync_tx, resync_rx) = loole::unbounded();
 		Ok(Arc::new(Self {
 			active: Mutex::new(HashSet::new()),
+			pending_sends: Mutex::new(std::collections::HashMap::new()),
 			resolved: tokio::sync::Notify::new(),
 			resolved_at: Mutex::new(std::collections::HashMap::new()),
 			resync_tx,
@@ -119,6 +128,22 @@ impl Service {
 			}
 			notified.await;
 		}
+	}
+
+	/// Remember a PDU sent while the room was partial so it can be sent to the
+	/// servers we only learn about after resync.
+	pub fn record_partial_send(
+		&self,
+		room_id: &RoomId,
+		pdu_id: rooms::timeline::RawPduId,
+		sent_to: HashSet<OwnedServerName>,
+	) {
+		self.pending_sends
+			.lock()
+			.expect("locked")
+			.entry(room_id.to_owned())
+			.or_default()
+			.push((pdu_id, sent_to));
 	}
 
 	/// Record that a room's partial state is now resolved and wake waiters.

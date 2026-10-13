@@ -44,6 +44,49 @@ impl Service {
 		}
 	}
 
+	/// Send PDUs created during the partial join to servers that were only
+	/// discovered by the resync.
+	async fn send_pending(&self, room_id: &RoomId) {
+		let pending = self
+			.pending_sends
+			.lock()
+			.expect("locked")
+			.remove(room_id)
+			.unwrap_or_default();
+		if pending.is_empty() {
+			return;
+		}
+
+		let servers: Vec<OwnedServerName> = self
+			.services
+			.state_cache
+			.room_servers(room_id)
+			.filter(|server| {
+				futures::future::ready(!self.services.globals.server_is_ours(server))
+			})
+			.collect()
+			.await;
+
+		for (pdu_id, sent_to) in pending {
+			let remaining: Vec<OwnedServerName> = servers
+				.iter()
+				.filter(|server| !sent_to.contains(*server))
+				.cloned()
+				.collect();
+			if remaining.is_empty() {
+				continue;
+			}
+			if let Err(e) = self
+				.services
+				.sending
+				.send_pdu_servers(remaining.into_iter().stream(), &pdu_id)
+				.await
+			{
+				warn!("Failed to send partial-state PDU to newly discovered servers: {e}");
+			}
+		}
+	}
+
 	/// Spawn a resync task for the room unless one is already running.
 	fn start_resync(self: Arc<Self>, room_id: OwnedRoomId) {
 		if !self.active.lock().expect("locked").insert(room_id.clone()) {
@@ -72,6 +115,7 @@ impl Service {
 					info!("Successfully resynced partial state for room {}", room_id);
 					self.db.state_partial_rooms.remove(room_id.as_bytes());
 					self.db.state_partial_events.remove(room_id.as_bytes());
+					self.send_pending(room_id).await;
 					self.notify_resolved(room_id);
 					return;
 				},
