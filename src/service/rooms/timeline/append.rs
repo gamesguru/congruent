@@ -320,7 +320,6 @@ where
 		pdu,
 		state_lock,
 		state_root_handle.as_ref(),
-		prev_state_root_handle.as_ref(),
 		&pending_nodes,
 	))
 	.await?;

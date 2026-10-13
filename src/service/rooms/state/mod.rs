@@ -393,7 +393,6 @@ impl Service {
 				new_pdu,
 				state_lock,
 				state_root_handle,
-				prev_root_handle,
 				pre_persisted_nodes,
 			)
 			.await?;
@@ -417,7 +416,6 @@ impl Service {
 		new_pdu: &PduEvent,
 		state_lock: &RoomMutexGuard,
 		state_root_handle: Option<&rezzy::hamt::RootHandle>,
-		prev_root_handle: Option<&rezzy::hamt::RootHandle>,
 		pre_persisted_nodes: &[rooms::state_hamt::store::PendingNode],
 	) -> Result<rezzy::hamt::RootHandle> {
 		let shorteventid = self
