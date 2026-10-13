@@ -23,8 +23,6 @@ impl Service {
 		info!("Starting MSC3902 partial state resync worker");
 
 		loop {
-			tokio::time::sleep(Duration::from_secs(60)).await;
-
 			let self_copy = self.clone();
 			self.db
 				.state_partial_rooms
@@ -35,6 +33,8 @@ impl Service {
 				})
 				.collect::<Vec<()>>()
 				.await;
+
+			tokio::time::sleep(Duration::from_secs(60)).await;
 		}
 	}
 

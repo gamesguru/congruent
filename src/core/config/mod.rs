@@ -1627,7 +1627,7 @@ pub struct Config {
 	/// Enable this to allow skipping full state resolution of massive
 	/// lists of offline members from remote servers during joins.
 	/// This allows handling large federation events with ease.
-	#[serde(default = "true_fn")]
+	#[serde(default)]
 	pub fast_joins: bool,
 
 	/// Allow receiving incoming read receipts from remote servers.

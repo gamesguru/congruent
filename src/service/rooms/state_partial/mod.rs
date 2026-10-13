@@ -2,6 +2,7 @@ pub mod resync;
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use conduwuit::Result;
 use database::{Deserialized, Map};
 use slipstream::{OwnedServerName, RoomId, ServerName};
@@ -28,6 +29,7 @@ struct Services {
 	short: Dep<rooms::short::Service>,
 }
 
+#[async_trait]
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
@@ -47,6 +49,11 @@ impl crate::Service for Service {
 				short: args.depend::<rooms::short::Service>("rooms::short"),
 			},
 		}))
+	}
+
+	async fn worker(self: Arc<Self>) -> Result<()> {
+		self.spawn_resync_worker().await;
+		Ok(())
 	}
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
