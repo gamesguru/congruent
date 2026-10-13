@@ -77,3 +77,4 @@ dual_protocol = true
 msc3266_enabled = true
 msc4222_enabled = true
 presence_idle_debounce_ms = 0
+# fast_joins = true

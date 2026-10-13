@@ -1341,7 +1341,7 @@
 # lists of offline members from remote servers during joins.
 # This allows handling large federation events with ease.
 #
-#fast_joins = true
+#fast_joins = false
 
 # Allow receiving incoming read receipts from remote servers.
 #
