@@ -934,10 +934,11 @@ async fn join_room_by_id_helper_remote_process(
 	// Deal with partial joins
 	if send_join_response.room_state.members_omitted {
 		info!("Room {room_id} joined with omitted members (MSC3902). Marking as partial state.");
-		services
-			.rooms
-			.state_partial
-			.mark_as_partial(room_id, &remote_server, resync_event_id.as_ref());
+		services.rooms.state_partial.mark_as_partial(
+			room_id,
+			&remote_server,
+			resync_event_id.as_ref(),
+		);
 	}
 
 	Ok(())

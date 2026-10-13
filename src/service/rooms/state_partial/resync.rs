@@ -12,7 +12,9 @@ use conduwuit_core::{
 use futures::{StreamExt, TryStreamExt};
 use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, RoomVersionId, ServerName,
-	api::federation::event::{get_room_state, get_room_state_ids}, events::StateEventType, sswire::RawJsonValue,
+	api::federation::event::{get_room_state, get_room_state_ids},
+	events::StateEventType,
+	sswire::RawJsonValue,
 };
 
 use crate::rooms::{short::ShortStateKey, state_partial::Service};

@@ -132,7 +132,11 @@ impl Service {
 	/// The global count at which this room finished resyncing, if it did so
 	/// since startup.
 	pub fn resolved_at(&self, room_id: &RoomId) -> Option<u64> {
-		self.resolved_at.lock().expect("locked").get(room_id).copied()
+		self.resolved_at
+			.lock()
+			.expect("locked")
+			.get(room_id)
+			.copied()
 	}
 
 	/// A future completing when any partial-state room is resolved. Armed on
