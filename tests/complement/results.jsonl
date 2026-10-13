@@ -655,10 +655,10 @@
 {"Action":"fail","Test":"TestPartialStateJoin/EagerIncrementalSyncDuringPartialStateJoin"}
 {"Action":"fail","Test":"TestPartialStateJoin/EagerInitialSyncDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/EagerLongPollingSyncWokenWhenResyncCompletes"}
-{"Action":"fail","Test":"TestPartialStateJoin/GappySyncAfterPartialStateSynced"}
-{"Action":"fail","Test":"TestPartialStateJoin/Lazy-loading_gappy_sync_includes_remote_memberships_during_partial_state_join"}
-{"Action":"fail","Test":"TestPartialStateJoin/Lazy-loading_incremental_sync_includes_remote_memberships_during_partial_state_join"}
-{"Action":"fail","Test":"TestPartialStateJoin/Lazy-loading_initial_sync_includes_remote_memberships_during_partial_state_join"}
+{"Action":"pass","Test":"TestPartialStateJoin/GappySyncAfterPartialStateSynced"}
+{"Action":"pass","Test":"TestPartialStateJoin/Lazy-loading_gappy_sync_includes_remote_memberships_during_partial_state_join"}
+{"Action":"pass","Test":"TestPartialStateJoin/Lazy-loading_incremental_sync_includes_remote_memberships_during_partial_state_join"}
+{"Action":"pass","Test":"TestPartialStateJoin/Lazy-loading_initial_sync_includes_remote_memberships_during_partial_state_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/can_be_triggered_by_remote_ban"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/can_be_triggered_by_remote_kick"}
@@ -684,7 +684,7 @@
 {"Action":"pass","Test":"TestPartialStateJoin/Rejects_make_knock_during_partial_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/Rejects_send_join_during_partial_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/Rejects_send_knock_during_partial_join"}
-{"Action":"fail","Test":"TestPartialStateJoin/Resync_completes_even_when_events_arrive_before_their_prev_events"}
+{"Action":"pass","Test":"TestPartialStateJoin/Resync_completes_even_when_events_arrive_before_their_prev_events"}
 {"Action":"pass","Test":"TestPartialStateJoin/Room_aliases_can_be_added_and_deleted_during_a_resync"}
 {"Action":"fail","Test":"TestPartialStateJoin/Room_aliases_can_be_added_and_queried_during_a_resync"}
 {"Action":"skip","Test":"TestPartialStateJoin/Room_stats_are_correctly_updated_once_state_re-sync_completes"}

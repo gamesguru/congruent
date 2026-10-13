@@ -8,12 +8,12 @@ use conduwuit::{
 	},
 	trace,
 	utils::{
-		BoolExt, IterStream, ReadyExt, TryFutureExtExt,
+		BoolExt, IterStream, ReadyExt,
 		stream::{BroadbandExt, TryIgnore},
 	},
 };
 use conduwuit_service::{Services, rooms::lazy_loading::MemberSet};
-use futures::{FutureExt, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt};
 use itertools::Itertools;
 use service::rooms::short::ShortEventId;
 use slipstream::{OwnedEventId, RoomId, UserId, events::StateEventType};
@@ -140,7 +140,7 @@ pub(super) async fn build_state_initial(
 			.filter_map(|pdu| pdu.state_key().map(ToOwned::to_owned))
 			.collect();
 
-		for user_id in lazily_loaded_members.iter() {
+		for user_id in lazily_loaded_members {
 			if user_id == sender_user || present.contains(user_id.as_str()) {
 				continue;
 			}
