@@ -444,12 +444,26 @@ async fn join_room_by_id_helper_remote(
 	// It has enough fields to be called a proper event now
 	let mut join_event = join_event_stub;
 
-	info!("Asking {remote_server} for send_join in room {room_id}");
+	// A partial join omits other servers' members, which is only safe for a server
+	// with no members of its own in the room: otherwise installing the response's
+	// state would erase the local users already joined.
+	let already_in_room = services
+		.rooms
+		.state_cache
+		.local_users_in_room(room_id)
+		.boxed()
+		.next()
+		.await
+		.is_some();
+	info!(
+		"Asking {remote_server} for send_join in room {room_id} \
+		 (already_in_room={already_in_room})"
+	);
 	let send_join_request = federation::membership::create_join_event::v2::Request {
 		room_id: room_id.to_owned(),
 		event_id: event_id.clone(),
 
-		omit_members: services.server.config.fast_joins,
+		omit_members: services.server.config.fast_joins && !already_in_room,
 		pdu: services
 			.sending
 			.convert_to_outgoing_federation_event(join_event.clone())
