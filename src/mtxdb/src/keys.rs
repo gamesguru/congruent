@@ -13,15 +13,13 @@ use mtxdb::{
 /// detection is required; mtxdb identifiers are deliberately only 128 bits.
 #[must_use]
 pub fn derive_id(domain: &[u8], identifier: &[u8]) -> [u8; 16] {
-	use sha2::{Digest, Sha256};
-
-	let mut hasher = Sha256::new();
+	let mut hasher = blake3::Hasher::new();
 	hasher.update(domain);
-	hasher.update([0]);
+	hasher.update(&[0]);
 	hasher.update(identifier);
 
 	let mut id = [0; 16];
-	id.copy_from_slice(&hasher.finalize()[..16]);
+	id.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
 	id
 }
 
@@ -69,9 +67,13 @@ pub fn hamt_node_id(structural_hash: &[u8; 32]) -> [u8; 16] {
 
 /// Derive an event record ID from an event ID.
 ///
-/// Uses SHA-256 for domain separation from mtxdb's BLAKE3-based collections.
+/// Uses raw BLAKE3, matching the Matrix template and CLI selector.
 #[must_use]
-pub fn event_record_id(event_id: &[u8]) -> [u8; 16] { derive_id(b"event", event_id) }
+pub fn event_record_id(event_id: &[u8]) -> [u8; 16] {
+	let mut id = [0; 16];
+	id.copy_from_slice(&blake3::hash(event_id).as_bytes()[..16]);
+	id
+}
 
 /// Derive the room current-root node ID (fixed tag within room's STAT collection).
 #[must_use]

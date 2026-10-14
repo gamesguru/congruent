@@ -750,9 +750,9 @@ dependencies = [
 name = "conduwuit_mtxdb"
 version = "0.5.10"
 dependencies = [
+ "blake3",
  "mtxdb",
  "rezzy",
- "sha2",
 ]
 
 [[package]]
