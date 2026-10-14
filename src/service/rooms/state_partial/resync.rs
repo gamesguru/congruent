@@ -251,6 +251,8 @@ impl Service {
 		// When the failures to get usable state from any server began.
 		let mut unusable_since: Option<Instant> = None;
 		let mut servers_before: Option<HashSet<OwnedServerName>> = None;
+		let mut discovered: Option<Vec<OwnedUserId>> = None;
+		let mut device_updates_replayed = false;
 		loop {
 			let Ok(Some(server_name)) = self.partial_server(room_id).await else {
 				return;
@@ -263,64 +265,71 @@ impl Service {
 				servers_before = Some(self.device_list_servers(room_id).await);
 			}
 			let servers_before = servers_before.clone().unwrap_or_default();
-			match self.clone().resync_room(room_id, &server_name).await {
-				| Ok(discovered) => {
-					info!("Successfully resynced partial state for room {}", room_id);
-					// Keep the partial markers until both replays are queued, so a
-					// failure retries them.
-					let replayed =
-						match self.replay_device_updates(room_id, &servers_before).await {
-							| Ok(()) => {
-								// An append checks the marker and records its pending row
-								// while holding the room's state lock. Holding it here
-								// means every PDU either recorded its row before this drain
-								// or sees no marker and uses the full server list.
-								let _state_lock = self.services.state.mutex.lock(room_id).await;
-								let sent = self.send_pending(room_id).await;
-								if sent.is_ok() {
-									self.db.state_partial_rooms.remove(room_id.as_bytes());
-									self.db.state_partial_events.remove(room_id.as_bytes());
-								}
-								sent
-							},
-							| Err(e) => Err(e),
-						};
-					if let Err(e) = replayed {
-						warn!(
-							"Failed to replay to newly discovered servers for room {room_id}: \
-							 {e}"
-						);
+			if discovered.is_none() {
+				match self.clone().resync_room(room_id, &server_name).await {
+					| Ok(users) => {
+						info!("Successfully resynced partial state for room {}", room_id);
+						discovered = Some(users);
+						delay = Duration::from_secs(1);
+					},
+					| Err(e) => {
+						warn!("Failed to resync partial state for room {}: {}", room_id, e);
+						if self.should_give_up(&e, &mut unusable_since) {
+							warn!(%room_id, "No server gave usable state in time; abandoning the join");
+							self.abandon_join(room_id).await;
+							return;
+						}
 						async_io::Timer::after(delay).await;
 						delay = delay.saturating_mul(2).min(Duration::from_secs(60));
 						continue;
-					}
-					self.notify_resolved(room_id);
-					// Only users whose update was held back while their membership was
-					// unknown are reported; other newly found members had no update.
-					for user_id in self.take_deferred_device_updates(room_id, &discovered) {
-						self.services
-							.users
-							.mark_device_key_update_in_room(&user_id, room_id)
-							.await;
-					}
-					// With no partial room left, nothing can place the remaining
-					// deferred users, so don't keep them around.
-					if !self.any_partial_rooms().await {
-						self.clear_deferred_device_updates();
-					}
-					return;
-				},
-				| Err(e) => {
-					warn!("Failed to resync partial state for room {}: {}", room_id, e);
-					if self.should_give_up(&e, &mut unusable_since) {
-						warn!(%room_id, "No server gave usable state in time; abandoning the join");
-						self.abandon_join(room_id).await;
-						return;
-					}
+					},
+				}
+			}
+
+			// Keep the successful resync result and completed replay stages across
+			// retries. A send_pending failure must not refetch state or re-emit the
+			// device-list EDUs that were already queued.
+			if !device_updates_replayed {
+				if let Err(e) = self.replay_device_updates(room_id, &servers_before).await {
+					warn!("Failed to replay device list updates for room {room_id}: {e}");
 					async_io::Timer::after(delay).await;
 					delay = delay.saturating_mul(2).min(Duration::from_secs(60));
-				},
+					continue;
+				}
+				device_updates_replayed = true;
 			}
+
+			// An append checks the marker and records its pending row while holding
+			// the room's state lock. Holding it here means each PDU either recorded
+			// its row before this drain or sees no marker and uses the full server list.
+			let state_lock = self.services.state.mutex.lock(room_id).await;
+			if let Err(e) = self.send_pending(room_id).await {
+				warn!("Failed to replay pending PDUs for room {room_id}: {e}");
+				drop(state_lock);
+				async_io::Timer::after(delay).await;
+				delay = delay.saturating_mul(2).min(Duration::from_secs(60));
+				continue;
+			}
+			self.db.state_partial_rooms.remove(room_id.as_bytes());
+			self.db.state_partial_events.remove(room_id.as_bytes());
+			drop(state_lock);
+
+			self.notify_resolved(room_id);
+			// Use the full member set found by the successful resync, even after
+			// one or more replay retries.
+			let discovered = discovered.take().unwrap_or_default();
+			for user_id in self.take_deferred_device_updates(room_id, &discovered) {
+				self.services
+					.users
+					.mark_device_key_update_in_room(&user_id, room_id)
+					.await;
+			}
+			// With no partial room left, nothing can place the remaining deferred
+			// users, so don't keep them around.
+			if !self.any_partial_rooms().await {
+				self.clear_deferred_device_updates();
+			}
+			return;
 		}
 	}
 
@@ -425,8 +434,8 @@ impl Service {
 
 		let room_id = room_id.to_owned();
 		let mut invalid_servers = HashSet::new();
-		let new_state_ids = loop {
-			let (response, remote_server, state_ids) = self
+		let (new_state_ids, anchor) = loop {
+			let (response, remote_server, state_ids, anchor) = self
 				.fetch_remote_state(&room_id, server_name, &invalid_servers)
 				.await
 				.map_err(|error| {
@@ -466,7 +475,7 @@ impl Service {
 				)
 				.await
 			{
-				| Ok(state) if state.len() == expected => break state,
+				| Ok(state) if state.len() == expected => break (state, anchor),
 				| Ok(state) => {
 					warn!(%room_id, %remote_server, loaded = state.len(), expected, "state response omitted state keys");
 					invalid_servers.insert(remote_server);
@@ -490,9 +499,6 @@ impl Service {
 		let mut reauthed = None;
 		let mut gave_up = false;
 		for attempt in 1..=REAUTH_ATTEMPTS {
-			let Some(anchor) = self.resync_event_id(&room_id).await else {
-				break;
-			};
 			let Some((current, left, extremities)) = self
 				.reauth_window(&room_id, &anchor, anchor_state.clone())
 				.await
@@ -550,7 +556,8 @@ impl Service {
 		room_id: &RoomId,
 		server_name: &ServerName,
 		excluded: &HashSet<OwnedServerName>,
-	) -> Result<(get_room_state::v1::Response, OwnedServerName, Vec<OwnedEventId>)> {
+	) -> Result<(get_room_state::v1::Response, OwnedServerName, Vec<OwnedEventId>, OwnedEventId)>
+	{
 		// Discovery fallback: collect servers to try
 		let others = self
 			.services
@@ -573,18 +580,19 @@ impl Service {
 			}
 
 			debug!("Asking {} for missing full state of {}", server, room_id);
+			let event_id = match self.resync_event_id(room_id).await {
+				| Some(event_id) => event_id,
+				| None => self
+					.services
+					.state
+					.get_forward_extremities(room_id)
+					.next()
+					.await
+					.expect("room has forward extremities"),
+			};
 			let request = get_room_state::v1::Request {
 				room_id: room_id.to_owned(),
-				event_id: match self.resync_event_id(room_id).await {
-					| Some(event_id) => event_id,
-					| None => self
-						.services
-						.state
-						.get_forward_extremities(room_id)
-						.next()
-						.await
-						.expect("room has forward extremities"),
-				},
+				event_id: event_id.clone(),
 			};
 
 			// Like Synapse, ask for /state_ids first and only then pull the full
@@ -614,7 +622,9 @@ impl Service {
 				.send_federation_request(&server, request)
 				.await
 			{
-				| Ok(response) => return Ok((response, server, ids_response.pdu_ids)),
+				| Ok(response) => {
+					return Ok((response, server, ids_response.pdu_ids, event_id));
+				},
 				| Err(e) => {
 					warn!("Failed to fetch state from {}: {}", server, e);
 					answered |= server_answered(&e);
