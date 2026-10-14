@@ -39,7 +39,7 @@ const RANDOM_USER_ID_LENGTH: usize = 10;
 /// Usernames that were issued a registration challenge, and when.
 static CHALLENGED: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(Mutex::default);
 
-const CHALLENGE_TTL: Duration = Duration::from_secs(15 * 60);
+const CHALLENGE_TTL: Duration = Duration::from_mins(15);
 const CHALLENGE_LIMIT: usize = 10_000;
 
 fn note_challenge(username: &str) {
@@ -52,9 +52,7 @@ fn note_challenge(username: &str) {
 	}
 }
 
-fn forget_challenge(username: &str) {
-	CHALLENGED.lock().expect("locked").remove(username);
-}
+fn forget_challenge(username: &str) { CHALLENGED.lock().expect("locked").remove(username); }
 
 /// Whether `username` was issued a challenge that is still outstanding.
 fn challenge_outstanding(username: &str) -> bool {
@@ -192,7 +190,12 @@ pub(crate) async fn register_route(
 			| _ => &body.auth,
 		};
 
-		Some(services.uiaa.authenticate(auth, flows, params, None).await?)
+		Some(
+			services
+				.uiaa
+				.authenticate(auth, flows, params, None)
+				.await?,
+		)
 	};
 
 	// If the user didn't supply a username but did supply an email, use
@@ -474,7 +477,7 @@ pub(crate) async fn register_route(
 		user_id,
 		device_id: device,
 		refresh_token,
-		expires_in: expires_in.map(std::time::Duration::from_millis),
+		expires_in: expires_in.map(Duration::from_millis),
 	})
 }
 
