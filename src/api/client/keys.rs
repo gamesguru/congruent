@@ -13,7 +13,7 @@ use conduwuit_service::{Services, users::parse_master_key};
 use futures::{StreamExt, stream::FuturesUnordered};
 use service::uiaa::Identity;
 use slipstream::{
-	OneTimeKeyAlgorithm, OwnedDeviceId, OwnedUserId, UserId,
+	OneTimeKeyAlgorithm, OwnedDeviceId, OwnedRoomId, OwnedUserId, UserId,
 	api::{
 		client::{
 			error::ErrorKind,
@@ -460,10 +460,59 @@ pub(crate) async fn get_key_changes_route(
 		);
 	}
 
+	// Users we stopped sharing any room with since `from`; one who still shares
+	// a room with us is not reported as gone.
+	let mut left = Vec::new();
+	let left_candidates: HashSet<_> = services
+		.users
+		.device_list_left(sender_user, Some(from), Some(to))
+		.map(|(user_id, _)| user_id)
+		.collect()
+		.await;
+	for user_id in left_candidates {
+		if !services
+			.rooms
+			.state_cache
+			.user_sees_user(sender_user, &user_id)
+			.await
+		{
+			left.push(user_id);
+		}
+	}
+
 	Ok(get_key_changes::v3::Response {
 		changed: device_list_updates.into_iter().collect(),
-		left: Vec::new(), // TODO
+		left,
 	})
+}
+
+/// Whether we hear about this remote user's device list changes: they must share
+/// a room with one of our users (or have been seen joining a partial-state room).
+async fn remote_user_tracked(services: &Services, user_id: &UserId) -> bool {
+	let mut rooms: Vec<OwnedRoomId> = services.users.tracked_remote_rooms(user_id);
+	rooms.extend(
+		services
+			.rooms
+			.state_cache
+			.rooms_joined(user_id)
+			.collect::<Vec<_>>()
+			.await,
+	);
+	for room_id in rooms {
+		if services
+			.rooms
+			.state_cache
+			.local_users_in_room(&room_id)
+			.boxed()
+			.next()
+			.await
+			.is_some()
+		{
+			return true;
+		}
+	}
+
+	false
 }
 
 pub(crate) async fn get_keys_helper<F>(
@@ -488,6 +537,26 @@ where
 		let user_id: &UserId = user_id;
 
 		if !services.globals.user_is_local(user_id) {
+			// A tracked user whose keys we already fetched, with no change since,
+			// is answered locally without asking their server again.
+			if device_ids.is_empty() {
+				let tracked = remote_user_tracked(services, user_id).await;
+				debug!(target: "keys_cache_debug", %user_id, tracked, "remote_keys_cache: lookup");
+				if let Some(cached) = tracked
+					.then(|| services.users.cached_remote_keys(user_id))
+					.flatten()
+				{
+					device_keys.insert(user_id.to_owned(), cached.device_keys);
+					if let Some(master_key) = cached.master_key {
+						master_keys.insert(user_id.to_owned(), master_key);
+					}
+					if let Some(self_signing_key) = cached.self_signing_key {
+						self_signing_keys.insert(user_id.to_owned(), self_signing_key);
+					}
+					continue;
+				}
+			}
+
 			get_over_federation
 				.entry(user_id.server_name())
 				.or_insert_with(Vec::new)
@@ -561,6 +630,7 @@ where
 	}
 
 	let mut failures = BTreeMap::new();
+	let keys_generation = services.users.remote_keys_generation();
 
 	let futures = get_over_federation
 		.into_iter()
@@ -602,6 +672,17 @@ where
 	for (server, requested_users, response) in futures {
 		match response {
 			| Ok(response) => {
+				debug!(
+					target: "keys_cache_debug",
+					%server,
+					?requested_users,
+					response_users = response.device_keys.len(),
+					master_keys = response.master_keys.len(),
+					self_signing_keys = response.self_signing_keys.len(),
+					generation_at_request = keys_generation,
+					generation_now = services.users.remote_keys_generation(),
+					"remote_keys_cache: federation response"
+				);
 				let mut filtered_device_keys = BTreeMap::new();
 				for (user_id, devices) in response.device_keys {
 					if user_id.server_name().as_str() != server.as_str()
@@ -682,9 +763,35 @@ where
 				}
 
 				self_signing_keys.extend(response.self_signing_keys);
+
+				// Remember complete answers so the next query can skip federation.
+				for (user_id, devices) in &filtered_device_keys {
+					// Only a tracked user's answer is kept: an untracked one (a pre-existing
+					// member of a partial room) would go stale unnoticed.
+					let tracked = remote_user_tracked(services, user_id).await;
+					let all_devices =
+						tracked && device_keys_input.get(user_id).is_some_and(Vec::is_empty);
+					debug!(
+						target: "keys_cache_debug",
+						%user_id, all_devices, devices = devices.len(),
+						"remote_keys_cache: store candidate"
+					);
+					if all_devices {
+						services.users.store_remote_keys(
+							user_id,
+							conduwuit_service::users::CachedRemoteKeys {
+								device_keys: devices.clone(),
+								master_key: master_keys.get(user_id).cloned(),
+								self_signing_key: self_signing_keys.get(user_id).cloned(),
+							},
+							keys_generation,
+						);
+					}
+				}
 				device_keys.extend(filtered_device_keys);
 			},
 			| Err(e) => {
+				conduwuit::info!(%server, "keys/query over federation failed: {e}");
 				failures.insert(server.to_string(), single_field("error", &e.to_string()));
 			},
 		}

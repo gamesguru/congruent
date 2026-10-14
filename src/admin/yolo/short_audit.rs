@@ -62,17 +62,9 @@ pub(super) struct DerivedIndexAudit {
 
 	pub authchain_rows: u64,
 
-	pub statediff_rows: u64,
-	pub statediff_malformed: u64,
-	pub statediff_missing_parents: u64,
-
 	pub digest_rows: u64,
 	pub digest_duplicate_shorts: u64,
 	pub digest_malformed: u64,
-
-	pub event_statehash_rows: u64,
-	pub event_statehash_dangling: u64,
-	pub event_statehash_malformed: u64,
 }
 
 impl DerivedIndexAudit {
@@ -172,22 +164,8 @@ impl DerivedIndexAudit {
 		writeln!(out, "  shorteventid_authchain: rows={}", self.authchain_rows).ok();
 		writeln!(
 			out,
-			"  shortstatehash_statediff: rows={}, malformed={}, missing_parents={}",
-			self.statediff_rows, self.statediff_malformed, self.statediff_missing_parents
-		)
-		.ok();
-		writeln!(
-			out,
 			"  statehash_shortstatehash: rows={}, duplicate_shorts={}, malformed={}",
 			self.digest_rows, self.digest_duplicate_shorts, self.digest_malformed
-		)
-		.ok();
-		writeln!(
-			out,
-			"  shorteventid_shortstatehash: rows={}, dangling={}, malformed={}",
-			self.event_statehash_rows,
-			self.event_statehash_dangling,
-			self.event_statehash_malformed
 		)
 		.ok();
 
@@ -277,24 +255,11 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 	.unwrap_or(u64::MAX);
 
 	// State-hash family.
-	let (statediff, statediff_rows, statediff_malformed) =
-		reverse_keys(&services.db["shortstatehash_statediff"], words).await;
-	audit.statediff_rows = statediff_rows;
-	audit.statediff_malformed = statediff_malformed;
-	audit.statediff_missing_parents =
-		statediff_missing_parents(&services.db["shortstatehash_statediff"], &statediff).await;
-
 	let (digest_rows, digest_dups, digest_malformed) =
 		digest_claims(&services.db["statehash_shortstatehash"], words).await;
 	audit.digest_rows = digest_rows;
 	audit.digest_duplicate_shorts = digest_dups;
 	audit.digest_malformed = digest_malformed;
-
-	let (esh_rows, esh_dangling, esh_malformed) =
-		event_statehash(&services.db["shorteventid_shortstatehash"], &statediff, counter).await;
-	audit.event_statehash_rows = esh_rows;
-	audit.event_statehash_dangling = esh_dangling;
-	audit.event_statehash_malformed = esh_malformed;
 
 	audit.internal_error = consistency_error(&audit, canonical_not_fwd);
 
@@ -455,18 +420,6 @@ async fn forward_vals(map: &Arc<Map>, words: usize) -> (Bits, u64) {
 		.await
 }
 
-/// Counts statediff rows whose 8-byte parent has no statediff key.
-async fn statediff_missing_parents(map: &Arc<Map>, keys: &Bits) -> u64 {
-	map.raw_stream()
-		.ignore_err()
-		.fold(0_u64, |missing, (key, val)| {
-			let parent = short_of(key).and_then(|_| val.get(0..8)).and_then(short_of);
-			let is_missing = parent.is_some_and(|parent| parent != 0 && !get_bit(keys, parent));
-			async move { missing.saturating_add(u64::from(is_missing)) }
-		})
-		.await
-}
-
 /// Claims short state-hash ids from digest rows, counting duplicate claims.
 async fn digest_claims(map: &Arc<Map>, words: usize) -> (u64, u64, u64) {
 	let (_, rows, dups, malformed) = map
@@ -494,31 +447,6 @@ async fn digest_claims(map: &Arc<Map>, words: usize) -> (u64, u64, u64) {
 		)
 		.await;
 	(rows, dups, malformed)
-}
-
-/// Checks `shorteventid_shortstatehash` values exist as statediff keys.
-async fn event_statehash(map: &Arc<Map>, statediff: &Bits, counter: u64) -> (u64, u64, u64) {
-	map.raw_stream()
-		.ignore_err()
-		.fold(
-			(0_u64, 0_u64, 0_u64),
-			|(mut rows, mut dangling, mut malformed), (_key, val)| async move {
-				rows = rows.saturating_add(1);
-				if val.len() == 8 {
-					if let Some(state) = short_of(val) {
-						if state != 0 && state <= counter && !get_bit(statediff, state) {
-							dangling = dangling.saturating_add(1);
-						}
-					} else {
-						malformed = malformed.saturating_add(1);
-					}
-				} else {
-					malformed = malformed.saturating_add(1);
-				}
-				(rows, dangling, malformed)
-			},
-		)
-		.await
 }
 
 fn short_of(bytes: &[u8]) -> Option<u64> { bytes.try_into().ok().map(u64::from_be_bytes) }

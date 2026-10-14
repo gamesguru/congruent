@@ -34,6 +34,16 @@ type PrefetchedPrev = (
 	bool,
 );
 
+/// Whether a leave/ban is provably older than the invite it would rescind. With
+/// either timestamp unknown, or equal timestamps, it is not.
+fn leave_predates_invite(leave_ts: Option<i64>, invite_ts: Option<u64>) -> bool {
+	match (leave_ts, invite_ts) {
+		| (Some(leave_ts), Some(invite_ts)) =>
+			u64::try_from(leave_ts).is_ok_and(|leave_ts| leave_ts < invite_ts),
+		| _ => false,
+	}
+}
+
 async fn should_rescind_invite(
 	services: &crate::rooms::event_handler::Services,
 	content: &BTreeMap<String, CanonicalJsonValue>,
@@ -92,7 +102,13 @@ async fn should_rescind_invite(
 				.get_field::<RoomMemberEventContent>("content")?
 				.is_some_and(|c| c.membership == MembershipState::Invite)
 		{
-			return Ok(true);
+			// A leave older than the invite (an unban that reached us after the
+			// invite did) cannot rescind it.
+			let leave_ts = content
+				.get("origin_server_ts")
+				.and_then(rezzy::JsonValue::as_i64);
+			let invite_ts = event.get_field::<u64>("origin_server_ts")?;
+			return Ok(!leave_predates_invite(leave_ts, invite_ts));
 		}
 	}
 
@@ -134,7 +150,7 @@ pub async fn handle_incoming_pdu<'a>(
 	event_id: &'a EventId,
 	value: BTreeMap<String, CanonicalJsonValue>,
 	is_timeline_event: bool,
-	room_version_override: Option<&'a slipstream::RoomVersionId>,
+	room_version: &'a slipstream::RoomVersionId,
 ) -> Result<Option<RawPduId>> {
 	// Prepare outlier value in case we need to soft-fail on timeout
 	let mut outlier_value = value.clone();
@@ -147,7 +163,7 @@ pub async fn handle_incoming_pdu<'a>(
 		event_id,
 		value,
 		is_timeline_event,
-		room_version_override,
+		room_version,
 	);
 
 	let pdu_timeout = self.services.server.config.pdu_receive_timeout;
@@ -184,7 +200,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	event_id: &'a EventId,
 	value: BTreeMap<String, CanonicalJsonValue>,
 	is_timeline_event: bool,
-	room_version_override: Option<&'a slipstream::RoomVersionId>,
+	room_version: &'a slipstream::RoomVersionId,
 ) -> Result<Option<RawPduId>> {
 	// Skip if it's already an accepted timeline event.
 	if let Ok(pdu_id) = self.services.timeline.get_pdu_id(event_id).await {
@@ -337,7 +353,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					.and_then(|v| v.as_str())
 					.unwrap_or_default();
 				let target_user = UserId::parse(state_key).unwrap_or_else(|_| sender.clone());
-				debug_info!(
+				info!(
 					"Invite to {room_id} appears to have been rescinded by {sender}, marking \
 					 target {target_user} as left"
 				);
@@ -403,6 +419,39 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	// it through here means it doesn't repeat the round-trip.
 	let mut prefetched_prev: Option<PrefetchedPrev> = None;
 
+	// A partial-state room can't serve /state_ids for events we've never seen
+	// (members are omitted), so resolve missing auth events with /event_auth
+	// straight away instead of deferring to a /state_ids retry.
+	let partial_room = self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|s| s.is_some());
+	// ... except when the event also lacks a prev_event: the state fetched to fill
+	// that gap (Synapse asks for the state after each missing prev) brings the
+	// auth events along, so /event_auth is only the last resort.
+	let has_missing_prev = if partial_room {
+		let mut missing_prev = false;
+		if let Ok(pdu) = conduwuit::PduEvent::from_id_val(event_id, value.clone(), Some(room_id))
+		{
+			for prev in pdu.prev_events() {
+				if !self.services.timeline.pdu_exists(prev).await {
+					missing_prev = true;
+					break;
+				}
+			}
+		}
+		missing_prev
+	} else {
+		false
+	};
+	let first_stage = if partial_room && !has_missing_prev {
+		AuthRecoveryStage::AfterStateIds
+	} else {
+		AuthRecoveryStage::BeforeStateIds
+	};
+
 	let (incoming_pdu, val) = match Box::pin(self.handle_outlier_pdu(
 		origin,
 		Some(create_event),
@@ -411,8 +460,8 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 		value.clone(),
 		false,
 		false,
-		room_version_override,
-		AuthRecoveryStage::BeforeStateIds,
+		room_version,
+		first_stage,
 	))
 	.await
 	{
@@ -441,11 +490,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			// missing-auth-event recovery) must not cascade here -- fall
 			// through to the /state_ids retry below instead.
 			for mid in &missing {
-				if self
-					.services
-					.pdu_metadata
-					.is_event_permanently_rejected(mid)?
-				{
+				if self.auth_event_poisons(mid, room_id).await? {
 					info!(
 						"Event {event_id} rejected: missing auth event {mid} is already marked \
 						 rejected; skipping /state/ fetch"
@@ -530,15 +575,22 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				}
 			}
 
+			// A partial-state room can't serve /state_ids for events it never saw
+			// (members are omitted), so only anchor one at a prev_event we lack.
+			let skip_state_ids = partial_room
+				&& (direct_prev.is_none()
+					|| self.services.timeline.pdu_exists(&state_ids_anchor).await);
 			let retry_result = Box::pin(async {
-				Box::pin(self.fetch_state(
-					origin,
-					create_event,
-					room_id,
-					&state_ids_anchor,
-					false,
-				))
-				.await?;
+				if !skip_state_ids {
+					Box::pin(self.fetch_state(
+						origin,
+						create_event,
+						room_id,
+						&state_ids_anchor,
+						false,
+					))
+					.await?;
+				}
 
 				let room_version_id = self.services.state.get_room_version(room_id).await?;
 				let mut inline_fetches = 0_usize;
@@ -602,7 +654,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 						value,
 						false,
 						false,
-						Some(&room_version_id),
+						&room_version_id,
 						AuthRecoveryStage::AfterStateIds,
 					))
 					.await
@@ -621,7 +673,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					value.clone(),
 					false,
 					false,
-					room_version_override,
+					room_version,
 					AuthRecoveryStage::AfterStateIds,
 				))
 				.await
@@ -760,9 +812,6 @@ pub async fn process_timeline_upgrade(
 		))
 		.await?
 	};
-
-	// A malformed item in the response only matters when it left us without any
-	// usable predecessor; otherwise it may be unrelated to this event.
 	let fetched_prev_ids = &fetched_prev_events;
 	let all_prevs_unknown = futures::StreamExt::all(
 		futures::stream::iter(incoming_pdu.prev_events()),
@@ -772,7 +821,6 @@ pub async fn process_timeline_upgrade(
 		},
 	)
 	.await;
-
 	if prev_fetch_had_invalid_data && all_prevs_unknown {
 		warn!(
 			%event_id,
@@ -791,7 +839,6 @@ pub async fn process_timeline_upgrade(
 			"prev_event contained structurally invalid data"
 		))));
 	}
-
 	debug!(events = ?sorted_prev_events, "Handling previous events");
 
 	// Corked (but not flushed) for the whole loop so a gap with many
@@ -822,7 +869,7 @@ pub async fn process_timeline_upgrade(
 					val,
 					false,
 					false,
-					Some(&room_version_id),
+					&room_version_id,
 					AuthRecoveryStage::AfterStateIds,
 				))
 				.await
@@ -927,4 +974,32 @@ pub async fn process_timeline_upgrade(
 			.map(|(pdu_id, _)| pdu_id)
 		})
 		.await
+}
+
+#[cfg(test)]
+mod rescind_tests {
+	use super::leave_predates_invite;
+
+	#[test]
+	fn an_older_leave_does_not_rescind() {
+		assert!(leave_predates_invite(Some(99), Some(100)));
+	}
+
+	#[test]
+	fn equal_or_newer_leave_is_not_older() {
+		assert!(!leave_predates_invite(Some(100), Some(100)));
+		assert!(!leave_predates_invite(Some(101), Some(100)));
+	}
+
+	#[test]
+	fn a_missing_timestamp_keeps_the_old_behaviour() {
+		assert!(!leave_predates_invite(None, Some(100)));
+		assert!(!leave_predates_invite(Some(99), None));
+		assert!(!leave_predates_invite(None, None));
+	}
+
+	#[test]
+	fn a_negative_leave_timestamp_is_not_older() {
+		assert!(!leave_predates_invite(Some(-1), Some(100)));
+	}
 }

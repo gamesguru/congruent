@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, HashMap, hash_map};
 
-use conduwuit::{
-	Err, Event, PduEvent, Result, debug, debug_info, err, implement, info, trace, warn,
-};
+use conduwuit::{Err, Event, PduEvent, Result, debug, debug_info, implement, info, trace, warn};
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, RoomId, ServerName,
 	events::{StateEventType, TimelineEventType},
@@ -28,7 +26,7 @@ pub async fn handle_outlier_pdu<'a, Pdu>(
 	mut value: CanonicalJsonObject,
 	_auth_events_known: bool,
 	skip_sig_verify: bool,
-	room_version_override: Option<&'a slipstream::RoomVersionId>,
+	room_version: &'a slipstream::RoomVersionId,
 	auth_recovery_stage: AuthRecoveryStage,
 ) -> Result<(PduEvent, BTreeMap<String, CanonicalJsonValue>)>
 where
@@ -131,22 +129,10 @@ where
 
 	// TODO: For RoomVersion6 we must check that Raw<..> is canonical do we anywhere?: https://matrix.org/docs/spec/rooms/v6#canonical-json
 
+	// The create event, when we have it, is authoritative for the room version.
 	let room_version_id = match create_event {
 		| Some(ce) => get_room_version_id(ce)?,
-		| None =>
-			if let Some(override_v) = room_version_override {
-				override_v.clone()
-			} else {
-				self.services
-					.state
-					.get_room_version(room_id)
-					.await
-					.map_err(|e| {
-						err!(Request(InvalidParam(
-							"Room version is unknown locally and no override was provided: {e}"
-						)))
-					})?
-			},
+		| None => room_version.clone(),
 	};
 
 	let mut incoming_pdu = if skip_sig_verify {
@@ -387,11 +373,7 @@ where
 		// marked as rejected in our database. A transiently-rejected auth event
 		// (missing/unresolved, not intrinsically bad) must NOT hard-cascade here
 		// -- fall through and let it be treated as missing/retryable below.
-		if self
-			.services
-			.pdu_metadata
-			.is_event_permanently_rejected(aid)?
-		{
+		if self.auth_event_poisons(aid, room_id).await? {
 			self.services.pdu_metadata.mark_event_rejected(
 				event_id,
 				&RejectionCode::DependsOnRejectedAuthEvent.with_detail(aid),
@@ -495,7 +477,7 @@ where
 			&pdu_event,
 			&incoming_pdu,
 			&room_version_id,
-			room_version_override,
+			room_version,
 			&missing_auth_events,
 			&mut auth_events,
 			auth_recovery_stage,
@@ -512,11 +494,7 @@ where
 		// *permanently* rejected, this event must be rejected too. A
 		// transiently-rejected one falls through to the missing-auth-event
 		// branch below instead of hard-cascading.
-		if self
-			.services
-			.pdu_metadata
-			.is_event_permanently_rejected(id)?
-		{
+		if self.auth_event_poisons(id, room_id).await? {
 			self.services.pdu_metadata.mark_event_rejected(
 				event_id,
 				&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
@@ -685,7 +663,7 @@ async fn resolve_missing_outlier_auth_events<'a, Pdu>(
 	pdu_event: &PduEvent,
 	incoming_pdu: &CanonicalJsonObject,
 	room_version_id: &slipstream::RoomVersionId,
-	room_version_override: Option<&'a slipstream::RoomVersionId>,
+	room_version: &'a slipstream::RoomVersionId,
 	missing_auth_events: &[&EventId],
 	auth_events: &mut HashMap<OwnedEventId, PduEvent>,
 	auth_recovery_stage: AuthRecoveryStage,
@@ -696,11 +674,7 @@ where
 	const MAX_INLINE_FETCH: usize = 5;
 
 	for mid in missing_auth_events {
-		if self
-			.services
-			.pdu_metadata
-			.is_event_permanently_rejected(mid)?
-		{
+		if self.auth_event_poisons(mid, room_id).await? {
 			self.services.pdu_metadata.mark_event_rejected(
 				event_id,
 				&RejectionCode::DependsOnRejectedAuthEvent.with_detail(mid),
@@ -876,7 +850,7 @@ where
 						auth_val,
 						true,
 						false,
-						room_version_override,
+						room_version,
 						auth_recovery_stage,
 					))
 					.await
@@ -955,10 +929,7 @@ where
 		// (MissingAuthEvents) -- those are pushed to `still_missing` below
 		// instead, so they get a retryable verdict rather than a permanent
 		// one.
-		let permanently_rejected = self
-			.services
-			.pdu_metadata
-			.is_event_permanently_rejected(id)?;
+		let permanently_rejected = self.auth_event_poisons(id, room_id).await?;
 		info!(
 			target: "state_res_debug",
 			%event_id,
@@ -1017,4 +988,33 @@ where
 	}
 
 	Ok(())
+}
+
+/// Whether a dependent of the rejected `auth_event_id` must be rejected too. In
+/// a partial-state room an auth-check rejection is provisional: it was made
+/// without the full member list and the resync may overturn it, so events that
+/// merely cite it are judged on their own merits instead.
+#[implement(super::Service)]
+pub(super) async fn auth_event_poisons(
+	&self,
+	auth_event_id: &EventId,
+	room_id: &RoomId,
+) -> Result<bool> {
+	let pdu_metadata = &self.services.pdu_metadata;
+	if !pdu_metadata.is_event_permanently_rejected(auth_event_id)? {
+		return Ok(false);
+	}
+
+	let provisional = pdu_metadata
+		.get_rejection_reason(auth_event_id)?
+		.and_then(|reason| RejectionCode::parse(&reason))
+		.is_some_and(|code| code == RejectionCode::AuthCheckFailed)
+		&& self
+			.services
+			.state_partial
+			.partial_server(room_id)
+			.await
+			.is_ok_and(|server| server.is_some());
+
+	Ok(!provisional)
 }

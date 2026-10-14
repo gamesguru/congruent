@@ -811,6 +811,13 @@ pub struct Config {
 	/// display: sensitive
 	pub registration_token: Option<String>,
 
+	/// Shared secret enabling Synapse's `/_synapse/admin/v1/register` endpoint,
+	/// which registers (admin) users via an HMAC-SHA1 signature. Disabled when
+	/// unset.
+	///
+	/// display: sensitive
+	pub registration_shared_secret: Option<String>,
+
 	/// A path to a file containing static registration tokens, one per line.
 	/// Tokens in this file do not supersede tokens from other sources, such as
 	/// the `!admin token` command or the `registration_token` configuration
@@ -1185,6 +1192,14 @@ pub struct Config {
 	/// default: 120000
 	#[serde(default = "default_login_token_ttl")]
 	pub login_token_ttl: u64,
+
+	/// Lifetime in milliseconds of access tokens issued to clients which
+	/// opted into refresh tokens (MSC2918 / Matrix v1.3). Clients which do not
+	/// request a refresh token keep receiving non-expiring access tokens.
+	///
+	/// default: 300000
+	#[serde(default = "default_access_token_ttl")]
+	pub access_token_ttl: u64,
 
 	/// Static TURN username to provide the client if not using a shared secret
 	/// ("turn_secret"), It is recommended to use a shared secret over static
@@ -1621,6 +1636,23 @@ pub struct Config {
 	/// receipts.
 	#[serde(default = "true_fn")]
 	pub allow_local_read_receipts: bool,
+
+	/// MSC3902: Faster Joins.
+	///
+	/// Enable this to allow skipping full state resolution of massive
+	/// lists of offline members from remote servers during joins.
+	/// This allows handling large federation events with ease.
+	#[serde(default)]
+	pub fast_joins: bool,
+
+	/// How long, in seconds, a partial-state join may keep failing to obtain
+	/// usable state from any server before it is abandoned: the local users
+	/// leave the room and its partial state is dropped. Local errors never
+	/// count towards this. 0 retries forever.
+	///
+	/// default: 0
+	#[serde(default = "default_partial_state_resync_give_up_after")]
+	pub partial_state_resync_give_up_after: u64,
 
 	/// Allow receiving incoming read receipts from remote servers.
 	#[serde(default = "true_fn")]
@@ -3247,6 +3279,11 @@ fn default_openid_token_ttl() -> u64 { 60 * 60 }
 
 fn default_login_token_ttl() -> u64 { 2 * 60 * 1000 }
 
+/// Returns the default access-token lifetime of five minutes in milliseconds.
+fn default_access_token_ttl() -> u64 { 5 * 60 * 1000 }
+
+fn default_partial_state_resync_give_up_after() -> u64 { 0 }
+
 fn default_turn_ttl() -> u64 { 60 * 60 * 24 }
 
 fn default_presence_idle_timeout_s() -> u64 { 5 * 60 }
@@ -3407,3 +3444,24 @@ fn default_ldap_uid_attribute() -> String { String::from("uid") }
 fn default_ldap_name_attribute() -> String { String::from("givenName") }
 
 fn default_presence_idle_debounce_ms() -> u64 { 60000 }
+
+#[cfg(test)]
+mod tests {
+	use super::{Config, RawConfig, default_access_token_ttl};
+
+	/// Verifies that the default access-token lifetime is 300,000 milliseconds.
+	#[test]
+	fn access_tokens_default_to_five_minutes() {
+		assert_eq!(default_access_token_ttl(), 300_000);
+	}
+
+	#[test]
+	fn an_omitted_access_token_ttl_is_five_minutes() {
+		let raw = RawConfig::from_toml(
+			"server_name = \"test.local\"\ndatabase_path = \"/nonexistent/conduwuit-test\"",
+		)
+		.unwrap();
+		let config = Config::new(&raw).unwrap();
+		assert_eq!(config.access_token_ttl, 300_000);
+	}
+}

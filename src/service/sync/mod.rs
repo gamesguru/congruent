@@ -178,6 +178,7 @@ struct Services {
 	short: Dep<rooms::short::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
 	typing: Dep<rooms::typing::Service>,
+	state_partial: Dep<rooms::state_partial::Service>,
 }
 
 struct SlidingSyncCache {
@@ -230,6 +231,8 @@ impl crate::Service for Service {
 				short: args.depend::<rooms::short::Service>("rooms::short"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 				typing: args.depend::<rooms::typing::Service>("rooms::typing"),
+				state_partial: args
+					.depend::<rooms::state_partial::Service>("rooms::state_partial"),
 			},
 			connections: Cache::builder()
 				.time_to_idle(Duration::from_hours(12))

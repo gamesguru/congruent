@@ -11,11 +11,11 @@ use conduwuit::{
 	utils::stream::IterStream,
 	warn,
 };
-use futures::{StreamExt, future::ready};
+use futures::{StreamExt, TryStreamExt, future::ready};
 use slipstream::{CanonicalJsonValue, OwnedEventId, RoomId, ServerName, events::StateEventType};
 
 use super::{get_room_version_id, to_room_version};
-use crate::rooms::timeline::RawPduId;
+use crate::rooms::{pdu_metadata::RejectionCode, timeline::RawPduId};
 
 #[implement(super::Service)]
 #[allow(clippy::too_many_arguments)]
@@ -82,23 +82,64 @@ where
 			};
 
 			if state.is_none() {
-				// The snapshot used below must be the state *at this event*, so
-				// /state_ids is always asked about the event itself. A deeper
-				// anchor (the point before the gap) is only a source of missing
-				// events and auth chain: pull it first for its side effects and
-				// ignore the returned snapshot, which predates the gap.
+				// A deeper anchor (the point before a gap) can fill in missing
+				// events and auth-chain data. Its snapshot can also serve directly
+				// when it is this event's sole predecessor; otherwise it predates
+				// the gap and we need a snapshot for this event itself.
+				let mut state_at_event = None;
 				if let Some(anchor) = state_ids_anchor.as_ref() {
-					if let Err(e) = self
+					let anchor_is_only_prev = incoming_pdu.prev_events().count() == 1
+						&& incoming_pdu.prev_events().next() == Some(anchor);
+					let anchor_fetch = self
 						.fetch_state(origin, create_event, room_id, anchor, false)
-						.await
-					{
-						debug!(%anchor, "deeper /state_ids anchor fetch failed: {e}");
+						.await;
+					info!(
+						target: "state_at_event_debug",
+						event_id = %incoming_pdu.event_id,
+						%anchor,
+						prev_events = ?incoming_pdu.prev_events().collect::<Vec<_>>(),
+						anchor_is_only_prev,
+						anchor_fetch = ?anchor_fetch.as_ref().map(|s| s.as_ref().map(HashMap::len)).map_err(ToString::to_string),
+						"upgrade_outlier: deeper anchor fetch"
+					);
+					match anchor_fetch {
+						| Ok(state) if anchor_is_only_prev => state_at_event = state,
+						| Ok(Some(fetched))
+							if incoming_pdu.prev_events().count() > 1
+								&& incoming_pdu.prev_events().any(|prev| prev == anchor) =>
+						{
+							// The anchor is one of several predecessors: its fetched state
+							// plus the others' own give the state before this event.
+							state_at_event = self
+								.state_at_incoming_with_fetched_prev(
+									&incoming_pdu,
+									room_id,
+									&room_version_id,
+									anchor,
+									&fetched,
+								)
+								.await?;
+						},
+						| Ok(_) => {},
+						| Err(e) => debug!(%anchor, "deeper /state_ids anchor fetch failed: {e}"),
 					}
 				}
-				let state = self
-					.fetch_state(origin, create_event, room_id, incoming_pdu.event_id(), false)
-					.await?;
-				Ok::<_, conduwuit::Error>((state, true))
+				// State after the sole predecessor is exactly the state before this
+				// event. Reuse it when the anchor is that predecessor; otherwise the
+				// deeper anchor only warmed the event/auth stores and we still need a
+				// snapshot for this event itself.
+				if state_at_event.is_none() {
+					state_at_event = self
+						.fetch_state(
+							origin,
+							create_event,
+							room_id,
+							incoming_pdu.event_id(),
+							false,
+						)
+						.await?;
+				}
+				Ok::<_, conduwuit::Error>((state_at_event, true))
 			} else {
 				Ok::<_, conduwuit::Error>((state, false))
 			}
@@ -141,12 +182,72 @@ where
 		"Performing auth check to upgrade"
 	);
 	// 11. Check the auth of the event passes based on the state of the event
+	// A partial-state room omits member events from its state, so the sender's
+	// membership is absent. The event's own auth_events carry it; fall back to
+	// those (only for partial rooms) instead of failing auth.
+	let partial_room = self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|s| s.is_some());
+	// A user leaving for themselves grants nothing, so it is judged by its own
+	// auth_events even if the provisional state says they already left (e.g. after
+	// a kick accepted on partial state); everything else is judged against the
+	// state at the event, with the auth_events only filling gaps.
+	let claimed_first = partial_room
+		&& *incoming_pdu.kind() == slipstream::events::TimelineEventType::RoomMember
+		&& incoming_pdu.state_key() == Some(incoming_pdu.sender().as_str())
+		&& incoming_pdu
+			.get_content::<slipstream::events::room::member::RoomMemberEventContent>()
+			.is_ok_and(|c| {
+				c.membership == slipstream::events::room::member::MembershipState::Leave
+			});
+	let partial_auth_events: Vec<PduEvent> = if partial_room {
+		let mut v = Vec::new();
+		for id in incoming_pdu.auth_events() {
+			if let Ok(pdu) = self.services.timeline.get_pdu(id).await {
+				v.push(pdu);
+			}
+		}
+		v
+	} else {
+		Vec::new()
+	};
+	info!(
+		target: "state_at_event_debug",
+		event_id = %incoming_pdu.event_id,
+		auth_events = incoming_pdu.auth_events().count(),
+		resolved = partial_auth_events.len(),
+		"partial auth fallback: resolved event auth_events"
+	);
+	let partial_auth_events = &partial_auth_events;
 	let state_fetch_state = &state_at_incoming_event;
 	let state_fetch = |k: StateEventType, s: StateKey| async move {
-		let shortstatekey = self.services.short.get_shortstatekey(&k, &s).await.ok()?;
-
-		let event_id = state_fetch_state.get(&shortstatekey)?;
-		self.services.timeline.get_pdu(event_id).await.ok()
+		if claimed_first {
+			let claimed = partial_auth_events.iter().find(|p| {
+				*p.kind() == slipstream::events::TimelineEventType::from(k.clone())
+					&& p.state_key() == Some(s.as_str())
+			});
+			if let Some(claimed) = claimed {
+				return Some(claimed.clone());
+			}
+		}
+		let from_state = async {
+			let shortstatekey = self.services.short.get_shortstatekey(&k, &s).await.ok()?;
+			let event_id = state_fetch_state.get(&shortstatekey)?;
+			self.services.timeline.get_pdu(event_id).await.ok()
+		}
+		.await;
+		from_state.or_else(|| {
+			partial_auth_events
+				.iter()
+				.find(|p| {
+					*p.kind() == slipstream::events::TimelineEventType::from(k.clone())
+						&& p.state_key() == Some(s.as_str())
+				})
+				.cloned()
+		})
 	};
 
 	debug!(
@@ -164,6 +265,11 @@ where
 	.map_err(|e| err!(Request(Forbidden("Auth check failed: {e:?}"))))?;
 
 	if !auth_check {
+		// Later events that name this one as a predecessor take the state from
+		// before it; that only works if it is known to be rejected.
+		self.services
+			.pdu_metadata
+			.mark_event_rejected(incoming_pdu.event_id(), RejectionCode::AuthCheckFailed.tag())?;
 		return Err!(Request(Forbidden("Event has failed auth check with state at the event.")));
 	}
 
@@ -208,7 +314,26 @@ where
 
 		let state_fetch = |k: &StateEventType, s: &str| {
 			let key = k.with_state_key(s);
-			ready(auth_events.get(&key).map(ToOwned::to_owned))
+			let claimed = || {
+				partial_auth_events
+					.iter()
+					.find(|p| {
+						*p.kind() == slipstream::events::TimelineEventType::from(k.clone())
+							&& p.state_key() == Some(s)
+					})
+					.cloned()
+			};
+			// See `claimed_first` above.
+			if claimed_first {
+				ready(claimed().or_else(|| auth_events.get(&key).map(ToOwned::to_owned)))
+			} else {
+				ready(
+					auth_events
+						.get(&key)
+						.map(ToOwned::to_owned)
+						.or_else(claimed),
+				)
+			}
 		};
 
 		debug!(
@@ -282,9 +407,33 @@ where
 						.await?,
 			};
 			let prev_root = Some(prev_root);
-			let (new_root, pending_nodes) = self
-				.resolve_state(room_id, &room_version_id, state_after)
-				.await?;
+
+			// In a partial-state room the members needed to judge conflicting
+			// forks are unknown, so state resolution would reject events that were
+			// accepted on the strength of their own auth events. Apply the event to
+			// the current state like Synapse does; the resync re-authorises it and
+			// corrects the state if it was wrong.
+			let partial_current = if partial_room {
+				match self.services.state.get_room_state_hamt(room_id).await {
+					| Ok(root) => self
+						.services
+						.state_accessor
+						.state_full_ids_hamt(room_id, &root)
+						.try_collect::<HashMap<u64, OwnedEventId>>()
+						.await
+						.ok(),
+					| Err(_) => None,
+				}
+			} else {
+				None
+			};
+			let (new_root, pending_nodes) = if let Some(mut current) = partial_current {
+				current.insert(shortstatekey, event_id.to_owned());
+				self.state_map_to_root_handle(room_id, &current).await?
+			} else {
+				self.resolve_state(room_id, &room_version_id, state_after)
+					.await?
+			};
 
 			prev_nodes.extend(pending_nodes);
 			(prev_root, Some(new_root), prev_nodes)

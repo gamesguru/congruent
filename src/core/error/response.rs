@@ -58,6 +58,7 @@ pub(super) fn bad_request_code(kind: &ErrorKind) -> StatusCode {
 		| UserDeactivated
 		| ThreepidDenied
 		| InviteBlocked
+		| CannotLeaveServerNoticeRoom
 		| WrongRoomKeysVersion { .. }
 		| UserSuspended
 		| Forbidden { .. } => StatusCode::FORBIDDEN,

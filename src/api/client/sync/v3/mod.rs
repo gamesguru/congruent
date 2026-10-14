@@ -48,7 +48,10 @@ use crate::{
 	Ruma, RumaResponse,
 	client::{
 		is_ignored_invite,
-		sync::v3::{joined::load_joined_room, left::load_left_room},
+		sync::{
+			shares_a_room,
+			v3::{joined::load_joined_room, left::load_left_room},
+		},
 	},
 	json_util::{empty_events, single_field},
 	router::extract::{ClientIp, State},
@@ -240,6 +243,9 @@ struct SyncContext<'a> {
 	filter: &'a FilterDefinition,
 	/// Whether MSC4222 state_after was requested by the client.
 	use_state_after: bool,
+	/// For a room delivered late (after a partial-state resync) as if newly
+	/// joined: the client's real `since`, so device list changes are still sent.
+	redelivered_since: Option<u64>,
 }
 
 impl<'a> SyncContext<'a> {
@@ -589,6 +595,7 @@ pub(crate) async fn build_sync_events(
 		full_state,
 		filter: &filter,
 		use_state_after,
+		redelivered_since: None,
 	};
 
 	let is_initial_sync = last_sync_end_count.is_none();
@@ -597,7 +604,36 @@ pub(crate) async fn build_sync_events(
 		.state_cache
 		.rooms_joined(syncing_user)
 		.map(|room_id| async move {
-			let joined_room = load_joined_room(services, context, room_id.clone()).await;
+			// MSC3902: eager (non-lazy-loading) syncs must omit rooms whose state
+			// is still partial, as the member list would be incomplete.
+			if !context.lazy_loading_enabled()
+				&& services
+					.rooms
+					.state_partial
+					.partial_server(&room_id)
+					.await
+					.is_ok_and(|s| s.is_some())
+			{
+				return None;
+			}
+
+			// A room that finished its partial-state resync after the client's last
+			// sync was hidden from it (eager syncs omit partial rooms), so deliver
+			// it now as if newly joined.
+			let mut room_context = context;
+			if !context.lazy_loading_enabled() {
+				if let (Some(since), Some(resolved_at)) = (
+					context.last_sync_end_count,
+					services.rooms.state_partial.resolved_at(&room_id),
+				) {
+					if since < resolved_at {
+						room_context.redelivered_since = Some(since);
+						room_context.last_sync_end_count = None;
+					}
+				}
+			}
+
+			let joined_room = load_joined_room(services, room_context, room_id.clone()).await;
 
 			match joined_room {
 				| Ok((room, state_after, updates)) => Some((room_id, room, state_after, updates)),
@@ -879,14 +915,23 @@ pub(crate) async fn build_sync_events(
 		);
 	}
 
-	// A leave and subsequent visibility-restoring update (for example, an invite
-	// arriving before the next /sync response is built) can otherwise surface as
-	// both `left` and `changed` for the same user in one response. Prefer the
-	// current visibility-restoring state and suppress the stale `left`.
-	let changed_users = device_list_updates.changed.iter().collect::<HashSet<_>>();
-	device_list_updates
+	// A user can be in both `changed` and `left` in one response (e.g. their join's
+	// key-change row lands after the previous sync token, then they leave). If
+	// they still share a room with us, the visibility-restoring `changed` wins
+	// and the stale `left` is dropped; if they share none, they really left.
+	let both = device_list_updates
 		.left
-		.retain(|user_id| !changed_users.contains(user_id));
+		.iter()
+		.filter(|user_id| device_list_updates.changed.contains(*user_id))
+		.cloned()
+		.collect::<Vec<_>>();
+	for user_id in both {
+		if shares_a_room(services, syncing_user, &user_id, None).await {
+			device_list_updates.left.remove(&user_id);
+		} else {
+			device_list_updates.changed.remove(&user_id);
+		}
+	}
 
 	let mut presence_updates = presence_updates.unwrap_or_default();
 	if services.config.allow_local_presence {
@@ -1266,6 +1311,10 @@ async fn process_presence_updates(
 					.rooms
 					.state_cache
 					.user_sees_user(syncing_user, &user_id)
+					.await || services
+					.rooms
+					.state_partial
+					.shares_partial_server(syncing_user, &user_id)
 					.await
 			}
 		})

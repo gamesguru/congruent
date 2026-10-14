@@ -8,17 +8,73 @@ use conduwuit::{
 	},
 	trace,
 	utils::{
-		BoolExt, IterStream, ReadyExt, TryFutureExtExt,
+		BoolExt, IterStream, ReadyExt,
 		stream::{BroadbandExt, TryIgnore},
 	},
 };
 use conduwuit_service::{Services, rooms::lazy_loading::MemberSet};
-use futures::{FutureExt, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt};
 use itertools::Itertools;
 use service::rooms::short::ShortEventId;
 use slipstream::{OwnedEventId, RoomId, UserId, events::StateEventType};
 
 use crate::client::TimelinePdus;
+
+/// Look up a lazily-loaded member's membership event.
+///
+/// In a partial-state room (MSC3902) the room state omits remote members, so
+/// the lookup falls back to the membership event cited in the `auth_events` of
+/// an event that user sent in the timeline.
+async fn lazy_member_event(
+	services: &Services,
+	room_id: &RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
+	user_id: &UserId,
+	timeline: Option<&TimelinePdus>,
+) -> Option<PduEvent> {
+	if let Ok(pdu) = services
+		.rooms
+		.state_accessor
+		.state_get_in_room_hamt(
+			room_id,
+			root_handle,
+			&StateEventType::RoomMember,
+			user_id.as_str(),
+		)
+		.await
+	{
+		return Some(pdu);
+	}
+
+	let timeline = timeline?;
+	if !services
+		.rooms
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|s| s.is_some())
+	{
+		return None;
+	}
+
+	for (_, pdu) in timeline
+		.pdus
+		.iter()
+		.filter(|(_, pdu)| pdu.sender() == user_id)
+	{
+		for auth_event_id in pdu.auth_events() {
+			if let Ok(auth_pdu) = services.rooms.timeline.get_pdu(auth_event_id).await {
+				if *auth_pdu.kind() == slipstream::events::TimelineEventType::RoomMember
+					&& auth_pdu.state_key() == Some(user_id.as_str())
+				{
+					return Some(auth_pdu);
+				}
+			}
+		}
+	}
+
+	None
+}
 
 /// Calculate the state events to include in an initial sync response.
 ///
@@ -32,6 +88,7 @@ pub(super) async fn build_state_initial(
 	sender_user: &UserId,
 	timeline_start_root_handle: &rezzy::hamt::RootHandle,
 	lazily_loaded_members: Option<&MemberSet>,
+	timeline: Option<&TimelinePdus>,
 ) -> Result<Vec<PduEvent>> {
 	// load the keys and event IDs of the state events at the start of the timeline
 	let (shortstatekeys, event_ids): (Vec<_>, Vec<_>) = services
@@ -45,7 +102,7 @@ pub(super) async fn build_state_initial(
 
 	trace!("performing initial sync of {} state events", event_ids.len());
 
-	services
+	let pdus = services
 		.rooms
 		.short
 		// look up the full state keys
@@ -71,9 +128,37 @@ pub(super) async fn build_state_initial(
 		.broad_filter_map(|event_id: OwnedEventId| async move {
 			services.rooms.timeline.get_pdu(&event_id).await.ok()
 		})
-		.collect()
-		.map(Ok)
-		.await
+		.collect::<Vec<PduEvent>>()
+		.await;
+
+	let mut pdus = pdus;
+	// lazily-loaded members that weren't in the (possibly partial) state
+	if let Some(lazily_loaded_members) = lazily_loaded_members {
+		let present: std::collections::HashSet<String> = pdus
+			.iter()
+			.filter(|pdu| *pdu.kind() == slipstream::events::TimelineEventType::RoomMember)
+			.filter_map(|pdu| pdu.state_key().map(ToOwned::to_owned))
+			.collect();
+
+		for user_id in lazily_loaded_members {
+			if user_id == sender_user || present.contains(user_id.as_str()) {
+				continue;
+			}
+			if let Some(pdu) = lazy_member_event(
+				services,
+				room_id,
+				timeline_start_root_handle,
+				user_id,
+				timeline,
+			)
+			.await
+			{
+				pdus.push(pdu);
+			}
+		}
+	}
+
+	Ok(pdus)
 }
 
 /// Calculate the state events to include in an incremental sync response.
@@ -168,17 +253,14 @@ pub(super) async fn build_state_incremental<'a>(
 							return None;
 						}
 
-						services
-							.rooms
-							.state_accessor
-							.state_get_in_room_hamt(
-								room_id,
-								timeline_start_root_handle,
-								&StateEventType::RoomMember,
-								user_id.as_str(),
-							)
-							.ok()
-							.await
+						lazy_member_event(
+							services,
+							room_id,
+							timeline_start_root_handle,
+							user_id,
+							Some(timeline),
+						)
+						.await
 					})
 					.collect()
 					.await;
@@ -256,7 +338,7 @@ pub(super) async fn build_state_incremental<'a>(
 		.ignore_err();
 
 	// finally, fetch the PDU contents and collect them into a vec
-	let state_diff_pdus = state_diff
+	let mut state_diff_pdus = state_diff
 		.broad_filter_map(|event_id| async move {
 			services
 				.rooms
@@ -267,6 +349,44 @@ pub(super) async fn build_state_incremental<'a>(
 		})
 		.collect::<Vec<_>>()
 		.await;
+
+	// With lazy-loading the client never received most memberships, so the diff
+	// against the previous sync's state cannot be trusted to contain the
+	// memberships of the timeline's senders. `lazily_loaded_members` has already
+	// been narrowed to the ones this device hasn't been sent yet (and is now
+	// marked as sent), so they must be included here too.
+	if let Some(lazily_loaded_members) = lazily_loaded_members {
+		let already_included: std::collections::HashSet<OwnedEventId> = state_diff_pdus
+			.iter()
+			.map(|pdu| pdu.event_id.clone())
+			.collect();
+
+		let lazy_membership_events: Vec<PduEvent> = lazily_loaded_members
+			.iter()
+			.stream()
+			.broad_filter_map(|user_id| async move {
+				if user_id == sender_user {
+					return None;
+				}
+
+				lazy_member_event(
+					services,
+					room_id,
+					timeline_start_root_handle,
+					user_id,
+					Some(timeline),
+				)
+				.await
+			})
+			.collect()
+			.await;
+
+		state_diff_pdus.extend(
+			lazy_membership_events
+				.into_iter()
+				.filter(|pdu| !already_included.contains(&pdu.event_id)),
+		);
+	}
 
 	trace!(
 		target: "conduwuit::api::client::sync",

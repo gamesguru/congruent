@@ -1,10 +1,10 @@
 use std::{borrow::Borrow, iter::once};
 
-use conduwuit::{Result, at, err, info};
+use conduwuit::{Result, info};
 use futures::TryStreamExt;
-use slipstream::{OwnedEventId, api::federation::event::get_room_state_ids};
+use slipstream::api::federation::event::get_room_state_ids;
 
-use super::AccessCheck;
+use super::{AccessCheck, utils::state_ids_at_event};
 use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/federation/v1/state_ids/{roomId}`
@@ -31,22 +31,7 @@ pub(crate) async fn get_room_state_ids_route(
 		"Serving state_ids request"
 	);
 
-	let root_handle = services
-		.rooms
-		.state_accessor
-		.pdu_roothandle_before_event(&body.event_id)
-		.await
-		.map_err(|_| err!(Request(NotFound("Pdu state not found."))))?;
-
-	let pdu_ids: Vec<OwnedEventId> = services
-		.rooms
-		.state_accessor
-		.state_full_ids_hamt(&body.room_id, &root_handle)
-		.try_collect::<Vec<_>>()
-		.await?
-		.into_iter()
-		.map(at!(1))
-		.collect();
+	let pdu_ids = state_ids_at_event(&services, &body.room_id, &body.event_id).await?;
 
 	let auth_chain_ids = services
 		.rooms

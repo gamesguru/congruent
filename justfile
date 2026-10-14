@@ -242,13 +242,16 @@ e2ee args=".*":
     # repeat run.
     case "$CRYPTO_MATRIX" in
         *[rR]*)
+            # Exported for the rpc build and for `go test` below, which links the
+            # same static archive.
+            export CGO_LDFLAGS="${CGO_LDFLAGS:-} -Wl,--no-as-needed -lzstd -lm"
             RPC_BIN="$COMPLEMENT_SRC/rpc"
             if [ ! -x "$RPC_BIN" ] || [ -n "$(find "$COMPLEMENT_SRC/cmd/rpc" "$COMPLEMENT_SRC/internal/deploy/rpc" "$COMPLEMENT_SRC/internal/api" "$COMPLEMENT_SRC/go.mod" "$COMPLEMENT_SRC/go.sum" -newer "$RPC_BIN" -print -quit 2>/dev/null)" ]; then
                 echo "Building complement-crypto's cmd/rpc binary (multiprocess tests)..."
                 # libmatrix_sdk_ffi.a is a static archive, so its libm/libzstd
                 # deps aren't recorded; --no-as-needed keeps them linked even
                 # though CGO_LDFLAGS precede the generated -lmatrix_sdk_ffi.
-                (cd "$COMPLEMENT_SRC" && CGO_LDFLAGS="${CGO_LDFLAGS:-} -Wl,--no-as-needed -lzstd -lm" go build -tags="$CRYPTO_TAGS" -o rpc ./cmd/rpc)
+                (cd "$COMPLEMENT_SRC" && go build -tags="$CRYPTO_TAGS" -o rpc ./cmd/rpc)
             fi
             export COMPLEMENT_CRYPTO_RPC_BINARY="$RPC_BIN"
             ;;

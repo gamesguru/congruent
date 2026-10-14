@@ -90,6 +90,25 @@ version = "2.3.1"
 [workspace.dependencies.regex]
 version = "1.11.1"
 
+[workspace.dependencies.axum]
+version = "0.8.8"
+default-features = false
+features = [
+    "form",
+    "http1",
+    "http2",
+    "json",
+    "matched-path",
+    "query",
+    "tokio",
+    "tracing",
+]
+
+[workspace.dependencies.axum-extra]
+version = "0.12.0"
+default-features = false
+features = ["typed-header", "tracing", "cookie"]
+
 [workspace.dependencies.tower]
 version = "0.5.2"
 default-features = false
@@ -279,7 +298,7 @@ version = "2.0.2"
 
 [workspace.dependencies.mtxdb]
 git = "https://gitlab.com/Wombat-Foundation/mtxdb.git"
-branch = "refactor/pack-id-store-layout"
+branch = "dev"
 features = ["reconcile"]
 
 [workspace.dependencies.rezzy]

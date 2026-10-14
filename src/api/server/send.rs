@@ -1,6 +1,7 @@
 use std::{
 	collections::{BTreeMap, HashMap, HashSet},
 	net::IpAddr,
+	str::FromStr,
 	sync::Arc,
 	time::{Duration, Instant},
 };
@@ -225,7 +226,12 @@ async fn process_inbound_transaction(
 		.edus
 		.into_iter()
 		.map(|edu| edu.get().to_owned())
-		.map(|json| codec::from_str::<Edu>(&json))
+		.map(|json| {
+			codec::from_str::<Edu>(&json).map_err(|e| {
+				warn!(%origin, len = json.len(), "Failed to parse incoming EDU, dropping: {e}");
+				e
+			})
+		})
 		.filter_map(Result::ok)
 		.collect::<Vec<_>>()
 		.into_iter()
@@ -650,6 +656,49 @@ async fn build_local_dag(
 	.map_err(|e| err!("failed to resolve local graph: {e}"))
 }
 
+/// Recover a room's version from a local invitee's stored stripped state, for
+/// a room we are not resident in (e.g. a rescinded out-of-band invite).
+async fn invited_room_version(
+	services: &Services,
+	room_id: &slipstream::RoomId,
+) -> Option<slipstream::RoomVersionId> {
+	let mut invited = Box::pin(services.rooms.state_cache.room_members_invited(room_id));
+
+	while let Some(user_id) = invited.next().await {
+		if !services.globals.user_is_local(&user_id) {
+			continue;
+		}
+
+		let Ok(stripped) = services
+			.rooms
+			.state_cache
+			.invite_state(&user_id, room_id)
+			.await
+		else {
+			continue;
+		};
+
+		let version = stripped.iter().find_map(|event| {
+			let event = event.json().ok()?;
+			(event.get("type")?.as_str()? == "m.room.create")
+				.then(|| {
+					event
+						.get("content")?
+						.get("room_version")?
+						.as_str()
+						.map(str::to_owned)
+				})
+				.flatten()
+		});
+
+		if let Some(version) = version {
+			return slipstream::RoomVersionId::from_str(&version).ok();
+		}
+	}
+
+	None
+}
+
 async fn handle_room(
 	services: &Services,
 	_client: &IpAddr,
@@ -701,18 +750,95 @@ async fn handle_room(
 			.get(&event_id)
 			.expect("sorted event IDs must be from the original map")
 			.clone();
+		let room_version_id = match services.rooms.state.get_room_version(room_id).await {
+			| Ok(version) => version,
+			| Err(state_error) => {
+				let is_create = value
+					.get("type")
+					.and_then(slipstream::CanonicalJsonValue::as_str)
+					== Some("m.room.create");
+				if !is_create {
+					// Room unknown locally. Like Tuwunel, recover the version from a
+					// pending local invite's stripped state so the event handler still
+					// runs (it owns invite-rescind handling); otherwise this is not a
+					// transient failure: reject only this PDU instead of the whole
+					// transaction (which also carries EDUs and other rooms).
+					if let Some(version) = invited_room_version(services, room_id).await {
+						info!(%room_id, %event_id, %version, "room unknown locally; using version from invite state");
+						version
+					} else {
+						info!(%room_id, %event_id, "room unknown locally and no invite state: {state_error}");
+						let is_member = value
+							.get("type")
+							.and_then(slipstream::CanonicalJsonValue::as_str)
+							== Some("m.room.member");
+						let result = if is_member {
+							services
+								.rooms
+								.outlier
+								.add_pdu_outlier(&event_id, &value, Some(room_id))
+								.await;
+							Ok(())
+						} else {
+							Err(err!(Request(NotFound(
+								"This server is not participating in that room."
+							))))
+						};
+						results.push((event_id, result));
+						continue;
+					}
+				} else {
+					let version = value
+						.get("content")
+						.and_then(slipstream::CanonicalJsonValue::as_object)
+						.and_then(|content| content.get("room_version"))
+						.and_then(slipstream::CanonicalJsonValue::as_str)
+						.map_or(Ok(slipstream::RoomVersionId::V1), |version| {
+							slipstream::RoomVersionId::from_str(version)
+						});
+					version.map_err(|e| TransactionError::Transient(e.to_string()))?
+				}
+			},
+		};
 		services
 			.server
 			.check_running()
 			.map_err(|_| TransactionError::ShuttingDown)?;
-		let result = Box::pin(
-			services
-				.rooms
-				.event_handler
-				.handle_incoming_pdu(origin, room_id, &event_id, value, true, None),
-		)
+		let result = Box::pin(services.rooms.event_handler.handle_incoming_pdu(
+			origin,
+			room_id,
+			&event_id,
+			value,
+			true,
+			&room_version_id,
+		))
 		.await
 		.map(|_| ());
+
+		// An event that fails auth is stored as rejected; Synapse reports it as
+		// accepted too.
+		// Only in a partial-state room: the PDU's auth may be judged differently
+		// once the full state is known, so don't tell the sender it was refused.
+		let room_is_partial = result.is_err()
+			&& services
+				.rooms
+				.state_partial
+				.partial_server(room_id)
+				.await
+				.is_ok_and(|server| server.is_some());
+		let result = match result {
+			| Err(ref e)
+				if room_is_partial && matches!(e.kind(), ErrorKind::Forbidden { .. }) && {
+					let msg = e.to_string();
+					msg.contains("Event authorisation fails")
+						|| msg.contains("Event has failed auth check")
+				} =>
+			{
+				debug_warn!("Incoming PDU {event_id} rejected on auth: {e}");
+				Ok(())
+			},
+			| other => other,
+		};
 
 		if let Err(ref e) = result {
 			// Only abort the entire transaction for truly local failures
@@ -894,7 +1020,12 @@ async fn handle_edu_receipt_room_user(
 		.rooms
 		.state_cache
 		.server_in_room(&origin, &room_id)
+		.await && !services
+		.rooms
+		.state_partial
+		.is_partial_from_server(&room_id, &origin)
 		.await
+		.unwrap_or(false)
 	{
 		debug_warn!(
 			%user_id, %room_id, %origin,
@@ -962,7 +1093,12 @@ async fn handle_edu_typing(
 		.rooms
 		.state_cache
 		.is_joined(&typing.user_id, &typing.room_id)
+		.await && !services
+		.rooms
+		.state_partial
+		.is_partial_from_server(&typing.room_id, &typing.user_id.server_name())
 		.await
+		.unwrap_or(false)
 	{
 		debug_warn!(
 			%typing.user_id, %typing.room_id, %origin,
@@ -1065,6 +1201,33 @@ async fn handle_edu_device_list_update(
 	}
 
 	let Some(incoming_keys) = keys else {
+		// A user we cannot yet place in any room is likely a member of a room that
+		// is still partial-state with the origin. Fetching their devices now would
+		// be wasted (and unwelcome): remember the update and let the resync
+		// mark exactly these users changed once their membership is known.
+		let partial_rooms = services
+			.rooms
+			.state_partial
+			.partial_rooms_via(&user_id.server_name())
+			.await;
+		if !partial_rooms.is_empty()
+			&& services
+				.rooms
+				.state_cache
+				.rooms_joined(&user_id)
+				.boxed()
+				.next()
+				.await
+				.is_none()
+		{
+			services
+				.rooms
+				.state_partial
+				.defer_device_update(&user_id, &partial_rooms);
+			services.users.invalidate_remote_keys(&user_id);
+			return;
+		}
+
 		let request = get_devices::v1::Request { user_id: user_id.clone() };
 
 		let Ok(response) = services

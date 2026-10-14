@@ -15,11 +15,12 @@ use http_body_util::{BodyExt, Full};
 
 use self::handler::{RouterExt, any, delete, get, post, put};
 pub(super) use self::{
-	args::{Args as Ruma, authenticate_user},
+	args::{Args as Ruma, authenticate_user, authenticate_user_with_body},
 	response::{ApiError, IntoResponse, Response, RumaResponse},
 };
 use crate::{admin, client, server};
 
+/// Registers the Matrix API routes, including enabled experimental endpoints.
 pub fn build(
 	router: crate::hyper_router::MinimalRouter,
 	server: &Server,
@@ -67,6 +68,7 @@ pub fn build(
 		.ruma_route(&client::login_token_route)
 		.ruma_route(&client::whoami_route)
 		.ruma_route(&client::logout_route)
+		.ruma_route(&client::refresh_token_route)
 		.ruma_route(&client::logout_all_route)
 		.ruma_route(&client::change_password_route)
 		.ruma_route(&client::request_password_change_token_via_email_route)
@@ -325,6 +327,16 @@ pub fn build(
 			"/_matrix/client/unstable/org.continuwuity.dag/{room_id}",
 			get(client::get_room_dag_route),
 		)
+		.route(
+			"/_synapse/admin/v1/register",
+			get(client::synapse_register_nonce).post(client::synapse_register),
+		)
+		.route("/_synapse/admin/v1/send_server_notice", post(client::synapse_send_server_notice))
+		.route(
+			"/_synapse/admin/v1/send_server_notice/{txn_id}",
+			put(client::synapse_send_server_notice_txn),
+		)
+		.route("/_synapse/admin/v1/rooms/{room_id}", delete(client::synapse_delete_room))
 		.ruma_route(&admin::rooms::ban::ban_room)
 		.ruma_route(&admin::rooms::list::list_rooms);
 

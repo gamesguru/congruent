@@ -603,6 +603,12 @@
 #
 #registration_token =
 
+# Shared secret enabling Synapse's `/_synapse/admin/v1/register` endpoint,
+# which registers (admin) users via an HMAC-SHA1 signature. Disabled when
+# unset.
+#
+#registration_shared_secret =
+
 # A path to a file containing static registration tokens, one per line.
 # Tokens in this file do not supersede tokens from other sources, such as
 # the `!admin token` command or the `registration_token` configuration
@@ -938,6 +944,12 @@
 # see login_via_existing_session.
 #
 #login_token_ttl = 120000
+
+# Lifetime in milliseconds of access tokens issued to clients which
+# opted into refresh tokens (MSC2918 / Matrix v1.3). Clients which do not
+# request a refresh token keep receiving non-expiring access tokens.
+#
+#access_token_ttl = 300000
 
 # Static TURN username to provide the client if not using a shared secret
 # ("turn_secret"), It is recommended to use a shared secret over static
@@ -1334,6 +1346,21 @@
 # receipts.
 #
 #allow_local_read_receipts = true
+
+# MSC3902: Faster Joins.
+#
+# Enable this to allow skipping full state resolution of massive
+# lists of offline members from remote servers during joins.
+# This allows handling large federation events with ease.
+#
+#fast_joins = false
+
+# How long, in seconds, a partial-state join may keep failing to obtain
+# usable state from any server before it is abandoned: the local users
+# leave the room and its partial state is dropped. Local errors never
+# count towards this. 0 retries forever.
+#
+#partial_state_resync_give_up_after = 0
 
 # Allow receiving incoming read receipts from remote servers.
 #

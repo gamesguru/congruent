@@ -235,15 +235,32 @@ where
 							return None;
 						},
 					};
-					if rejected && timeline.non_outlier_pdu_exists(&pdu.event_id).await {
-						warn!(
-							event_id = %pdu.event_id,
-							"state_res: clearing stale rejection flag on timeline event"
-						);
-						if let Err(error) = meta.unmark_event_rejected(&pdu.event_id) {
-							warn!(%error, event_id = %pdu.event_id, "state_res: failed to clear stale rejection flag");
+					if rejected {
+						// An auth failure is a verdict about the event; keep it, like
+						// Synapse does, and keep the event out of resolved state.
+						// Rejections of another kind on a timeline event are stale.
+						// If the reason can't be read, keep the rejection.
+						let auth_failed =
+							meta.get_rejection_reason(&pdu.event_id)
+								.map_or(true, |reason| {
+									reason.is_some_and(|reason| {
+										reason
+										== crate::rooms::pdu_metadata::RejectionCode::AuthCheckFailed
+											.tag()
+									})
+								});
+						if !auth_failed && timeline.non_outlier_pdu_exists(&pdu.event_id).await {
+							warn!(
+								event_id = %pdu.event_id,
+								"state_res: clearing stale rejection flag on timeline event"
+							);
+							if let Err(error) = meta.unmark_event_rejected(&pdu.event_id) {
+								warn!(%error, event_id = %pdu.event_id, "state_res: failed to clear stale rejection flag");
+							}
+							pdu.rejected = false;
+						} else {
+							pdu.rejected = true;
 						}
-						pdu.rejected = false;
 					}
 					Some(pdu)
 				} else {
@@ -457,6 +474,7 @@ fn pdu_to_lean(
 		prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
 		auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
 		depth: pdu.depth,
+		rejected: pdu.rejected,
 		..Default::default()
 	}
 }

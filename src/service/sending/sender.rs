@@ -467,17 +467,17 @@ impl Service {
 				statuses.remove(&msg.dest);
 			}
 		} else if is_flush {
-			// Flush was rejected (e.g., backoff still active). Re-schedule
-			// at the remaining backoff time to avoid hot-polling the channel.
-			let delay = self.remaining_backoff(&msg.dest, statuses);
+			// Flush was rejected, and this must not schedule another: only the
+			// active-backoff branch of `select_events` reschedules (for the end of
+			// the backoff). A Running/Retrying rejection is followed up by that
+			// transaction's completion, and a Cooldown one by the flush
+			// `handle_response_ok` already queued. Rescheduling here as well
+			// doubled the pending flushes on every rejection.
 			debug!(
 				target: "presence_debug",
-				dest = ?msg.dest, status = ?statuses.get(&msg.dest), ?delay,
+				dest = ?msg.dest, status = ?statuses.get(&msg.dest),
 				"flush rejected by sender status"
 			);
-			if delay > Duration::ZERO {
-				self.reschedule_flush(msg.dest, delay);
-			}
 		}
 	}
 
@@ -710,36 +710,6 @@ impl Service {
 		Ok((allow, retry))
 	}
 
-	/// Calculate the remaining backoff duration for a destination.
-	/// Used to schedule retries at the correct time instead of hot-polling.
-	fn remaining_backoff(&self, dest: &Destination, statuses: &CurTransactionStatus) -> Duration {
-		let Some(status) = statuses.get(dest) else {
-			return Duration::ZERO;
-		};
-
-		match status {
-			| TransactionStatus::Failed(tries, time) => {
-				let base = self.server.config.sender_retry_backoff_base;
-				let max = self.server.config.sender_retry_backoff_limit;
-				let backoff = base
-					.saturating_mul(
-						1_u64
-							.checked_shl(tries.saturating_sub(1))
-							.unwrap_or(u64::MAX),
-					)
-					.min(max);
-				let total = Duration::from_secs(backoff);
-				total
-					.saturating_sub(time.elapsed())
-					.max(Duration::from_secs(1))
-			},
-			| TransactionStatus::Cooldown(time) => Duration::from_millis(300)
-				.saturating_sub(time.elapsed())
-				.max(Duration::from_millis(50)),
-			| _ => Duration::ZERO,
-		}
-	}
-
 	async fn select_edus(&self, server_name: &ServerName) -> Result<(EduVec, u64)> {
 		// selection window
 		let since = self.db.get_latest_educount(server_name).await;
@@ -837,14 +807,35 @@ impl Service {
 
 		let server_rooms = self.services.state_cache.server_rooms(server_name);
 
-		pin_mut!(server_rooms);
+		let mut rooms: Vec<OwnedRoomId> = server_rooms.collect().await;
+		for room_id in self
+			.services
+			.state_partial
+			.partial_rooms_via(server_name)
+			.await
+		{
+			if !rooms.contains(&room_id) {
+				rooms.push(room_id);
+			}
+		}
+		let mut server_rooms = futures::stream::iter(rooms);
 		let mut all_changes = BTreeMap::<u64, HashSet<OwnedUserId>>::new();
 
 		while let Some(room_id) = server_rooms.next().await {
+			// A server never sent anything before doesn't need the history from before
+			// we joined the room through it.
+			let from = if since.0 == 0 {
+				self.services
+					.state_partial
+					.partial_since(&room_id)
+					.unwrap_or(0)
+			} else {
+				since.0
+			};
 			let keys_changed = self
 				.services
 				.users
-				.room_keys_changed(&room_id, Some(since.0), None)
+				.room_keys_changed(&room_id, Some(from), None)
 				.ready_filter(|(user_id, _)| self.services.globals.user_is_local(user_id));
 
 			pin_mut!(keys_changed);

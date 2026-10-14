@@ -167,6 +167,12 @@ pub async fn build_and_append_pdu(
 		.collect()
 		.await;
 
+	// A partial-state room has an incomplete member list, so the server we
+	// joined through may be missing from `room_servers`.
+	if let Ok(Some(partial_server)) = self.services.state_partial.partial_server(&room_id).await {
+		servers.insert(partial_server);
+	}
+
 	// In case we are kicking or banning a user, we need to inform their server of
 	// the change
 	//
@@ -223,6 +229,20 @@ pub async fn build_and_append_pdu(
 
 	if num_sent > 0 {
 		info!("Sending to federation");
+	}
+
+	// Our member list is incomplete until the resync finishes; send this event to
+	// the remaining servers then.
+	if self
+		.services
+		.state_partial
+		.partial_server(&room_id)
+		.await
+		.is_ok_and(|s| s.is_some())
+	{
+		self.services
+			.state_partial
+			.record_partial_send(&room_id, pdu_id, &servers);
 	}
 
 	trace!("Event {} in room {:?} has been appended", pdu.event_id(), room_id);

@@ -278,10 +278,18 @@ async fn authenticate_thread_user(
 		});
 	let token =
 		token.ok_or_else(|| conduwuit::err!(Request(MissingToken("Missing access token."))))?;
-	services
+	let (user, _) = services
 		.users
 		.find_from_token(&token)
 		.await
-		.map(|(user, _)| user)
-		.map_err(Into::into)
+		.map_err(ApiError::from)?;
+	if services.users.access_token_expired(&token).await {
+		return Err(conduwuit::Error::Request(
+			slipstream::api::client::error::ErrorKind::UnknownToken { soft_logout: true },
+			"Access token has expired.".into(),
+			StatusCode::UNAUTHORIZED,
+		)
+		.into());
+	}
+	Ok(user)
 }

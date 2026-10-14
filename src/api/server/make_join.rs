@@ -64,6 +64,14 @@ pub(crate) async fn create_join_event_template_route(
 			}
 		}
 	}
+	info!(
+		user_id = %body.user_id,
+		room_id = %body.room_id,
+		is_joined,
+		is_invited,
+		%room_version_id,
+		"make_join: begin authoriser selection"
+	);
 	let join_authorized_via_users_server: Option<OwnedUserId> = {
 		use RoomVersionId::*;
 		if is_joined || is_invited {
@@ -109,6 +117,14 @@ pub(crate) async fn create_join_event_template_route(
 			None
 		}
 	};
+	info!(
+		user_id = %body.user_id,
+		room_id = %body.room_id,
+		is_joined,
+		is_invited,
+		authoriser = ?join_authorized_via_users_server,
+		"make_join: authorising user decision"
+	);
 	if services.antispam.check_all_joins() && join_authorized_via_users_server.is_none() {
 		if services
 			.antispam
@@ -175,9 +191,19 @@ pub(crate) async fn select_authorising_user(
 	)
 	.await?;
 
+	info!(
+		%room_id,
+		%target_user,
+		local_members = ?local_members,
+		allowed_rooms = ?allowed_rooms,
+		"select_authorising_user: candidates"
+	);
 	for user in &local_members {
 		// Must have invite power in the restricted room
-		if !rezzy::auth::user::user_can_invite(user.as_str(), &state.provider, state.version) {
+		let can_invite =
+			rezzy::auth::user::user_can_invite(user.as_str(), &state.provider, state.version);
+		info!(%room_id, candidate = %user, can_invite, "select_authorising_user: invite power");
+		if !can_invite {
 			continue;
 		}
 
@@ -195,6 +221,7 @@ pub(crate) async fn select_authorising_user(
 			}
 		}
 
+		info!(%room_id, candidate = %user, in_allowed, "select_authorising_user: allowed-room membership");
 		if in_allowed {
 			return Ok(user.clone());
 		}
@@ -272,24 +299,32 @@ pub(crate) async fn user_can_perform_restricted_join(
 	for allow_rule in &r.allow {
 		match allow_rule {
 			| AllowRule::RoomMembership(membership) => {
-				if !services
+				let server_in_allowed = services
 					.rooms
 					.state_cache
 					.server_in_room(services.globals.server_name(), &membership.room_id)
-					.await
-				{
+					.await;
+				let user_joined_allowed = services
+					.rooms
+					.state_cache
+					.is_joined(user_id, &membership.room_id)
+					.await;
+				debug!(
+					%user_id,
+					%room_id,
+					allowed_room = %membership.room_id,
+					server_in_allowed,
+					user_joined_allowed,
+					"restricted join: allow-rule membership check"
+				);
+				if !server_in_allowed {
 					// Since we can't check this room, mark could_satisfy as false
 					// so that we can return M_UNABLE_TO_AUTHORIZE_JOIN later.
 					could_satisfy = false;
 					continue;
 				}
 
-				if services
-					.rooms
-					.state_cache
-					.is_joined(user_id, &membership.room_id)
-					.await
-				{
+				if user_joined_allowed {
 					debug!(
 						"User {} is allowed to join room {} via membership in room {}",
 						user_id, room_id, membership.room_id

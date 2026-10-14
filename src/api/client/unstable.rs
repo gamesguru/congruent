@@ -365,6 +365,14 @@ pub(crate) async fn get_room_dag_route(
 				http::StatusCode::UNAUTHORIZED,
 			)
 		})?;
+		if services.users.access_token_expired(&token).await {
+			return Err(conduwuit::Error::Request(
+				slipstream::api::client::error::ErrorKind::UnknownToken { soft_logout: true },
+				"Access token has expired.".into(),
+				http::StatusCode::UNAUTHORIZED,
+			)
+			.into());
+		}
 
 		// Require server admin
 		if !services.users.is_admin(&user_id).await {

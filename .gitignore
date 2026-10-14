@@ -129,6 +129,11 @@ matrix-spec-txt/
 ruma-upstream/
 ruwuma/
 
+# top-level stuff
+/*.txt
+/pr*.md
+/*.jsonl
+
 # nested DBs
 *.log
 *.sst

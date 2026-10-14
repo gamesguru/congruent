@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use conduwuit::{
 	Err, Error, Result, debug, err, info,
-	utils::{self, ReadyExt, hash, stream::BroadbandExt},
+	utils::{self, hash, stream::BroadbandExt},
 	warn,
 };
 use conduwuit_core::{debug_error, debug_warn};
@@ -23,7 +23,7 @@ use slipstream::{
 				self,
 				v3::{DiscoveryInfo, HomeserverInfo},
 			},
-			logout, logout_all,
+			logout, logout_all, refresh_token,
 		},
 		uiaa::UserIdentifier,
 	},
@@ -309,34 +309,23 @@ pub(crate) async fn login_route(
 	// Generate a new token for the device (ensuring no collisions)
 	let token = services.users.generate_unique_token().await;
 
-	// Determine if device_id was provided and exists in the db for this user
-	let device_exists = if body.device_id.is_some() {
-		services
-			.users
-			.all_device_ids(&user_id)
-			.ready_any(|v| v == device_id)
-			.await
-	} else {
-		false
-	};
-
-	if device_exists {
-		services
-			.users
-			.set_token(&user_id, &device_id, &token)
-			.await?;
-	} else {
-		services
-			.users
-			.create_device(
-				&user_id,
-				&device_id,
-				&token,
-				body.initial_device_display_name.clone(),
-				Some(client.to_string()),
-			)
-			.await?;
-	}
+	// MSC2918: clients which opt in get an expiring token and a refresh token
+	let ttl = body
+		.refresh_token
+		.then_some(services.server.config.access_token_ttl);
+	let refresh_token = services
+		.users
+		.login_device_with_ttl(
+			&user_id,
+			&device_id,
+			&token,
+			ttl,
+			body.device_id.is_some(),
+			body.initial_device_display_name.clone(),
+			Some(client.to_string()),
+		)
+		.await?;
+	let expires_in = ttl.map(Duration::from_millis);
 
 	// send client well-known if specified so the client knows to reconfigure itself
 	let client_discovery_info: Option<DiscoveryInfo> = services
@@ -355,9 +344,9 @@ pub(crate) async fn login_route(
 		access_token: token,
 		device_id,
 		well_known: client_discovery_info,
-		expires_in: None,
+		expires_in,
 		home_server: Some(services.config.server_name.clone()),
-		refresh_token: None,
+		refresh_token,
 	})
 }
 
@@ -472,4 +461,27 @@ pub(crate) async fn logout_all_route(
 		.await;
 
 	Ok(logout_all::v3::Response::new())
+}
+
+/// # `POST /_matrix/client/v3/refresh`
+///
+/// Exchanges a refresh token for a new access token and refresh token
+/// (MSC2918). The device is unchanged, so device-scoped state such as
+/// transaction ID deduplication carries over to the new access token.
+///
+/// <https://spec.matrix.org/v1.3/client-server-api/#post_matrixclientv3refresh>
+pub(crate) async fn refresh_token_route(
+	State(services): State<crate::State>,
+	body: Ruma<refresh_token::v3::Request>,
+) -> Result<refresh_token::v3::Response> {
+	let (access_token, new_refresh_token, ttl) = services
+		.users
+		.refresh_access_token(&body.refresh_token)
+		.await?;
+
+	let mut response = refresh_token::v3::Response::new(access_token);
+	response.refresh_token = Some(new_refresh_token);
+	response.expires_in_ms = Some(Duration::from_millis(ttl));
+
+	Ok(response)
 }

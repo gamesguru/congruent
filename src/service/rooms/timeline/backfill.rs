@@ -96,12 +96,19 @@ pub async fn backfill_if_required(
 		.await
 		.unwrap_or(0);
 
+	// A partial-state join omits remote members, so room_servers lacks the join
+	// server until resync completes; it can still serve backfill.
 	let has_remote_servers = self
 		.services
 		.state_cache
 		.room_servers(room_id)
 		.ready_any(|server| !self.services.globals.server_is_ours(&server))
-		.await;
+		.await || self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|s| s.is_some());
 
 	info!(
 		%room_id, %from, %limit, %joined_count, %has_remote_servers,
@@ -648,7 +655,18 @@ async fn get_remote_pdu_limited(
 
 	let local = self.get_pdu(event_id).await;
 	if local.is_ok() {
-		// We already have this PDU, no need to backfill
+		// `get_pdu` also finds outliers, e.g. one a resync stored first. Those have
+		// no timeline position yet, so give them the same treatment as a freshly
+		// fetched event; promotion itself leaves rejected outliers alone.
+		if self.get_pdu_id(event_id).await.is_err() {
+			if let Err(e) = self
+				.materialize_remote_history_limited(room_id, event_id, budget)
+				.await
+			{
+				warn!("Failed to promote outlier {event_id} in {room_id}: {e}");
+			}
+		}
+		// We already have this PDU, no need to fetch it
 		debug!("We already have {event_id} in {room_id}, no need to backfill.");
 		return local;
 	}
@@ -660,7 +678,12 @@ async fn get_remote_pdu_limited(
 		.state_cache
 		.room_servers(room_id)
 		.ready_any(|server| !self.services.globals.server_is_ours(&server))
-		.await;
+		.await || self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|s| s.is_some());
 
 	if !has_remote_servers
 		&& !self
@@ -696,6 +719,7 @@ async fn get_remote_pdu_limited(
 		})
 		.collect();
 
+	let room_version_id = self.services.state.get_room_version(room_id).await?;
 	let mut servers = self
 		.get_backfill_servers(room_id, room_mods.iter().map(AsRef::as_ref))
 		.await
@@ -730,7 +754,14 @@ async fn get_remote_pdu_limited(
 				// materialize their predecessor chain into the backfilled
 				// timeline so they keep their historical position instead of
 				// becoming new forward timeline/extremity events.
-				.handle_incoming_pdu(backfill_server, room_id, event_id, value, false, None)
+				.handle_incoming_pdu(
+					backfill_server,
+					room_id,
+					event_id,
+					value,
+					false,
+					&room_version_id,
+				)
 				.boxed()
 				.await
 			{
@@ -846,7 +877,7 @@ pub async fn backfill_pdu(
 		value.clone(),
 		false,
 		false,
-		Some(&room_version_id),
+		&room_version_id,
 		crate::rooms::event_handler::AuthRecoveryStage::AfterStateIds,
 	))
 	.await
@@ -1594,6 +1625,15 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 	.map(|alias| alias.server_name())
 	.stream();
 
+	// The partial-state join server isn't in room_servers until resync finishes.
+	let partial_server = self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.ok()
+		.flatten();
+
 	room_mods
 		.map(ToOwned::to_owned)
 		.stream()
@@ -1608,6 +1648,7 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 				.stream(),
 		)
 		.chain(self.services.state_cache.room_servers(room_id))
+		.chain(once(partial_server.clone()).flatten().stream())
 		.ready_filter(|server_name| {
 			!self.services.globals.server_is_ours(server_name)
 				&& !self
@@ -1617,12 +1658,17 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 					.forbidden_remote_server_names
 					.is_match(server_name.host())
 		})
-		.wide_filter_map(move |server_name| async move {
-			self.services
-				.state_cache
-				.server_in_room(&server_name, room_id)
-				.await
-				.then_some(server_name)
+		.wide_filter_map(move |server_name| {
+			let partial = partial_server.clone();
+			async move {
+				(partial.as_deref().is_some_and(|p| p == &*server_name)
+					|| self
+						.services
+						.state_cache
+						.server_in_room(&server_name, room_id)
+						.await)
+					.then_some(server_name)
+			}
 		})
 }
 

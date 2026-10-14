@@ -1,8 +1,11 @@
 pub(super) mod dehydrated_device;
+mod token_expiry;
 
-#[cfg(feature = "ldap")]
-use std::collections::HashMap;
-use std::{collections::BTreeMap, net::IpAddr, sync::Arc};
+use std::{
+	collections::{BTreeMap, HashMap},
+	net::IpAddr,
+	sync::Arc,
+};
 
 #[cfg(feature = "ldap")]
 use conduwuit::result::LogErr;
@@ -13,7 +16,7 @@ use conduwuit::{
 };
 #[cfg(feature = "ldap")]
 use conduwuit_core::error;
-use database::{Deserialized, Ignore, Interfix, Json, Map};
+use database::{Batch, Deserialized, Ignore, Interfix, Json, Map, serialize_to_vec};
 use futures::{Stream, StreamExt, TryFutureExt};
 #[cfg(feature = "ldap")]
 use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
@@ -122,14 +125,37 @@ impl Deserialize for ProfileUpdate {
 	}
 }
 
+/// What a remote server last told us about a user's keys, kept until a
+/// device-list or signing-key change for that user invalidates it.
+#[derive(Clone, Default)]
+pub struct CachedRemoteKeys {
+	pub device_keys: BTreeMap<OwnedDeviceId, Raw<DeviceKeys>>,
+	pub master_key: Option<Raw<CrossSigningKey>>,
+	pub self_signing_key: Option<Raw<CrossSigningKey>>,
+}
+
 pub struct Service {
 	pub last_device_key_update_count: std::sync::atomic::AtomicU64,
+	/// Complete `/keys/query` answers for tracked remote users. In memory only:
+	/// after a restart users are simply fetched again.
+	remote_keys_cache: std::sync::Mutex<HashMap<OwnedUserId, CachedRemoteKeys>>,
+	/// Remote users seen joining a partial-state room after we did: their device
+	/// lists are tracked even though the membership index lacks them.
+	tracked_remote_users:
+		std::sync::Mutex<HashMap<OwnedUserId, std::collections::HashSet<OwnedRoomId>>>,
+	/// Bumped on every invalidation so an answer fetched before one is never
+	/// stored after it.
+	remote_keys_generation: std::sync::atomic::AtomicU64,
 	services: Services,
 	db: Data,
 	/// Serializes one-time-key claims per (user, device) so concurrent
 	/// `/keys/claim` requests can't double-take the same key, which could
 	/// leave a regular OTK unused and break fallback-key semantics.
 	take_one_time_key_lock: MutexMap<String, ()>,
+	/// Serializes every mutation of a device's credentials (access tokens,
+	/// refresh tokens, removal) so a refresh can't write credentials after
+	/// logout has enumerated them, nor lose a concurrent token-list update.
+	device_credentials_lock: MutexMap<String, ()>,
 }
 
 struct Services {
@@ -140,6 +166,7 @@ struct Services {
 	globals: Dep<globals::Service>,
 	sending: Dep<crate::sending::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
+	state_partial: Dep<rooms::state_partial::Service>,
 }
 
 struct Data {
@@ -152,6 +179,10 @@ struct Data {
 	logintoken_expiresatuserid: Arc<Map>,
 	todeviceid_events: Arc<Map>,
 	token_userdeviceid: Arc<Map>,
+	token_expiresat: Arc<Map>,
+	refreshtoken_userdeviceid: Arc<Map>,
+	userdeviceid_refreshtoken: Arc<Map>,
+	userdeviceid_prevrefreshtoken: Arc<Map>,
 	userdeviceid_metadata: Arc<Map>,
 	userdeviceid_token: Arc<Map>,
 	userfilterid_filter: Arc<Map>,
@@ -175,6 +206,7 @@ struct Data {
 }
 
 impl crate::Service for Service {
+	/// Initializes the user service with its dependencies and database maps.
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let current_count = args
 			.depend::<globals::Service>("globals")
@@ -182,6 +214,9 @@ impl crate::Service for Service {
 			.unwrap_or(0);
 		Ok(Arc::new(Self {
 			last_device_key_update_count: std::sync::atomic::AtomicU64::new(current_count),
+			remote_keys_cache: std::sync::Mutex::new(HashMap::new()),
+			tracked_remote_users: std::sync::Mutex::new(HashMap::new()),
+			remote_keys_generation: std::sync::atomic::AtomicU64::new(0),
 			services: Services {
 				server: args.server.clone(),
 				account_data: args.depend::<account_data::Service>("account_data"),
@@ -190,6 +225,8 @@ impl crate::Service for Service {
 				globals: args.depend::<globals::Service>("globals"),
 				sending: args.depend::<crate::sending::Service>("sending"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
+				state_partial: args
+					.depend::<rooms::state_partial::Service>("rooms::state_partial"),
 			},
 			db: Data {
 				deviceleftid_userid: args.db["deviceleftid_userid"].clone(),
@@ -201,6 +238,10 @@ impl crate::Service for Service {
 				logintoken_expiresatuserid: args.db["logintoken_expiresatuserid"].clone(),
 				todeviceid_events: args.db["todeviceid_events"].clone(),
 				token_userdeviceid: args.db["token_userdeviceid"].clone(),
+				token_expiresat: args.db["token_expiresat"].clone(),
+				refreshtoken_userdeviceid: args.db["refreshtoken_userdeviceid"].clone(),
+				userdeviceid_refreshtoken: args.db["userdeviceid_refreshtoken"].clone(),
+				userdeviceid_prevrefreshtoken: args.db["userdeviceid_prevrefreshtoken"].clone(),
 				userdeviceid_metadata: args.db["userdeviceid_metadata"].clone(),
 				userdeviceid_token: args.db["userdeviceid_token"].clone(),
 				userfilterid_filter: args.db["userfilterid_filter"].clone(),
@@ -225,6 +266,7 @@ impl crate::Service for Service {
 				userprofileupdate_value: args.db["userprofileupdate_value"].clone(),
 			},
 			take_one_time_key_lock: MutexMap::new(),
+			device_credentials_lock: MutexMap::new(),
 		}))
 	}
 
@@ -691,6 +733,51 @@ impl Service {
 		initial_device_display_name: Option<String>,
 		client_ip: Option<String>,
 	) -> Result<()> {
+		self.create_device_with_ttl(
+			user_id,
+			device_id,
+			token,
+			None,
+			initial_device_display_name,
+			client_ip,
+		)
+		.await
+	}
+
+	/// Adds a new device to a user, with an access token which expires `ttl`
+	/// milliseconds from now when given. The token and its expiry are stored
+	/// together.
+	pub async fn create_device_with_ttl(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		token: &str,
+		ttl: Option<u64>,
+		initial_device_display_name: Option<String>,
+		client_ip: Option<String>,
+	) -> Result<()> {
+		let lock_key = Self::device_lock_key(user_id, device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+		self.create_device_with_ttl_locked(
+			user_id,
+			device_id,
+			token,
+			ttl,
+			initial_device_display_name,
+			client_ip,
+		)
+		.await
+	}
+
+	async fn create_device_with_ttl_locked(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		token: &str,
+		ttl: Option<u64>,
+		initial_device_display_name: Option<String>,
+		client_ip: Option<String>,
+	) -> Result<()> {
 		if !self.exists(user_id).await {
 			return Err!(Request(InvalidParam(error!(
 				"Called create_device for non-existent user {user_id}"
@@ -707,12 +794,61 @@ impl Service {
 
 		increment(&self.db.userid_devicelistversion, user_id.as_bytes());
 		self.db.userdeviceid_metadata.put(key, Json(val));
-		self.set_token(user_id, device_id, token).await
+		self.store_access_token(user_id, device_id, token, ttl)
+			.await
+	}
+
+	/// Stores the login access token and optional refresh token while holding
+	/// the device credential lock for the entire operation.
+	#[allow(clippy::too_many_arguments)]
+	pub async fn login_device_with_ttl(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		token: &str,
+		ttl: Option<u64>,
+		may_reuse_device: bool,
+		initial_device_display_name: Option<String>,
+		client_ip: Option<String>,
+	) -> Result<Option<String>> {
+		let lock_key = Self::device_lock_key(user_id, device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+
+		let device_exists = may_reuse_device
+			&& self
+				.db
+				.userdeviceid_metadata
+				.qry(&(user_id, device_id))
+				.await
+				.is_ok();
+		if device_exists {
+			self.store_access_token(user_id, device_id, token, ttl)
+				.await?;
+		} else {
+			self.create_device_with_ttl_locked(
+				user_id,
+				device_id,
+				token,
+				ttl,
+				initial_device_display_name,
+				client_ip,
+			)
+			.await?;
+		}
+
+		Ok(if ttl.is_some() {
+			Some(self.issue_refresh_token_locked(user_id, device_id).await)
+		} else {
+			None
+		})
 	}
 
 	/// Removes a device from a user.
 	pub async fn remove_device(&self, user_id: &UserId, device_id: &DeviceId) {
 		info!("Removing device {device_id} for user {user_id}");
+		let lock_key = Self::device_lock_key(user_id, device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+
 		// Remove dehydrated device if this is the dehydrated device
 		let _: Result<_> = self
 			.remove_dehydrated_device(user_id, Some(device_id))
@@ -724,10 +860,12 @@ impl Service {
 		let tokens = self.active_tokens(user_id, device_id).await;
 		for token in &tokens {
 			self.db.token_userdeviceid.remove(token);
+			self.db.token_expiresat.remove(token);
 		}
 		if !tokens.is_empty() {
 			self.db.userdeviceid_token.del(userdeviceid);
 		}
+		self.remove_refresh_token(user_id, device_id).await;
 
 		// Remove todevice events
 		let prefix = (user_id, device_id, Interfix);
@@ -821,6 +959,39 @@ impl Service {
 		device_id: &DeviceId,
 		token: &str,
 	) -> Result<()> {
+		self.set_token_with_ttl(user_id, device_id, token, None)
+			.await
+	}
+
+	/// `set_token` with a lifetime of `ttl` milliseconds when given, stored
+	/// atomically with the token.
+	pub async fn set_token_with_ttl(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		token: &str,
+		ttl: Option<u64>,
+	) -> Result<()> {
+		let lock_key = Self::device_lock_key(user_id, device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+		self.store_access_token(user_id, device_id, token, ttl)
+			.await
+	}
+
+	fn device_lock_key(user_id: &UserId, device_id: &DeviceId) -> String {
+		format!("{user_id}\0{device_id}")
+	}
+
+	/// Records an access token for a device, and its lifetime when `ttl` is
+	/// given, in one atomic batch. The caller holds the device's credentials
+	/// lock.
+	async fn store_access_token(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		token: &str,
+		ttl: Option<u64>,
+	) -> Result<()> {
 		let key = (user_id, device_id);
 		if self.db.userdeviceid_metadata.qry(&key).await.is_err() {
 			return Err!(Database(error!(
@@ -848,11 +1019,282 @@ impl Service {
 		let mut tokens = self.active_tokens(user_id, device_id).await;
 		if !tokens.as_slice().contains(&token.to_owned()) {
 			tokens.push(token.to_owned());
-			self.db.userdeviceid_token.put(key, Json(&tokens));
-			self.db.token_userdeviceid.raw_put(token, key);
+			let device_key = serialize_to_vec(key)?;
+			let mut batch = Batch::new();
+			self.db.userdeviceid_token.batch_put(
+				&mut batch,
+				&device_key,
+				serialize_to_vec(Json(&tokens))?,
+			);
+			self.db
+				.token_userdeviceid
+				.batch_raw_put(&mut batch, token, key);
+			if let Some(ttl) = ttl {
+				let expires_at = token_expiry::expires_at(utils::millis_since_unix_epoch(), ttl);
+				self.db
+					.token_expiresat
+					.batch_raw_put(&mut batch, token, expires_at);
+			}
+			self.db.userdeviceid_token.apply_batch(batch);
 		}
 
 		Ok(())
+	}
+
+	/// Whether an access token has a lifetime which has elapsed. A failed
+	/// lookup counts as expired.
+	pub async fn access_token_expired(&self, token: &str) -> bool {
+		match self.token_expires_at(token).await {
+			| Ok(expires_at) =>
+				token_expiry::has_expired(expires_at, utils::millis_since_unix_epoch()),
+			| Err(_) => true,
+		}
+	}
+
+	/// The recorded expiry of a token; `None` when it has no entry.
+	async fn token_expires_at(&self, token: &str) -> Result<Option<u64>> {
+		match self
+			.db
+			.token_expiresat
+			.get(token)
+			.await
+			.deserialized::<u64>()
+		{
+			| Ok(expires_at) => Ok(Some(expires_at)),
+			| Err(e) if e.is_not_found() => Ok(None),
+			| Err(e) => Err(e),
+		}
+	}
+
+	/// Issues a new refresh token for a device, replacing (and thereby
+	/// invalidating) any previous ones.
+	pub async fn issue_refresh_token(&self, user_id: &UserId, device_id: &DeviceId) -> String {
+		let lock_key = Self::device_lock_key(user_id, device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+		self.issue_refresh_token_locked(user_id, device_id).await
+	}
+
+	async fn issue_refresh_token_locked(&self, user_id: &UserId, device_id: &DeviceId) -> String {
+		let key = (user_id, device_id);
+		let revoked = [
+			self.device_refresh_token(&self.db.userdeviceid_refreshtoken, key)
+				.await,
+			self.device_refresh_token(&self.db.userdeviceid_prevrefreshtoken, key)
+				.await,
+		];
+		let refresh_token = self.generate_refresh_token().await;
+		self.commit_refresh_tokens(key, Some(&refresh_token), None, revoked.iter().flatten());
+
+		refresh_token
+	}
+
+	async fn generate_refresh_token(&self) -> String {
+		loop {
+			let candidate = utils::random_string(32);
+			if self
+				.db
+				.refreshtoken_userdeviceid
+				.get(&candidate)
+				.await
+				.is_err()
+			{
+				break candidate;
+			}
+		}
+	}
+
+	/// Writes a device's refresh-token state in one atomic batch: the current
+	/// and previous token (each `None` to clear), and the tokens to revoke.
+	/// A token which is current or previous must already have its entry in
+	/// `refreshtoken_userdeviceid`, or be written here as the current one.
+	fn commit_refresh_tokens<'a>(
+		&self,
+		(user_id, device_id): (&UserId, &DeviceId),
+		current: Option<&str>,
+		previous: Option<&str>,
+		revoked: impl Iterator<Item = &'a String>,
+	) {
+		let key = serialize_to_vec((user_id, device_id)).expect("failed to serialize device key");
+		let mut batch = Batch::new();
+
+		for token in revoked {
+			self.db
+				.refreshtoken_userdeviceid
+				.batch_delete(&mut batch, token);
+		}
+		match current {
+			| Some(token) => {
+				self.db.refreshtoken_userdeviceid.batch_raw_put(
+					&mut batch,
+					token,
+					(user_id, device_id),
+				);
+				self.db
+					.userdeviceid_refreshtoken
+					.batch_put(&mut batch, &key, token);
+			},
+			| None => self
+				.db
+				.userdeviceid_refreshtoken
+				.batch_delete(&mut batch, &key),
+		}
+		match previous {
+			| Some(token) => self
+				.db
+				.userdeviceid_prevrefreshtoken
+				.batch_put(&mut batch, &key, token),
+			| None => self
+				.db
+				.userdeviceid_prevrefreshtoken
+				.batch_delete(&mut batch, &key),
+		}
+
+		self.db.refreshtoken_userdeviceid.apply_batch(batch);
+	}
+
+	async fn device_refresh_token(
+		&self,
+		map: &Arc<Map>,
+		key: (&UserId, &DeviceId),
+	) -> Option<String> {
+		map.qry(&key).await.deserialized::<String>().ok()
+	}
+
+	/// Revokes the refresh tokens of a device, if any. The caller holds the
+	/// device's credentials lock.
+	async fn remove_refresh_token(&self, user_id: &UserId, device_id: &DeviceId) {
+		let key = (user_id, device_id);
+		let revoked = [
+			self.device_refresh_token(&self.db.userdeviceid_refreshtoken, key)
+				.await,
+			self.device_refresh_token(&self.db.userdeviceid_prevrefreshtoken, key)
+				.await,
+		];
+		self.commit_refresh_tokens(key, None, None, revoked.iter().flatten());
+	}
+
+	/// Rotates a device's refresh token after `used` was exchanged. The token
+	/// used stays valid until its replacement is itself used, so a client
+	/// which never received the response can retry.
+	async fn rotate_refresh_token(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		used: &str,
+	) -> String {
+		let key = (user_id, device_id);
+		let current = self
+			.device_refresh_token(&self.db.userdeviceid_refreshtoken, key)
+			.await;
+		let previous = self
+			.device_refresh_token(&self.db.userdeviceid_prevrefreshtoken, key)
+			.await;
+
+		let (kept_previous, revoked) = if current.as_deref() == Some(used) {
+			// The client holds the current token: the one before it is spent.
+			(Some(used.to_owned()), previous)
+		} else {
+			// A retry with the previous token: the replacement was never received.
+			(previous, current)
+		};
+
+		let refresh_token = self.generate_refresh_token().await;
+		self.commit_refresh_tokens(
+			key,
+			Some(&refresh_token),
+			kept_previous.as_deref(),
+			revoked.iter(),
+		);
+
+		refresh_token
+	}
+
+	async fn refresh_token_device(
+		&self,
+		refresh_token: &str,
+	) -> Result<(OwnedUserId, OwnedDeviceId)> {
+		self.db
+			.refreshtoken_userdeviceid
+			.get(refresh_token)
+			.await
+			.deserialized()
+	}
+
+	/// Exchanges a refresh token for a fresh access token and a rotated
+	/// refresh token. Returns `(access_token, refresh_token, expires_in_ms)`.
+	pub async fn refresh_access_token(
+		&self,
+		refresh_token: &str,
+	) -> Result<(String, String, u64)> {
+		let unrecognized = || {
+			Error::Request(
+				ErrorKind::UnknownToken { soft_logout: false },
+				"Refresh token is unrecognized.".into(),
+				http::StatusCode::UNAUTHORIZED,
+			)
+		};
+		let Ok((user_id, device_id)) = self.refresh_token_device(refresh_token).await else {
+			return Err(unrecognized());
+		};
+
+		let lock_key = Self::device_lock_key(&user_id, &device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+
+		// Recheck under the lock: a concurrent refresh or logout may have
+		// consumed the token while this request waited.
+		if self.refresh_token_device(refresh_token).await.is_err() {
+			return Err(unrecognized());
+		}
+
+		if self.is_locked(&user_id).await? {
+			return Err(Error::Request(
+				ErrorKind::UserLocked,
+				"This account has been locked.".into(),
+				http::StatusCode::UNAUTHORIZED,
+			));
+		}
+
+		// Expiring access tokens of this device are superseded, except the most
+		// recent, which a client that lost the last response may still hold (it
+		// is expired, not unknown, so the client can still refresh). Tokens which
+		// never expire (issued to clients without refresh support) are kept.
+		let mut tokens = Vec::new();
+		for token in self.active_tokens(&user_id, &device_id).await {
+			let expires_at = self.token_expires_at(&token).await?;
+			tokens.push((token, expires_at));
+		}
+		for old in token_expiry::superseded_tokens(tokens) {
+			self.remove_access_token(&user_id, &device_id, &old).await;
+		}
+
+		let access_token = self.generate_unique_token().await;
+		let ttl = self.services.server.config.access_token_ttl;
+		self.store_access_token(&user_id, &device_id, &access_token, Some(ttl))
+			.await?;
+		let new_refresh = self
+			.rotate_refresh_token(&user_id, &device_id, refresh_token)
+			.await;
+
+		Ok((access_token, new_refresh, ttl))
+	}
+
+	/// Revokes one access token and its expiry, preserving the device's other tokens.
+	async fn remove_access_token(&self, user_id: &UserId, device_id: &DeviceId, token: &str) {
+		let tokens =
+			token_expiry::without_token(self.active_tokens(user_id, device_id).await, token);
+		let Ok(device_key) = serialize_to_vec((user_id, device_id)) else {
+			return;
+		};
+		let Ok(list) = serialize_to_vec(Json(&tokens)) else {
+			return;
+		};
+		let mut batch = Batch::new();
+		self.db.token_userdeviceid.batch_delete(&mut batch, token);
+		self.db.token_expiresat.batch_delete(&mut batch, token);
+		self.db
+			.userdeviceid_token
+			.batch_put(&mut batch, &device_key, list);
+		self.db.userdeviceid_token.apply_batch(batch);
 	}
 
 	pub async fn add_one_time_key(
@@ -1512,22 +1954,127 @@ impl Service {
 			.map(move |((_, count), changed_user): KeyVal<'_>| (changed_user, count))
 	}
 
+	pub fn remote_keys_generation(&self) -> u64 {
+		self.remote_keys_generation
+			.load(std::sync::atomic::Ordering::Acquire)
+	}
+
+	pub fn cached_remote_keys(&self, user_id: &UserId) -> Option<CachedRemoteKeys> {
+		self.remote_keys_cache
+			.lock()
+			.expect("locked")
+			.get(user_id)
+			.cloned()
+	}
+
+	/// Remember a complete answer fetched when the generation was `generation`;
+	/// dropped if any user's keys were invalidated since.
+	pub fn store_remote_keys(&self, user_id: &UserId, keys: CachedRemoteKeys, generation: u64) {
+		let mut cache = self.remote_keys_cache.lock().expect("locked");
+		let current = self.remote_keys_generation();
+		conduwuit::debug!(target: "keys_cache_debug", %user_id, generation, current, "remote_keys_cache: store");
+		if current == generation {
+			cache.insert(user_id.to_owned(), keys);
+		}
+	}
+
+	/// Remember that `user_id` was seen joining the partial-state `room_id`.
+	pub fn track_remote_user(&self, user_id: &UserId, room_id: &RoomId) {
+		self.tracked_remote_users
+			.lock()
+			.expect("locked")
+			.entry(user_id.to_owned())
+			.or_default()
+			.insert(room_id.to_owned());
+	}
+
+	pub fn untrack_remote_user(&self, user_id: &UserId, room_id: &RoomId) {
+		{
+			let mut tracked = self.tracked_remote_users.lock().expect("locked");
+			if let Some(rooms) = tracked.get_mut(user_id) {
+				rooms.remove(room_id);
+				if rooms.is_empty() {
+					tracked.remove(user_id);
+				}
+			}
+		}
+		self.invalidate_remote_keys(user_id);
+	}
+
+	/// Forget every user tracked as joining the partial-state `room_id`.
+	pub fn untrack_remote_users_in_room(&self, room_id: &RoomId) -> Vec<OwnedUserId> {
+		let mut removed = Vec::new();
+		{
+			let mut tracked = self.tracked_remote_users.lock().expect("locked");
+			tracked.retain(|user_id, rooms| {
+				if rooms.remove(room_id) {
+					removed.push(user_id.clone());
+				}
+				!rooms.is_empty()
+			});
+		};
+		for user_id in &removed {
+			self.invalidate_remote_keys(user_id);
+		}
+		removed
+	}
+
+	/// The partial-state rooms in which `user_id` was seen joining.
+	pub fn tracked_remote_rooms(&self, user_id: &UserId) -> Vec<OwnedRoomId> {
+		self.tracked_remote_users
+			.lock()
+			.expect("locked")
+			.get(user_id)
+			.map(|rooms| rooms.iter().cloned().collect())
+			.unwrap_or_default()
+	}
+
+	pub fn invalidate_remote_keys(&self, user_id: &UserId) {
+		let mut cache = self.remote_keys_cache.lock().expect("locked");
+		conduwuit::debug!(target: "keys_cache_debug", %user_id, "remote_keys_cache: invalidate");
+		self.remote_keys_generation
+			.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+		cache.remove(user_id);
+	}
+
 	pub async fn mark_device_key_update(&self, user_id: &UserId) {
+		self.mark_device_key_update_inner(user_id, None).await;
+	}
+
+	/// Like `mark_device_key_update`, but only in `room_id`. Used when a partial
+	/// state resync confirms the user in that room: other rooms (which may still
+	/// be partial) must not be notified on its account.
+	pub async fn mark_device_key_update_in_room(&self, user_id: &UserId, room_id: &RoomId) {
+		self.mark_device_key_update_inner(user_id, Some(room_id))
+			.await;
+	}
+
+	async fn mark_device_key_update_inner(&self, user_id: &UserId, only_room: Option<&RoomId>) {
 		// Keep the sender from reading its EDU window bound between allocating the
 		// count and writing the rows below (see `globals::Service::edu_barrier`).
 		let _barrier = self.services.globals.edu_barrier.read().await;
 		let count = self.services.globals.next_count().unwrap();
 
-		conduwuit::info!(%user_id, "mark_device_key_update called");
+		if !self.services.globals.user_is_local(user_id) {
+			self.invalidate_remote_keys(user_id);
+		}
 
-		let mut joined_rooms = self
-			.services
-			.state_cache
-			.rooms_joined(user_id)
-			.collect::<Vec<_>>()
-			.await;
+		conduwuit::debug!(%user_id, ?only_room, "mark_device_key_update called");
 
-		if joined_rooms.is_empty() && !self.services.globals.user_is_local(user_id) {
+		let mut joined_rooms = if let Some(room_id) = only_room {
+			vec![room_id.to_owned()]
+		} else {
+			self.services
+				.state_cache
+				.rooms_joined(user_id)
+				.collect::<Vec<_>>()
+				.await
+		};
+
+		if only_room.is_none()
+			&& joined_rooms.is_empty()
+			&& !self.services.globals.user_is_local(user_id)
+		{
 			let mut server_rooms = self
 				.services
 				.state_cache
@@ -1554,6 +2101,22 @@ impl Service {
 					rooms = joined_rooms.len(),
 					"Recovered remote device-key update rooms via server-room fallback"
 				);
+			}
+		}
+
+		// Members of a partial-state room are not all known yet; a remote user
+		// whose server we joined through may well be in it.
+		if only_room.is_none() && !self.services.globals.user_is_local(user_id) {
+			let server_name = user_id.server_name();
+			for room_id in self
+				.services
+				.state_partial
+				.partial_rooms_via(&server_name)
+				.await
+			{
+				if !joined_rooms.contains(&room_id) {
+					joined_rooms.push(room_id);
+				}
 			}
 		}
 

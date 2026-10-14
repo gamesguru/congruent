@@ -36,6 +36,8 @@ pub(crate) async fn get_member_events_route(
 	let membership = body.membership.as_ref();
 	let not_membership = body.not_membership.as_ref();
 
+	services.rooms.state_partial.await_full_state(room_id).await;
+
 	let is_joined = services
 		.rooms
 		.state_cache
@@ -186,6 +188,12 @@ pub(crate) async fn joined_members_route(
 		return Err!(Request(Forbidden("You don't have permission to view this room.")))
 			.map_err(Into::into);
 	}
+
+	services
+		.rooms
+		.state_partial
+		.await_full_state(&body.room_id)
+		.await;
 
 	let room_members: Vec<(OwnedUserId, RoomMemberResponse)> = services
 		.rooms

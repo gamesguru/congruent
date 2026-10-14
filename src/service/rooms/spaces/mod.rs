@@ -46,6 +46,7 @@ pub struct Service {
 struct Services {
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
+	state_partial: Dep<rooms::state_partial::Service>,
 	state: Dep<rooms::state::Service>,
 	event_handler: Dep<rooms::event_handler::Service>,
 	timeline: Dep<rooms::timeline::Service>,
@@ -94,6 +95,8 @@ impl crate::Service for Service {
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
+				state_partial: args
+					.depend::<rooms::state_partial::Service>("rooms::state_partial"),
 				state: args.depend::<rooms::state::Service>("rooms::state"),
 				event_handler: args
 					.depend::<rooms::event_handler::Service>("rooms::event_handler"),
@@ -580,7 +583,15 @@ where
 		.any(async |room| match identifier {
 			| Identifier::UserId(user) => self.services.state_cache.is_joined(user, room).await,
 			| Identifier::ServerName(server) =>
-				self.services.state_cache.server_in_room(server, room).await,
+				self.services.state_cache.server_in_room(server, room).await
+					// A partial-state room lacks its member list; the server we
+					// joined through is certainly in it.
+					|| self
+						.services
+						.state_partial
+						.is_partial_from_server(room, server)
+						.await
+						.unwrap_or(false),
 		})
 		.await;
 
