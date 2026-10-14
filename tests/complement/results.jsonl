@@ -648,7 +648,7 @@
 {"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_no_longer_tracked_when_new_member_leaves_partial_state_room"}
 {"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracked_for_new_members_in_partial_state_room"}
 {"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_for_pre-existing_members_in_partial_state_room"}
-{"Action":"fail","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_for_user_incorrectly_believed_to_be_in_room_when_they_join_another_shared_room_before_partial_state_join_completes"}
+{"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_for_user_incorrectly_believed_to_be_in_room_when_they_join_another_shared_room_before_partial_state_join_completes"}
 {"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_for_user_incorrectly_believed_to_be_in_room_when_they_rejoin_after_partial_state_join_completes"}
 {"Action":"fail","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_for_user_incorrectly_believed_to_be_in_room_when_they_rejoin_before_partial_state_join_completes"}
 {"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_when_pre-existing_members_in_partial_state_room_join_another_shared_room"}
