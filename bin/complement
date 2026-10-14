@@ -26,6 +26,14 @@ COMPLEMENT_BASE_IMAGE="${COMPLEMENT_BASE_IMAGE:-continuwuity:complement}"
 # default (fast_joins is enabled in complement.config.toml).
 SKIPPED_COMPLEMENT_TESTS="${SKIPPED_COMPLEMENT_TESTS:-""}"
 
+# Partial-state joins only exist with fast_joins, so TestPartialStateJoin cannot
+# pass without it; skip it rather than report its subtests as failures.
+if grep -Eq '^[[:space:]]*fast_joins[[:space:]]*=[[:space:]]*false' \
+	"$(dirname "$0")/../complement/complement.config.toml"; then
+	echo "fast_joins = false: skipping TestPartialStateJoin"
+	SKIPPED_COMPLEMENT_TESTS="${SKIPPED_COMPLEMENT_TESTS:+$SKIPPED_COMPLEMENT_TESTS|}^TestPartialStateJoin\$"
+fi
+
 # A regex for tests to run.
 RUN_TESTS="${COMPLEMENT_RUN:-.}"
 
