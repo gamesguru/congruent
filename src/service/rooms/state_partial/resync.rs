@@ -60,8 +60,9 @@ impl Service {
 	}
 
 	/// Send PDUs created during the partial join to servers that were only
-	/// discovered by the resync.
-	async fn send_pending(&self, room_id: &RoomId) {
+	/// discovered by the resync. Rows of PDUs that could not be queued are kept
+	/// and the first error is returned, so the caller can retry.
+	async fn send_pending(&self, room_id: &RoomId) -> Result {
 		let mut prefix = room_id.as_bytes().to_vec();
 		prefix.push(database::SEP);
 		let rows: Vec<(Vec<u8>, Vec<u8>)> = self
@@ -86,7 +87,7 @@ impl Service {
 			})
 			.collect();
 		if pending.is_empty() {
-			return;
+			return Ok(());
 		}
 
 		let servers: Vec<OwnedServerName> = self
@@ -99,6 +100,8 @@ impl Service {
 			.collect()
 			.await;
 
+		let mut failed = HashSet::new();
+		let mut first_error = None;
 		for (pdu_id, sent_to) in pending {
 			let remaining: Vec<OwnedServerName> = servers
 				.iter()
@@ -115,11 +118,20 @@ impl Service {
 				.await
 			{
 				warn!("Failed to send partial-state PDU to newly discovered servers: {e}");
+				failed.insert(pdu_id.0);
+				first_error.get_or_insert(e);
 			}
 		}
 		for (key, _) in &rows {
-			self.db.state_partial_pending.remove(key);
+			let failed_row = key
+				.get(prefix.len()..)
+				.and_then(|id| <[u8; 16]>::try_from(id).ok())
+				.is_some_and(|id| failed.contains(&id));
+			if !failed_row {
+				self.db.state_partial_pending.remove(key);
+			}
 		}
+		first_error.map_or(Ok(()), Err)
 	}
 
 	/// Remote servers we send device-list updates to for this room.
@@ -144,7 +156,7 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		servers_before: &HashSet<OwnedServerName>,
-	) {
+	) -> Result {
 		let mut servers = self.device_list_servers(room_id).await;
 		let members = self
 			.services
@@ -162,7 +174,7 @@ impl Service {
 		}
 		servers.retain(|server| !servers_before.contains(server));
 		if servers.is_empty() {
-			return;
+			return Ok(());
 		}
 
 		let from = self.partial_since(room_id).unwrap_or(0);
@@ -201,11 +213,15 @@ impl Service {
 		);
 		for server in &servers {
 			for edu in &edus {
-				if let Err(e) = self.services.sending.send_edu_server(server, edu.clone()) {
-					warn!("Failed to replay device list update to {server}: {e}");
-				}
+				self.services
+					.sending
+					.send_edu_server(server, edu.clone())
+					.inspect_err(|e| {
+						warn!("Failed to replay device list update to {server}: {e}");
+					})?;
 			}
 		}
+		Ok(())
 	}
 
 	/// Spawn a resync task for the room unless one is already running.
@@ -227,18 +243,37 @@ impl Service {
 		let mut delay = Duration::from_secs(1);
 		// When the failures to get usable state from any server began.
 		let mut unusable_since: Option<Instant> = None;
+		let mut servers_before: Option<HashSet<OwnedServerName>> = None;
 		loop {
 			let Ok(Some(server_name)) = self.partial_server(room_id).await else {
 				return;
 			};
 
 			debug!("Resyncing partial state for room {} from server {}", room_id, server_name);
-			let servers_before = self.device_list_servers(room_id).await;
+			// Captured once: a retry after a failed replay must still replay to the
+			// servers the earlier resync discovered.
+			if servers_before.is_none() {
+				servers_before = Some(self.device_list_servers(room_id).await);
+			}
+			let servers_before = servers_before.clone().unwrap_or_default();
 			match self.clone().resync_room(room_id, &server_name).await {
 				| Ok(discovered) => {
 					info!("Successfully resynced partial state for room {}", room_id);
-					self.send_pending(room_id).await;
-					self.replay_device_updates(room_id, &servers_before).await;
+					// Keep the partial markers until both replays are queued, so a
+					// failure retries them.
+					let replayed = match self.send_pending(room_id).await {
+						| Ok(()) => self.replay_device_updates(room_id, &servers_before).await,
+						| Err(e) => Err(e),
+					};
+					if let Err(e) = replayed {
+						warn!(
+							"Failed to replay to newly discovered servers for room {room_id}: \
+							 {e}"
+						);
+						async_io::Timer::after(delay).await;
+						delay = delay.saturating_mul(2).min(Duration::from_secs(60));
+						continue;
+					}
 					self.db.state_partial_rooms.remove(room_id.as_bytes());
 					self.db.state_partial_events.remove(room_id.as_bytes());
 					self.notify_resolved(room_id);
@@ -314,7 +349,9 @@ impl Service {
 		self.db.state_partial_rooms.remove(room_id.as_bytes());
 		self.db.state_partial_events.remove(room_id.as_bytes());
 		self.services.users.untrack_remote_users_in_room(room_id);
-		self.send_pending(room_id).await;
+		if let Err(e) = self.send_pending(room_id).await {
+			warn!(%room_id, "Could not send pending PDUs for the abandoned join: {e}");
+		}
 		self.services.state_cache.update_joined_count(room_id).await;
 		// Release anything waiting on this room's state.
 		self.resolved.notify_waiters();
