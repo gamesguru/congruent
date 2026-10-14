@@ -737,6 +737,7 @@ where
 				device_keys.extend(filtered_device_keys);
 			},
 			| Err(e) => {
+				conduwuit::info!(%server, "keys/query over federation failed: {e}");
 				failures.insert(server.to_string(), single_field("error", &e.to_string()));
 			},
 		}
