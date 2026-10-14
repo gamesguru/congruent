@@ -336,6 +336,15 @@ async fn migrate(services: &Services) -> Result<()> {
 			.map_err(|e| err!("Failed to run v19 migrations: {e}"))?;
 	}
 
+	// Rejections live in the event verdicts now; the old table is dead weight.
+	if services.db.db.cf_exists("rejectedeventids") {
+		services
+			.db
+			.db
+			.drop_cf("rejectedeventids")
+			.unwrap_or_else(|e| warn!("Failed to drop rejectedeventids: {e}"));
+	}
+
 	if db["global"]
 		.get(UNIFY_RAW_PDU_ID_MARKER)
 		.await
