@@ -467,17 +467,14 @@ impl Service {
 				statuses.remove(&msg.dest);
 			}
 		} else if is_flush {
-			// Flush was rejected (e.g., backoff still active). Re-schedule
-			// at the remaining backoff time to avoid hot-polling the channel.
-			let delay = self.remaining_backoff(&msg.dest, statuses);
+			// Flush was rejected. `select_events` already rescheduled it for the
+			// end of an active backoff; rescheduling here as well doubled the
+			// pending flushes on every rejection.
 			debug!(
 				target: "presence_debug",
-				dest = ?msg.dest, status = ?statuses.get(&msg.dest), ?delay,
+				dest = ?msg.dest, status = ?statuses.get(&msg.dest),
 				"flush rejected by sender status"
 			);
-			if delay > Duration::ZERO {
-				self.reschedule_flush(msg.dest, delay);
-			}
 		}
 	}
 
@@ -708,36 +705,6 @@ impl Service {
 			.or_insert(TransactionStatus::Running);
 
 		Ok((allow, retry))
-	}
-
-	/// Calculate the remaining backoff duration for a destination.
-	/// Used to schedule retries at the correct time instead of hot-polling.
-	fn remaining_backoff(&self, dest: &Destination, statuses: &CurTransactionStatus) -> Duration {
-		let Some(status) = statuses.get(dest) else {
-			return Duration::ZERO;
-		};
-
-		match status {
-			| TransactionStatus::Failed(tries, time) => {
-				let base = self.server.config.sender_retry_backoff_base;
-				let max = self.server.config.sender_retry_backoff_limit;
-				let backoff = base
-					.saturating_mul(
-						1_u64
-							.checked_shl(tries.saturating_sub(1))
-							.unwrap_or(u64::MAX),
-					)
-					.min(max);
-				let total = Duration::from_secs(backoff);
-				total
-					.saturating_sub(time.elapsed())
-					.max(Duration::from_secs(1))
-			},
-			| TransactionStatus::Cooldown(time) => Duration::from_millis(300)
-				.saturating_sub(time.elapsed())
-				.max(Duration::from_millis(50)),
-			| _ => Duration::ZERO,
-		}
 	}
 
 	async fn select_edus(&self, server_name: &ServerName) -> Result<(EduVec, u64)> {
