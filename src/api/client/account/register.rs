@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fmt::Write};
+use std::{
+	collections::HashMap,
+	fmt::Write,
+	sync::{LazyLock, Mutex},
+	time::{Duration, Instant},
+};
 
 use conduwuit::{
 	Err, Result, debug_info, err, error, info,
@@ -30,6 +35,28 @@ use crate::{
 };
 
 const RANDOM_USER_ID_LENGTH: usize = 10;
+
+/// Usernames that were issued a registration challenge, and when.
+static CHALLENGED: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(Mutex::default);
+
+const CHALLENGE_TTL: Duration = Duration::from_secs(15 * 60);
+
+fn note_challenge(username: &str) {
+	let now = Instant::now();
+	let mut challenged = CHALLENGED.lock().expect("locked");
+	challenged.retain(|_, issued| now.duration_since(*issued) < CHALLENGE_TTL);
+	challenged.insert(username.to_owned(), now);
+}
+
+/// Whether `username` was issued a challenge that is still outstanding.
+fn challenge_outstanding(username: &str) -> bool {
+	let now = Instant::now();
+	CHALLENGED
+		.lock()
+		.expect("locked")
+		.get(username)
+		.is_some_and(|issued| now.duration_since(*issued) < CHALLENGE_TTL)
+}
 
 /// # `POST /_matrix/client/v3/register`
 ///
@@ -143,12 +170,21 @@ pub(crate) async fn register_route(
 		// Perform UIAA to determine the user's identity
 		let (flows, params) = create_registration_uiaa_session(&services).await?;
 
-		Some(
-			services
-				.uiaa
-				.authenticate(&body.auth, flows, params, None)
-				.await?,
-		)
+		// The spec requires the client to pass back the session it was issued, but
+		// an auth dict with none is how a client starts with existing credentials.
+		// Only refuse it for a username that has an outstanding challenge.
+		let auth = match (&body.username, &body.auth) {
+			| (Some(username), None) => {
+				note_challenge(username);
+				&body.auth
+			},
+			| (Some(username), Some(auth))
+				if auth.session().is_none() && challenge_outstanding(username) =>
+				&None,
+			| _ => &body.auth,
+		};
+
+		Some(services.uiaa.authenticate(auth, flows, params, None).await?)
 	};
 
 	// If the user didn't supply a username but did supply an email, use
