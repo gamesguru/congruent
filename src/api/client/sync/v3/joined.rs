@@ -522,7 +522,6 @@ async fn build_timeline(
 		last_sync_end_count,
 		current_count,
 		filter,
-		redelivered_since,
 		..
 	} = sync_context;
 
@@ -548,10 +547,7 @@ async fn build_timeline(
 	// A partial-state join promotes the remote room's state events into the
 	// timeline; once the resync is done the user should see those as state and
 	// the timeline should begin at their own join.
-	if starting_count.is_none()
-		&& redelivered_since.is_some()
-		&& services.rooms.state_partial.resolved_at(room_id).is_some()
-	{
+	if starting_count.is_none() && services.rooms.state_partial.resolved_at(room_id).is_some() {
 		if let Ok(join) = services
 			.rooms
 			.state_accessor
@@ -561,20 +557,7 @@ async fn build_timeline(
 			let is_join = join
 				.get_content::<RoomMemberEventContent>()
 				.is_ok_and(|content| content.membership == MembershipState::Join);
-			let was_not_join = join.unsigned.as_ref().is_some_and(|unsigned| {
-				let Ok(unsigned) =
-					slipstream::codec::from_str::<slipstream::json::Value>(unsigned.get())
-				else {
-					return false;
-				};
-				unsigned
-					.get("prev_content")
-					.and_then(|content| {
-						slipstream::codec::from_value::<RoomMemberEventContent>(content).ok()
-					})
-					.is_some_and(|content| content.membership != MembershipState::Join)
-			});
-			if is_join && was_not_join {
+			if is_join {
 				if let Ok(PduCount::Normal(count)) =
 					services.rooms.timeline.get_pdu_count(&join.event_id).await
 				{
