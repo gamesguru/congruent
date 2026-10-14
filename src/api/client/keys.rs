@@ -460,9 +460,29 @@ pub(crate) async fn get_key_changes_route(
 		);
 	}
 
+	// Users we stopped sharing any room with since `from`; one who still shares
+	// a room with us is not reported as gone.
+	let mut left = Vec::new();
+	let left_candidates: HashSet<_> = services
+		.users
+		.device_list_left(sender_user, Some(from), Some(to))
+		.map(|(user_id, _)| user_id)
+		.collect()
+		.await;
+	for user_id in left_candidates {
+		if !services
+			.rooms
+			.state_cache
+			.user_sees_user(sender_user, &user_id)
+			.await
+		{
+			left.push(user_id);
+		}
+	}
+
 	Ok(get_key_changes::v3::Response {
 		changed: device_list_updates.into_iter().collect(),
-		left: Vec::new(), // TODO
+		left,
 	})
 }
 
