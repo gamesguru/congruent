@@ -55,8 +55,8 @@ finish in under 20s, in parallel with that chain.
 
 Removed: `reqwest`, `axum`, `tower-http`, `opentelemetry`,
 `tracing-opentelemetry`, `aws-lc-rs`, and the `hyper-util`, `event-listener`
-and `async-channel` Forgejo forks. Kept: `core_affinity` fork (the code uses
-fork-only `set_each_for_current`).
+and `async-channel` Forgejo forks, and `core_affinity` (replaced by direct
+`libc` sched_{get,set}affinity calls).
 
 Still present: `hyper`, `hyper-util`, `h2`, `tower`, `tokio`, `tokio-rustls`,
 `http-body-util` (router and transitive), `smol`/`async-io`/`async-process`/

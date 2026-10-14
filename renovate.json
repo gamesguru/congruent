@@ -22,7 +22,6 @@
         "rustyline-async",
         "event-listener",
         "async-channel",
-        "core_affinity",
         "hyper-util"
     ],
     "github-actions": {
