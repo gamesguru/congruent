@@ -1176,6 +1176,30 @@ async fn handle_edu_device_list_update(
 	}
 
 	let Some(incoming_keys) = keys else {
+		// A user we cannot yet place in any room is likely a member of a room that
+		// is still partial-state with the origin. Fetching their devices now would
+		// be wasted (and unwelcome): remember the stream position and let the
+		// resync mark them changed once their membership is known.
+		if !services
+			.rooms
+			.state_partial
+			.partial_rooms_via(user_id.server_name())
+			.await
+			.is_empty() && services
+			.rooms
+			.state_cache
+			.rooms_joined(&user_id)
+			.boxed()
+			.next()
+			.await
+			.is_none()
+		{
+			services
+				.users
+				.set_remote_device_list_stream_id(&user_id, incoming_stream_id);
+			return;
+		}
+
 		let request = get_devices::v1::Request { user_id: user_id.clone() };
 
 		let Ok(response) = services
