@@ -7,7 +7,7 @@
 //! a wrongly accepted event becomes rejected, a wrongly rejected one is
 //! accepted, and the state snapshots and current state follow.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use conduwuit::{
 	PduEvent, info,
@@ -30,6 +30,46 @@ type StateMap = HashMap<ShortStateKey, OwnedEventId>;
 /// Sanity ceiling on the events re-authorised in one resync. Past it the resync
 /// fails and is retried; it is never completed without re-authorising.
 const WINDOW_LIMIT: usize = 500_000;
+
+/// The window's events with every event after its in-window `prev_events`.
+/// Depth is advisory, so it (then the event id) only picks among the events
+/// whose predecessors are all done. `None` if a cycle keeps some from being
+/// ordered.
+fn window_order(window: &HashMap<OwnedEventId, PduEvent>) -> Option<Vec<&PduEvent>> {
+	let mut waiting: HashMap<&EventId, usize> = HashMap::new();
+	let mut children: HashMap<&EventId, Vec<&EventId>> = HashMap::new();
+	for (id, pdu) in window {
+		let id: &EventId = id;
+		let prevs: HashSet<&EventId> = pdu
+			.prev_events()
+			.filter(|prev| window.contains_key(*prev))
+			.collect();
+		waiting.insert(id, prevs.len());
+		for prev in prevs {
+			children.entry(prev).or_default().push(id);
+		}
+	}
+
+	let mut ready: BTreeSet<(_, &EventId)> = window
+		.iter()
+		.filter_map(|(id, pdu)| {
+			let id: &EventId = id;
+			(waiting.get(id) == Some(&0)).then(|| (pdu.depth(), id))
+		})
+		.collect();
+	let mut order = Vec::with_capacity(window.len());
+	while let Some((_, id)) = ready.pop_first() {
+		order.push(window.get(id)?);
+		for child in children.get(id).into_iter().flatten() {
+			let count = waiting.get_mut(child)?;
+			*count = count.saturating_sub(1);
+			if *count == 0 {
+				ready.insert((window.get(*child)?.depth(), *child));
+			}
+		}
+	}
+	(order.len() == window.len()).then_some(order)
+}
 
 impl Service {
 	/// Re-authorise the events between the resync point (`anchor`, whose full
@@ -91,12 +131,10 @@ impl Service {
 			window.insert(event_id, pdu);
 		}
 
-		let mut order: Vec<&PduEvent> = window.values().collect();
-		order.sort_by(|a, b| {
-			a.depth()
-				.cmp(&b.depth())
-				.then_with(|| a.event_id().cmp(b.event_id()))
-		});
+		let Some(order) = window_order(&window) else {
+			warn!(target: "reauth_debug", %room_id, "re-auth window has a cycle in prev_events");
+			return None;
+		};
 
 		info!(
 			target: "reauth_debug",

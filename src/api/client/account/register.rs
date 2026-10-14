@@ -36,31 +36,37 @@ use crate::{
 
 const RANDOM_USER_ID_LENGTH: usize = 10;
 
-/// Usernames that were issued a registration challenge, and when.
+/// Registration attempts (client address and username) that were issued a
+/// challenge, and when. Binding it to the address keeps a stranger's request
+/// for a username from changing how someone else's registration is judged.
 static CHALLENGED: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(Mutex::default);
 
 const CHALLENGE_TTL: Duration = Duration::from_mins(15);
 const CHALLENGE_LIMIT: usize = 10_000;
 
-fn note_challenge(username: &str) {
+fn challenge_key(client: impl std::fmt::Display, username: &str) -> String {
+	format!("{client}/{}", username.to_lowercase())
+}
+
+fn note_challenge(key: String) {
 	let now = Instant::now();
 	let mut challenged = CHALLENGED.lock().expect("locked");
 	challenged.retain(|_, issued| now.duration_since(*issued) < CHALLENGE_TTL);
 	// Past the limit nothing new is tracked, so the map cannot grow without bound.
 	if challenged.len() < CHALLENGE_LIMIT {
-		challenged.insert(username.to_owned(), now);
+		challenged.insert(key, now);
 	}
 }
 
-fn forget_challenge(username: &str) { CHALLENGED.lock().expect("locked").remove(username); }
+fn forget_challenge(key: &str) { CHALLENGED.lock().expect("locked").remove(key); }
 
-/// Whether `username` was issued a challenge that is still outstanding.
-fn challenge_outstanding(username: &str) -> bool {
+/// Whether this attempt was issued a challenge that is still outstanding.
+fn challenge_outstanding(key: &str) -> bool {
 	let now = Instant::now();
 	CHALLENGED
 		.lock()
 		.expect("locked")
-		.get(username)
+		.get(key)
 		.is_some_and(|issued| now.duration_since(*issued) < CHALLENGE_TTL)
 }
 
@@ -242,7 +248,7 @@ pub(crate) async fn register_route(
 
 	// Create user
 	services.users.create(&user_id, password, None).await?;
-	forget_challenge(user_id.localpart());
+	forget_challenge(&challenge_key(client, user_id.localpart()));
 
 	// Set an initial display name
 	let mut displayname = user_id.localpart().to_owned();
