@@ -12,6 +12,7 @@ use conduwuit_core::{
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, RoomVersionId, ServerName,
+	UserId,
 	api::federation::event::{get_room_state, get_room_state_ids},
 	events::{
 		StateEventType,
@@ -258,19 +259,10 @@ impl Service {
 				},
 				| Err(e) => {
 					warn!("Failed to resync partial state for room {}: {}", room_id, e);
-					if e.to_string().contains(NO_USABLE_STATE) {
-						let since = *unusable_since.get_or_insert_with(Instant::now);
-						let give_up_after = self.services.server.config.partial_state_resync_give_up_after;
-						if give_up_after > 0 && since.elapsed() >= Duration::from_secs(give_up_after) {
-							warn!(
-								%room_id,
-								"No server gave usable state for {give_up_after}s; abandoning the partial state join"
-							);
-							self.abandon_join(room_id).await;
-							return;
-						}
-					} else {
-						unusable_since = None;
+					if self.should_give_up(&e, &mut unusable_since) {
+						warn!(%room_id, "No server gave usable state in time; abandoning the join");
+						self.abandon_join(room_id).await;
+						return;
 					}
 					async_io::Timer::after(delay).await;
 					delay = delay.saturating_mul(2).min(Duration::from_secs(60));
@@ -279,8 +271,29 @@ impl Service {
 		}
 	}
 
-	/// Give up on a partial-state join: the local users leave through normal
-	/// leave events, and the room's partial-state tracking is dropped.
+	/// Whether the failures to obtain usable state have lasted the configured
+	/// budget. `unusable_since` tracks when they began; any other error resets it.
+	fn should_give_up(
+		&self,
+		error: &conduwuit::Error,
+		unusable_since: &mut Option<Instant>,
+	) -> bool {
+		if !error.to_string().contains(NO_USABLE_STATE) {
+			*unusable_since = None;
+			return false;
+		}
+
+		let budget = self
+			.services
+			.server
+			.config
+			.partial_state_resync_give_up_after;
+		let since = *unusable_since.get_or_insert_with(Instant::now);
+		budget > 0 && since.elapsed() >= Duration::from_secs(budget)
+	}
+
+	/// Give up on a partial-state join: the local users leave, and the room's
+	/// partial-state tracking is dropped.
 	async fn abandon_join(&self, room_id: &RoomId) {
 		let local_users: Vec<OwnedUserId> = self
 			.services
@@ -289,39 +302,8 @@ impl Service {
 			.collect()
 			.await;
 		for user_id in &local_users {
-			let state_lock = self.services.state.mutex.lock(room_id).await;
-			let left = match self
-				.services
-				.state_accessor
-				.room_state_get_content::<RoomMemberEventContent>(
-					room_id,
-					&StateEventType::RoomMember,
-					user_id.as_str(),
-				)
-				.await
-			{
-				| Ok(content) => self
-					.services
-					.timeline
-					.build_and_append_pdu(
-						PduBuilder::state(user_id.to_string(), &RoomMemberEventContent {
-							membership: MembershipState::Leave,
-							reason: Some("Could not complete the partial state join".to_owned()),
-							join_authorized_via_users_server: None,
-							is_direct: None,
-							..content
-						}),
-						user_id,
-						Some(room_id),
-						&state_lock,
-					)
-					.boxed()
-					.await
-					.is_ok(),
-				| Err(_) => false,
-			};
-			drop(state_lock);
-			if !left {
+			if let Err(e) = self.leave_abandoned_room(room_id, user_id).await {
+				warn!(%room_id, %user_id, "Could not send a leave event, marking as left: {e}");
 				self.services
 					.state_cache
 					.mark_as_left(user_id, room_id, None)
@@ -336,6 +318,39 @@ impl Service {
 		self.services.state_cache.update_joined_count(room_id).await;
 		// Release anything waiting on this room's state.
 		self.resolved.notify_waiters();
+	}
+
+	/// Append a leave event for `user_id`, as for a normal leave.
+	async fn leave_abandoned_room(&self, room_id: &RoomId, user_id: &UserId) -> Result {
+		let state_lock = self.services.state.mutex.lock(room_id).await;
+		let content = self
+			.services
+			.state_accessor
+			.room_state_get_content::<RoomMemberEventContent>(
+				room_id,
+				&StateEventType::RoomMember,
+				user_id.as_str(),
+			)
+			.await?;
+		let leave = RoomMemberEventContent {
+			membership: MembershipState::Leave,
+			reason: Some("Could not complete the partial state join".to_owned()),
+			join_authorized_via_users_server: None,
+			is_direct: None,
+			..content
+		};
+
+		self.services
+			.timeline
+			.build_and_append_pdu(
+				PduBuilder::state(user_id.to_string(), &leave),
+				user_id,
+				Some(room_id),
+				&state_lock,
+			)
+			.boxed()
+			.await?;
+		Ok(())
 	}
 
 	async fn resync_room(
