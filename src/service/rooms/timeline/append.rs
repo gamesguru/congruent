@@ -639,10 +639,21 @@ where
 				.await
 				.is_ok_and(|server| server.is_some())
 			{
-				self.services
-					.users
-					.mark_device_key_update_in_room(&target, room_id)
-					.await;
+				// A profile update for someone already joined is not a new member.
+				let already_joined = match prev_state_root_handle.as_ref() {
+					| Some(handle) =>
+						self.services
+							.state_accessor
+							.user_membership_hamt(room_id, handle, &target)
+							.await == slipstream::events::room::member::MembershipState::Join,
+					| None => false,
+				};
+				if !already_joined {
+					self.services
+						.users
+						.mark_device_key_update_in_room(&target, room_id)
+						.await;
+				}
 			}
 		}
 	}
