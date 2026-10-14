@@ -143,10 +143,19 @@ pub(crate) async fn register_route(
 		// Perform UIAA to determine the user's identity
 		let (flows, params) = create_registration_uiaa_session(&services).await?;
 
+		// A session is issued with every challenge, and the spec requires the client
+		// to pass it back. An auth dict without one gets a fresh challenge instead
+		// of silently starting a session of its own.
+		let auth = if body.auth.as_ref().is_some_and(|auth| auth.session().is_none()) {
+			&None
+		} else {
+			&body.auth
+		};
+
 		Some(
 			services
 				.uiaa
-				.authenticate(&body.auth, flows, params, None)
+				.authenticate(auth, flows, params, None)
 				.await?,
 		)
 	};
