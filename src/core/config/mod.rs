@@ -1650,7 +1650,7 @@ pub struct Config {
 	/// leave the room and its partial state is dropped. Local errors never
 	/// count towards this. 0 retries forever.
 	///
-	/// default: 15
+	/// default: 0
 	#[serde(default = "default_partial_state_resync_give_up_after")]
 	pub partial_state_resync_give_up_after: u64,
 
@@ -3282,7 +3282,7 @@ fn default_login_token_ttl() -> u64 { 2 * 60 * 1000 }
 /// Returns the default access-token lifetime of five minutes in milliseconds.
 fn default_access_token_ttl() -> u64 { 5 * 60 * 1000 }
 
-fn default_partial_state_resync_give_up_after() -> u64 { 15 }
+fn default_partial_state_resync_give_up_after() -> u64 { 0 }
 
 fn default_turn_ttl() -> u64 { 60 * 60 * 24 }
 

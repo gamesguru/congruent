@@ -1360,7 +1360,7 @@
 # leave the room and its partial state is dropped. Local errors never
 # count towards this. 0 retries forever.
 #
-#partial_state_resync_give_up_after = 15
+#partial_state_resync_give_up_after = 0
 
 # Allow receiving incoming read receipts from remote servers.
 #
