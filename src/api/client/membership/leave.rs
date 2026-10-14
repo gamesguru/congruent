@@ -33,6 +33,19 @@ pub(crate) async fn leave_room_route(
 	State(services): State<crate::State>,
 	body: Ruma<leave_room::v3::Request>,
 ) -> Result<leave_room::v3::Response> {
+	// Server notices cannot be rejected, only left after joining.
+	if crate::client::is_server_notice_room(body.sender_user(), &body.room_id)
+		&& !services
+			.rooms
+			.state_cache
+			.is_joined(body.sender_user(), &body.room_id)
+			.await
+	{
+		return Err!(Request(CannotLeaveServerNoticeRoom(
+			"You cannot reject this invite as it is a server notice room."
+		)));
+	}
+
 	leave_room(&services, body.sender_user(), &body.room_id, body.reason.clone())
 		.boxed()
 		.await

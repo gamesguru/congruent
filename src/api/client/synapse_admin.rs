@@ -1,26 +1,38 @@
 //! The few Synapse admin endpoints Complement relies on: shared-secret
 //! registration and room purging.
 
-use std::{collections::HashSet, sync::LazyLock};
+use std::{
+	collections::{BTreeMap, HashMap, HashSet},
+	sync::LazyLock,
+};
 
-use conduwuit::{Err, err, utils};
+use conduwuit::{Err, err, pdu::PduBuilder, utils};
 use futures::{FutureExt, StreamExt};
 use hmac::{Hmac, KeyInit, Mac};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use sha1::Sha1;
 use slipstream::{
-	OwnedDeviceId, OwnedRoomId, OwnedUserId,
+	OwnedDeviceId, OwnedRoomId, OwnedUserId, RoomId, RoomVersionId, UserId,
 	api::{EndpointRequest, client::config::set_room_account_data},
 	codec,
+	events::room::{
+		create::RoomCreateEventContent,
+		history_visibility::{HistoryVisibility, RoomHistoryVisibilityEventContent},
+		join_rules::{JoinRule, RoomJoinRulesEventContent},
+		member::{MembershipState, RoomMemberEventContent},
+		message::RoomMessageEventContent,
+		name::RoomNameEventContent,
+		power_levels::RoomPowerLevelsEventContent,
+	},
 	json::Value,
 };
 
 use crate::{
-	client::leave_room,
+	client::{invite_helper, leave_room},
 	json_util::json_response,
 	router::{
-		ApiError, authenticate_user,
+		ApiError, authenticate_user, authenticate_user_with_body,
 		extract::{Path, State},
 	},
 };
@@ -205,4 +217,223 @@ pub(crate) async fn synapse_delete_room(
 	object.field("local_aliases", &Vec::<String>::new());
 	object.field("new_room_id", &Value::Null);
 	Ok(json_response(object.finish()))
+}
+
+/// Server notice rooms by recipient. Not persisted: a restart starts a new room.
+static NOTICE_ROOMS: LazyLock<std::sync::Mutex<HashMap<OwnedUserId, OwnedRoomId>>> =
+	LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Responses to `PUT .../send_server_notice/{txn_id}`, by admin and txn id.
+static NOTICE_TXNS: LazyLock<std::sync::Mutex<HashMap<(OwnedUserId, String), String>>> =
+	LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Whether `room_id` is the server notice room of `user_id`.
+pub(crate) fn is_server_notice_room(user_id: &UserId, room_id: &RoomId) -> bool {
+	NOTICE_ROOMS
+		.lock()
+		.expect("locked")
+		.get(user_id)
+		.is_some_and(|room| room == room_id)
+}
+
+async fn create_notice_room(
+	services: &conduwuit_service::Services,
+	notice_user: &UserId,
+) -> conduwuit::Result<OwnedRoomId> {
+	let room_id = OwnedRoomId::new_v1(services.globals.server_name());
+	services
+		.rooms
+		.short
+		.get_or_create_shortroomid(&room_id)
+		.await;
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+
+	let power_users = BTreeMap::from_iter([(notice_user.to_owned(), 100.into())]);
+	let timeline = &services.rooms.timeline;
+	timeline
+		.build_and_append_pdu(
+			PduBuilder::state(String::new(), &RoomCreateEventContent {
+				federate: false,
+				predecessor: None,
+				room_version: RoomVersionId::V11,
+				..RoomCreateEventContent::new_v11()
+			}),
+			notice_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.boxed()
+		.await?;
+	timeline
+		.build_and_append_pdu(
+			PduBuilder::state(
+				notice_user.to_string(),
+				&RoomMemberEventContent::new(MembershipState::Join),
+			),
+			notice_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.boxed()
+		.await?;
+	timeline
+		.build_and_append_pdu(
+			PduBuilder::state(String::new(), &RoomPowerLevelsEventContent {
+				users: power_users,
+				..Default::default()
+			}),
+			notice_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.boxed()
+		.await?;
+	timeline
+		.build_and_append_pdu(
+			PduBuilder::state(String::new(), &RoomJoinRulesEventContent::new(JoinRule::Invite)),
+			notice_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.boxed()
+		.await?;
+	timeline
+		.build_and_append_pdu(
+			PduBuilder::state(
+				String::new(),
+				&RoomHistoryVisibilityEventContent::new(HistoryVisibility::Shared),
+			),
+			notice_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.boxed()
+		.await?;
+	timeline
+		.build_and_append_pdu(
+			PduBuilder::state(String::new(), &RoomNameEventContent::new("Server Notices".into())),
+			notice_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.boxed()
+		.await?;
+	drop(state_lock);
+
+	Ok(room_id)
+}
+
+/// # `POST /_synapse/admin/v1/send_server_notice`
+pub(crate) async fn synapse_send_server_notice(
+	State(services): State<crate::State>,
+	request: hyper::Request<Incoming>,
+) -> Result<crate::router::response::Response, ApiError> {
+	send_server_notice(&services, request, None).await
+}
+
+/// # `PUT /_synapse/admin/v1/send_server_notice/{txn_id}`
+pub(crate) async fn synapse_send_server_notice_txn(
+	State(services): State<crate::State>,
+	Path(txn_id): Path<String>,
+	request: hyper::Request<Incoming>,
+) -> Result<crate::router::response::Response, ApiError> {
+	send_server_notice(&services, request, Some(txn_id)).await
+}
+
+async fn send_server_notice(
+	services: &crate::State,
+	request: hyper::Request<Incoming>,
+	txn_id: Option<String>,
+) -> Result<crate::router::response::Response, ApiError> {
+	let (admin, body) = authenticate_user_with_body(
+		request,
+		services,
+		&set_room_account_data::v3::Request::METADATA,
+	)
+	.await?;
+	if !services.users.is_admin(&admin).await {
+		return Err!(Request(Forbidden("Only server administrators can use this endpoint")))
+			.map_err(Into::into);
+	}
+
+	let reply = |event_id: &str| {
+		let mut object = slipstream::ObjectBuilder::new();
+		object.field("event_id", event_id);
+		json_response(object.finish())
+	};
+	if let Some(txn_id) = &txn_id {
+		let key = (admin.clone(), txn_id.clone());
+		if let Some(event_id) = NOTICE_TXNS.lock().expect("locked").get(&key) {
+			return Ok(reply(event_id));
+		}
+	}
+
+	let body = std::str::from_utf8(&body)
+		.map_err(|e| err!(Request(BadJson("Body is not UTF-8: {e}"))))?;
+	let json: Value = codec::from_str(body)
+		.map_err(|e| err!(Request(BadJson("Invalid JSON body: {e}"))))?;
+	let target = json
+		.get("user_id")
+		.and_then(|v| v.as_str())
+		.and_then(|u| OwnedUserId::parse(u).ok())
+		.ok_or_else(|| err!(Request(InvalidParam("Missing or invalid `user_id`"))))?;
+	let text = json
+		.get("content")
+		.and_then(|c| c.get("body"))
+		.and_then(|b| b.as_str())
+		.ok_or_else(|| err!(Request(InvalidParam("Missing `content.body`"))))?
+		.to_owned();
+	if !services.globals.user_is_local(&target) || !services.users.exists(&target).await {
+		return Err!(Request(InvalidParam("Server notices can only be sent to local users")))
+			.map_err(Into::into);
+	}
+
+	let notice_user = OwnedUserId::parse(format!("@_server:{}", services.globals.server_name()))
+		.map_err(|e| err!(Request(Unknown("Bad notice user: {e}"))))?;
+	if !services.users.exists(&notice_user).await {
+		services.users.create(&notice_user, None, None).await?;
+	}
+
+	let existing = NOTICE_ROOMS.lock().expect("locked").get(&target).cloned();
+	let room_id = match existing {
+		| Some(room_id) => room_id,
+		| None => {
+			let room_id = create_notice_room(services, &notice_user).await?;
+			NOTICE_ROOMS
+				.lock()
+				.expect("locked")
+				.insert(target.clone(), room_id.clone());
+			room_id
+		},
+	};
+	if !services
+		.rooms
+		.state_cache
+		.is_invited_or_joined(&target, &room_id)
+		.await
+	{
+		invite_helper(services, &notice_user, &target, &room_id, None, false).await?;
+	}
+
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+	let event_id = services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::timeline(&RoomMessageEventContent::text_plain(text)),
+			&notice_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.boxed()
+		.await?;
+	drop(state_lock);
+
+	if let Some(txn_id) = txn_id {
+		NOTICE_TXNS
+			.lock()
+			.expect("locked")
+			.insert((admin, txn_id), event_id.to_string());
+	}
+	Ok(reply(event_id.as_str()))
 }
