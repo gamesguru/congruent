@@ -997,8 +997,8 @@ where
 #[implement(super::Service)]
 pub(super) async fn auth_event_poisons(
 	&self,
-	auth_event_id: &slipstream::EventId,
-	room_id: &slipstream::RoomId,
+	auth_event_id: &EventId,
+	room_id: &RoomId,
 ) -> Result<bool> {
 	let pdu_metadata = &self.services.pdu_metadata;
 	if !pdu_metadata.is_event_permanently_rejected(auth_event_id)? {
