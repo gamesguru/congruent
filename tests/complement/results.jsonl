@@ -364,7 +364,7 @@
 {"Action":"pass","Test":"TestMSC3389RedactionPreservesPlainRelation"}
 {"Action":"pass","Test":"TestMSC3389RedactionPreservesRelation"}
 {"Action":"pass","Test":"TestMSC3389RedactionStripsRelationInOlderVersions"}
-{"Action":"fail","Test":"TestMSC3757OwnedState"}
+{"Action":"skip","Test":"TestMSC3757OwnedState"}
 {"Action":"pass","Test":"TestMSC3967"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync/BulkLoad"}
@@ -626,7 +626,7 @@
 {"Action":"pass","Test":"TestOutboundFederationProfile"}
 {"Action":"pass","Test":"TestOutboundFederationProfile/Outbound_federation_can_query_profile_data"}
 {"Action":"pass","Test":"TestOutboundFederationSend"}
-{"Action":"fail","Test":"TestPartialStateJoin"}
+{"Action":"pass","Test":"TestPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanFastJoinDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanLazyLoadingSyncDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveDeviceListUpdateDuringPartialStateJoin"}
@@ -659,14 +659,14 @@
 {"Action":"pass","Test":"TestPartialStateJoin/Lazy-loading_gappy_sync_includes_remote_memberships_during_partial_state_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/Lazy-loading_incremental_sync_includes_remote_memberships_during_partial_state_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/Lazy-loading_initial_sync_includes_remote_memberships_during_partial_state_join"}
-{"Action":"fail","Test":"TestPartialStateJoin/Leave_during_resync"}
+{"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/can_be_triggered_by_remote_ban"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/can_be_triggered_by_remote_kick"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/does_not_wait_for_resync"}
-{"Action":"fail","Test":"TestPartialStateJoin/Leave_during_resync/is_seen_after_the_resync"}
+{"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/is_seen_after_the_resync"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/succeeds,_then_another_user_can_join_without_resync_completing"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/succeeds,_then_rejoin_succeeds_without_resync_completing"}
-{"Action":"fail","Test":"TestPartialStateJoin/Leave_during_resync/works_after_a_second_partial_join"}
+{"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/works_after_a_second_partial_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/MembersRequestBlocksDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/Outgoing_device_list_updates"}
 {"Action":"pass","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_no_longer_reach_departed_servers_after_partial_state_join_completes"}
@@ -740,8 +740,8 @@
 {"Action":"pass","Test":"TestRedact"}
 {"Action":"pass","Test":"TestRedact/Event_content_is_redacted"}
 {"Action":"skip","Test":"TestRedisRestartRecovery"}
-{"Action":"fail","Test":"TestRegistration"}
-{"Action":"fail","Test":"TestRegistration/parallel"}
+{"Action":"pass","Test":"TestRegistration"}
+{"Action":"pass","Test":"TestRegistration/parallel"}
 {"Action":"pass","Test":"TestRegistration/parallel/GET_/register/available_returns_M_INVALID_USERNAME_for_invalid_user_name"}
 {"Action":"pass","Test":"TestRegistration/parallel/GET_/register/available_returns_M_USER_IN_USE_for_registered_user_name"}
 {"Action":"pass","Test":"TestRegistration/parallel/GET_/register/available_returns_available_for_unregistered_user_name"}
@@ -764,7 +764,7 @@
 {"Action":"pass","Test":"TestRegistration/parallel/POST_/register_returns_the_same_device_id_as_that_in_the_request"}
 {"Action":"pass","Test":"TestRegistration/parallel/POST_{}_returns_a_set_of_flows"}
 {"Action":"pass","Test":"TestRegistration/parallel/Registration_accepts_non-ascii_passwords"}
-{"Action":"fail","Test":"TestRegistration/parallel/Registration_without_a_session_fails"}
+{"Action":"skip","Test":"TestRegistration/parallel/Registration_without_a_session_fails"}
 {"Action":"pass","Test":"TestRelations"}
 {"Action":"pass","Test":"TestRelationsPagination"}
 {"Action":"pass","Test":"TestRelationsPaginationSync"}
