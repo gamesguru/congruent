@@ -237,10 +237,10 @@ impl Service {
 			match self.clone().resync_room(room_id, &server_name).await {
 				| Ok(discovered) => {
 					info!("Successfully resynced partial state for room {}", room_id);
-					self.db.state_partial_rooms.remove(room_id.as_bytes());
-					self.db.state_partial_events.remove(room_id.as_bytes());
 					self.send_pending(room_id).await;
 					self.replay_device_updates(room_id, &servers_before).await;
+					self.db.state_partial_rooms.remove(room_id.as_bytes());
+					self.db.state_partial_events.remove(room_id.as_bytes());
 					self.notify_resolved(room_id);
 					// Only users whose update was held back while their membership was
 					// unknown are reported; other newly found members had no update.

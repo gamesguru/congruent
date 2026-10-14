@@ -322,6 +322,7 @@ impl Service {
 						.await
 					{
 						warn!(target: "reauth_debug", %event_id, "failed to store snapshot: {e}");
+						return None;
 					}
 				},
 				| Err(e) => {
