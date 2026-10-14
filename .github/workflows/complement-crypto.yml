@@ -283,6 +283,7 @@ jobs:
             tests/crypto/results.jsonl
             tests/crypto/test_results.*.jsonl
             tests/crypto/logs.*.jsonl
+            complement-crypto-src/tests/logs/
           retention-days: 90
 
       # Publish a per-variant complement-crypto badge
