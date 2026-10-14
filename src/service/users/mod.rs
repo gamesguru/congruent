@@ -1896,13 +1896,16 @@ impl Service {
 	/// dropped if any user's keys were invalidated since.
 	pub fn store_remote_keys(&self, user_id: &UserId, keys: CachedRemoteKeys, generation: u64) {
 		let mut cache = self.remote_keys_cache.lock().expect("locked");
-		if self.remote_keys_generation() == generation {
+		let current = self.remote_keys_generation();
+		conduwuit::info!(%user_id, generation, current, "remote_keys_cache: store");
+		if current == generation {
 			cache.insert(user_id.to_owned(), keys);
 		}
 	}
 
 	fn invalidate_remote_keys(&self, user_id: &UserId) {
 		let mut cache = self.remote_keys_cache.lock().expect("locked");
+		conduwuit::info!(%user_id, "remote_keys_cache: invalidate");
 		self.remote_keys_generation
 			.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 		cache.remove(user_id);

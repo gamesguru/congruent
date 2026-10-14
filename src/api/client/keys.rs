@@ -508,6 +508,7 @@ where
 						.partial_rooms_via(&user_id.server_name())
 						.await
 						.is_empty();
+				info!(%user_id, tracked, "remote_keys_cache: lookup");
 				if let Some(cached) = tracked
 					.then(|| services.users.cached_remote_keys(user_id))
 					.flatten()
