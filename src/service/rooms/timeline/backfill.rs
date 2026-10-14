@@ -655,7 +655,18 @@ async fn get_remote_pdu_limited(
 
 	let local = self.get_pdu(event_id).await;
 	if local.is_ok() {
-		// We already have this PDU, no need to backfill
+		// `get_pdu` also finds outliers, e.g. one a resync stored first. Those have
+		// no timeline position yet, so give them the same treatment as a freshly
+		// fetched event; promotion itself leaves rejected outliers alone.
+		if self.get_pdu_id(event_id).await.is_err() {
+			if let Err(e) = self
+				.materialize_remote_history_limited(room_id, event_id, budget)
+				.await
+			{
+				warn!("Failed to promote outlier {event_id} in {room_id}: {e}");
+			}
+		}
+		// We already have this PDU, no need to fetch it
 		debug!("We already have {event_id} in {room_id}, no need to backfill.");
 		return local;
 	}
