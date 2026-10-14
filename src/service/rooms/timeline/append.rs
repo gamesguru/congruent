@@ -302,6 +302,20 @@ where
 		None
 	};
 
+	// MSC2836: index the parent->child edge before the PDU becomes visible to
+	// sync. A client that sees the child and immediately queries
+	// /event_relationships must find the edge (it is idempotent, so a
+	// redundant call for an already-present PDU is harmless).
+	if let Ok(content) = pdu.get_content::<super::ExtractMsc2836Relationship>() {
+		if let Some(relationship) = content.relationship {
+			self.services.pdu_metadata.msc2836_add_child(
+				&relationship.event_id,
+				pdu.event_id(),
+				&relationship.rel_type,
+			);
+		}
+	}
+
 	self.services
 		.user
 		.reset_notification_counts(pdu.sender(), room_id);
@@ -640,16 +654,6 @@ where
 				}
 			},
 			| _ => {}, // TODO: Aggregate other types
-		}
-	}
-
-	if let Ok(content) = pdu.get_content::<super::ExtractMsc2836Relationship>() {
-		if let Some(relationship) = content.relationship {
-			self.services.pdu_metadata.msc2836_add_child(
-				&relationship.event_id,
-				pdu.event_id(),
-				&relationship.rel_type,
-			);
 		}
 	}
 
