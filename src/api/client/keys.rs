@@ -541,7 +541,7 @@ where
 			// is answered locally without asking their server again.
 			if device_ids.is_empty() {
 				let tracked = remote_user_tracked(services, user_id).await;
-				info!(target: "keys_cache_debug", %user_id, tracked, cached = services.users.cached_remote_keys(user_id).is_some(), "remote_keys_cache: lookup");
+				info!(target: "keys_cache_debug", %user_id, tracked, "remote_keys_cache: lookup");
 				if let Some(cached) = tracked
 					.then(|| services.users.cached_remote_keys(user_id))
 					.flatten()

@@ -316,7 +316,6 @@ pub async fn create_event(
 			kind = %pdu.kind,
 			sender = %pdu.sender,
 			state_key = ?pdu.state_key,
-			content = %pdu.content.get(),
 			auth_event_ids = ?auth_events.iter().map(|(k, v)| (format!("{k:?}"), v.event_id.to_string())).collect::<Vec<_>>(),
 			"event failed auth check"
 		);

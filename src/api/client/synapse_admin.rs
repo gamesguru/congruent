@@ -228,6 +228,7 @@ pub(crate) async fn synapse_delete_room(
 		.collect()
 		.await;
 	let mut kicked = Vec::new();
+	let mut failed = Vec::new();
 	for user_id in users {
 		if leave_room(&services, &user_id, &room_id, None)
 			.boxed()
@@ -236,13 +237,15 @@ pub(crate) async fn synapse_delete_room(
 		{
 			services.rooms.state_cache.forget(&room_id, &user_id);
 			kicked.push(user_id.to_string());
+		} else {
+			failed.push(user_id.to_string());
 		}
 	}
 	services.rooms.directory.set_not_public(&room_id);
 
 	let mut object = slipstream::ObjectBuilder::new();
 	object.field("kicked_users", &kicked);
-	object.field("failed_to_kick_users", &Vec::<String>::new());
+	object.field("failed_to_kick_users", &failed);
 	object.field("local_aliases", &Vec::<String>::new());
 	object.field("new_room_id", &Value::Null);
 	Ok(json_response(object.finish()))

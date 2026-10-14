@@ -20,13 +20,20 @@ pub(super) fn superseded_on_refresh(expires_at: Option<u64>) -> bool { expires_a
 /// replaces, in their original order. The most recent expiring token is kept:
 /// a client which lost the previous refresh response may still hold it.
 pub(super) fn superseded_tokens(tokens: Vec<(String, Option<u64>)>) -> Vec<String> {
-	let mut expiring: Vec<String> = tokens
+	let mut expiring: Vec<(String, u64)> = tokens
 		.into_iter()
 		.filter(|(_, expires_at)| superseded_on_refresh(*expires_at))
-		.map(|(token, _)| token)
+		.filter_map(|(token, expires_at)| expires_at.map(|at| (token, at)))
 		.collect();
-	expiring.pop();
-	expiring
+	if let Some(newest) = expiring
+		.iter()
+		.enumerate()
+		.max_by_key(|(_, (_, at))| *at)
+		.map(|(i, _)| i)
+	{
+		expiring.remove(newest);
+	}
+	expiring.into_iter().map(|(token, _)| token).collect()
 }
 
 /// A device's token list with one token revoked.

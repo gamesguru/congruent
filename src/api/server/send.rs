@@ -228,7 +228,7 @@ async fn process_inbound_transaction(
 		.map(|edu| edu.get().to_owned())
 		.map(|json| {
 			codec::from_str::<Edu>(&json).map_err(|e| {
-				warn!(%origin, "Failed to parse incoming EDU, dropping: {e}: {json}");
+				warn!(%origin, len = json.len(), "Failed to parse incoming EDU, dropping: {e}");
 				e
 			})
 		})
@@ -1224,6 +1224,7 @@ async fn handle_edu_device_list_update(
 				.rooms
 				.state_partial
 				.defer_device_update(&user_id, &partial_rooms);
+			services.users.invalidate_remote_keys(&user_id);
 			return;
 		}
 

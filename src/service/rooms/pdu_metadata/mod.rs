@@ -439,6 +439,7 @@ impl Service {
 		event_id: &EventId,
 		reason: &str,
 	) -> Result<()> {
+		self.services.short.leanevent_cache.invalidate(event_id);
 		self.db.mark_event_rejected(event_id, reason)
 	}
 

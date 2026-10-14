@@ -294,10 +294,19 @@ impl Service {
 			.await;
 
 		// Process State events
+		let expected = response.pdus.len();
 		let new_state_ids = self
 			.clone()
 			.process_state_events(&room_id, &room_version, &remote_server, response.pdus)
 			.await;
+		// A state event that failed to load (a signing key fetch, say) leaves a hole
+		// in the state; fail so the resync is retried rather than marked complete.
+		if new_state_ids.len() < expected {
+			return Err(err!(Request(Unknown(
+				"Loaded {} of {expected} state events; retrying",
+				new_state_ids.len()
+			))));
+		}
 
 		// Events received while the state was partial were accepted without the
 		// omitted members; re-authorise them against the full state, which also
