@@ -18,7 +18,7 @@ use futures::StreamExt;
 use slipstream::{
 	EventId, OwnedEventId, OwnedUserId, RoomId, UserId,
 	events::{
-		StateEventType,
+		StateEventType, TimelineEventType,
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
 };

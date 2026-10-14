@@ -285,13 +285,9 @@ impl Service {
 		if let Some((current, left)) = reauthed {
 			self.install_current_state(&room_id, current).await?;
 			// Only now that the corrected state is installed: these users missed
-			// updates while out of the room, so refetch their keys.
-			for user_id in left {
-				self.services
-					.users
-					.mark_device_key_update_in_room(&user_id, &room_id)
-					.await;
-			}
+			// updates while out of the room, so refetch their keys. (Only the
+			// re-auth path finds them; the merge fallback below does not.)
+			self.flush_users_who_left_in_window(&room_id, left).await;
 		} else {
 			// Update room state graph (amend the partial state)
 			self.update_state_graph(&room_id, new_state_ids.clone())
@@ -614,6 +610,54 @@ impl Service {
 			.set_room_state_hamt_with_nodes(room_id, &new_root, &pending_nodes)?;
 		self.reconcile_tracking(room_id, &old, &current).await;
 		Ok(())
+	}
+
+	async fn flush_users_who_left_in_window(
+		&self,
+		room_id: &RoomId,
+		left: std::collections::HashSet<slipstream::OwnedUserId>,
+	) {
+		use slipstream::events::room::member::{MembershipState, RoomMemberEventContent};
+		for user_id in left {
+			self.services.users.invalidate_remote_keys(&user_id);
+			// A user who ended up out follows the membership-leave path instead.
+			let rejoined = self
+				.services
+				.state_accessor
+				.room_state_get(
+					room_id,
+					&slipstream::events::StateEventType::RoomMember,
+					user_id.as_str(),
+				)
+				.await
+				.is_ok_and(|pdu| {
+					pdu.get_content::<RoomMemberEventContent>()
+						.is_ok_and(|c| c.membership == MembershipState::Join)
+				});
+			if !rejoined {
+				continue;
+			}
+			// This room, and the fully stated rooms they share with us; other
+			// partial rooms are left to their own resync.
+			let mut rooms = vec![room_id.to_owned()];
+			let others: Vec<OwnedRoomId> = self
+				.services
+				.state_cache
+				.rooms_joined(&user_id)
+				.collect()
+				.await;
+			for other in others {
+				if other != room_id && matches!(self.partial_server(&other).await, Ok(None)) {
+					rooms.push(other);
+				}
+			}
+			for room in rooms {
+				self.services
+					.users
+					.mark_device_key_update_in_room(&user_id, &room)
+					.await;
+			}
+		}
 	}
 
 	async fn update_state_graph(
