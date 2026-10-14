@@ -90,10 +90,19 @@ where
 				if let Some(anchor) = state_ids_anchor.as_ref() {
 					let anchor_is_only_prev = incoming_pdu.prev_events().count() == 1
 						&& incoming_pdu.prev_events().next() == Some(anchor);
-					match self
+					let anchor_fetch = self
 						.fetch_state(origin, create_event, room_id, anchor, false)
-						.await
-					{
+						.await;
+					info!(
+						target: "state_at_event_debug",
+						event_id = %incoming_pdu.event_id,
+						%anchor,
+						prev_events = ?incoming_pdu.prev_events().collect::<Vec<_>>(),
+						anchor_is_only_prev,
+						anchor_fetch = ?anchor_fetch.as_ref().map(|s| s.as_ref().map(HashMap::len)).map_err(ToString::to_string),
+						"upgrade_outlier: deeper anchor fetch"
+					);
+					match anchor_fetch {
 						| Ok(state) if anchor_is_only_prev => state_at_event = state,
 						| Ok(_) => {},
 						| Err(e) => debug!(%anchor, "deeper /state_ids anchor fetch failed: {e}"),
