@@ -2534,7 +2534,7 @@ struct StateDiff {
 
 /// A table from a retired schema, opened by name: it is no longer part of the
 /// active map list, only read by the migrations that consume it.
-fn legacy_map(services: &Services, name: &'static str) -> Result<std::sync::Arc<database::Map>> {
+fn legacy_map(services: &Services, name: &'static str) -> Result<Arc<database::Map>> {
 	database::Map::open(&services.db.db, name)
 }
 
@@ -2824,11 +2824,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 	let roomid_shortstatehash = legacy_map(services, "roomid_shortstatehash")?;
 	let mut room_stream = services.rooms.metadata.iter_ids();
 	while let Some(room_id) = room_stream.next().await {
-		match roomid_shortstatehash
-			.get(&room_id)
-			.await
-			.deserialized()
-		{
+		match roomid_shortstatehash.get(&room_id).await.deserialized() {
 			| Err(e) if e.is_not_found() => {
 				// Room has no state yet (e.g. partial join); skip.
 				debug_warn!(
