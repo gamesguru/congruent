@@ -20,6 +20,7 @@ pub(super) use self::{
 };
 use crate::{admin, client, server};
 
+/// Registers the Matrix API routes, including enabled experimental endpoints.
 pub fn build(
 	router: crate::hyper_router::MinimalRouter,
 	server: &Server,
@@ -67,6 +68,7 @@ pub fn build(
 		.ruma_route(&client::login_token_route)
 		.ruma_route(&client::whoami_route)
 		.ruma_route(&client::logout_route)
+		.ruma_route(&client::refresh_token_route)
 		.ruma_route(&client::logout_all_route)
 		.ruma_route(&client::change_password_route)
 		.ruma_route(&client::request_password_change_token_via_email_route)

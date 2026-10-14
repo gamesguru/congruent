@@ -32,6 +32,7 @@ use crate::service::appservice::RegistrationInfo;
 enum Token {
 	Appservice(Box<RegistrationInfo>),
 	User((OwnedUserId, OwnedDeviceId)),
+	Expired,
 	Invalid,
 	None,
 }
@@ -43,6 +44,7 @@ pub(super) struct Auth {
 	pub(super) appservice_info: Option<RegistrationInfo>,
 }
 
+/// Authenticates the request according to the endpoint's authentication scheme.
 pub(super) async fn auth(
 	services: &Services,
 	request: &Request,
@@ -85,7 +87,7 @@ pub(super) async fn auth(
 						// we should have validated the token above
 						// already
 					},
-					| Token::None | Token::Invalid => {
+					| Token::None | Token::Invalid | Token::Expired => {
 						return Err(Error::BadRequest(
 							ErrorKind::MissingToken,
 							"Missing or invalid access token.",
@@ -103,7 +105,7 @@ pub(super) async fn auth(
 							// we should have validated the token above
 							// already
 						},
-						| Token::None | Token::Invalid => {
+						| Token::None | Token::Invalid | Token::Expired => {
 							return Err(Error::BadRequest(
 								ErrorKind::MissingToken,
 								"Missing or invalid access token.",
@@ -229,11 +231,27 @@ pub(super) async fn auth(
 				))
 			}
 		},
-		| (_, Token::Invalid) => Err(Error::BadRequest(
-			ErrorKind::UnknownToken { soft_logout: false },
-			"Unknown access token.",
-		)),
+		| (AuthScheme::None, Token::Expired) => Ok(Auth {
+			// Clients refreshing (or logging in) commonly still present their
+			// expired access token; these endpoints do not need it.
+			origin: None,
+			sender_user: None,
+			sender_device: None,
+			appservice_info: None,
+		}),
+		| (_, Token::Expired) => Err(expired_token_error()),
+		| (_, Token::Invalid) => Err(unknown_token_error()),
 	}
+}
+
+/// The client may refresh, so this is a soft logout.
+fn expired_token_error() -> Error {
+	Error::BadRequest(ErrorKind::UnknownToken { soft_logout: true }, "Access token has expired.")
+}
+
+/// Rejects an unrecognized access token with a hard logout.
+fn unknown_token_error() -> Error {
+	Error::BadRequest(ErrorKind::UnknownToken { soft_logout: false }, "Unknown access token.")
 }
 
 async fn auth_appservice(
@@ -429,6 +447,13 @@ async fn parse_x_matrix(request: &Request) -> Result<XMatrix> {
 	XMatrix::decode(value).ok_or_else(|| err!(Request(Forbidden("Invalid X-Matrix signatures"))))
 }
 
+/// A recognised user token is `Expired` once its refresh-token lifetime lapses,
+/// so the client is soft-logged-out and can refresh instead of re-logging in.
+fn classify_user_token(user: (OwnedUserId, OwnedDeviceId), expired: bool) -> Token {
+	if expired { Token::Expired } else { Token::User(user) }
+}
+
+/// Resolves a supplied user or appservice token, checking user-token expiry.
 async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {
 	let Some(token) = token else {
 		return Ok(Token::None);
@@ -437,7 +462,12 @@ async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {
 		return Ok(Token::Invalid);
 	}
 
-	let user_token = services.users.find_from_token(token).map_ok(Token::User);
+	let user_token = services
+		.users
+		.find_from_token(token)
+		.and_then(async |user| {
+			Ok(classify_user_token(user, services.users.access_token_expired(token).await))
+		});
 
 	let appservice_token = services
 		.appservice
@@ -457,6 +487,48 @@ async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// Returns a fixed user and device pair for token-classification tests.
+	fn user() -> (OwnedUserId, OwnedDeviceId) {
+		(
+			OwnedUserId::parse("@alice:local.com").unwrap(),
+			OwnedDeviceId::parse("DEVICE").unwrap(),
+		)
+	}
+
+	/// Verifies that an unexpired token retains its user and device identity.
+	#[test]
+	fn a_live_user_token_authenticates() {
+		let Token::User(authenticated) = classify_user_token(user(), false) else {
+			panic!("a live token must authenticate");
+		};
+		assert_eq!(authenticated, user());
+	}
+
+	/// Verifies that an expired token remains distinct from an invalid token.
+	#[test]
+	fn a_lapsed_user_token_is_expired_not_invalid() {
+		// Expired maps to a soft logout; Invalid would be a hard one.
+		assert!(matches!(classify_user_token(user(), true), Token::Expired));
+	}
+
+	/// Verifies that expired access tokens allow the client to refresh its session.
+	#[test]
+	fn an_expired_token_is_a_soft_logout() {
+		assert!(matches!(
+			expired_token_error(),
+			Error::BadRequest(ErrorKind::UnknownToken { soft_logout: true }, _)
+		));
+	}
+
+	/// Verifies that unknown access tokens require the client to log in again.
+	#[test]
+	fn an_unknown_token_is_a_hard_logout() {
+		assert!(matches!(
+			unknown_token_error(),
+			Error::BadRequest(ErrorKind::UnknownToken { soft_logout: false }, _)
+		));
+	}
 
 	#[test]
 	fn test_auth_server_checks_impl_missing_destination() {

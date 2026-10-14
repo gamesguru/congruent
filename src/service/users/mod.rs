@@ -1,4 +1,5 @@
 pub(super) mod dehydrated_device;
+mod token_expiry;
 
 #[cfg(feature = "ldap")]
 use std::collections::HashMap;
@@ -13,7 +14,7 @@ use conduwuit::{
 };
 #[cfg(feature = "ldap")]
 use conduwuit_core::error;
-use database::{Deserialized, Ignore, Interfix, Json, Map};
+use database::{Batch, Deserialized, Ignore, Interfix, Json, Map, serialize_to_vec};
 use futures::{Stream, StreamExt, TryFutureExt};
 #[cfg(feature = "ldap")]
 use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
@@ -130,6 +131,10 @@ pub struct Service {
 	/// `/keys/claim` requests can't double-take the same key, which could
 	/// leave a regular OTK unused and break fallback-key semantics.
 	take_one_time_key_lock: MutexMap<String, ()>,
+	/// Serializes every mutation of a device's credentials (access tokens,
+	/// refresh tokens, removal) so a refresh can't write credentials after
+	/// logout has enumerated them, nor lose a concurrent token-list update.
+	device_credentials_lock: MutexMap<String, ()>,
 }
 
 struct Services {
@@ -153,6 +158,10 @@ struct Data {
 	logintoken_expiresatuserid: Arc<Map>,
 	todeviceid_events: Arc<Map>,
 	token_userdeviceid: Arc<Map>,
+	token_expiresat: Arc<Map>,
+	refreshtoken_userdeviceid: Arc<Map>,
+	userdeviceid_refreshtoken: Arc<Map>,
+	userdeviceid_prevrefreshtoken: Arc<Map>,
 	userdeviceid_metadata: Arc<Map>,
 	userdeviceid_token: Arc<Map>,
 	userfilterid_filter: Arc<Map>,
@@ -176,6 +185,7 @@ struct Data {
 }
 
 impl crate::Service for Service {
+	/// Initializes the user service with its dependencies and database maps.
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let current_count = args
 			.depend::<globals::Service>("globals")
@@ -204,6 +214,10 @@ impl crate::Service for Service {
 				logintoken_expiresatuserid: args.db["logintoken_expiresatuserid"].clone(),
 				todeviceid_events: args.db["todeviceid_events"].clone(),
 				token_userdeviceid: args.db["token_userdeviceid"].clone(),
+				token_expiresat: args.db["token_expiresat"].clone(),
+				refreshtoken_userdeviceid: args.db["refreshtoken_userdeviceid"].clone(),
+				userdeviceid_refreshtoken: args.db["userdeviceid_refreshtoken"].clone(),
+				userdeviceid_prevrefreshtoken: args.db["userdeviceid_prevrefreshtoken"].clone(),
 				userdeviceid_metadata: args.db["userdeviceid_metadata"].clone(),
 				userdeviceid_token: args.db["userdeviceid_token"].clone(),
 				userfilterid_filter: args.db["userfilterid_filter"].clone(),
@@ -228,6 +242,7 @@ impl crate::Service for Service {
 				userprofileupdate_value: args.db["userprofileupdate_value"].clone(),
 			},
 			take_one_time_key_lock: MutexMap::new(),
+			device_credentials_lock: MutexMap::new(),
 		}))
 	}
 
@@ -694,6 +709,29 @@ impl Service {
 		initial_device_display_name: Option<String>,
 		client_ip: Option<String>,
 	) -> Result<()> {
+		self.create_device_with_ttl(
+			user_id,
+			device_id,
+			token,
+			None,
+			initial_device_display_name,
+			client_ip,
+		)
+		.await
+	}
+
+	/// Adds a new device to a user, with an access token which expires `ttl`
+	/// milliseconds from now when given. The token and its expiry are stored
+	/// together.
+	pub async fn create_device_with_ttl(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		token: &str,
+		ttl: Option<u64>,
+		initial_device_display_name: Option<String>,
+		client_ip: Option<String>,
+	) -> Result<()> {
 		if !self.exists(user_id).await {
 			return Err!(Request(InvalidParam(error!(
 				"Called create_device for non-existent user {user_id}"
@@ -710,12 +748,16 @@ impl Service {
 
 		increment(&self.db.userid_devicelistversion, user_id.as_bytes());
 		self.db.userdeviceid_metadata.put(key, Json(val));
-		self.set_token(user_id, device_id, token).await
+		self.set_token_with_ttl(user_id, device_id, token, ttl)
+			.await
 	}
 
 	/// Removes a device from a user.
 	pub async fn remove_device(&self, user_id: &UserId, device_id: &DeviceId) {
 		info!("Removing device {device_id} for user {user_id}");
+		let lock_key = Self::device_lock_key(user_id, device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+
 		// Remove dehydrated device if this is the dehydrated device
 		let _: Result<_> = self
 			.remove_dehydrated_device(user_id, Some(device_id))
@@ -727,10 +769,12 @@ impl Service {
 		let tokens = self.active_tokens(user_id, device_id).await;
 		for token in &tokens {
 			self.db.token_userdeviceid.remove(token);
+			self.db.token_expiresat.remove(token);
 		}
 		if !tokens.is_empty() {
 			self.db.userdeviceid_token.del(userdeviceid);
 		}
+		self.remove_refresh_token(user_id, device_id).await;
 
 		// Remove todevice events
 		let prefix = (user_id, device_id, Interfix);
@@ -824,6 +868,39 @@ impl Service {
 		device_id: &DeviceId,
 		token: &str,
 	) -> Result<()> {
+		self.set_token_with_ttl(user_id, device_id, token, None)
+			.await
+	}
+
+	/// `set_token` with a lifetime of `ttl` milliseconds when given, stored
+	/// atomically with the token.
+	pub async fn set_token_with_ttl(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		token: &str,
+		ttl: Option<u64>,
+	) -> Result<()> {
+		let lock_key = Self::device_lock_key(user_id, device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+		self.store_access_token(user_id, device_id, token, ttl)
+			.await
+	}
+
+	fn device_lock_key(user_id: &UserId, device_id: &DeviceId) -> String {
+		format!("{user_id}\0{device_id}")
+	}
+
+	/// Records an access token for a device, and its lifetime when `ttl` is
+	/// given, in one atomic batch. The caller holds the device's credentials
+	/// lock.
+	async fn store_access_token(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		token: &str,
+		ttl: Option<u64>,
+	) -> Result<()> {
 		let key = (user_id, device_id);
 		if self.db.userdeviceid_metadata.qry(&key).await.is_err() {
 			return Err!(Database(error!(
@@ -851,11 +928,279 @@ impl Service {
 		let mut tokens = self.active_tokens(user_id, device_id).await;
 		if !tokens.as_slice().contains(&token.to_owned()) {
 			tokens.push(token.to_owned());
-			self.db.userdeviceid_token.put(key, Json(&tokens));
-			self.db.token_userdeviceid.raw_put(token, key);
+			let device_key = serialize_to_vec(key)?;
+			let mut batch = Batch::new();
+			self.db.userdeviceid_token.batch_put(
+				&mut batch,
+				&device_key,
+				serialize_to_vec(Json(&tokens))?,
+			);
+			self.db
+				.token_userdeviceid
+				.batch_raw_put(&mut batch, token, key);
+			if let Some(ttl) = ttl {
+				let expires_at = token_expiry::expires_at(utils::millis_since_unix_epoch(), ttl);
+				self.db
+					.token_expiresat
+					.batch_raw_put(&mut batch, token, expires_at);
+			}
+			self.db.userdeviceid_token.apply_batch(batch);
 		}
 
 		Ok(())
+	}
+
+	/// Whether an access token has a lifetime which has elapsed. A failed
+	/// lookup counts as expired.
+	pub async fn access_token_expired(&self, token: &str) -> bool {
+		match self.token_expires_at(token).await {
+			| Ok(expires_at) =>
+				token_expiry::has_expired(expires_at, utils::millis_since_unix_epoch()),
+			| Err(_) => true,
+		}
+	}
+
+	/// The recorded expiry of a token; `None` when it has no entry.
+	async fn token_expires_at(&self, token: &str) -> Result<Option<u64>> {
+		match self
+			.db
+			.token_expiresat
+			.get(token)
+			.await
+			.deserialized::<u64>()
+		{
+			| Ok(expires_at) => Ok(Some(expires_at)),
+			| Err(e) if e.is_not_found() => Ok(None),
+			| Err(e) => Err(e),
+		}
+	}
+
+	/// Issues a new refresh token for a device, replacing (and thereby
+	/// invalidating) any previous ones.
+	pub async fn issue_refresh_token(&self, user_id: &UserId, device_id: &DeviceId) -> String {
+		let lock_key = Self::device_lock_key(user_id, device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+
+		let key = (user_id, device_id);
+		let revoked = [
+			self.device_refresh_token(&self.db.userdeviceid_refreshtoken, key)
+				.await,
+			self.device_refresh_token(&self.db.userdeviceid_prevrefreshtoken, key)
+				.await,
+		];
+		let refresh_token = self.generate_refresh_token().await;
+		self.commit_refresh_tokens(key, Some(&refresh_token), None, revoked.iter().flatten());
+
+		refresh_token
+	}
+
+	async fn generate_refresh_token(&self) -> String {
+		loop {
+			let candidate = utils::random_string(32);
+			if self
+				.db
+				.refreshtoken_userdeviceid
+				.get(&candidate)
+				.await
+				.is_err()
+			{
+				break candidate;
+			}
+		}
+	}
+
+	/// Writes a device's refresh-token state in one atomic batch: the current
+	/// and previous token (each `None` to clear), and the tokens to revoke.
+	/// A token which is current or previous must already have its entry in
+	/// `refreshtoken_userdeviceid`, or be written here as the current one.
+	fn commit_refresh_tokens<'a>(
+		&self,
+		(user_id, device_id): (&UserId, &DeviceId),
+		current: Option<&str>,
+		previous: Option<&str>,
+		revoked: impl Iterator<Item = &'a String>,
+	) {
+		let key = serialize_to_vec((user_id, device_id)).expect("failed to serialize device key");
+		let mut batch = Batch::new();
+
+		for token in revoked {
+			self.db
+				.refreshtoken_userdeviceid
+				.batch_delete(&mut batch, token);
+		}
+		match current {
+			| Some(token) => {
+				self.db.refreshtoken_userdeviceid.batch_raw_put(
+					&mut batch,
+					token,
+					(user_id, device_id),
+				);
+				self.db
+					.userdeviceid_refreshtoken
+					.batch_put(&mut batch, &key, token);
+			},
+			| None => self
+				.db
+				.userdeviceid_refreshtoken
+				.batch_delete(&mut batch, &key),
+		}
+		match previous {
+			| Some(token) => self
+				.db
+				.userdeviceid_prevrefreshtoken
+				.batch_put(&mut batch, &key, token),
+			| None => self
+				.db
+				.userdeviceid_prevrefreshtoken
+				.batch_delete(&mut batch, &key),
+		}
+
+		self.db.refreshtoken_userdeviceid.apply_batch(batch);
+	}
+
+	async fn device_refresh_token(
+		&self,
+		map: &Arc<Map>,
+		key: (&UserId, &DeviceId),
+	) -> Option<String> {
+		map.qry(&key).await.deserialized::<String>().ok()
+	}
+
+	/// Revokes the refresh tokens of a device, if any. The caller holds the
+	/// device's credentials lock.
+	async fn remove_refresh_token(&self, user_id: &UserId, device_id: &DeviceId) {
+		let key = (user_id, device_id);
+		let revoked = [
+			self.device_refresh_token(&self.db.userdeviceid_refreshtoken, key)
+				.await,
+			self.device_refresh_token(&self.db.userdeviceid_prevrefreshtoken, key)
+				.await,
+		];
+		self.commit_refresh_tokens(key, None, None, revoked.iter().flatten());
+	}
+
+	/// Rotates a device's refresh token after `used` was exchanged. The token
+	/// used stays valid until its replacement is itself used, so a client
+	/// which never received the response can retry.
+	async fn rotate_refresh_token(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		used: &str,
+	) -> String {
+		let key = (user_id, device_id);
+		let current = self
+			.device_refresh_token(&self.db.userdeviceid_refreshtoken, key)
+			.await;
+		let previous = self
+			.device_refresh_token(&self.db.userdeviceid_prevrefreshtoken, key)
+			.await;
+
+		let (kept_previous, revoked) = if current.as_deref() == Some(used) {
+			// The client holds the current token: the one before it is spent.
+			(Some(used.to_owned()), previous)
+		} else {
+			// A retry with the previous token: the replacement was never received.
+			(previous, current)
+		};
+
+		let refresh_token = self.generate_refresh_token().await;
+		self.commit_refresh_tokens(
+			key,
+			Some(&refresh_token),
+			kept_previous.as_deref(),
+			revoked.iter(),
+		);
+
+		refresh_token
+	}
+
+	async fn refresh_token_device(
+		&self,
+		refresh_token: &str,
+	) -> Result<(OwnedUserId, OwnedDeviceId)> {
+		self.db
+			.refreshtoken_userdeviceid
+			.get(refresh_token)
+			.await
+			.deserialized()
+	}
+
+	/// Exchanges a refresh token for a fresh access token and a rotated
+	/// refresh token. Returns `(access_token, refresh_token, expires_in_ms)`.
+	pub async fn refresh_access_token(
+		&self,
+		refresh_token: &str,
+	) -> Result<(String, String, u64)> {
+		let unrecognized = || {
+			Error::Request(
+				ErrorKind::UnknownToken { soft_logout: false },
+				"Refresh token is unrecognized.".into(),
+				http::StatusCode::UNAUTHORIZED,
+			)
+		};
+		let Ok((user_id, device_id)) = self.refresh_token_device(refresh_token).await else {
+			return Err(unrecognized());
+		};
+
+		let lock_key = Self::device_lock_key(&user_id, &device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+
+		// Recheck under the lock: a concurrent refresh or logout may have
+		// consumed the token while this request waited.
+		if self.refresh_token_device(refresh_token).await.is_err() {
+			return Err(unrecognized());
+		}
+
+		if self.is_locked(&user_id).await? {
+			return Err(Error::Request(
+				ErrorKind::UserLocked,
+				"This account has been locked.".into(),
+				http::StatusCode::UNAUTHORIZED,
+			));
+		}
+
+		// Expiring access tokens of this device are superseded, except the most
+		// recent, which a client that lost the last response may still hold (it
+		// is expired, not unknown, so the client can still refresh). Tokens which
+		// never expire (issued to clients without refresh support) are kept.
+		let mut tokens = Vec::new();
+		for token in self.active_tokens(&user_id, &device_id).await {
+			let expires_at = self.token_expires_at(&token).await?;
+			tokens.push((token, expires_at));
+		}
+		for old in token_expiry::superseded_tokens(tokens) {
+			self.remove_access_token(&user_id, &device_id, &old).await;
+		}
+
+		let access_token = self.generate_unique_token().await;
+		let ttl = self.services.server.config.access_token_ttl;
+		self.store_access_token(&user_id, &device_id, &access_token, Some(ttl))
+			.await?;
+		let new_refresh = self
+			.rotate_refresh_token(&user_id, &device_id, refresh_token)
+			.await;
+
+		Ok((access_token, new_refresh, ttl))
+	}
+
+	/// Revokes one access token and its expiry, preserving the device's other tokens.
+	async fn remove_access_token(&self, user_id: &UserId, device_id: &DeviceId, token: &str) {
+		let tokens =
+			token_expiry::without_token(self.active_tokens(user_id, device_id).await, token);
+		let Ok(device_key) = serialize_to_vec((user_id, device_id)) else {
+			return;
+		};
+		let Ok(list) = serialize_to_vec(Json(&tokens)) else {
+			return;
+		};
+		let mut batch = Batch::new();
+		self.db.token_userdeviceid.batch_delete(&mut batch, token);
+		self.db.token_expiresat.batch_delete(&mut batch, token);
+		self.db
+			.userdeviceid_token
+			.batch_put(&mut batch, &device_key, list);
+		self.db.userdeviceid_token.apply_batch(batch);
 	}
 
 	pub async fn add_one_time_key(

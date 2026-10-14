@@ -82,39 +82,23 @@ where
 			};
 
 			if state.is_none() {
-				// A deeper anchor (the point before a gap) can fill in missing
-				// events and auth-chain data. Its snapshot can also serve directly
-				// when it is this event's sole predecessor; otherwise it predates
-				// the gap and we need a snapshot for this event itself.
-				let mut state_at_event = None;
+				// The snapshot used below must be the state *at this event*, so
+				// /state_ids is always asked about the event itself. A deeper
+				// anchor (the point before the gap) is only a source of missing
+				// events and auth chain: pull it first for its side effects and
+				// ignore the returned snapshot, which predates the gap.
 				if let Some(anchor) = state_ids_anchor.as_ref() {
-					let anchor_is_only_prev = incoming_pdu.prev_events().count() == 1
-						&& incoming_pdu.prev_events().next() == Some(anchor);
-					match self
+					if let Err(e) = self
 						.fetch_state(origin, create_event, room_id, anchor, false)
 						.await
 					{
-						| Ok(state) if anchor_is_only_prev => state_at_event = state,
-						| Ok(_) => {},
-						| Err(e) => debug!(%anchor, "deeper /state_ids anchor fetch failed: {e}"),
+						debug!(%anchor, "deeper /state_ids anchor fetch failed: {e}");
 					}
 				}
-				// State after the sole predecessor is exactly the state before this
-				// event. Reuse it when the anchor is that predecessor; otherwise the
-				// deeper anchor only warmed the event/auth stores and we still need a
-				// snapshot for this event itself.
-				if state_at_event.is_none() {
-					state_at_event = self
-						.fetch_state(
-							origin,
-							create_event,
-							room_id,
-							incoming_pdu.event_id(),
-							false,
-						)
-						.await?;
-				}
-				Ok::<_, conduwuit::Error>((state_at_event, true))
+				let state = self
+					.fetch_state(origin, create_event, room_id, incoming_pdu.event_id(), false)
+					.await?;
+				Ok::<_, conduwuit::Error>((state, true))
 			} else {
 				Ok::<_, conduwuit::Error>((state, false))
 			}

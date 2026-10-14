@@ -233,6 +233,8 @@ pub(crate) async fn register_route(
 			.as_ref()
 			.is_some_and(|aps| aps.registration.device_management);
 
+	let mut expires_in: Option<u64> = None;
+	let mut refresh_token: Option<String> = None;
 	let (token, device) = if !no_device {
 		// Don't create a device for inhibited logins
 		let device_id = match if is_guest { None } else { body.device_id.clone() } {
@@ -243,18 +245,35 @@ pub(crate) async fn register_route(
 		// Generate new token for the device
 		let new_token = utils::random_string(TOKEN_LENGTH);
 
+		// MSC2918: clients which opt in get an expiring token and a refresh token
+		let ttl = body
+			.refresh_token
+			.then_some(services.server.config.access_token_ttl);
+
 		// Create device for this account
 		services
 			.users
-			.create_device(
+			.create_device_with_ttl(
 				&user_id,
 				&device_id,
 				&new_token,
+				ttl,
 				body.initial_device_display_name.clone(),
 				Some(client.to_string()),
 			)
 			.await?;
 		debug_info!(%user_id, %device_id, "User account was created");
+
+		if let Some(ttl) = ttl {
+			expires_in = Some(ttl);
+			refresh_token = Some(
+				services
+					.users
+					.issue_refresh_token(&user_id, &device_id)
+					.await,
+			);
+		}
+
 		(Some(new_token), Some(device_id))
 	} else {
 		(None, None)
@@ -409,8 +428,8 @@ pub(crate) async fn register_route(
 		access_token: token,
 		user_id,
 		device_id: device,
-		refresh_token: None,
-		expires_in: None,
+		refresh_token,
+		expires_in: expires_in.map(std::time::Duration::from_millis),
 	})
 }
 

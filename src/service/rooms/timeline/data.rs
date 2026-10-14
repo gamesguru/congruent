@@ -1178,16 +1178,10 @@ impl Data {
 		self.eventid_pdu.apply_batch(batch);
 	}
 
-	pub(super) async fn append_pdu_batch<'a>(
-		&'a self,
-		batch: &mut database::Batch<'a>,
-		pdu_id: &RawPduId,
-		pdu: &PduEvent,
-		json: &CanonicalJsonObject,
-		count: PduCount,
-	) {
-		debug_assert!(matches!(count, PduCount::Normal(_)), "PduCount not Normal");
-
+	/// Persist the event body and its prev/auth edges in mtxdb. Keyed by event
+	/// id and idempotent, so it needs no stream count and can run before one is
+	/// allocated. A failure is logged and leaves the event unrecorded there.
+	pub(super) fn write_event_to_mtxdb(&self, pdu: &PduEvent, json: &CanonicalJsonObject) {
 		let event_id_bytes = pdu.event_id.as_bytes();
 		let room_id_bytes = pdu
 			.room_id
@@ -1206,6 +1200,47 @@ impl Data {
 		) {
 			conduwuit::warn!(?error, event_id = %pdu.event_id, "Failed shadow-writing event in mtxdb");
 		}
+	}
+
+	/// Like [`Self::append_pdu`], for a caller that already ran
+	/// [`Self::write_event_to_mtxdb`] for this event.
+	pub(super) async fn append_pdu_prewritten(
+		&self,
+		pdu_id: &RawPduId,
+		pdu: &PduEvent,
+		json: &CanonicalJsonObject,
+		count: PduCount,
+	) {
+		let mut batch = database::Batch::new();
+		self.append_pdu_batch_rows(&mut batch, pdu_id, pdu, json, count)
+			.await;
+		self.eventid_pdu.apply_batch(batch);
+	}
+
+	pub(super) async fn append_pdu_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
+		pdu_id: &RawPduId,
+		pdu: &PduEvent,
+		json: &CanonicalJsonObject,
+		count: PduCount,
+	) {
+		self.write_event_to_mtxdb(pdu, json);
+		self.append_pdu_batch_rows(batch, pdu_id, pdu, json, count)
+			.await;
+	}
+
+	async fn append_pdu_batch_rows<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
+		pdu_id: &RawPduId,
+		pdu: &PduEvent,
+		json: &CanonicalJsonObject,
+		count: PduCount,
+	) {
+		debug_assert!(matches!(count, PduCount::Normal(_)), "PduCount not Normal");
+
+		let event_id_bytes = pdu.event_id.as_bytes();
 		let existing_metadata = if let Ok(bytes) = self.eventid_metadata.get(event_id_bytes).await
 		{
 			rooms::timeline::EventMetadata::from_bincode(&bytes).ok()

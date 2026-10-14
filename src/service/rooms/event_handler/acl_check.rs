@@ -7,18 +7,30 @@ use slipstream::{
 /// Returns Ok if the acl allows the server
 #[implement(super::Service)]
 pub async fn acl_check(&self, server_name: &ServerName, room_id: &RoomId) -> Result {
-	let Ok(acl_event_content) = self
+	let acl_event_content = match self
 		.services
 		.state_accessor
 		.room_state_get_content(room_id, &StateEventType::RoomServerAcl, "")
 		.await
 		.map(|c: RoomServerAclEventContent| c)
-	else {
-		info!(
-			target: "acl_debug",
-			%room_id, %server_name, "acl_check: No ACL content found in state, allowing."
-		);
-		return Ok(());
+	{
+		| Ok(content) => content,
+		| Err(e) if e.is_not_found() => {
+			info!(
+				target: "acl_debug",
+				%room_id, %server_name, "acl_check: No ACL content found in state, allowing."
+			);
+			return Ok(());
+		},
+		| Err(e) => {
+			// Anything other than a plain absence means the ACL could not be read,
+			// not that none exists; keep allowing, but make the cause visible.
+			warn!(
+				%room_id, %server_name,
+				"acl_check: could not read the room's ACL from state, allowing: {e}"
+			);
+			return Ok(());
+		},
 	};
 
 	debug!(
