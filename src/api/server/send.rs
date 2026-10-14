@@ -823,7 +823,7 @@ async fn handle_room(
 			&& services
 				.rooms
 				.state_partial
-				.partial_server(&room_id)
+				.partial_server(room_id)
 				.await
 				.is_ok_and(|server| server.is_some());
 		let result = match result {
