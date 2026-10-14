@@ -282,8 +282,16 @@ impl Service {
 			| Some(anchor) => self.reauth_window(&room_id, &anchor, anchor_state).await,
 			| None => None,
 		};
-		if let Some(current) = reauthed {
+		if let Some((current, left)) = reauthed {
 			self.install_current_state(&room_id, current).await?;
+			// Only now that the corrected state is installed: these users missed
+			// updates while out of the room, so refetch their keys.
+			for user_id in left {
+				self.services
+					.users
+					.mark_device_key_update_in_room(&user_id, &room_id)
+					.await;
+			}
 		} else {
 			// Update room state graph (amend the partial state)
 			self.update_state_graph(&room_id, new_state_ids.clone())

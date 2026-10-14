@@ -7,7 +7,7 @@
 //! a wrongly accepted event becomes rejected, a wrongly rejected one is
 //! accepted, and the state snapshots and current state follow.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use conduwuit::{
 	PduEvent, debug, info,
@@ -16,7 +16,7 @@ use conduwuit::{
 };
 use futures::StreamExt;
 use slipstream::{
-	EventId, OwnedEventId, RoomId,
+	EventId, OwnedEventId, OwnedUserId, RoomId, UserId,
 	events::{
 		StateEventType,
 		room::member::{MembershipState, RoomMemberEventContent},
@@ -34,14 +34,15 @@ impl Service {
 	/// Re-authorise the events between the resync point (`anchor`, whose full
 	/// state is `anchor_state`) and the room's forward extremities.
 	///
-	/// Returns the room's new current state, or `None` if the window could not
+	/// Returns the room's new current state and the remote users who were
+	/// joined and then left or banned within the window, or `None` if the window could not
 	/// be reconstructed (the caller then falls back to merging).
 	pub(super) async fn reauth_window(
 		&self,
 		room_id: &RoomId,
 		anchor: &EventId,
 		anchor_state: StateMap,
-	) -> Option<StateMap> {
+	) -> Option<(StateMap, HashSet<OwnedUserId>)> {
 		let create_pdu = self
 			.services
 			.state_accessor
@@ -101,6 +102,7 @@ impl Service {
 			"re-authorising events received while the state was partial"
 		);
 
+		let mut left: HashSet<OwnedUserId> = HashSet::new();
 		let mut after: HashMap<OwnedEventId, StateMap> = HashMap::new();
 		after.insert(anchor.to_owned(), anchor_state);
 
@@ -202,17 +204,24 @@ impl Service {
 
 			let mut state = before;
 			if accepted {
-				// A remote user who was out of the room at any point in the window
-				// missed device updates, even if they are back in by the end.
-				if pdu.kind() == rezzy::basespec::event_types::M_ROOM_MEMBER && !local {
-					let left = pdu
-						.get_content::<RoomMemberEventContent>()
-						.is_ok_and(|c| c.membership != MembershipState::Join);
-					if let (true, Some(Ok(user_id))) =
-						(left, pdu.state_key().map(slipstream::UserId::parse))
+				// A remote member who really left or was removed in the window missed
+				// device updates, even if they are back in by the end.
+				if pdu.kind() == rezzy::basespec::event_types::M_ROOM_MEMBER {
+					if let Some(user_id) = pdu
+						.state_key()
+						.and_then(|k| UserId::parse(k).ok())
+						.filter(|u| !self.services.globals.user_is_local(u))
 					{
-						self.services.users.invalidate_remote_keys(&user_id);
-						self.services.users.mark_device_key_update(&user_id).await;
+						let ends_membership =
+							pdu.get_content::<RoomMemberEventContent>().is_ok_and(|c| {
+								matches!(
+									c.membership,
+									MembershipState::Leave | MembershipState::Ban
+								)
+							});
+						if ends_membership && self.was_joined(&state, &user_id).await {
+							left.insert(user_id);
+						}
 					}
 				}
 				if let Some(state_key) = pdu.state_key() {
@@ -267,7 +276,25 @@ impl Service {
 				current.entry(*key).or_insert_with(|| id.clone());
 			}
 		}
-		Some(current)
+		Some((current, left))
+	}
+
+	async fn was_joined(&self, state: &StateMap, user_id: &UserId) -> bool {
+		let Ok(key) = self
+			.services
+			.short
+			.get_shortstatekey(&StateEventType::RoomMember, user_id.as_str())
+			.await
+		else {
+			return false;
+		};
+		let Some(id) = state.get(&key) else {
+			return false;
+		};
+		self.services.timeline.get_pdu(id).await.is_ok_and(|pdu| {
+			pdu.get_content::<RoomMemberEventContent>()
+				.is_ok_and(|c| c.membership == MembershipState::Join)
+		})
 	}
 
 	/// Fix device-list tracking for members whose join/leave differs between the
@@ -290,7 +317,7 @@ impl Service {
 			if ty != member_type {
 				continue;
 			}
-			let Ok(user_id) = slipstream::UserId::parse(state_key.as_str()) else {
+			let Ok(user_id) = UserId::parse(state_key.as_str()) else {
 				continue;
 			};
 			if self.services.globals.user_is_local(&user_id) {
