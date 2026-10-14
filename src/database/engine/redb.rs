@@ -161,9 +161,9 @@ impl RedbEngine {
 				keys
 			};
 			for key in keys {
-				table.remove(key.as_slice()).map_err(|error| {
-					err!(Database("failed to remove redb metadata: {error}"))
-				})?;
+				table
+					.remove(key.as_slice())
+					.map_err(|error| err!(Database("failed to remove redb metadata: {error}")))?;
 			}
 		}
 		transaction

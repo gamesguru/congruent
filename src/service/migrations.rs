@@ -36,7 +36,7 @@ use crate::{
 /// - If database is opened at lesser version we apply migrations up to this.
 ///   Note that named-feature migrations may also be performed when opening at
 ///   equal or lesser version. These are expected to be backward-compatible.
-pub(crate) const DATABASE_VERSION: u64 = 24;
+pub(crate) const DATABASE_VERSION: u64 = 25;
 
 /// Column families explicitly dropped in migrations. These are included
 /// in the fingerprint hash (prefixed with '-') so that a branch which
@@ -55,9 +55,9 @@ const DROPPED_CFS: &[&str] = &[
 	"softfailedeventids",
 ];
 
-/// Retired tables dropped on every startup once the migrations that consumed
-/// them (up to v24) have run.
-const RETIRED_CFS: &[&str] = &[
+/// Column families physically dropped by the v25 migration, after their
+/// contents have been consumed by earlier migrations.
+const V25_RETIRED_CFS: &[&str] = &[
 	"rejectedeventids",
 	"roomid_shortstatehash",
 	"roomuserid_lastprivatereadupdate",
@@ -356,20 +356,6 @@ async fn migrate(services: &Services) -> Result<()> {
 			.map_err(|e| err!("Failed to run v19 migrations: {e}"))?;
 	}
 
-	// Tables whose contents have been consumed by a migration or superseded
-	// (rejections live in the event verdicts now) are dead weight.
-	if services.globals.db.database_version().await >= 24 {
-		for name in RETIRED_CFS {
-			if services.db.db.cf_exists(name) {
-				services
-					.db
-					.db
-					.drop_cf(name)
-					.unwrap_or_else(|e| warn!("Failed to drop {name}: {e}"));
-			}
-		}
-	}
-
 	if db["global"]
 		.get(UNIFY_RAW_PDU_ID_MARKER)
 		.await
@@ -455,6 +441,14 @@ async fn migrate(services: &Services) -> Result<()> {
 		Box::pin(db_lt_24(services))
 			.await
 			.map_err(|e| err!("Failed to run v24 migrations: {e}"))?;
+	}
+
+	// Version 25 - remove retired column families after all migrations that
+	// consume their contents have completed.
+	if services.globals.db.database_version().await < 25 {
+		db_lt_25(services)
+			.await
+			.map_err(|e| err!("Failed to run v25 migrations: {e}"))?;
 	}
 
 	if services.globals.db.database_version().await != DATABASE_VERSION {
@@ -2362,7 +2356,7 @@ mod tests {
 		// The hash includes DATABASE_VERSION.to_be_bytes() as first input.
 		// We can't easily test mutation, but we verify the constant is
 		// included by confirming it matches the expected value.
-		assert_eq!(DATABASE_VERSION, 24);
+		assert_eq!(DATABASE_VERSION, 25);
 	}
 
 	#[test]
@@ -3020,10 +3014,8 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 ///
 /// The legacy state maps were only read as inputs to the v23 migration; at
 /// runtime the state layer now reads HAMT roots exclusively. Their contents are
-/// no longer consulted, so we clear them to reclaim the space. We deliberately
-/// do **not** remove the column families or the legacy accessor helpers: fresh
-/// databases arriving from schema `< 23` still need both the columns and the
-/// helpers to run v23 for the first time.
+/// no longer consulted. The retired column families themselves are dropped by
+/// v25; v24 only clears `roomsynctoken_shortstatehash`, which stays live.
 ///
 /// This runs only after v23 has bumped the schema version to 23, so the data we
 /// clear here is guaranteed to have already been consumed.
@@ -3056,5 +3048,23 @@ async fn db_lt_24(services: &Services) -> Result<()> {
 	info!(?total, "Cleared legacy shortstatehash table data.");
 
 	services.globals.db.bump_database_version(24);
+	Ok(())
+}
+
+/// Drop retired column families after their contents have been consumed by
+/// earlier migrations. Keep these names in `DROPPED_CFS` for schema
+/// fingerprinting, but remove them from the live database only once.
+async fn db_lt_25(services: &Services) -> Result<()> {
+	info!("Running v25 migration (dropping retired column families)...");
+
+	for name in V25_RETIRED_CFS {
+		if services.db.db.cf_exists(name) {
+			services.db.db.drop_cf(name).map_err(|e| {
+				err!(Database("Failed to drop retired column family {name}: {e}"))
+			})?;
+		}
+	}
+
+	services.globals.db.bump_database_version(25);
 	Ok(())
 }
