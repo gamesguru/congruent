@@ -561,7 +561,7 @@ impl Service {
 			}
 		}
 
-		Err(err!(Request(NotFound("No usable state: no server available to resync state"))))
+		Err(err!(Request(NotFound("No reachable server available to resync state"))))
 	}
 
 	async fn process_auth_chain(

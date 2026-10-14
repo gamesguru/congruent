@@ -187,11 +187,12 @@ pub(crate) async fn register_route(
 		// Only refuse it for a username that has an outstanding challenge.
 		let auth = match (&body.username, &body.auth) {
 			| (Some(username), None) => {
-				note_challenge(username);
+				note_challenge(challenge_key(client, username));
 				&body.auth
 			},
 			| (Some(username), Some(auth))
-				if auth.session().is_none() && challenge_outstanding(username) =>
+				if auth.session().is_none()
+					&& challenge_outstanding(&challenge_key(client, username)) =>
 				&None,
 			| _ => &body.auth,
 		};
@@ -248,7 +249,9 @@ pub(crate) async fn register_route(
 
 	// Create user
 	services.users.create(&user_id, password, None).await?;
-	forget_challenge(&challenge_key(client, user_id.localpart()));
+	if let Some(username) = body.username.as_deref() {
+		forget_challenge(&challenge_key(client, username));
+	}
 
 	// Set an initial display name
 	let mut displayname = user_id.localpart().to_owned();
