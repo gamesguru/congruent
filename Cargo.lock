@@ -2134,7 +2134,7 @@ dependencies = [
 [[package]]
 name = "mtxdb"
 version = "0.1.0-beta.2"
-source = "git+https://gitlab.com/Wombat-Foundation/mtxdb.git?branch=dev#d8146aacc7e74032ec89870042a6d5457db5e27c"
+source = "git+https://gitlab.com/Wombat-Foundation/mtxdb.git?branch=dev#bff4016eb3d0caa538acd12059d16b57790fb5c8"
 dependencies = [
  "arc-swap",
  "blake3",
