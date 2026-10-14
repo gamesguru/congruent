@@ -10,13 +10,17 @@
 use std::collections::HashMap;
 
 use conduwuit::{
-	PduEvent, debug, info, warn,
+	PduEvent, debug, info,
 	matrix::{Event, StateKey, state_res},
+	warn,
 };
 use futures::StreamExt;
 use slipstream::{
 	EventId, OwnedEventId, RoomId,
-	events::{StateEventType, room::member::{MembershipState, RoomMemberEventContent}},
+	events::{
+		StateEventType,
+		room::member::{MembershipState, RoomMemberEventContent},
+	},
 };
 
 use crate::rooms::{pdu_metadata::RejectionCode, short::ShortStateKey, state_partial::Service};
@@ -44,7 +48,8 @@ impl Service {
 			.room_state_get(room_id, &StateEventType::RoomCreate, "")
 			.await
 			.ok()?;
-		let room_version_id = crate::rooms::event_handler::get_room_version_id(&create_pdu).ok()?;
+		let room_version_id =
+			crate::rooms::event_handler::get_room_version_id(&create_pdu).ok()?;
 		let room_version = crate::rooms::event_handler::to_room_version(&room_version_id);
 
 		let anchor_depth = self
@@ -141,7 +146,8 @@ impl Service {
 				.flatten();
 			// Only auth failures are revisited; other rejections are about the
 			// bytes of the event, not the state it was judged against.
-			let revisit = !was_rejected || reason.as_deref() == Some(RejectionCode::AuthCheckFailed.tag());
+			let revisit =
+				!was_rejected || reason.as_deref() == Some(RejectionCode::AuthCheckFailed.tag());
 			let local = self.services.globals.user_is_local(pdu.sender());
 
 			let mut accepted = !was_rejected;

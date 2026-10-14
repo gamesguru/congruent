@@ -95,8 +95,7 @@ impl crate::Service for Service {
 					.depend::<rooms::event_handler::Service>("rooms::event_handler"),
 				short: args.depend::<rooms::short::Service>("rooms::short"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
-				pdu_metadata: args
-					.depend::<rooms::pdu_metadata::Service>("rooms::pdu_metadata"),
+				pdu_metadata: args.depend::<rooms::pdu_metadata::Service>("rooms::pdu_metadata"),
 				users: args.depend::<crate::users::Service>("users"),
 			},
 		}))
