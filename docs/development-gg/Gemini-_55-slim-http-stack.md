@@ -103,7 +103,8 @@ utilizing modern Linux kernel features.
   no event loop and makes no architectural decisions for you.
 - **`httparse`:** A pure state-machine parser. It takes a `&[u8]` and returns an
   array of header slices.
-- **`libc` / `core_affinity`:** To pin threads to specific physical CPU cores.
+- **`libc`:** To pin threads to specific physical CPU cores via
+  `sched_setaffinity`.
 
 ### The Architecture: Thread-Per-Core Multishot
 

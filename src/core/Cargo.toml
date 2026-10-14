@@ -49,7 +49,6 @@ chrono.workspace = true
 clap.workspace = true
 conduwuit-macros.workspace = true
 const-str.workspace = true
-core_affinity.workspace = true
 ctor.workspace = true
 cyborgtime.workspace = true
 either.workspace = true
