@@ -488,6 +488,32 @@ where
 		let user_id: &UserId = user_id;
 
 		if !services.globals.user_is_local(user_id) {
+			// A tracked user whose keys we already fetched, with no change since,
+			// is answered locally without asking their server again.
+			if device_ids.is_empty() {
+				let tracked = services
+					.rooms
+					.state_cache
+					.rooms_joined(user_id)
+					.boxed()
+					.next()
+					.await
+					.is_some();
+				if let Some(cached) = tracked
+					.then(|| services.users.cached_remote_keys(user_id))
+					.flatten()
+				{
+					device_keys.insert(user_id.to_owned(), cached.device_keys);
+					if let Some(master_key) = cached.master_key {
+						master_keys.insert(user_id.to_owned(), master_key);
+					}
+					if let Some(self_signing_key) = cached.self_signing_key {
+						self_signing_keys.insert(user_id.to_owned(), self_signing_key);
+					}
+					continue;
+				}
+			}
+
 			get_over_federation
 				.entry(user_id.server_name())
 				.or_insert_with(Vec::new)
@@ -561,6 +587,7 @@ where
 	}
 
 	let mut failures = BTreeMap::new();
+	let keys_generation = services.users.remote_keys_generation();
 
 	let futures = get_over_federation
 		.into_iter()
@@ -682,6 +709,21 @@ where
 				}
 
 				self_signing_keys.extend(response.self_signing_keys);
+
+				// Remember complete answers so the next query can skip federation.
+				for (user_id, devices) in &filtered_device_keys {
+					if device_keys_input.get(user_id).is_some_and(Vec::is_empty) {
+						services.users.store_remote_keys(
+							user_id,
+							conduwuit_service::users::CachedRemoteKeys {
+								device_keys: devices.clone(),
+								master_key: master_keys.get(user_id).cloned(),
+								self_signing_key: self_signing_keys.get(user_id).cloned(),
+							},
+							keys_generation,
+						);
+					}
+				}
 				device_keys.extend(filtered_device_keys);
 			},
 			| Err(e) => {

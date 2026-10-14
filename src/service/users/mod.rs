@@ -123,8 +123,23 @@ impl Deserialize for ProfileUpdate {
 	}
 }
 
+/// What a remote server last told us about a user's keys, kept until a
+/// device-list or signing-key change for that user invalidates it.
+#[derive(Clone, Default)]
+pub struct CachedRemoteKeys {
+	pub device_keys: BTreeMap<OwnedDeviceId, Raw<DeviceKeys>>,
+	pub master_key: Option<Raw<CrossSigningKey>>,
+	pub self_signing_key: Option<Raw<CrossSigningKey>>,
+}
+
 pub struct Service {
 	pub last_device_key_update_count: std::sync::atomic::AtomicU64,
+	/// Complete `/keys/query` answers for tracked remote users. In memory only:
+	/// after a restart users are simply fetched again.
+	remote_keys_cache: std::sync::Mutex<HashMap<OwnedUserId, CachedRemoteKeys>>,
+	/// Bumped on every invalidation so an answer fetched before one is never
+	/// stored after it.
+	remote_keys_generation: std::sync::atomic::AtomicU64,
 	services: Services,
 	db: Data,
 	/// Serializes one-time-key claims per (user, device) so concurrent
@@ -193,6 +208,8 @@ impl crate::Service for Service {
 			.unwrap_or(0);
 		Ok(Arc::new(Self {
 			last_device_key_update_count: std::sync::atomic::AtomicU64::new(current_count),
+			remote_keys_cache: std::sync::Mutex::new(HashMap::new()),
+			remote_keys_generation: std::sync::atomic::AtomicU64::new(0),
 			services: Services {
 				server: args.server.clone(),
 				account_data: args.depend::<account_data::Service>("account_data"),
@@ -1860,6 +1877,35 @@ impl Service {
 			.map(move |((_, count), changed_user): KeyVal<'_>| (changed_user, count))
 	}
 
+	pub fn remote_keys_generation(&self) -> u64 {
+		self.remote_keys_generation
+			.load(std::sync::atomic::Ordering::Acquire)
+	}
+
+	pub fn cached_remote_keys(&self, user_id: &UserId) -> Option<CachedRemoteKeys> {
+		self.remote_keys_cache
+			.lock()
+			.expect("locked")
+			.get(user_id)
+			.cloned()
+	}
+
+	/// Remember a complete answer fetched when the generation was `generation`;
+	/// dropped if any user's keys were invalidated since.
+	pub fn store_remote_keys(&self, user_id: &UserId, keys: CachedRemoteKeys, generation: u64) {
+		let mut cache = self.remote_keys_cache.lock().expect("locked");
+		if self.remote_keys_generation() == generation {
+			cache.insert(user_id.to_owned(), keys);
+		}
+	}
+
+	fn invalidate_remote_keys(&self, user_id: &UserId) {
+		let mut cache = self.remote_keys_cache.lock().expect("locked");
+		self.remote_keys_generation
+			.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+		cache.remove(user_id);
+	}
+
 	pub async fn mark_device_key_update(&self, user_id: &UserId) {
 		self.mark_device_key_update_inner(user_id, None).await;
 	}
@@ -1877,6 +1923,10 @@ impl Service {
 		// count and writing the rows below (see `globals::Service::edu_barrier`).
 		let _barrier = self.services.globals.edu_barrier.read().await;
 		let count = self.services.globals.next_count().unwrap();
+
+		if !self.services.globals.user_is_local(user_id) {
+			self.invalidate_remote_keys(user_id);
+		}
 
 		conduwuit::info!(%user_id, ?only_room, "mark_device_key_update called");
 
