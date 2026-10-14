@@ -986,7 +986,7 @@ mod rescind_tests {
 	}
 
 	#[test]
-	fn an_equal_or_newer_leave_rescinds() {
+	fn equal_or_newer_leave_is_not_older() {
 		assert!(!leave_predates_invite(Some(100), Some(100)));
 		assert!(!leave_predates_invite(Some(101), Some(100)));
 	}
