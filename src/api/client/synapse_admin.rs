@@ -2,14 +2,15 @@
 //! registration and room purging.
 
 use std::{
-	collections::{BTreeMap, HashMap, HashSet},
+	collections::{BTreeMap, HashMap},
 	sync::LazyLock,
+	time::{Duration, Instant},
 };
 
 use conduwuit::{Err, err, pdu::PduBuilder, utils};
 use futures::{FutureExt, StreamExt};
 use hmac::{Hmac, KeyInit, Mac};
-use http_body_util::BodyExt;
+use http_body_util::{BodyExt, Limited};
 use hyper::body::Incoming;
 use sha1::Sha1;
 use slipstream::{
@@ -39,8 +40,37 @@ use crate::{
 
 type HmacSha1 = Hmac<Sha1>;
 
-static NONCES: LazyLock<std::sync::Mutex<HashSet<String>>> =
-	LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
+const REGISTRATION_NONCE_TTL: Duration = Duration::from_secs(15 * 60);
+const MAX_REGISTRATION_NONCES: usize = 10_000;
+
+static NONCES: LazyLock<std::sync::Mutex<HashMap<String, Instant>>> =
+	LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+fn issue_registration_nonce(nonce: String) {
+	let now = Instant::now();
+	let mut nonces = NONCES.lock().expect("locked");
+	nonces.retain(|_, expires_at| *expires_at > now);
+
+	if nonces.len() >= MAX_REGISTRATION_NONCES {
+		if let Some(oldest) = nonces
+			.iter()
+			.min_by_key(|(_, expires_at)| **expires_at)
+			.map(|(nonce, _)| nonce.clone())
+		{
+			nonces.remove(&oldest);
+		}
+	}
+
+	nonces.insert(nonce, now + REGISTRATION_NONCE_TTL);
+}
+
+fn consume_registration_nonce(nonce: &str) -> bool {
+	NONCES
+		.lock()
+		.expect("locked")
+		.remove(nonce)
+		.is_some_and(|expires_at| Instant::now() < expires_at)
+}
 
 /// # `GET /_synapse/admin/v1/register`
 ///
@@ -54,7 +84,7 @@ pub(crate) async fn synapse_register_nonce(
 	}
 
 	let nonce = utils::random_string(32);
-	NONCES.lock().expect("locked").insert(nonce.clone());
+	issue_registration_nonce(nonce.clone());
 
 	let mut object = slipstream::ObjectBuilder::new();
 	object.field("nonce", &nonce);
@@ -75,11 +105,10 @@ pub(crate) async fn synapse_register(
 			.map_err(Into::into);
 	};
 
-	let body = request
-		.into_body()
+	let body = Limited::new(request.into_body(), services.server.config.max_request_size)
 		.collect()
 		.await
-		.map_err(|e| err!(Request(BadJson("Failed to read body: {e}"))))?
+		.map_err(|e| err!(Request(TooLarge("Request body too large: {e}"))))?
 		.to_bytes();
 	let body = std::str::from_utf8(&body)
 		.map_err(|e| err!(Request(BadJson("Body is not UTF-8: {e}"))))?;
@@ -96,7 +125,7 @@ pub(crate) async fn synapse_register(
 	let password = field("password")?;
 	let mac_hex = field("mac")?;
 
-	if !NONCES.lock().expect("locked").remove(&nonce) {
+	if !consume_registration_nonce(&nonce) {
 		return Err!(Request(Forbidden("Unrecognised nonce"))).map_err(Into::into);
 	}
 
