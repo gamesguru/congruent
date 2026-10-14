@@ -126,10 +126,8 @@ impl RedbEngine {
 			| None => table.range::<&[u8]>(prefix.as_slice()..),
 		};
 
-		let found = iter
-			.as_mut()
-			.is_ok_and(|iter| iter.next().is_some_and(|item| item.is_ok()));
-		found
+		iter.as_mut()
+			.is_ok_and(|iter| iter.next().is_some_and(|item| item.is_ok()))
 	}
 
 	/// Deletes every row of the map.
