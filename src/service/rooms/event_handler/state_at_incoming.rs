@@ -28,7 +28,7 @@ where
 	// Not found locally is a legitimate, common case (the prev_event was never
 	// delivered to us, we joined after it, etc.), not a database malfunction.
 	// Return None so the caller falls back to fetch_state().
-	let Ok(prev_pdu) = self
+	let Ok(mut prev_pdu) = self
 		.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), prev_event)
@@ -42,15 +42,46 @@ where
 		return Err(err!(Database("prev_event is not in the same room")));
 	}
 
-	let prev_roothandle = self
-		.services
-		.state_accessor
-		.pdu_roothandle_after_event(prev_event)
-		.await;
+	// A rejected predecessor changes no state, so the state after it is the
+	// state before it. It keeps no snapshot of its own, so walk back through
+	// single-parent rejected events to the nearest one that does.
+	let mut prev_event = prev_event.to_owned();
+	let prev_roothandle = loop {
+		if let Ok(handle) = self
+			.services
+			.state_accessor
+			.pdu_roothandle_after_event(&prev_event)
+			.await
+		{
+			break handle;
+		}
 
-	let Ok(prev_roothandle) = prev_roothandle else {
-		return Ok(None);
+		if !self
+			.services
+			.pdu_metadata
+			.is_event_rejected(&prev_event)
+			.unwrap_or(false)
+		{
+			return Ok(None);
+		}
+
+		let mut parents = prev_pdu.prev_events();
+		let (Some(parent), None) = (parents.next(), parents.next()) else {
+			return Ok(None);
+		};
+		let parent = parent.to_owned();
+		let Ok(parent_pdu) = self
+			.services
+			.timeline
+			.get_pdu_in_room(Some(room_id), &parent)
+			.await
+		else {
+			return Ok(None);
+		};
+		prev_event = parent;
+		prev_pdu = parent_pdu;
 	};
+	let prev_event = prev_event.as_ref();
 
 	let mut state: HashMap<_, _> = self
 		.services
