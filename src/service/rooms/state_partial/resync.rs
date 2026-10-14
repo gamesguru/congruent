@@ -50,12 +50,29 @@ impl Service {
 	/// Send PDUs created during the partial join to servers that were only
 	/// discovered by the resync.
 	async fn send_pending(&self, room_id: &RoomId) {
-		let pending = self
-			.pending_sends
-			.lock()
-			.expect("locked")
-			.remove(room_id)
-			.unwrap_or_default();
+		let mut prefix = room_id.as_bytes().to_vec();
+		prefix.push(database::SEP);
+		let rows: Vec<(Vec<u8>, Vec<u8>)> = self
+			.db
+			.state_partial_pending
+			.raw_stream_prefix(&prefix)
+			.ignore_err()
+			.map(|(key, value): (&[u8], &[u8])| (key.to_vec(), value.to_vec()))
+			.collect()
+			.await;
+		let pending: Vec<(conduwuit::matrix::RawPduId, std::collections::HashSet<OwnedServerName>)> =
+			rows.iter()
+				.filter_map(|(key, value)| {
+					let pdu_id = key.get(prefix.len()..)?;
+					let pdu_id = <[u8; 16]>::try_from(pdu_id).ok()?;
+					let sent_to = std::str::from_utf8(value)
+						.ok()?
+						.split(',')
+						.filter_map(|server| OwnedServerName::try_from(server).ok())
+						.collect();
+					Some((conduwuit::matrix::RawPduId(pdu_id), sent_to))
+				})
+				.collect();
 		if pending.is_empty() {
 			return;
 		}
@@ -87,6 +104,9 @@ impl Service {
 			{
 				warn!("Failed to send partial-state PDU to newly discovered servers: {e}");
 			}
+		}
+		for (key, _) in &rows {
+			self.db.state_partial_pending.remove(key);
 		}
 	}
 

@@ -16,21 +16,11 @@ use slipstream::{
 
 use crate::{Dep, rooms};
 
-/// PDUs awaiting delivery to servers discovered by a resync, per room.
-type PendingSends = std::collections::HashMap<
-	OwnedRoomId,
-	Vec<(rooms::timeline::RawPduId, HashSet<OwnedServerName>)>,
->;
-
 pub struct Service {
 	pub db: Data,
 	services: Services,
 	/// Rooms with a resync task currently running.
 	active: Mutex<HashSet<OwnedRoomId>>,
-	/// Wakes the resync worker when a room is newly marked partial.
-	/// PDUs sent while a room was partial, with the servers already sent to; once
-	/// the full member list is known they are also sent to the remaining servers.
-	pending_sends: Mutex<PendingSends>,
 	/// Woken whenever a room's partial state is resolved.
 	resolved: tokio::sync::Notify,
 	/// Global count at which each room's partial state was resolved.
@@ -49,6 +39,11 @@ pub struct Service {
 pub struct Data {
 	pub state_partial_rooms: Arc<Map>,
 	pub state_partial_events: Arc<Map>,
+	/// PDUs sent while a room was partial, with the servers already sent to; once
+	/// the full member list is known they are also sent to the remaining servers.
+	/// Keyed by room ID, separator, then the raw PDU ID; the value is the
+	/// comma-separated servers already sent to.
+	pub state_partial_pending: Arc<Map>,
 }
 
 struct Services {
@@ -71,7 +66,6 @@ impl crate::Service for Service {
 		let (resync_tx, resync_rx) = loole::unbounded();
 		Ok(Arc::new(Self {
 			active: Mutex::new(HashSet::new()),
-			pending_sends: Mutex::new(std::collections::HashMap::new()),
 			resolved: tokio::sync::Notify::new(),
 			resolved_at: Mutex::new(std::collections::HashMap::new()),
 			partial_since: Mutex::new(std::collections::HashMap::new()),
@@ -82,6 +76,7 @@ impl crate::Service for Service {
 			db: Data {
 				state_partial_rooms: args.db["state_partial_rooms"].clone(),
 				state_partial_events: args.db["state_partial_events"].clone(),
+				state_partial_pending: args.db["state_partial_pending"].clone(),
 			},
 			services: Services {
 				server: args.server.clone(),
@@ -173,12 +168,15 @@ impl Service {
 		pdu_id: rooms::timeline::RawPduId,
 		sent_to: HashSet<OwnedServerName>,
 	) {
-		self.pending_sends
-			.lock()
-			.expect("locked")
-			.entry(room_id.to_owned())
-			.or_default()
-			.push((pdu_id, sent_to));
+		let mut key = room_id.as_bytes().to_vec();
+		key.push(database::SEP);
+		key.extend_from_slice(pdu_id.as_bytes());
+		let sent_to = sent_to
+			.iter()
+			.map(|server| server.as_str())
+			.collect::<Vec<_>>()
+			.join(",");
+		self.db.state_partial_pending.insert(&key, sent_to.as_bytes());
 	}
 
 	/// Record that a room's partial state is now resolved and wake waiters.
