@@ -959,10 +959,19 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 	}
 
 	for user_id in state_joined.difference(&cached_joined) {
+		info!(%room_id, %user_id, "reconcile_membership: marking joined from state");
 		self.mark_as_joined_silent(user_id, room_id).await;
 		members_synced = members_synced.saturating_add(1);
 	}
 	for user_id in state_invited.difference(&cached_invited) {
+		// The snapshot may predate a join we already made (e.g. a partial-state
+		// resync at the join's prev events still shows our invite); don't
+		// re-invite a joined user.
+		if cached_joined.contains(user_id) {
+			info!(%room_id, %user_id, "reconcile_membership: keeping joined user despite invite in state");
+			continue;
+		}
+		info!(%room_id, %user_id, "reconcile_membership: marking invited from state");
 		if let Some(room_root) = room_root_opt.as_ref() {
 			if let Ok(pdu) = self
 				.services
