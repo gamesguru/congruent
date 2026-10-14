@@ -1897,7 +1897,7 @@ impl Service {
 	pub fn store_remote_keys(&self, user_id: &UserId, keys: CachedRemoteKeys, generation: u64) {
 		let mut cache = self.remote_keys_cache.lock().expect("locked");
 		let current = self.remote_keys_generation();
-		conduwuit::info!(%user_id, generation, current, "remote_keys_cache: store");
+		conduwuit::info!(target: "keys_cache_debug", %user_id, generation, current, "remote_keys_cache: store");
 		if current == generation {
 			cache.insert(user_id.to_owned(), keys);
 		}
@@ -1905,7 +1905,7 @@ impl Service {
 
 	fn invalidate_remote_keys(&self, user_id: &UserId) {
 		let mut cache = self.remote_keys_cache.lock().expect("locked");
-		conduwuit::info!(%user_id, "remote_keys_cache: invalidate");
+		conduwuit::info!(target: "keys_cache_debug", %user_id, "remote_keys_cache: invalidate");
 		self.remote_keys_generation
 			.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 		cache.remove(user_id);

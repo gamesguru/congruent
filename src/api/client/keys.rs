@@ -508,7 +508,7 @@ where
 						.partial_rooms_via(&user_id.server_name())
 						.await
 						.is_empty();
-				info!(%user_id, tracked, "remote_keys_cache: lookup");
+				info!(target: "keys_cache_debug", %user_id, tracked, cached = services.users.cached_remote_keys(user_id).is_some(), "remote_keys_cache: lookup");
 				if let Some(cached) = tracked
 					.then(|| services.users.cached_remote_keys(user_id))
 					.flatten()
@@ -639,6 +639,17 @@ where
 	for (server, requested_users, response) in futures {
 		match response {
 			| Ok(response) => {
+				info!(
+					target: "keys_cache_debug",
+					%server,
+					?requested_users,
+					response_users = response.device_keys.len(),
+					master_keys = response.master_keys.len(),
+					self_signing_keys = response.self_signing_keys.len(),
+					generation_at_request = keys_generation,
+					generation_now = services.users.remote_keys_generation(),
+					"remote_keys_cache: federation response"
+				);
 				let mut filtered_device_keys = BTreeMap::new();
 				for (user_id, devices) in response.device_keys {
 					if user_id.server_name().as_str() != server.as_str()
@@ -722,7 +733,13 @@ where
 
 				// Remember complete answers so the next query can skip federation.
 				for (user_id, devices) in &filtered_device_keys {
-					if device_keys_input.get(user_id).is_some_and(Vec::is_empty) {
+					let all_devices = device_keys_input.get(user_id).is_some_and(Vec::is_empty);
+					info!(
+						target: "keys_cache_debug",
+						%user_id, all_devices, devices = devices.len(),
+						"remote_keys_cache: store candidate"
+					);
+					if all_devices {
 						services.users.store_remote_keys(
 							user_id,
 							conduwuit_service::users::CachedRemoteKeys {
