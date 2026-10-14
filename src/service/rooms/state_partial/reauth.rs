@@ -124,6 +124,7 @@ impl Service {
 
 			// State before this event: that after its predecessors.
 			let mut predecessor_states: Vec<StateMap> = Vec::new();
+			let mut unavailable = false;
 			for prev in pdu.prev_events() {
 				if let Some(prev_state) = after.get(prev) {
 					predecessor_states.push(prev_state.clone());
@@ -144,19 +145,30 @@ impl Service {
 						None
 					};
 					let Some(stored) = stored else {
-						warn!(target: "reauth_debug", %event_id, %prev, "predecessor state unavailable; cannot re-authorise window");
-						return None;
+						unavailable = true;
+						break;
 					};
 					predecessor_states.push(stored);
 				}
 			}
-			if predecessor_states.is_empty() {
+			let before = if unavailable {
+				// A predecessor was never held locally (it was skipped over when this
+				// event arrived), so the state before this event is the one recorded
+				// when it was ingested, taken from the remote server's state at that
+				// predecessor.
+				let Some(recorded) = self.stored_pre_state(room_id, &event_id).await else {
+					warn!(target: "reauth_debug", %event_id, "predecessor state unavailable and none recorded; cannot re-authorise window");
+					return None;
+				};
+				info!(target: "reauth_debug", %event_id, "predecessor unavailable; using the state recorded at ingestion");
+				recorded
+			} else if predecessor_states.is_empty() {
 				warn!(target: "reauth_debug", %event_id, "event has no prev_events; cannot re-authorise window");
 				return None;
-			}
-			let before = self
-				.resolve_short_state_maps(room_id, &room_version_id, &predecessor_states)
-				.await?;
+			} else {
+				self.resolve_short_state_maps(room_id, &room_version_id, &predecessor_states)
+					.await?
+			};
 
 			let was_rejected = self
 				.services
@@ -356,6 +368,22 @@ impl Service {
 			short_state.insert(short_key, event_id);
 		}
 		Some(short_state)
+	}
+
+	/// The state recorded as the state before `event_id` when it was ingested.
+	async fn stored_pre_state(&self, room_id: &RoomId, event_id: &EventId) -> Option<StateMap> {
+		let root = self
+			.services
+			.state_accessor
+			.pdu_roothandle_before_event(event_id)
+			.await
+			.ok()?;
+		self.services
+			.state_accessor
+			.state_full_ids_hamt(room_id, &root)
+			.try_collect::<StateMap>()
+			.await
+			.ok()
 	}
 
 	/// The full state stored for `event_id`, if it has a snapshot.
