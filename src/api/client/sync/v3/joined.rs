@@ -1155,6 +1155,11 @@ async fn build_device_list_updates(
 			if matches!(content.membership, Leave | Join) {
 				let shares_room =
 					shares_a_room(services, syncing_user, &user_id, Some(room_id)).await;
+				conduwuit::info!(
+					%room_id, %user_id, membership = ?content.membership, shares_room,
+					changed = ?device_list_updates.changed,
+					"device_list_debug: membership event in device list update"
+				);
 				match content.membership {
 					| Leave if !shares_room => {
 						device_list_updates.left.insert(user_id);
