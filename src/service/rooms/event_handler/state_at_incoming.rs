@@ -65,11 +65,13 @@ where
 			return Ok(None);
 		}
 
-		let mut parents = prev_pdu.prev_events();
-		let (Some(parent), None) = (parents.next(), parents.next()) else {
-			return Ok(None);
+		let parent = {
+			let mut parents = prev_pdu.prev_events();
+			let (Some(parent), None) = (parents.next(), parents.next()) else {
+				return Ok(None);
+			};
+			parent.to_owned()
 		};
-		let parent = parent.to_owned();
 		let Ok(parent_pdu) = self
 			.services
 			.timeline
