@@ -87,7 +87,8 @@ pub(super) async fn auth(
 						// we should have validated the token above
 						// already
 					},
-					| Token::None | Token::Invalid | Token::Expired => {
+					| Token::Expired => return Err(expired_token_error()),
+					| Token::None | Token::Invalid => {
 						return Err(Error::BadRequest(
 							ErrorKind::MissingToken,
 							"Missing or invalid access token.",
@@ -105,7 +106,8 @@ pub(super) async fn auth(
 							// we should have validated the token above
 							// already
 						},
-						| Token::None | Token::Invalid | Token::Expired => {
+						| Token::Expired => return Err(expired_token_error()),
+						| Token::None | Token::Invalid => {
 							return Err(Error::BadRequest(
 								ErrorKind::MissingToken,
 								"Missing or invalid access token.",

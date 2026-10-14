@@ -38,6 +38,10 @@ use slipstream::{
 
 use crate::{Dep, account_data, admin, appservice, globals, rooms};
 
+/// Suffix on a stored previous refresh token marking its retry as used.
+/// Generated tokens are alphanumeric, so it cannot collide.
+const CONSUMED_MARKER: char = '!';
+
 #[derive(Debug, Clone)]
 pub struct UserSuspension {
 	/// Whether the user is currently suspended
@@ -1060,7 +1064,19 @@ impl Service {
 		map: &Arc<Map>,
 		key: (&UserId, &DeviceId),
 	) -> Option<String> {
-		map.qry(&key).await.deserialized::<String>().ok()
+		let token = map.qry(&key).await.deserialized::<String>().ok()?;
+		Some(token.trim_end_matches(CONSUMED_MARKER).to_owned())
+	}
+
+	/// Whether the device's previous refresh token has already been used for
+	/// its one lost-response retry.
+	async fn previous_refresh_consumed(&self, key: (&UserId, &DeviceId)) -> bool {
+		self.db
+			.userdeviceid_prevrefreshtoken
+			.qry(&key)
+			.await
+			.deserialized::<String>()
+			.is_ok_and(|token| token.ends_with(CONSUMED_MARKER))
 	}
 
 	/// Revokes the refresh tokens of a device, if any. The caller holds the
@@ -1097,8 +1113,9 @@ impl Service {
 			// The client holds the current token: the one before it is spent.
 			(Some(used.to_owned()), previous)
 		} else {
-			// A retry with the previous token: the replacement was never received.
-			(previous, current)
+			// The one retry with the previous token: the replacement was never
+			// received. Keep it mapped but marked consumed, so reuse is detected.
+			(previous.map(|token| format!("{token}{CONSUMED_MARKER}")), current)
 		};
 
 		let refresh_token = self.generate_refresh_token().await;
@@ -1146,6 +1163,19 @@ impl Service {
 		// Recheck under the lock: a concurrent refresh or logout may have
 		// consumed the token while this request waited.
 		if self.refresh_token_device(refresh_token).await.is_err() {
+			return Err(unrecognized());
+		}
+
+		// The previous token may be exchanged once (lost-response recovery).
+		// Presenting it again means it leaked or the client is replaying: revoke
+		// the whole token family.
+		let key: (&UserId, &DeviceId) = (&user_id, &device_id);
+		let is_current = self
+			.device_refresh_token(&self.db.userdeviceid_refreshtoken, key)
+			.await
+			.as_deref() == Some(refresh_token);
+		if !is_current && self.previous_refresh_consumed(key).await {
+			self.remove_refresh_token(&user_id, &device_id).await;
 			return Err(unrecognized());
 		}
 
