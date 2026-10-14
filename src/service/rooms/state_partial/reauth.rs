@@ -294,6 +294,9 @@ impl Service {
 				self.services.users.track_remote_user(&user_id, room_id);
 			} else {
 				self.services.users.untrack_remote_user(&user_id, room_id);
+				// Whoever still shares another room with us must refetch: their cached
+				// keys may have missed updates while we wrongly tracked them.
+				self.services.users.mark_device_key_update(&user_id).await;
 			}
 		}
 	}
