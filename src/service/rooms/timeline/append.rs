@@ -603,24 +603,6 @@ where
 							.mark_device_key_update(&target_user_id)
 							.await;
 					}
-
-					// Sync hides a partial-state room, so a remote user joining during
-					// the window would never be reported as newly tracked: record it now.
-					if content.membership
-						== slipstream::events::room::member::MembershipState::Join
-						&& !was_joined && !self.services.globals.user_is_local(&target_user_id)
-						&& self
-							.services
-							.state_partial
-							.partial_server(room_id)
-							.await
-							.is_ok_and(|server| server.is_some())
-					{
-						self.services
-							.users
-							.mark_device_key_update_in_room(&target_user_id, room_id)
-							.await;
-					}
 				}
 
 				// Invalidate hierarchy cache: membership changes can affect
@@ -638,6 +620,31 @@ where
 			self.index_pdu_search(shortroomid, &pdu_id, pdu);
 		},
 		| _ => {},
+	}
+
+	// Sync hides a partial-state room, so a remote user joining during the
+	// window would never be reported as newly tracked: record it now. This runs
+	// even when resolved state was already applied, which skips the arm above.
+	if *pdu.kind() == TimelineEventType::RoomMember {
+		if let Some(target) = pdu.state_key().and_then(|k| UserId::parse(k).ok()) {
+			if !self.services.globals.user_is_local(&target)
+				&& pdu
+					.get_content::<slipstream::events::room::member::RoomMemberEventContent>()
+					.is_ok_and(|c| {
+						c.membership == slipstream::events::room::member::MembershipState::Join
+					}) && self
+				.services
+				.state_partial
+				.partial_server(room_id)
+				.await
+				.is_ok_and(|server| server.is_some())
+			{
+				self.services
+					.users
+					.mark_device_key_update_in_room(&target, room_id)
+					.await;
+			}
+		}
 	}
 
 	// CONCERN: If we receive events with a relation out-of-order, we never write

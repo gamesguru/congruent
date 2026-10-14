@@ -820,7 +820,11 @@ async fn handle_room(
 		let result = match result {
 			| Err(ref e)
 				if matches!(e.kind(), ErrorKind::Forbidden { .. })
-					&& e.to_string().to_lowercase().contains("auth") =>
+					&& {
+						let msg = e.to_string();
+						msg.contains("Event authorisation fails")
+							|| msg.contains("Event has failed auth check")
+					} =>
 			{
 				debug_warn!("Incoming PDU {event_id} rejected on auth: {e}");
 				Ok(())
