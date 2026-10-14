@@ -14,7 +14,7 @@ use conduwuit::{
 	matrix::{Event, StateKey, state_res},
 	warn,
 };
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use slipstream::{
 	EventId, OwnedEventId, OwnedUserId, RoomId, UserId,
 	events::{
@@ -106,9 +106,6 @@ impl Service {
 
 		let mut left: HashSet<OwnedUserId> = HashSet::new();
 		let mut after: HashMap<OwnedEventId, StateMap> = HashMap::new();
-		// Stands in for predecessors older than the anchor, whose own state is not
-		// reconstructed.
-		let pre_anchor_state = anchor_state.clone();
 		after.insert(anchor.to_owned(), anchor_state);
 
 		// A state map is only needed until its last in-window child has used it, so
@@ -135,7 +132,18 @@ impl Service {
 					warn!(target: "reauth_debug", %event_id, %prev, "predecessor state missing; cannot re-authorise window");
 					return None;
 				} else {
-					predecessor_states.push(pre_anchor_state.clone());
+					// Outside the window: only acceptable if it is known to be at or
+					// below the anchor's depth, and then its own stored state is used.
+					let older = match (self.services.timeline.get_pdu(prev).await, anchor_depth) {
+						| (Ok(pred), Some(depth)) => pred.depth() <= depth,
+						| _ => false,
+					};
+					let stored = if older { self.stored_state(room_id, prev).await } else { None };
+					let Some(stored) = stored else {
+						warn!(target: "reauth_debug", %event_id, %prev, "predecessor state unavailable; cannot re-authorise window");
+						return None;
+					};
+					predecessor_states.push(stored);
 				}
 			}
 			if predecessor_states.is_empty() {
@@ -344,6 +352,18 @@ impl Service {
 			short_state.insert(short_key, event_id);
 		}
 		Some(short_state)
+	}
+
+	/// The full state stored for `event_id`, if it has a snapshot.
+	async fn stored_state(&self, room_id: &RoomId, event_id: &EventId) -> Option<StateMap> {
+		let shorteventid = self.services.short.get_shorteventid(event_id).await.ok()?;
+		let root = self.services.state.get_roothandle(shorteventid).await.ok()?;
+		self.services
+			.state_accessor
+			.state_full_ids_hamt(room_id, &root)
+			.try_collect::<StateMap>()
+			.await
+			.ok()
 	}
 
 	async fn was_joined(&self, state: &StateMap, user_id: &UserId) -> bool {
