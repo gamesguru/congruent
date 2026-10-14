@@ -122,7 +122,7 @@ impl Service {
 			.unwrap_or_default();
 		for member in members {
 			if let Ok(user_id) = slipstream::UserId::parse(member.as_str()) {
-				let server = user_id.server_name().to_owned();
+				let server = user_id.server_name().clone();
 				if !self.services.globals.server_is_ours(&server) {
 					servers.insert(server);
 				}

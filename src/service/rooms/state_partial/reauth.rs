@@ -57,7 +57,7 @@ impl Service {
 			.timeline
 			.get_pdu(anchor)
 			.await
-			.map(|pdu| u64::from(pdu.depth()))
+			.map(|pdu| pdu.depth())
 			.ok();
 
 		// Walk back from the forward extremities to the anchor.
@@ -77,7 +77,7 @@ impl Service {
 				debug!(target: "reauth_debug", %event_id, "window event not found");
 				continue;
 			};
-			if anchor_depth.is_some_and(|depth| u64::from(pdu.depth()) <= depth) {
+			if anchor_depth.is_some_and(|depth| pdu.depth() <= depth) {
 				continue;
 			}
 			if window.len() >= WINDOW_LIMIT {
@@ -237,7 +237,7 @@ impl Service {
 		let mut tips: Vec<(&OwnedEventId, &StateMap, u64)> = Vec::new();
 		for extremity in &extremities {
 			if let (Some(state), Some(pdu)) = (after.get(extremity), window.get(extremity)) {
-				tips.push((extremity, state, u64::from(pdu.depth())));
+				tips.push((extremity, state, pdu.depth()));
 			} else if extremity == anchor {
 				if let Some(state) = after.get(extremity) {
 					tips.push((extremity, state, anchor_depth.unwrap_or(0)));
