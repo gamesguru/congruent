@@ -49,7 +49,6 @@ const MAP_NAMES: &[&str] = &[
 	"referencedevents",
 	"refreshtoken_userdeviceid",
 	"registrationtoken_info",
-	"rejectedeventids",
 	"room_pducount_eventid",
 	"room_pducount_eventid_backup",
 	"roomid_depth_missingeventid",

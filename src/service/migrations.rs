@@ -41,8 +41,12 @@ pub(crate) const DATABASE_VERSION: u64 = 24;
 /// Column families explicitly dropped in migrations. These are included
 /// in the fingerprint hash (prefixed with '-') so that a branch which
 /// still has them as live CFs produces a different fingerprint.
-const DROPPED_CFS: &[&str] =
-	&["eventid_receivecount", "roomid_outliereventid", "softfailedeventids"];
+const DROPPED_CFS: &[&str] = &[
+	"eventid_receivecount",
+	"rejectedeventids",
+	"roomid_outliereventid",
+	"softfailedeventids",
+];
 
 /// Compute schema fingerprint from the static column family name list,
 /// explicitly dropped CFs, and the schema version number.
@@ -2314,6 +2318,7 @@ mod tests {
 
 		// Verify the CF names we expect are present
 		assert!(DROPPED_CFS.contains(&"softfailedeventids"));
+		assert!(DROPPED_CFS.contains(&"rejectedeventids"));
 		assert!(DROPPED_CFS.contains(&"eventid_receivecount"));
 		assert!(DROPPED_CFS.contains(&"roomid_outliereventid"));
 	}
