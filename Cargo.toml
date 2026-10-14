@@ -310,6 +310,11 @@ features = ["reconcile"]
 git = "https://gitlab.com/Wombat-Foundation/rezzy.git"
 branch = "master"
 
+# `mtx-slipstream` still names the original Rezzy repository. Keep its JSON
+# value types unified with this workspace's Wombat fork.
+[patch."https://gitlab.com/gamesguru/rezzy.git"]
+rezzy = { git = "https://gitlab.com/Wombat-Foundation/rezzy.git", branch = "master" }
+
 [workspace.dependencies.sha2]
 version = "0.11.0"
 default-features = false
