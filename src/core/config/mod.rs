@@ -1645,6 +1645,15 @@ pub struct Config {
 	#[serde(default)]
 	pub fast_joins: bool,
 
+	/// How long, in seconds, a partial-state join may keep failing to obtain
+	/// usable state from any server before it is abandoned: the local users
+	/// leave the room and its partial state is dropped. Local errors never
+	/// count towards this. 0 retries forever.
+	///
+	/// default: 120
+	#[serde(default = "default_partial_state_resync_give_up_after")]
+	pub partial_state_resync_give_up_after: u64,
+
 	/// Allow receiving incoming read receipts from remote servers.
 	#[serde(default = "true_fn")]
 	pub allow_incoming_read_receipts: bool,
@@ -3272,6 +3281,8 @@ fn default_login_token_ttl() -> u64 { 2 * 60 * 1000 }
 
 /// Returns the default access-token lifetime of five minutes in milliseconds.
 fn default_access_token_ttl() -> u64 { 5 * 60 * 1000 }
+
+fn default_partial_state_resync_give_up_after() -> u64 { 120 }
 
 fn default_turn_ttl() -> u64 { 60 * 60 * 24 }
 

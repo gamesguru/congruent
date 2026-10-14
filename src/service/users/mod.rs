@@ -2001,6 +2001,24 @@ impl Service {
 		self.invalidate_remote_keys(user_id);
 	}
 
+	/// Forget every user tracked as joining the partial-state `room_id`.
+	pub fn untrack_remote_users_in_room(&self, room_id: &RoomId) -> Vec<OwnedUserId> {
+		let mut removed = Vec::new();
+		{
+			let mut tracked = self.tracked_remote_users.lock().expect("locked");
+			tracked.retain(|user_id, rooms| {
+				if rooms.remove(room_id) {
+					removed.push(user_id.clone());
+				}
+				!rooms.is_empty()
+			});
+		}
+		for user_id in &removed {
+			self.invalidate_remote_keys(user_id);
+		}
+		removed
+	}
+
 	/// The partial-state rooms in which `user_id` was seen joining.
 	pub fn tracked_remote_rooms(&self, user_id: &UserId) -> Vec<OwnedRoomId> {
 		self.tracked_remote_users

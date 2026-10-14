@@ -1,19 +1,22 @@
 use std::{
 	collections::{BTreeMap, HashMap, HashSet},
 	sync::Arc,
-	time::Duration,
+	time::{Duration, Instant},
 };
 
-use conduwuit::{Event, PduEvent, Result, debug, info, warn};
+use conduwuit::{Event, PduEvent, Result, debug, info, pdu::PduBuilder, warn};
 use conduwuit_core::{
 	Err, err,
 	utils::stream::{BroadbandExt, IterStream, TryIgnore},
 };
-use futures::{StreamExt, TryStreamExt};
+use futures::{FutureExt, StreamExt, TryStreamExt};
 use slipstream::{
-	OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, RoomVersionId, ServerName,
+	OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, RoomVersionId, ServerName,
 	api::federation::event::{get_room_state, get_room_state_ids},
-	events::StateEventType,
+	events::{
+		StateEventType,
+		room::member::{MembershipState, RoomMemberEventContent},
+	},
 	sswire::RawJsonValue,
 };
 
@@ -23,6 +26,10 @@ enum StateEventLoadError {
 	InvalidResponse(String),
 	Transient(conduwuit::Error),
 }
+
+/// Prefix of the errors meaning no server gave usable state, the only failures
+/// that count towards `partial_state_resync_give_up_after`.
+const NO_USABLE_STATE: &str = "No usable state";
 
 /// How many times the re-authorised state is rebuilt when the room changes under it.
 const REAUTH_ATTEMPTS: usize = 5;
@@ -217,6 +224,8 @@ impl Service {
 	/// room is no longer partial.
 	async fn resync_with_backoff(self: Arc<Self>, room_id: &RoomId) {
 		let mut delay = Duration::from_secs(1);
+		// When the failures to get usable state from any server began.
+		let mut unusable_since: Option<Instant> = None;
 		loop {
 			let Ok(Some(server_name)) = self.partial_server(room_id).await else {
 				return;
@@ -249,11 +258,84 @@ impl Service {
 				},
 				| Err(e) => {
 					warn!("Failed to resync partial state for room {}: {}", room_id, e);
+					if e.to_string().contains(NO_USABLE_STATE) {
+						let since = *unusable_since.get_or_insert_with(Instant::now);
+						let give_up_after = self.services.server.config.partial_state_resync_give_up_after;
+						if give_up_after > 0 && since.elapsed() >= Duration::from_secs(give_up_after) {
+							warn!(
+								%room_id,
+								"No server gave usable state for {give_up_after}s; abandoning the partial state join"
+							);
+							self.abandon_join(room_id).await;
+							return;
+						}
+					} else {
+						unusable_since = None;
+					}
 					async_io::Timer::after(delay).await;
 					delay = delay.saturating_mul(2).min(Duration::from_secs(60));
 				},
 			}
 		}
+	}
+
+	/// Give up on a partial-state join: the local users leave through normal
+	/// leave events, and the room's partial-state tracking is dropped.
+	async fn abandon_join(&self, room_id: &RoomId) {
+		let local_users: Vec<OwnedUserId> = self
+			.services
+			.state_cache
+			.local_users_in_room(room_id)
+			.collect()
+			.await;
+		for user_id in &local_users {
+			let state_lock = self.services.state.mutex.lock(room_id).await;
+			let left = match self
+				.services
+				.state_accessor
+				.room_state_get_content::<RoomMemberEventContent>(
+					room_id,
+					&StateEventType::RoomMember,
+					user_id.as_str(),
+				)
+				.await
+			{
+				| Ok(content) => self
+					.services
+					.timeline
+					.build_and_append_pdu(
+						PduBuilder::state(user_id.to_string(), &RoomMemberEventContent {
+							membership: MembershipState::Leave,
+							reason: Some("Could not complete the partial state join".to_owned()),
+							join_authorized_via_users_server: None,
+							is_direct: None,
+							..content
+						}),
+						user_id,
+						Some(room_id),
+						&state_lock,
+					)
+					.boxed()
+					.await
+					.is_ok(),
+				| Err(_) => false,
+			};
+			drop(state_lock);
+			if !left {
+				self.services
+					.state_cache
+					.mark_as_left(user_id, room_id, None)
+					.await;
+			}
+		}
+
+		self.db.state_partial_rooms.remove(room_id.as_bytes());
+		self.db.state_partial_events.remove(room_id.as_bytes());
+		self.services.users.untrack_remote_users_in_room(room_id);
+		self.send_pending(room_id).await;
+		self.services.state_cache.update_joined_count(room_id).await;
+		// Release anything waiting on this room's state.
+		self.resolved.notify_waiters();
 	}
 
 	async fn resync_room(
@@ -282,7 +364,7 @@ impl Service {
 						error
 					} else {
 						err!(Request(Unknown(
-							"No usable state response for {room_id}; rejected responses from \
+							"No usable state: responses for {room_id} rejected by \
 							 {invalid_servers:?}: {error}"
 						)))
 					}
@@ -464,7 +546,7 @@ impl Service {
 			}
 		}
 
-		Err(err!(Request(NotFound("No server available to resync state"))))
+		Err(err!(Request(NotFound("No usable state: no server available to resync state"))))
 	}
 
 	async fn process_auth_chain(
