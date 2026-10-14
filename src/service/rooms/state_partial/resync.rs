@@ -273,14 +273,23 @@ impl Service {
 			.process_state_events(&room_id, &room_version, &remote_server, response.pdus)
 			.await;
 
-		// Update room state graph (amend the partial state)
-		self.update_state_graph(&room_id, new_state_ids.clone())
-			.await?;
-
-		// Events received while the state was partial carry snapshots without the
-		// omitted members; give them the full state too (Synapse un-partial-states
-		// each event), then bring the membership caches up to date.
-		self.repair_event_states(&room_id, &new_state_ids).await;
+		// Events received while the state was partial were accepted without the
+		// omitted members; re-authorise them against the full state, which also
+		// gives each one a full snapshot (Synapse un-partial-states each event).
+		let anchor_state: HashMap<ShortStateKey, OwnedEventId> =
+			new_state_ids.iter().map(|(k, v)| (*k, v.clone())).collect();
+		let reauthed = match self.resync_event_id(&room_id).await {
+			| Some(anchor) => self.reauth_window(&room_id, &anchor, anchor_state).await,
+			| None => None,
+		};
+		if let Some(current) = reauthed {
+			self.install_current_state(&room_id, current).await?;
+		} else {
+			// Update room state graph (amend the partial state)
+			self.update_state_graph(&room_id, new_state_ids.clone())
+				.await?;
+			self.repair_event_states(&room_id, &new_state_ids).await;
+		}
 		let known: std::collections::HashSet<slipstream::OwnedUserId> = self
 			.services
 			.state_cache
@@ -569,6 +578,34 @@ impl Service {
 			}
 		}
 		via
+	}
+
+	/// Replace the room's current state with the re-authorised one, fixing
+	/// device-list tracking for members whose membership changed.
+	async fn install_current_state(
+		&self,
+		room_id: &RoomId,
+		current: HashMap<ShortStateKey, OwnedEventId>,
+	) -> Result<()> {
+		let _state_lock = self.services.state.mutex.lock(room_id).await;
+		let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
+		let old = self
+			.services
+			.state_accessor
+			.state_full_ids_hamt(room_id, &root_handle)
+			.try_collect::<HashMap<ShortStateKey, OwnedEventId>>()
+			.await?;
+
+		let (new_root, pending_nodes) = self
+			.services
+			.event_handler
+			.state_map_to_root_handle(room_id, &current)
+			.await?;
+		self.services
+			.state
+			.set_room_state_hamt_with_nodes(room_id, &new_root, &pending_nodes)?;
+		self.reconcile_tracking(&old, &current).await;
+		Ok(())
 	}
 
 	async fn update_state_graph(

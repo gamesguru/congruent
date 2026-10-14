@@ -1,3 +1,4 @@
+mod reauth;
 pub mod resync;
 
 use std::{
@@ -60,6 +61,7 @@ struct Services {
 	event_handler: Dep<rooms::event_handler::Service>,
 	short: Dep<rooms::short::Service>,
 	timeline: Dep<rooms::timeline::Service>,
+	pdu_metadata: Dep<rooms::pdu_metadata::Service>,
 	users: Dep<crate::users::Service>,
 }
 
@@ -93,6 +95,8 @@ impl crate::Service for Service {
 					.depend::<rooms::event_handler::Service>("rooms::event_handler"),
 				short: args.depend::<rooms::short::Service>("rooms::short"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
+				pdu_metadata: args
+					.depend::<rooms::pdu_metadata::Service>("rooms::pdu_metadata"),
 				users: args.depend::<crate::users::Service>("users"),
 			},
 		}))

@@ -459,6 +459,7 @@ impl Service {
 	/// etc.) are not visible.
 	pub async fn is_event_visible_to_clients(&self, event_id: &EventId) -> bool {
 		self.services.timeline.get_pdu_id(event_id).await.is_ok()
+			&& !self.db.is_event_rejected(event_id).unwrap_or(false)
 	}
 
 	pub fn get_rejection_reason(&self, event_id: &EventId) -> Result<Option<String>> {

@@ -328,6 +328,6 @@ pub(crate) fn get_room_version_id<Pdu: Event>(create_event: &Pdu) -> Result<Room
 }
 
 #[inline]
-fn to_room_version(room_version_id: &RoomVersionId) -> RoomVersion {
+pub(crate) fn to_room_version(room_version_id: &RoomVersionId) -> RoomVersion {
 	RoomVersion::new(room_version_id).expect("room version is supported")
 }
