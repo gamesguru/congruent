@@ -229,6 +229,10 @@ impl Service {
 			.await
 			.unwrap_or_default();
 
+		// Servers the send_join response listed are as good as any to ask.
+		let mut others = others;
+		others.extend(self.services.state_partial.partial_servers(room_id).await);
+
 		let servers = sort_servers(server_name, others);
 
 		for server in servers {
