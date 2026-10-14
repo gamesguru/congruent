@@ -101,7 +101,7 @@ impl Service {
 		info!(
 			target: "reauth_debug",
 			%room_id, %anchor, events = order.len(), extremities = extremities.len(),
-			order = ?order.iter().map(|p| (p.event_id().as_str(), p.prev_events().map(|e| e.as_str()).collect::<Vec<_>>())).collect::<Vec<_>>(),
+			order = ?order.iter().map(|p| (p.event_id().as_str(), p.prev_events().map(OwnedEventId::as_str).collect::<Vec<_>>())).collect::<Vec<_>>(),
 			"re-authorising events received while the state was partial"
 		);
 
