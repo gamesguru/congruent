@@ -113,6 +113,18 @@ impl Service {
 		remote_server: &ServerName,
 		state_event_id: Option<&EventId>,
 	) {
+		self.register_partial(room_id, remote_server, state_event_id);
+		self.start_resync(room_id);
+	}
+
+	/// Record the room as partial without starting the resync. Done before our
+	/// own join event is appended so appending sees the room as partial.
+	pub fn register_partial(
+		&self,
+		room_id: &RoomId,
+		remote_server: &ServerName,
+		state_event_id: Option<&EventId>,
+	) {
 		// The event the remote server's partial state is "at": a resync must ask for
 		// the full state at this event, not at our own (unknown to them) join.
 		if let Some(event_id) = state_event_id {
@@ -127,9 +139,10 @@ impl Service {
 			.lock()
 			.expect("locked")
 			.insert(room_id.to_owned(), self.services.globals.current_count().unwrap_or(0));
-		// Start resyncing straight away, like Synapse's _start_partial_state_room_sync.
-		_ = self.resync_tx.send(room_id.to_owned());
 	}
+
+	/// Start resyncing straight away, like Synapse's _start_partial_state_room_sync.
+	pub fn start_resync(&self, room_id: &RoomId) { _ = self.resync_tx.send(room_id.to_owned()); }
 
 	/// Wait until the room no longer has partial state (Synapse's
 	/// `await_full_state`).

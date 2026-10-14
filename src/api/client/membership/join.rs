@@ -906,6 +906,15 @@ async fn join_room_by_id_helper_remote_process(
 	// can indeed fail, in which case the local membership cache may be left in an
 	// inconsistent state (where the user appears joined in the cache but the join
 	// PDU is not persisted).
+	// Mark the room partial first so appending our own join does not announce
+	// our device list to a server we only partially know the room of.
+	if send_join_response.room_state.members_omitted {
+		services.rooms.state_partial.register_partial(
+			room_id,
+			&remote_server,
+			resync_event_id.as_ref(),
+		);
+	}
 	let (state_root_handle, _state_node, pending_nodes) = services
 		.rooms
 		.state
@@ -948,11 +957,6 @@ async fn join_room_by_id_helper_remote_process(
 	// Deal with partial joins
 	if send_join_response.room_state.members_omitted {
 		info!("Room {room_id} joined with omitted members (MSC3902). Marking as partial state.");
-		services.rooms.state_partial.mark_as_partial(
-			room_id,
-			&remote_server,
-			resync_event_id.as_ref(),
-		);
 		if let Some(servers) = &send_join_response.room_state.servers_in_room {
 			services.rooms.state_partial.set_extra_servers(
 				room_id,
@@ -962,6 +966,7 @@ async fn join_room_by_id_helper_remote_process(
 					.collect(),
 			);
 		}
+		services.rooms.state_partial.start_resync(room_id);
 	}
 
 	Ok(())
