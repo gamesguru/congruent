@@ -651,7 +651,7 @@
 {"Action":"skip","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_for_user_incorrectly_believed_to_be_in_room_when_they_join_another_shared_room_before_partial_state_join_completes"}
 {"Action":"fail","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_for_user_incorrectly_believed_to_be_in_room_when_they_rejoin_after_partial_state_join_completes"}
 {"Action":"skip","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_for_user_incorrectly_believed_to_be_in_room_when_they_rejoin_before_partial_state_join_completes"}
-{"Action":"fail","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_when_pre-existing_members_in_partial_state_room_join_another_shared_room"}
+{"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_when_pre-existing_members_in_partial_state_room_join_another_shared_room"}
 {"Action":"pass","Test":"TestPartialStateJoin/EagerIncrementalSyncDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/EagerInitialSyncDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/EagerLongPollingSyncWokenWhenResyncCompletes"}
@@ -677,7 +677,7 @@
 {"Action":"fail","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_reach_incorrectly_kicked_servers_once_partial_state_join_completes_even_though_remote_server_left_room"}
 {"Action":"pass","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_reach_newly_joined_servers_in_partial_state_rooms"}
 {"Action":"pass","Test":"TestPartialStateJoin/PartialStateJoinContinuesAfterRestart"}
-{"Action":"fail","Test":"TestPartialStateJoin/PartialStateJoinSyncsUsingOtherHomeservers"}
+{"Action":"pass","Test":"TestPartialStateJoin/PartialStateJoinSyncsUsingOtherHomeservers"}
 {"Action":"skip","Test":"TestPartialStateJoin/Purge_during_resync"}
 {"Action":"pass","Test":"TestPartialStateJoin/Rejected_events_remain_rejected_after_resync"}
 {"Action":"pass","Test":"TestPartialStateJoin/Rejects_make_join_during_partial_join"}

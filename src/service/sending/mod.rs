@@ -225,6 +225,17 @@ impl Service {
 	}
 
 	pub async fn send_pdu_room(&self, room_id: &RoomId, pdu_id: &RawPduId) -> Result {
+		self.send_pdu_room_except(room_id, pdu_id, None).await
+	}
+
+	/// Like `send_pdu_room`, but skips `except`: the server an event came from
+	/// has it already (e.g. a joining server must not be sent its own join).
+	pub async fn send_pdu_room_except(
+		&self,
+		room_id: &RoomId,
+		pdu_id: &RawPduId,
+		except: Option<&ServerName>,
+	) -> Result {
 		// In a partial-state room the member list is incomplete, so the server we
 		// joined through may be absent from `room_servers`; always include it.
 		let mut servers = self
@@ -241,6 +252,8 @@ impl Service {
 				servers.push(partial_server);
 			}
 		}
+
+		servers.retain(|server| except.is_none_or(|except| except != &**server));
 
 		let num_servers = self
 			.send_pdu_servers(futures::stream::iter(servers), pdu_id)

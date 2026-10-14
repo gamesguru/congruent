@@ -365,7 +365,10 @@ pub(super) async fn handle_and_send_incoming_pdu(
 
 	drop(mutex_lock);
 
-	services.sending.send_pdu_room(room_id, &pdu_id).await?;
+	services
+		.sending
+		.send_pdu_room_except(room_id, &pdu_id, Some(origin))
+		.await?;
 
 	Ok(pdu_id)
 }
