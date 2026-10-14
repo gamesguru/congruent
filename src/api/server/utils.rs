@@ -1,6 +1,7 @@
 use conduwuit::{Err, Result, err, implement, info, warn};
 use conduwuit_service::Services;
-use slipstream::{EventId, RoomId, ServerName};
+use futures::TryStreamExt;
+use slipstream::{EventId, OwnedEventId, RoomId, ServerName, events::StateEventType};
 
 pub(super) struct AccessCheck<'a> {
 	pub(super) services: &'a Services,
@@ -158,7 +159,7 @@ pub(super) async fn verify_send_membership(
 	pdu: &slipstream::sswire::Raw<slipstream::json::Value>,
 	expected_membership: slipstream::events::room::member::MembershipState,
 ) -> Result<(
-	slipstream::OwnedEventId,
+	OwnedEventId,
 	slipstream::CanonicalJsonObject,
 	slipstream::events::room::member::RoomMemberEventContent,
 	slipstream::RoomVersionId,
@@ -247,14 +248,14 @@ pub(super) async fn verify_send_membership(
 		return Err!(Request(BadJson("Event room_id does not match request path room ID.")));
 	}
 
-	let event_type: slipstream::events::StateEventType = slipstream::codec::from_value(
+	let event_type: StateEventType = slipstream::codec::from_value(
 		value
 			.get("type")
 			.ok_or_else(|| err!(Request(BadJson("Event missing type property."))))?,
 	)
 	.map_err(|e| err!(Request(BadJson(warn!("Event has invalid state event type: {e}")))))?;
 
-	if event_type != slipstream::events::StateEventType::RoomMember {
+	if event_type != StateEventType::RoomMember {
 		return Err!(Request(BadJson(
 			"Not allowed to send non-membership state event to membership endpoint."
 		)));
@@ -367,4 +368,43 @@ pub(super) async fn handle_and_send_incoming_pdu(
 	services.sending.send_pdu_room(room_id, &pdu_id).await?;
 
 	Ok(pdu_id)
+}
+
+/// The room state *at* `event_id`, as federation peers (Synapse) serve it: the
+/// state before the event, plus the event itself if it is a state event.
+pub(super) async fn state_ids_at_event(
+	services: &Services,
+	room_id: &RoomId,
+	event_id: &EventId,
+) -> Result<Vec<OwnedEventId>> {
+	let root_handle = services
+		.rooms
+		.state_accessor
+		.pdu_roothandle_before_event(event_id)
+		.await
+		.map_err(|_| err!(Request(NotFound("Pdu state not found."))))?;
+
+	let mut state: Vec<_> = services
+		.rooms
+		.state_accessor
+		.state_full_ids_hamt(room_id, &root_handle)
+		.try_collect()
+		.await?;
+
+	if let Ok(pdu) = services.rooms.timeline.get_pdu(event_id).await {
+		if let Some(state_key) = pdu.state_key.as_deref() {
+			let ssk = services
+				.rooms
+				.short
+				.get_or_create_shortstatekey(
+					&StateEventType::from(pdu.kind.to_string()),
+					state_key,
+				)
+				.await;
+			state.retain(|(existing, _)| *existing != ssk);
+			state.push((ssk, event_id.to_owned()));
+		}
+	}
+
+	Ok(state.into_iter().map(|(_, id)| id).collect())
 }
