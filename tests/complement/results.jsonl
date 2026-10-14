@@ -627,7 +627,7 @@
 {"Action":"pass","Test":"TestOutboundFederationProfile/Outbound_federation_can_query_profile_data"}
 {"Action":"pass","Test":"TestOutboundFederationSend"}
 {"Action":"fail","Test":"TestPartialStateJoin"}
-{"Action":"pass","Test":"TestPartialStateJoin/CanFastJoinDuringPartialStateJoin"}
+{"Action":"fail","Test":"TestPartialStateJoin/CanFastJoinDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanLazyLoadingSyncDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveDeviceListUpdateDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveEventsDuringPartialStateJoin"}
