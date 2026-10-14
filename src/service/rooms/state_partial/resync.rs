@@ -836,10 +836,7 @@ impl Service {
 /// Whether the error came from a server that replied (with an error status or
 /// an unparsable body), as opposed to one that could not be reached.
 fn server_answered(error: &conduwuit::Error) -> bool {
-	matches!(
-		error,
-		conduwuit::Error::Federation(..) | conduwuit::Error::BadServerResponse(_)
-	)
+	matches!(error, conduwuit::Error::Federation(..) | conduwuit::Error::BadServerResponse(_))
 }
 
 fn sort_servers(suggested: &ServerName, others: Vec<OwnedServerName>) -> Vec<OwnedServerName> {
