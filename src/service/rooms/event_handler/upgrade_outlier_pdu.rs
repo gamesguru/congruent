@@ -289,7 +289,7 @@ where
 
 		let state_fetch = |k: &StateEventType, s: &str| {
 			let key = k.with_state_key(s);
-			ready(auth_events.get(&key).map(ToOwned::to_owned).or_else(|| {
+			let claimed = || {
 				partial_auth_events
 					.iter()
 					.find(|p| {
@@ -297,7 +297,19 @@ where
 							&& p.state_key() == Some(s)
 					})
 					.cloned()
-			}))
+			};
+			// With partial state the current state may be incomplete or provisional,
+			// so the event's own auth_events take precedence (see the first check).
+			if partial_room {
+				ready(claimed().or_else(|| auth_events.get(&key).map(ToOwned::to_owned)))
+			} else {
+				ready(
+					auth_events
+						.get(&key)
+						.map(ToOwned::to_owned)
+						.or_else(claimed),
+				)
+			}
 		};
 
 		debug!(
