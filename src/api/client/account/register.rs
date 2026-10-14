@@ -40,12 +40,20 @@ const RANDOM_USER_ID_LENGTH: usize = 10;
 static CHALLENGED: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(Mutex::default);
 
 const CHALLENGE_TTL: Duration = Duration::from_secs(15 * 60);
+const CHALLENGE_LIMIT: usize = 10_000;
 
 fn note_challenge(username: &str) {
 	let now = Instant::now();
 	let mut challenged = CHALLENGED.lock().expect("locked");
 	challenged.retain(|_, issued| now.duration_since(*issued) < CHALLENGE_TTL);
-	challenged.insert(username.to_owned(), now);
+	// Past the limit nothing new is tracked, so the map cannot grow without bound.
+	if challenged.len() < CHALLENGE_LIMIT {
+		challenged.insert(username.to_owned(), now);
+	}
+}
+
+fn forget_challenge(username: &str) {
+	CHALLENGED.lock().expect("locked").remove(username);
 }
 
 /// Whether `username` was issued a challenge that is still outstanding.
@@ -231,6 +239,7 @@ pub(crate) async fn register_route(
 
 	// Create user
 	services.users.create(&user_id, password, None).await?;
+	forget_challenge(user_id.localpart());
 
 	// Set an initial display name
 	let mut displayname = user_id.localpart().to_owned();
