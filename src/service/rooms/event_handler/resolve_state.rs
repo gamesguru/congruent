@@ -240,15 +240,15 @@ where
 						// Synapse does, and keep the event out of resolved state.
 						// Rejections of another kind on a timeline event are stale.
 						// If the reason can't be read, keep the rejection.
-						let auth_failed = meta
-							.get_rejection_reason(&pdu.event_id)
-							.map_or(true, |reason| {
-								reason.is_some_and(|reason| {
-									reason
+						let auth_failed =
+							meta.get_rejection_reason(&pdu.event_id)
+								.map_or(true, |reason| {
+									reason.is_some_and(|reason| {
+										reason
 										== crate::rooms::pdu_metadata::RejectionCode::AuthCheckFailed
 											.tag()
-								})
-							});
+									})
+								});
 						if !auth_failed && timeline.non_outlier_pdu_exists(&pdu.event_id).await {
 							warn!(
 								event_id = %pdu.event_id,
