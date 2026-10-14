@@ -417,7 +417,8 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	// auth events along, so /event_auth is only the last resort.
 	let has_missing_prev = if partial_room {
 		let mut missing_prev = false;
-		if let Ok(pdu) = conduwuit::PduEvent::from_id_val(event_id, value.clone(), Some(room_id)) {
+		if let Ok(pdu) = conduwuit::PduEvent::from_id_val(event_id, value.clone(), Some(room_id))
+		{
 			for prev in pdu.prev_events() {
 				if !self.services.timeline.pdu_exists(prev).await {
 					missing_prev = true;
@@ -565,7 +566,8 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			// A partial-state room can't serve /state_ids for events it never saw
 			// (members are omitted), so only anchor one at a prev_event we lack.
 			let skip_state_ids = partial_room
-				&& (direct_prev.is_none() || self.services.timeline.pdu_exists(&state_ids_anchor).await);
+				&& (direct_prev.is_none()
+					|| self.services.timeline.pdu_exists(&state_ids_anchor).await);
 			let retry_result = Box::pin(async {
 				if !skip_state_ids {
 					Box::pin(self.fetch_state(

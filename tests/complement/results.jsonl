@@ -626,12 +626,12 @@
 {"Action":"pass","Test":"TestOutboundFederationProfile"}
 {"Action":"pass","Test":"TestOutboundFederationProfile/Outbound_federation_can_query_profile_data"}
 {"Action":"pass","Test":"TestOutboundFederationSend"}
-{"Action":"fail","Test":"TestPartialStateJoin"}
+{"Action":"pass","Test":"TestPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanFastJoinDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanLazyLoadingSyncDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveDeviceListUpdateDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveEventsDuringPartialStateJoin"}
-{"Action":"fail","Test":"TestPartialStateJoin/CanReceiveEventsWithHalfMissingGrandparentsDuringPartialStateJoin"}
+{"Action":"pass","Test":"TestPartialStateJoin/CanReceiveEventsWithHalfMissingGrandparentsDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveEventsWithHalfMissingParentsDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveEventsWithMissingParentsDuringPartialStateJoin"}
 {"Action":"skip","Test":"TestPartialStateJoin/CanReceivePresenceDuringPartialStateJoin"}
