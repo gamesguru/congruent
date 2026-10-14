@@ -202,6 +202,19 @@ impl Service {
 
 			let mut state = before;
 			if accepted {
+				// A remote user who was out of the room at any point in the window
+				// missed device updates, even if they are back in by the end.
+				if pdu.kind() == rezzy::basespec::event_types::M_ROOM_MEMBER && !local {
+					let left = pdu
+						.get_content::<RoomMemberEventContent>()
+						.is_ok_and(|c| c.membership != MembershipState::Join);
+					if let (true, Some(Ok(user_id))) =
+						(left, pdu.state_key().map(slipstream::UserId::parse))
+					{
+						self.services.users.invalidate_remote_keys(&user_id);
+						self.services.users.mark_device_key_update(&user_id).await;
+					}
+				}
 				if let Some(state_key) = pdu.state_key() {
 					let shortstatekey = self
 						.services
