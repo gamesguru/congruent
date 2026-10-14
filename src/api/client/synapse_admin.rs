@@ -40,7 +40,7 @@ use crate::{
 
 type HmacSha1 = Hmac<Sha1>;
 
-const REGISTRATION_NONCE_TTL: Duration = Duration::from_secs(15 * 60);
+const REGISTRATION_NONCE_TTL: Duration = Duration::from_mins(15);
 const MAX_REGISTRATION_NONCES: usize = 10_000;
 
 static NONCES: LazyLock<std::sync::Mutex<HashMap<String, Instant>>> =
@@ -61,7 +61,7 @@ fn issue_registration_nonce(nonce: String) {
 		}
 	}
 
-	nonces.insert(nonce, now + REGISTRATION_NONCE_TTL);
+	nonces.insert(nonce, now.checked_add(REGISTRATION_NONCE_TTL).unwrap_or(now));
 }
 
 fn consume_registration_nonce(nonce: &str) -> bool {
