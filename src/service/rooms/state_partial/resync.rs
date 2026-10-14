@@ -7,7 +7,7 @@ use std::{
 
 use conduwuit::{Event, PduEvent, Result, debug, info, warn};
 use conduwuit_core::{
-	err,
+	Err, err,
 	utils::stream::{BroadbandExt, IterStream, TryIgnore},
 };
 use futures::{StreamExt, TryStreamExt};
@@ -19,6 +19,9 @@ use slipstream::{
 };
 
 use crate::rooms::{short::ShortStateKey, state_partial::Service};
+
+/// How many times the re-authorised state is rebuilt when the room changes under it.
+const REAUTH_ATTEMPTS: usize = 5;
 
 impl Service {
 	/// Background worker: resyncs partial-state rooms as soon as they are
@@ -278,12 +281,35 @@ impl Service {
 		// gives each one a full snapshot (Synapse un-partial-states each event).
 		let anchor_state: HashMap<ShortStateKey, OwnedEventId> =
 			new_state_ids.iter().map(|(k, v)| (*k, v.clone())).collect();
-		let reauthed = match self.resync_event_id(&room_id).await {
-			| Some(anchor) => self.reauth_window(&room_id, &anchor, anchor_state).await,
-			| None => None,
-		};
-		if let Some((current, left)) = reauthed {
-			self.install_current_state(&room_id, current).await?;
+		// Events appended while the window is re-authorised (a local leave, say)
+		// would be overwritten by the older state, so retry until the room's
+		// forward extremities are unchanged when the state is installed.
+		let mut reauthed = None;
+		let mut gave_up = false;
+		for attempt in 1..=REAUTH_ATTEMPTS {
+			let Some(anchor) = self.resync_event_id(&room_id).await else {
+				break;
+			};
+			let Some((current, left, extremities)) = self
+				.reauth_window(&room_id, &anchor, anchor_state.clone())
+				.await
+			else {
+				break;
+			};
+			if self
+				.install_current_state(&room_id, current, &extremities)
+				.await?
+			{
+				reauthed = Some(left);
+				break;
+			}
+			debug!(%room_id, "room changed during re-authorisation; retrying");
+			gave_up = attempt == REAUTH_ATTEMPTS;
+		}
+		if gave_up {
+			return Err!("room {room_id} kept changing during re-authorisation");
+		}
+		if let Some(left) = reauthed {
 			// Only now that the corrected state is installed: these users missed
 			// updates while out of the room, so refetch their keys. (Only the
 			// re-auth path finds them; the merge fallback below does not.)
@@ -590,8 +616,19 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		current: HashMap<ShortStateKey, OwnedEventId>,
-	) -> Result<()> {
+		expected_extremities: &[OwnedEventId],
+	) -> Result<bool> {
 		let _state_lock = self.services.state.mutex.lock(room_id).await;
+		let mut now: Vec<OwnedEventId> = self
+			.services
+			.state
+			.get_forward_extremities(room_id)
+			.collect()
+			.await;
+		now.sort();
+		if now != expected_extremities {
+			return Ok(false);
+		}
 		let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 		let old = self
 			.services
@@ -609,7 +646,7 @@ impl Service {
 			.state
 			.set_room_state_hamt_with_nodes(room_id, &new_root, &pending_nodes)?;
 		self.reconcile_tracking(room_id, &old, &current).await;
-		Ok(())
+		Ok(true)
 	}
 
 	async fn flush_users_who_left_in_window(

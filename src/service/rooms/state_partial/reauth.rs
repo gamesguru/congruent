@@ -34,15 +34,16 @@ impl Service {
 	/// Re-authorise the events between the resync point (`anchor`, whose full
 	/// state is `anchor_state`) and the room's forward extremities.
 	///
-	/// Returns the room's new current state and the remote users who were
-	/// joined and then left or banned within the window, or `None` if the window could not
+	/// Returns the room's new current state, the remote users who were
+	/// joined and then left or banned within the window, and the forward
+	/// extremities it was built from (sorted), or `None` if the window could not
 	/// be reconstructed (the caller then falls back to merging).
 	pub(super) async fn reauth_window(
 		&self,
 		room_id: &RoomId,
 		anchor: &EventId,
 		anchor_state: StateMap,
-	) -> Option<(StateMap, HashSet<OwnedUserId>)> {
+	) -> Option<(StateMap, HashSet<OwnedUserId>, Vec<OwnedEventId>)> {
 		let create_pdu = self
 			.services
 			.state_accessor
@@ -276,7 +277,9 @@ impl Service {
 				current.entry(*key).or_insert_with(|| id.clone());
 			}
 		}
-		Some((current, left))
+		let mut seen = extremities;
+		seen.sort();
+		Some((current, left, seen))
 	}
 
 	async fn was_joined(&self, state: &StateMap, user_id: &UserId) -> bool {
