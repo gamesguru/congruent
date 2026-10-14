@@ -370,8 +370,8 @@ async fn send_server_notice(
 
 	let body = std::str::from_utf8(&body)
 		.map_err(|e| err!(Request(BadJson("Body is not UTF-8: {e}"))))?;
-	let json: Value = codec::from_str(body)
-		.map_err(|e| err!(Request(BadJson("Invalid JSON body: {e}"))))?;
+	let json: Value =
+		codec::from_str(body).map_err(|e| err!(Request(BadJson("Invalid JSON body: {e}"))))?;
 	let target = json
 		.get("user_id")
 		.and_then(|v| v.as_str())
