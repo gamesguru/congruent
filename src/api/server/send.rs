@@ -815,16 +815,24 @@ async fn handle_room(
 		.await
 		.map(|_| ());
 
-		// An event that fails auth is stored as rejected, which is a normal
-		// outcome, not a processing error: Synapse reports it as accepted too.
+		// An event that fails auth is stored as rejected; Synapse reports it as
+		// accepted too.
+		// Only in a partial-state room: the PDU's auth may be judged differently
+		// once the full state is known, so don't tell the sender it was refused.
+		let room_is_partial = result.is_err()
+			&& services
+				.rooms
+				.state_partial
+				.partial_server(&room_id)
+				.await
+				.is_ok_and(|server| server.is_some());
 		let result = match result {
 			| Err(ref e)
-				if matches!(e.kind(), ErrorKind::Forbidden { .. })
-					&& {
-						let msg = e.to_string();
-						msg.contains("Event authorisation fails")
-							|| msg.contains("Event has failed auth check")
-					} =>
+				if room_is_partial && matches!(e.kind(), ErrorKind::Forbidden { .. }) && {
+					let msg = e.to_string();
+					msg.contains("Event authorisation fails")
+						|| msg.contains("Event has failed auth check")
+				} =>
 			{
 				debug_warn!("Incoming PDU {event_id} rejected on auth: {e}");
 				Ok(())
