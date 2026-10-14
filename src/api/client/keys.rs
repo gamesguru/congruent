@@ -486,6 +486,31 @@ pub(crate) async fn get_key_changes_route(
 	})
 }
 
+/// Whether we hear about this remote user's device list changes: they must share
+/// a room with one of our users (or have been seen joining a partial-state room).
+async fn remote_user_tracked(services: &Services, user_id: &UserId) -> bool {
+	if services.users.is_remote_user_tracked(user_id) {
+		return true;
+	}
+
+	let mut rooms = services.rooms.state_cache.rooms_joined(user_id).boxed();
+	while let Some(room_id) = rooms.next().await {
+		if services
+			.rooms
+			.state_cache
+			.local_users_in_room(&room_id)
+			.boxed()
+			.next()
+			.await
+			.is_some()
+		{
+			return true;
+		}
+	}
+
+	false
+}
+
 pub(crate) async fn get_keys_helper<F>(
 	services: &Services,
 	sender_user: Option<&UserId>,
@@ -511,16 +536,7 @@ where
 			// A tracked user whose keys we already fetched, with no change since,
 			// is answered locally without asking their server again.
 			if device_ids.is_empty() {
-				let tracked = services
-					.rooms
-					.state_cache
-					.rooms_joined(user_id)
-					.boxed()
-					.next()
-					.await
-					.is_some();
-				// A member seen joining a partial-state room has no membership row yet.
-				let tracked = tracked || services.users.is_remote_user_tracked(user_id);
+				let tracked = remote_user_tracked(services, user_id).await;
 				info!(target: "keys_cache_debug", %user_id, tracked, cached = services.users.cached_remote_keys(user_id).is_some(), "remote_keys_cache: lookup");
 				if let Some(cached) = tracked
 					.then(|| services.users.cached_remote_keys(user_id))
@@ -748,15 +764,7 @@ where
 				for (user_id, devices) in &filtered_device_keys {
 					// Only a tracked user's answer is kept: an untracked one (a pre-existing
 					// member of a partial room) would go stale unnoticed.
-					let tracked = services.users.is_remote_user_tracked(user_id)
-						|| services
-							.rooms
-							.state_cache
-							.rooms_joined(user_id)
-							.boxed()
-							.next()
-							.await
-							.is_some();
+					let tracked = remote_user_tracked(services, user_id).await;
 					let all_devices =
 						tracked && device_keys_input.get(user_id).is_some_and(Vec::is_empty);
 					info!(

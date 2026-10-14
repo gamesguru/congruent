@@ -1929,7 +1929,7 @@ impl Service {
 			.contains(user_id)
 	}
 
-	fn invalidate_remote_keys(&self, user_id: &UserId) {
+	pub fn invalidate_remote_keys(&self, user_id: &UserId) {
 		let mut cache = self.remote_keys_cache.lock().expect("locked");
 		conduwuit::info!(target: "keys_cache_debug", %user_id, "remote_keys_cache: invalidate");
 		self.remote_keys_generation

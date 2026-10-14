@@ -45,6 +45,9 @@ pub async fn update_membership(
 		if !self.services.users.exists(user_id).await {
 			self.services.users.create(user_id, None, None).await?;
 		}
+		// Any change in their membership may start or stop us hearing about their
+		// device list, so an earlier /keys/query answer can no longer be trusted.
+		self.services.users.invalidate_remote_keys(user_id);
 	}
 
 	match &membership.membership {
