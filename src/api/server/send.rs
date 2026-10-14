@@ -1180,12 +1180,12 @@ async fn handle_edu_device_list_update(
 		// is still partial-state with the origin. Fetching their devices now would
 		// be wasted (and unwelcome): remember the update and let the resync
 		// mark exactly these users changed once their membership is known.
-		if !services
+		let partial_rooms = services
 			.rooms
 			.state_partial
 			.partial_rooms_via(&user_id.server_name())
-			.await
-			.is_empty()
+			.await;
+		if !partial_rooms.is_empty()
 			&& services
 				.rooms
 				.state_cache
@@ -1195,7 +1195,10 @@ async fn handle_edu_device_list_update(
 				.await
 				.is_none()
 		{
-			services.rooms.state_partial.defer_device_update(&user_id);
+			services
+				.rooms
+				.state_partial
+				.defer_device_update(&user_id, &partial_rooms);
 			return;
 		}
 

@@ -119,7 +119,7 @@ impl Service {
 					self.notify_resolved(room_id);
 					// Only users whose update was held back while their membership was
 					// unknown are reported; other newly found members had no update.
-					for user_id in self.take_deferred_device_updates(&discovered) {
+					for user_id in self.take_deferred_device_updates(room_id, &discovered) {
 						self.services
 							.users
 							.mark_device_key_update_in_room(&user_id, room_id)

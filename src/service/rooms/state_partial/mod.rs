@@ -40,7 +40,7 @@ pub struct Service {
 	extra_servers: Mutex<std::collections::HashMap<OwnedRoomId, Vec<OwnedServerName>>>,
 	/// Remote users whose device-list update arrived while their room membership
 	/// was unknown; marked changed once a resync confirms them as members.
-	deferred_device_updates: Mutex<HashSet<OwnedUserId>>,
+	deferred_device_updates: Mutex<std::collections::HashMap<OwnedUserId, HashSet<OwnedRoomId>>>,
 	resync_tx: loole::Sender<OwnedRoomId>,
 	resync_rx: loole::Receiver<OwnedRoomId>,
 }
@@ -74,7 +74,7 @@ impl crate::Service for Service {
 			resolved_at: Mutex::new(std::collections::HashMap::new()),
 			partial_since: Mutex::new(std::collections::HashMap::new()),
 			extra_servers: Mutex::new(std::collections::HashMap::new()),
-			deferred_device_updates: Mutex::new(HashSet::new()),
+			deferred_device_updates: Mutex::new(std::collections::HashMap::new()),
 			resync_tx,
 			resync_rx,
 			db: Data {
@@ -176,12 +176,14 @@ impl Service {
 	}
 
 	/// Remember a device-list update from `user_id` that cannot be placed in a
-	/// room yet.
-	pub fn defer_device_update(&self, user_id: &slipstream::UserId) {
+	/// room yet, along with the partial rooms that might turn out to hold them.
+	pub fn defer_device_update(&self, user_id: &slipstream::UserId, rooms: &[OwnedRoomId]) {
 		self.deferred_device_updates
 			.lock()
 			.expect("locked")
-			.insert(user_id.to_owned());
+			.entry(user_id.to_owned())
+			.or_default()
+			.extend(rooms.iter().cloned());
 	}
 
 	/// Drop all deferred updates (no partial room remains to place them).
@@ -189,17 +191,31 @@ impl Service {
 		self.deferred_device_updates.lock().expect("locked").clear();
 	}
 
-	/// Remove and return the deferred updates for the given (now placed) users.
-	pub fn take_deferred_device_updates<'a, I>(&self, users: I) -> Vec<OwnedUserId>
+	/// Return the given (now placed in `room_id`) users that have a deferred
+	/// update pending for that room. Other rooms still awaiting resync keep
+	/// their claim on the update.
+	pub fn take_deferred_device_updates<'a, I>(
+		&self,
+		room_id: &RoomId,
+		users: I,
+	) -> Vec<OwnedUserId>
 	where
 		I: IntoIterator<Item = &'a OwnedUserId>,
 	{
 		let mut deferred = self.deferred_device_updates.lock().expect("locked");
-		users
-			.into_iter()
-			.filter(|user| deferred.remove(*user))
-			.cloned()
-			.collect()
+		let mut taken = Vec::new();
+		for user in users {
+			let Some(rooms) = deferred.get_mut(user) else {
+				continue;
+			};
+			if rooms.remove(room_id) {
+				taken.push(user.clone());
+			}
+			if rooms.is_empty() {
+				deferred.remove(user);
+			}
+		}
+		taken
 	}
 
 	/// The global count at which we partially joined this room, if since
