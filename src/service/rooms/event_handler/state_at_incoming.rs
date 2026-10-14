@@ -81,7 +81,7 @@ where
 		prev_event = parent;
 		prev_pdu = parent_pdu;
 	};
-	let prev_event = prev_event.as_ref();
+	let prev_event: &EventId = &prev_event;
 
 	let mut state: HashMap<_, _> = self
 		.services
