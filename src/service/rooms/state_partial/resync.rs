@@ -120,7 +120,10 @@ impl Service {
 					// Only users whose update was held back while their membership was
 					// unknown are reported; other newly found members had no update.
 					for user_id in self.take_deferred_device_updates(&discovered) {
-						self.services.users.mark_device_key_update(&user_id).await;
+						self.services
+							.users
+							.mark_device_key_update_in_room(&user_id, room_id)
+							.await;
 					}
 					// With no partial room left, nothing can place the remaining
 					// deferred users, so don't keep them around.

@@ -1861,21 +1861,39 @@ impl Service {
 	}
 
 	pub async fn mark_device_key_update(&self, user_id: &UserId) {
+		self.mark_device_key_update_inner(user_id, None).await;
+	}
+
+	/// Like `mark_device_key_update`, but only in `room_id`. Used when a partial
+	/// state resync confirms the user in that room: other rooms (which may still
+	/// be partial) must not be notified on its account.
+	pub async fn mark_device_key_update_in_room(&self, user_id: &UserId, room_id: &RoomId) {
+		self.mark_device_key_update_inner(user_id, Some(room_id))
+			.await;
+	}
+
+	async fn mark_device_key_update_inner(&self, user_id: &UserId, only_room: Option<&RoomId>) {
 		// Keep the sender from reading its EDU window bound between allocating the
 		// count and writing the rows below (see `globals::Service::edu_barrier`).
 		let _barrier = self.services.globals.edu_barrier.read().await;
 		let count = self.services.globals.next_count().unwrap();
 
-		conduwuit::info!(%user_id, "mark_device_key_update called");
+		conduwuit::info!(%user_id, ?only_room, "mark_device_key_update called");
 
-		let mut joined_rooms = self
-			.services
-			.state_cache
-			.rooms_joined(user_id)
-			.collect::<Vec<_>>()
-			.await;
+		let mut joined_rooms = if let Some(room_id) = only_room {
+			vec![room_id.to_owned()]
+		} else {
+			self.services
+				.state_cache
+				.rooms_joined(user_id)
+				.collect::<Vec<_>>()
+				.await
+		};
 
-		if joined_rooms.is_empty() && !self.services.globals.user_is_local(user_id) {
+		if only_room.is_none()
+			&& joined_rooms.is_empty()
+			&& !self.services.globals.user_is_local(user_id)
+		{
 			let mut server_rooms = self
 				.services
 				.state_cache
@@ -1907,7 +1925,7 @@ impl Service {
 
 		// Members of a partial-state room are not all known yet; a remote user
 		// whose server we joined through may well be in it.
-		if !self.services.globals.user_is_local(user_id) {
+		if only_room.is_none() && !self.services.globals.user_is_local(user_id) {
 			let server_name = user_id.server_name();
 			for room_id in self
 				.services
