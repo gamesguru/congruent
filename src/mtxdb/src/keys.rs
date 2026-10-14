@@ -1,29 +1,20 @@
 //! Stable identifiers used at the mtxdb boundary.
+//!
+//! The byte-exact derivations are owned by [`mtxdb::interop`]; this module
+//! re-exports them under the names the server already uses, so the server
+//! and the importer can never drift apart.
 
+pub use mtxdb::interop::{
+	EVENT_LOCATOR_BUCKETS, derive_id, event_locator_collection_id, event_record_id,
+	event_state_root_node_id as event_root_node_id, event_verdict_collection_id,
+	room_auth_collection_id, room_event_collection_id, room_prev_collection_id,
+	room_state_root_node_id as room_root_node_id, server_key_record_id,
+	server_keys_collection_id,
+};
 use mtxdb::{
 	MEMBER_NAMESPACE_STAT, MEMBER_NAMESPACE_STGP, derive_group_full_id,
 	derive_member_collection_id_from_group,
 };
-
-/// Derive an mtxdb identifier from a domain and logical identifier.
-///
-/// The domain is length-delimited by the separator, so identifiers from
-/// different namespaces cannot accidentally share the same input stream.
-/// Callers should retain the original logical identifier where collision
-/// detection is required; mtxdb identifiers are deliberately only 128 bits.
-#[must_use]
-pub fn derive_id(domain: &[u8], identifier: &[u8]) -> [u8; 16] {
-	use sha2::{Digest, Sha256};
-
-	let mut hasher = Sha256::new();
-	hasher.update(domain);
-	hasher.update([0]);
-	hasher.update(identifier);
-
-	let mut id = [0; 16];
-	id.copy_from_slice(&hasher.finalize()[..16]);
-	id
-}
 
 /// Derive the full 256-bit logical identity for a room's collection group.
 ///
@@ -33,7 +24,7 @@ pub fn room_group_full_id(room_id: &[u8]) -> [u8; 32] { derive_group_full_id(roo
 
 /// Derive a 128-bit collection ID for a member collection within a room's group.
 ///
-/// Formula: `BLAKE3-256("mtxdb/member/v1" || member_namespace || group_full_id)[0..16]`
+/// Formula: `wrapping_add_le(group_full_id, NAMESPACE_BIAS[member_namespace])[0..16]`
 #[must_use]
 pub fn room_collection_id(member_namespace: [u8; 4], group_full_id: &[u8; 32]) -> [u8; 16] {
 	derive_member_collection_id_from_group(member_namespace, *group_full_id)
@@ -65,53 +56,6 @@ pub fn hamt_node_id(structural_hash: &[u8; 32]) -> [u8; 16] {
 	let mut id = [0_u8; 16];
 	id.copy_from_slice(&structural_hash[..16]);
 	id
-}
-
-/// Derive an event record ID from an event ID.
-///
-/// Uses SHA-256 for domain separation from mtxdb's BLAKE3-based collections.
-#[must_use]
-pub fn event_record_id(event_id: &[u8]) -> [u8; 16] { derive_id(b"event", event_id) }
-
-/// Derive the room current-root node ID (fixed tag within room's STAT collection).
-#[must_use]
-pub fn room_root_node_id() -> [u8; 16] { derive_id(b"root", b"current") }
-
-/// Derive an event-root node ID within a room's STAT collection.
-#[must_use]
-pub fn event_root_node_id(event_id: &[u8]) -> [u8; 16] { derive_id(b"event-root", event_id) }
-
-pub use mtxdb::interop::{
-	EVENT_LOCATOR_BUCKETS, event_locator_collection_id, room_auth_collection_id,
-	room_event_collection_id, room_prev_collection_id,
-};
-
-/// Derive the per-event verdict collection ID (rejection, soft-fail and
-/// redaction) holding `node`.
-///
-/// Bucketed like [`event_locator_collection_id`], for the same reason, and
-/// global across rooms because the verdict setters are called with an event id
-/// alone.
-#[must_use]
-pub fn event_verdict_collection_id(node: &[u8; 16]) -> [u8; 16] {
-	let bucket = u32::from_le_bytes([node[0], node[1], node[2], node[3]]) % EVENT_LOCATOR_BUCKETS;
-	derive_id(b"sys", format!("event-verdict:{bucket}").as_bytes())
-}
-
-/// Derive the collection ID holding every origin's signing-key records.
-#[must_use]
-pub fn server_keys_collection_id() -> [u8; 16] { derive_id(b"sys", b"server-keys") }
-
-/// Derive the record ID of one signing-key record of `origin`. `kind` keeps the
-/// origin's several records (historical, provisional, ...) apart.
-#[must_use]
-pub fn server_key_record_id(kind: &[u8], origin: &[u8]) -> [u8; 16] {
-	let mut identifier =
-		Vec::with_capacity(kind.len().saturating_add(origin.len()).saturating_add(1));
-	identifier.extend_from_slice(kind);
-	identifier.push(0);
-	identifier.extend_from_slice(origin);
-	derive_id(b"server-key", &identifier)
 }
 
 /// Encode a Matrix state tuple without delimiter ambiguity.

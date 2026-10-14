@@ -373,11 +373,7 @@ where
 		// marked as rejected in our database. A transiently-rejected auth event
 		// (missing/unresolved, not intrinsically bad) must NOT hard-cascade here
 		// -- fall through and let it be treated as missing/retryable below.
-		if self
-			.services
-			.pdu_metadata
-			.is_event_permanently_rejected(aid)?
-		{
+		if self.auth_event_poisons(aid, room_id).await? {
 			self.services.pdu_metadata.mark_event_rejected(
 				event_id,
 				&RejectionCode::DependsOnRejectedAuthEvent.with_detail(aid),
@@ -498,11 +494,7 @@ where
 		// *permanently* rejected, this event must be rejected too. A
 		// transiently-rejected one falls through to the missing-auth-event
 		// branch below instead of hard-cascading.
-		if self
-			.services
-			.pdu_metadata
-			.is_event_permanently_rejected(id)?
-		{
+		if self.auth_event_poisons(id, room_id).await? {
 			self.services.pdu_metadata.mark_event_rejected(
 				event_id,
 				&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
@@ -682,11 +674,7 @@ where
 	const MAX_INLINE_FETCH: usize = 5;
 
 	for mid in missing_auth_events {
-		if self
-			.services
-			.pdu_metadata
-			.is_event_permanently_rejected(mid)?
-		{
+		if self.auth_event_poisons(mid, room_id).await? {
 			self.services.pdu_metadata.mark_event_rejected(
 				event_id,
 				&RejectionCode::DependsOnRejectedAuthEvent.with_detail(mid),
@@ -941,10 +929,7 @@ where
 		// (MissingAuthEvents) -- those are pushed to `still_missing` below
 		// instead, so they get a retryable verdict rather than a permanent
 		// one.
-		let permanently_rejected = self
-			.services
-			.pdu_metadata
-			.is_event_permanently_rejected(id)?;
+		let permanently_rejected = self.auth_event_poisons(id, room_id).await?;
 		info!(
 			target: "state_res_debug",
 			%event_id,
@@ -1003,4 +988,33 @@ where
 	}
 
 	Ok(())
+}
+
+/// Whether a dependent of the rejected `auth_event_id` must be rejected too. In
+/// a partial-state room an auth-check rejection is provisional: it was made
+/// without the full member list and the resync may overturn it, so events that
+/// merely cite it are judged on their own merits instead.
+#[implement(super::Service)]
+pub(super) async fn auth_event_poisons(
+	&self,
+	auth_event_id: &slipstream::EventId,
+	room_id: &slipstream::RoomId,
+) -> Result<bool> {
+	let pdu_metadata = &self.services.pdu_metadata;
+	if !pdu_metadata.is_event_permanently_rejected(auth_event_id)? {
+		return Ok(false);
+	}
+
+	let provisional = pdu_metadata
+		.get_rejection_reason(auth_event_id)?
+		.and_then(|reason| RejectionCode::parse(&reason))
+		.is_some_and(|code| code == RejectionCode::AuthCheckFailed)
+		&& self
+			.services
+			.state_partial
+			.partial_server(room_id)
+			.await
+			.is_ok_and(|server| server.is_some());
+
+	Ok(!provisional)
 }

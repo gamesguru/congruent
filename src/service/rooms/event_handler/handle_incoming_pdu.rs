@@ -474,11 +474,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			// missing-auth-event recovery) must not cascade here -- fall
 			// through to the /state_ids retry below instead.
 			for mid in &missing {
-				if self
-					.services
-					.pdu_metadata
-					.is_event_permanently_rejected(mid)?
-				{
+				if self.auth_event_poisons(mid, room_id).await? {
 					info!(
 						"Event {event_id} rejected: missing auth event {mid} is already marked \
 						 rejected; skipping /state/ fetch"

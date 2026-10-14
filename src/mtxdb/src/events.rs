@@ -733,11 +733,11 @@ mod room_tests {
 		};
 		let room = b"!room:example.com";
 		let node = event_record_id(b"$event:example.com");
-		assert_eq!(hex(&node), "f4f315ab8b948ccb0355c85e9d609ccd");
+		assert_eq!(hex(&node), "d3930850aae2d72b92a1d07108dcaa7f");
 		assert_eq!(hex(&room_event_collection_id(room)), "9507be45c492c4382edb18fc074477cc");
 		assert_eq!(hex(&room_prev_collection_id(room)), "fea9a58f0ab869317d696093fd7c6173");
 		assert_eq!(hex(&room_auth_collection_id(room)), "4842a2eff3cf511f9e48406350253c77");
-		assert_eq!(hex(&event_locator_collection_id(&node)), "9d34360b21fa7f1ad961f46fb7b25857");
+		assert_eq!(hex(&event_locator_collection_id(&node)), "8630e25f0c7e1a94558485e7176a1bda");
 	}
 
 	#[test]
