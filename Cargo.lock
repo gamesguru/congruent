@@ -2133,7 +2133,7 @@ dependencies = [
 [[package]]
 name = "mtx-slipstream"
 version = "0.1.0"
-source = "git+https://gitlab.com/Wombat-Foundation/mtx-slipstream.git?branch=dev#91d646d6a82bed97232e4d6d356d4003e50ad69d"
+source = "git+https://gitlab.com/Wombat-Foundation/mtx-slipstream.git?branch=dev#9dbd68bb1c4056b80a48b8422f90f6c1273b1786"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -2607,9 +2607,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "log",
  "once_cell",

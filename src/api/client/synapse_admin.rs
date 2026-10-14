@@ -311,7 +311,7 @@ async fn create_notice_room(
 		.await?;
 	timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomNameEventContent::new("Server Notices".into())),
+			PduBuilder::state(String::new(), &RoomNameEventContent::new("Server Notices")),
 			notice_user,
 			Some(&room_id),
 			&state_lock,
