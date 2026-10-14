@@ -14,7 +14,7 @@ use std::{
 };
 
 use conduwuit::{Result, err};
-use redb::{Database, ReadableDatabase, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use crate::{
 	map::batch::DbOp,
