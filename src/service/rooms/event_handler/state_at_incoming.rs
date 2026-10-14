@@ -371,3 +371,90 @@ where
 
 	Ok(Some(root_handle))
 }
+
+/// The state before an event with several predecessors, one of which we have
+/// no state for but whose state after it was fetched from the sender.
+///
+/// The fetched state stands in for that predecessor's own; the others come from
+/// what we hold. Returns `None` if any other predecessor lacks state too.
+#[implement(super::Service)]
+pub(crate) async fn state_at_incoming_with_fetched_prev<Pdu>(
+	&self,
+	incoming_pdu: &Pdu,
+	room_id: &RoomId,
+	room_version_id: &RoomVersionId,
+	fetched_prev: &EventId,
+	fetched_state: &HashMap<u64, OwnedEventId>,
+) -> Result<Option<HashMap<u64, OwnedEventId>>>
+where
+	Pdu: Event + Send + Sync,
+{
+	let mut forks: Vec<StateMap<OwnedEventId>> = Vec::new();
+	for prev in incoming_pdu.prev_events() {
+		if prev == fetched_prev {
+			let fork: StateMap<OwnedEventId> = fetched_state
+				.iter()
+				.stream()
+				.broad_then(|(k, id)| {
+					self.services
+						.short
+						.get_statekey_from_short(*k)
+						.map_ok(|(ty, sk)| ((ty, sk), id.clone()))
+				})
+				.ready_filter_map(Result::ok)
+				.collect()
+				.await;
+			forks.push(fork);
+			continue;
+		}
+
+		let Ok(prev_event) = self
+			.services
+			.timeline
+			.get_pdu_in_room(Some(room_id), prev)
+			.await
+		else {
+			return Ok(None);
+		};
+		let Ok(root_handle) = self
+			.services
+			.state_accessor
+			.pdu_roothandle_after_event(prev)
+			.await
+		else {
+			return Ok(None);
+		};
+		forks.push(
+			self.state_at_incoming_fork(room_id, root_handle, prev_event)
+				.await?,
+		);
+	}
+
+	let Some(first) = forks.first() else {
+		return Ok(None);
+	};
+	let resolved = if forks.iter().all(|fork| fork == first) {
+		first.clone()
+	} else {
+		let Ok(state) = self.state_resolution(room_id, room_version_id, forks.iter(), None)
+		else {
+			return Ok(None);
+		};
+		state
+	};
+
+	resolved
+		.into_iter()
+		.stream()
+		.broad_then(|((event_type, state_key), event_id)| async move {
+			self.services
+				.short
+				.get_or_create_shortstatekey(&event_type, &state_key)
+				.map(move |shortstatekey| (shortstatekey, event_id))
+				.await
+		})
+		.collect()
+		.map(Some)
+		.map(Ok)
+		.await
+}

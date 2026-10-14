@@ -406,13 +406,30 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	// A partial-state room can't serve /state_ids for events we've never seen
 	// (members are omitted), so resolve missing auth events with /event_auth
 	// straight away instead of deferring to a /state_ids retry.
-	let first_stage = if self
+	let partial_room = self
 		.services
 		.state_partial
 		.partial_server(room_id)
 		.await
-		.is_ok_and(|s| s.is_some())
-	{
+		.is_ok_and(|s| s.is_some());
+	// ... except when the event also lacks a prev_event: the state fetched to fill
+	// that gap (Synapse asks for the state after each missing prev) brings the
+	// auth events along, so /event_auth is only the last resort.
+	let has_missing_prev = if partial_room {
+		let mut missing_prev = false;
+		if let Ok(pdu) = conduwuit::PduEvent::from_id_val(event_id, value.clone(), Some(room_id)) {
+			for prev in pdu.prev_events() {
+				if !self.services.timeline.pdu_exists(prev).await {
+					missing_prev = true;
+					break;
+				}
+			}
+		}
+		missing_prev
+	} else {
+		false
+	};
+	let first_stage = if partial_room && !has_missing_prev {
 		AuthRecoveryStage::AfterStateIds
 	} else {
 		AuthRecoveryStage::BeforeStateIds
@@ -545,15 +562,21 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				}
 			}
 
+			// A partial-state room can't serve /state_ids for events it never saw
+			// (members are omitted), so only anchor one at a prev_event we lack.
+			let skip_state_ids = partial_room
+				&& (direct_prev.is_none() || self.services.timeline.pdu_exists(&state_ids_anchor).await);
 			let retry_result = Box::pin(async {
-				Box::pin(self.fetch_state(
-					origin,
-					create_event,
-					room_id,
-					&state_ids_anchor,
-					false,
-				))
-				.await?;
+				if !skip_state_ids {
+					Box::pin(self.fetch_state(
+						origin,
+						create_event,
+						room_id,
+						&state_ids_anchor,
+						false,
+					))
+					.await?;
+				}
 
 				let room_version_id = self.services.state.get_room_version(room_id).await?;
 				let mut inline_fetches = 0_usize;

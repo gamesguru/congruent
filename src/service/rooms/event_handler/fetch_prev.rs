@@ -350,7 +350,35 @@ where
 		&response_entries,
 		&response_graph,
 	);
-	let deep_anchor = deep_state_ids_anchor(&response_sorted, &response_graph);
+	let mut deep_anchor = deep_state_ids_anchor(&response_sorted, &response_graph);
+	if deep_anchor.is_none()
+		&& self
+			.services
+			.state_partial
+			.partial_server(room_id)
+			.await
+			.is_ok_and(|server| server.is_some())
+	{
+		// A fetched event with several parents, only one of which we lack, is
+		// anchored at the one we lack: its state is what the sender must supply,
+		// the rest we hold (Synapse asks for the state after each missing prev).
+		if let Some(parents) = response_sorted
+			.last()
+			.and_then(|last| response_graph.get(last))
+		{
+			let mut unknown = Vec::new();
+			for parent in parents {
+				if !response_graph.contains_key(parent)
+					&& !self.services.timeline.pdu_exists(parent).await
+				{
+					unknown.push(parent.clone());
+				}
+			}
+			if let [only] = unknown.as_slice() {
+				deep_anchor = Some(only.clone());
+			}
+		}
+	}
 	info!(
 		"fetch_prev {room_id}: response_events={response_count} already_known={known_count} \
 		 unparseable={unparsable} candidates={} deep_anchor={deep_anchor:?}",

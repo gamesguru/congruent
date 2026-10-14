@@ -104,6 +104,22 @@ where
 					);
 					match anchor_fetch {
 						| Ok(state) if anchor_is_only_prev => state_at_event = state,
+						| Ok(Some(fetched))
+							if incoming_pdu.prev_events().count() > 1
+								&& incoming_pdu.prev_events().any(|prev| prev == anchor) =>
+						{
+							// The anchor is one of several predecessors: its fetched state
+							// plus the others' own give the state before this event.
+							state_at_event = self
+								.state_at_incoming_with_fetched_prev(
+									&incoming_pdu,
+									room_id,
+									&room_version_id,
+									anchor,
+									&fetched,
+								)
+								.await?;
+						},
 						| Ok(_) => {},
 						| Err(e) => debug!(%anchor, "deeper /state_ids anchor fetch failed: {e}"),
 					}
