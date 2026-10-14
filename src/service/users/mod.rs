@@ -1170,10 +1170,10 @@ impl Service {
 		// Presenting it again means it leaked or the client is replaying: revoke
 		// the whole token family.
 		let key: (&UserId, &DeviceId) = (&user_id, &device_id);
-		let is_current = self
-			.device_refresh_token(&self.db.userdeviceid_refreshtoken, key)
-			.await
-			.as_deref() == Some(refresh_token);
+		let is_current =
+			self.device_refresh_token(&self.db.userdeviceid_refreshtoken, key)
+				.await
+				.as_deref() == Some(refresh_token);
 		if !is_current && self.previous_refresh_consumed(key).await {
 			self.remove_refresh_token(&user_id, &device_id).await;
 			return Err(unrecognized());
