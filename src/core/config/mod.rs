@@ -752,7 +752,7 @@ pub struct Config {
 
 	/// Maximum time to transmit a response to a client (seconds)
 	///
-	/// default: 15
+	/// default: 120
 	#[serde(default = "default_client_response_timeout")]
 	pub client_response_timeout: u64,
 
@@ -1992,7 +1992,7 @@ pub struct Config {
 	/// Total request timeout for URL previews (seconds). This includes
 	/// connection, request, and response body reading time.
 	///
-	/// default: 15
+	/// default: 120
 	#[serde(default = "default_url_preview_timeout")]
 	pub url_preview_timeout: u64,
 
