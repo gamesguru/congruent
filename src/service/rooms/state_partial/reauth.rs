@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use conduwuit::{
-	PduEvent, debug, info,
+	PduEvent, info,
 	matrix::{Event, StateKey, state_res},
 	warn,
 };
@@ -77,7 +77,7 @@ impl Service {
 				continue;
 			}
 			let Ok(pdu) = self.services.timeline.get_pdu(&event_id).await else {
-				debug!(target: "reauth_debug", %event_id, "window event not found");
+				warn!(target: "reauth_debug", %event_id, "window event not found");
 				continue;
 			};
 			if anchor_depth.is_some_and(|depth| pdu.depth() <= depth) {
@@ -101,6 +101,7 @@ impl Service {
 		info!(
 			target: "reauth_debug",
 			%room_id, %anchor, events = order.len(), extremities = extremities.len(),
+			order = ?order.iter().map(|p| (p.event_id().as_str(), p.prev_events().map(|e| e.as_str()).collect::<Vec<_>>())).collect::<Vec<_>>(),
 			"re-authorising events received while the state was partial"
 		);
 
@@ -313,6 +314,7 @@ impl Service {
 			}
 		}
 		if tips.is_empty() {
+			warn!(target: "reauth_debug", %room_id, extremities = extremities.len(), "no forward extremity has a reconstructed state");
 			return None;
 		}
 		let tip_states: Vec<StateMap> =
