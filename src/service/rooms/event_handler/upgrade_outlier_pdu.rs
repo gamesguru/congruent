@@ -15,7 +15,7 @@ use futures::{StreamExt, future::ready};
 use slipstream::{CanonicalJsonValue, OwnedEventId, RoomId, ServerName, events::StateEventType};
 
 use super::{get_room_version_id, to_room_version};
-use crate::rooms::timeline::RawPduId;
+use crate::rooms::{pdu_metadata::RejectionCode, timeline::RawPduId};
 
 #[implement(super::Service)]
 #[allow(clippy::too_many_arguments)]
@@ -228,6 +228,11 @@ where
 	.map_err(|e| err!(Request(Forbidden("Auth check failed: {e:?}"))))?;
 
 	if !auth_check {
+		// Later events that name this one as a predecessor take the state from
+		// before it; that only works if it is known to be rejected.
+		self.services
+			.pdu_metadata
+			.mark_event_rejected(incoming_pdu.event_id(), RejectionCode::AuthCheckFailed.tag())?;
 		return Err!(Request(Forbidden("Event has failed auth check with state at the event.")));
 	}
 
