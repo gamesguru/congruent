@@ -380,6 +380,20 @@ pub(super) async fn state_ids_at_event(
 	room_id: &RoomId,
 	event_id: &EventId,
 ) -> Result<Vec<OwnedEventId>> {
+	// With only partial state we can't answer for any event: the snapshots lack the
+	// omitted members (Synapse blocks or refuses such requests too).
+	if services
+		.rooms
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|server| server.is_some())
+	{
+		return Err!(Request(Forbidden(
+			"This server only has partial state for the room, so it can't serve its state."
+		)));
+	}
+
 	let root_handle = services
 		.rooms
 		.state_accessor
