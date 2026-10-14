@@ -302,28 +302,30 @@ where
 		None
 	};
 
+	// MSC2836: index the parent->child edge before the PDU becomes visible to
+	// sync. A client that sees the child and immediately queries
+	// /event_relationships must find the edge (it is idempotent, so a
+	// redundant call for an already-present PDU is harmless).
+	if let Ok(content) = pdu.get_content::<super::ExtractMsc2836Relationship>() {
+		if let Some(relationship) = content.relationship {
+			self.services.pdu_metadata.msc2836_add_child(
+				&relationship.event_id,
+				pdu.event_id(),
+				&relationship.rel_type,
+			);
+		}
+	}
+
 	self.services
 		.user
 		.reset_notification_counts(pdu.sender(), room_id);
 
-	// Everything below is keyed by event id, not by stream count, so it runs
+	// The mtxdb event write is keyed by event id, not by stream count, so it runs
 	// before the sync barrier is taken. That keeps the span between allocating a
-	// count and making its row visible down to the RocksDB batch apply, and it
-	// means no timeline row is ever visible without its state association. A
-	// failure afterwards leaves at worst unreferenced records. The derived
-	// membership caches are deliberately not updated here; see below.
+	// count and making its row visible down to the RocksDB batch apply.
 	if existing_pdu.is_none() {
 		self.db.write_event_to_mtxdb(pdu, &pdu_json);
 	}
-	let event_state_root = Box::pin(self.services.state.persist_event_state_with_root(
-		room_id,
-		pdu,
-		state_lock,
-		state_root_handle.as_ref(),
-		&pending_nodes,
-	))
-	.await?;
-
 	let (pdu_id, pdu_count, private_read_count) = if let Some((existing_id, existing_count)) =
 		existing_pdu
 	{
@@ -360,20 +362,17 @@ where
 		(pdu_id, pdu_count, Some(count))
 	};
 
-	// Update the derived membership caches only now that the row is visible. This
-	// allocates stream counts for markers such as the left marker, and sync only
-	// delivers a leave event when the marker's count is greater than the event's
-	// own. Allocating it before the event's count would let a sync report the
-	// room as left without the leave event and never deliver the event itself.
-	self.services
-		.state
-		.update_event_state_caches(
-			room_id,
-			pdu,
-			prev_state_root_handle.as_ref(),
-			&event_state_root,
-		)
-		.await?;
+	// Must stay after the timeline row is inserted and its count published: this
+	// applies the membership change and wakes sync, which has to find the PDU.
+	Box::pin(self.services.state.set_event_state_with_root(
+		room_id,
+		pdu,
+		state_lock,
+		state_root_handle.as_ref(),
+		prev_state_root_handle.as_ref(),
+		&pending_nodes,
+	))
+	.await?;
 
 	// Recovered outlier timelines carry no state event of their own, so the batch
 	// above did not advance the room pointer for them. A state event already had
@@ -655,16 +654,6 @@ where
 				}
 			},
 			| _ => {}, // TODO: Aggregate other types
-		}
-	}
-
-	if let Ok(content) = pdu.get_content::<super::ExtractMsc2836Relationship>() {
-		if let Some(relationship) = content.relationship {
-			self.services.pdu_metadata.msc2836_add_child(
-				&relationship.event_id,
-				pdu.event_id(),
-				&relationship.rel_type,
-			);
 		}
 	}
 
