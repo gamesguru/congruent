@@ -13,7 +13,7 @@ use conduwuit_service::{Services, users::parse_master_key};
 use futures::{StreamExt, stream::FuturesUnordered};
 use service::uiaa::Identity;
 use slipstream::{
-	OneTimeKeyAlgorithm, OwnedDeviceId, OwnedUserId, UserId,
+	OneTimeKeyAlgorithm, OwnedDeviceId, OwnedRoomId, OwnedUserId, UserId,
 	api::{
 		client::{
 			error::ErrorKind,
@@ -489,12 +489,16 @@ pub(crate) async fn get_key_changes_route(
 /// Whether we hear about this remote user's device list changes: they must share
 /// a room with one of our users (or have been seen joining a partial-state room).
 async fn remote_user_tracked(services: &Services, user_id: &UserId) -> bool {
-	if services.users.is_remote_user_tracked(user_id) {
-		return true;
-	}
-
-	let mut rooms = services.rooms.state_cache.rooms_joined(user_id).boxed();
-	while let Some(room_id) = rooms.next().await {
+	let mut rooms: Vec<OwnedRoomId> = services.users.tracked_remote_rooms(user_id);
+	rooms.extend(
+		services
+			.rooms
+			.state_cache
+			.rooms_joined(user_id)
+			.collect::<Vec<_>>()
+			.await,
+	);
+	for room_id in rooms {
 		if services
 			.rooms
 			.state_cache

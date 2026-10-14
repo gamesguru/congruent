@@ -291,6 +291,29 @@ impl Service {
 		servers
 	}
 
+	/// Whether `remote`'s server is known to be in a partial-state room `local`
+	/// has joined. Membership is unknown until the resync, so this stands in
+	/// for "shares a room" for things such as presence.
+	pub async fn shares_partial_server(
+		&self,
+		local: &slipstream::UserId,
+		remote: &slipstream::UserId,
+	) -> bool {
+		use futures::StreamExt;
+		let mut rooms = self.services.state_cache.rooms_joined(local).boxed();
+		while let Some(room_id) = rooms.next().await {
+			if self
+				.partial_servers(&room_id)
+				.await
+				.iter()
+				.any(|server| *server == remote.server_name())
+			{
+				return true;
+			}
+		}
+		false
+	}
+
 	pub async fn partial_server(&self, room_id: &RoomId) -> Result<Option<OwnedServerName>> {
 		match self.db.state_partial_rooms.qry(room_id).await {
 			| Ok(handle) => Ok(Some(handle.deserialized()?)),

@@ -141,7 +141,8 @@ pub struct Service {
 	remote_keys_cache: std::sync::Mutex<HashMap<OwnedUserId, CachedRemoteKeys>>,
 	/// Remote users seen joining a partial-state room after we did: their device
 	/// lists are tracked even though the membership index lacks them.
-	tracked_remote_users: std::sync::Mutex<std::collections::HashSet<OwnedUserId>>,
+	tracked_remote_users:
+		std::sync::Mutex<HashMap<OwnedUserId, std::collections::HashSet<OwnedRoomId>>>,
 	/// Bumped on every invalidation so an answer fetched before one is never
 	/// stored after it.
 	remote_keys_generation: std::sync::atomic::AtomicU64,
@@ -214,7 +215,7 @@ impl crate::Service for Service {
 		Ok(Arc::new(Self {
 			last_device_key_update_count: std::sync::atomic::AtomicU64::new(current_count),
 			remote_keys_cache: std::sync::Mutex::new(HashMap::new()),
-			tracked_remote_users: std::sync::Mutex::new(std::collections::HashSet::new()),
+			tracked_remote_users: std::sync::Mutex::new(HashMap::new()),
 			remote_keys_generation: std::sync::atomic::AtomicU64::new(0),
 			services: Services {
 				server: args.server.clone(),
@@ -1907,26 +1908,37 @@ impl Service {
 		}
 	}
 
-	pub fn track_remote_user(&self, user_id: &UserId) {
+	/// Remember that `user_id` was seen joining the partial-state `room_id`.
+	pub fn track_remote_user(&self, user_id: &UserId, room_id: &RoomId) {
 		self.tracked_remote_users
 			.lock()
 			.expect("locked")
-			.insert(user_id.to_owned());
+			.entry(user_id.to_owned())
+			.or_default()
+			.insert(room_id.to_owned());
 	}
 
-	pub fn untrack_remote_user(&self, user_id: &UserId) {
-		self.tracked_remote_users
-			.lock()
-			.expect("locked")
-			.remove(user_id);
+	pub fn untrack_remote_user(&self, user_id: &UserId, room_id: &RoomId) {
+		{
+			let mut tracked = self.tracked_remote_users.lock().expect("locked");
+			if let Some(rooms) = tracked.get_mut(user_id) {
+				rooms.remove(room_id);
+				if rooms.is_empty() {
+					tracked.remove(user_id);
+				}
+			}
+		}
 		self.invalidate_remote_keys(user_id);
 	}
 
-	pub fn is_remote_user_tracked(&self, user_id: &UserId) -> bool {
+	/// The partial-state rooms in which `user_id` was seen joining.
+	pub fn tracked_remote_rooms(&self, user_id: &UserId) -> Vec<OwnedRoomId> {
 		self.tracked_remote_users
 			.lock()
 			.expect("locked")
-			.contains(user_id)
+			.get(user_id)
+			.map(|rooms| rooms.iter().cloned().collect())
+			.unwrap_or_default()
 	}
 
 	pub fn invalidate_remote_keys(&self, user_id: &UserId) {

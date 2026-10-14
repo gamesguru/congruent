@@ -649,7 +649,7 @@ where
 					| None => false,
 				};
 				if !already_joined {
-					self.services.users.track_remote_user(&target);
+					self.services.users.track_remote_user(&target, room_id);
 					self.services
 						.users
 						.mark_device_key_update_in_room(&target, room_id)
@@ -671,7 +671,7 @@ where
 				.await
 				.is_ok_and(|server| server.is_some())
 			{
-				self.services.users.untrack_remote_user(&target);
+				self.services.users.untrack_remote_user(&target, room_id);
 			}
 		}
 	}

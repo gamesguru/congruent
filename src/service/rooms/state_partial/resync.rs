@@ -604,7 +604,7 @@ impl Service {
 		self.services
 			.state
 			.set_room_state_hamt_with_nodes(room_id, &new_root, &pending_nodes)?;
-		self.reconcile_tracking(&old, &current).await;
+		self.reconcile_tracking(room_id, &old, &current).await;
 		Ok(())
 	}
 

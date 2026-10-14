@@ -259,7 +259,12 @@ impl Service {
 
 	/// Fix device-list tracking for members whose join/leave differs between the
 	/// state held during the partial window and the corrected state.
-	pub(super) async fn reconcile_tracking(&self, old: &StateMap, new: &StateMap) {
+	pub(super) async fn reconcile_tracking(
+		&self,
+		room_id: &RoomId,
+		old: &StateMap,
+		new: &StateMap,
+	) {
 		let member_type = StateEventType::RoomMember;
 		for (key, new_id) in new {
 			if old.get(key) == Some(new_id) {
@@ -286,9 +291,9 @@ impl Service {
 				.is_ok_and(|c| c.membership == MembershipState::Join);
 			info!(target: "reauth_debug", %user_id, joined, "membership differs after resync");
 			if joined {
-				self.services.users.track_remote_user(&user_id);
+				self.services.users.track_remote_user(&user_id, room_id);
 			} else {
-				self.services.users.untrack_remote_user(&user_id);
+				self.services.users.untrack_remote_user(&user_id, room_id);
 			}
 		}
 	}

@@ -45,9 +45,21 @@ pub async fn update_membership(
 		if !self.services.users.exists(user_id).await {
 			self.services.users.create(user_id, None, None).await?;
 		}
-		// Any change in their membership may start or stop us hearing about their
-		// device list, so an earlier /keys/query answer can no longer be trusted.
-		self.services.users.invalidate_remote_keys(user_id);
+		// A change that starts or stops us hearing about their device list means an
+		// earlier /keys/query answer can no longer be trusted. If another room
+		// already kept us subscribed, the cached answer stays valid.
+		let mut others = self.services.users.tracked_remote_rooms(user_id);
+		others.extend(self.rooms_joined(user_id).collect::<Vec<_>>().await);
+		let mut subscribed_elsewhere = false;
+		for other in others.iter().filter(|other| *other != room_id) {
+			if self.local_users_in_room(other).next().await.is_some() {
+				subscribed_elsewhere = true;
+				break;
+			}
+		}
+		if !subscribed_elsewhere {
+			self.services.users.invalidate_remote_keys(user_id);
+		}
 	}
 
 	match &membership.membership {
