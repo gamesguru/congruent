@@ -190,6 +190,8 @@ impl Service {
 				if let Err(e) = result {
 					warn!(target: "reauth_debug", %event_id, "failed to update verdict: {e}");
 				}
+				// State resolution caches events with their verdict.
+				self.services.short.leanevent_cache.invalidate(&event_id);
 				info!(
 					target: "reauth_debug",
 					%event_id, was_rejected, now_rejected = !accepted,
