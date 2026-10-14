@@ -114,7 +114,7 @@ impl Service {
 		state_event_id: Option<&EventId>,
 	) {
 		self.register_partial(room_id, remote_server, state_event_id);
-		self.start_resync(room_id);
+		self.signal_resync(room_id);
 	}
 
 	/// Record the room as partial without starting the resync. Done before our
@@ -142,7 +142,7 @@ impl Service {
 	}
 
 	/// Start resyncing straight away, like Synapse's _start_partial_state_room_sync.
-	pub fn start_resync(&self, room_id: &RoomId) { _ = self.resync_tx.send(room_id.to_owned()); }
+	pub fn signal_resync(&self, room_id: &RoomId) { _ = self.resync_tx.send(room_id.to_owned()); }
 
 	/// Wait until the room no longer has partial state (Synapse's
 	/// `await_full_state`).

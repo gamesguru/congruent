@@ -966,7 +966,7 @@ async fn join_room_by_id_helper_remote_process(
 					.collect(),
 			);
 		}
-		services.rooms.state_partial.start_resync(room_id);
+		services.rooms.state_partial.signal_resync(room_id);
 	}
 
 	Ok(())
