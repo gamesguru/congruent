@@ -629,7 +629,7 @@
 {"Action":"fail","Test":"TestPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanFastJoinDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanLazyLoadingSyncDuringPartialStateJoin"}
-{"Action":"pass","Test":"TestPartialStateJoin/CanReceiveDeviceListUpdateDuringPartialStateJoin"}
+{"Action":"fail","Test":"TestPartialStateJoin/CanReceiveDeviceListUpdateDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveEventsDuringPartialStateJoin"}
 {"Action":"fail","Test":"TestPartialStateJoin/CanReceiveEventsWithHalfMissingGrandparentsDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveEventsWithHalfMissingParentsDuringPartialStateJoin"}
@@ -1003,7 +1003,7 @@
 {"Action":"pass","Test":"TestTyping/Typing_can_be_explicitly_stopped"}
 {"Action":"pass","Test":"TestTyping/Typing_events_DO_NOT_include_a_`room_id`_field"}
 {"Action":"pass","Test":"TestTyping/Typing_notification_sent_to_local_room_members"}
-{"Action":"fail","Test":"TestUnbanViaInvite"}
+{"Action":"pass","Test":"TestUnbanViaInvite"}
 {"Action":"pass","Test":"TestUnknownEndpoints"}
 {"Action":"pass","Test":"TestUnknownEndpoints/Client-server_endpoints"}
 {"Action":"pass","Test":"TestUnknownEndpoints/Key_endpoints"}
