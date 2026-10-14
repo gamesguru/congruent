@@ -138,7 +138,11 @@ impl Service {
 						| (Ok(pred), Some(depth)) => pred.depth() <= depth,
 						| _ => false,
 					};
-					let stored = if older { self.stored_state(room_id, prev).await } else { None };
+					let stored = if older {
+						self.stored_state(room_id, prev).await
+					} else {
+						None
+					};
 					let Some(stored) = stored else {
 						warn!(target: "reauth_debug", %event_id, %prev, "predecessor state unavailable; cannot re-authorise window");
 						return None;
@@ -357,7 +361,12 @@ impl Service {
 	/// The full state stored for `event_id`, if it has a snapshot.
 	async fn stored_state(&self, room_id: &RoomId, event_id: &EventId) -> Option<StateMap> {
 		let shorteventid = self.services.short.get_shorteventid(event_id).await.ok()?;
-		let root = self.services.state.get_roothandle(shorteventid).await.ok()?;
+		let root = self
+			.services
+			.state
+			.get_roothandle(shorteventid)
+			.await
+			.ok()?;
 		self.services
 			.state_accessor
 			.state_full_ids_hamt(room_id, &root)

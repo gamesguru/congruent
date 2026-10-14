@@ -92,6 +92,17 @@ async fn should_rescind_invite(
 				.get_field::<RoomMemberEventContent>("content")?
 				.is_some_and(|c| c.membership == MembershipState::Invite)
 		{
+			// A leave older than the invite (an unban that reached us after the
+			// invite did) cannot rescind it.
+			let leave_ts = content
+				.get("origin_server_ts")
+				.and_then(rezzy::JsonValue::as_i64);
+			let invite_ts = event.get_field::<u64>("origin_server_ts")?;
+			if let (Some(leave_ts), Some(invite_ts)) = (leave_ts, invite_ts) {
+				if u64::try_from(leave_ts).is_ok_and(|leave_ts| leave_ts < invite_ts) {
+					return Ok(false);
+				}
+			}
 			return Ok(true);
 		}
 	}
