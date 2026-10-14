@@ -641,13 +641,13 @@
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveTypingDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanSendEventsDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/Can_change_display_name_during_partial_state_join"}
-{"Action":"fail","Test":"TestPartialStateJoin/Device_list_tracking"}
+{"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking"}
 {"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_no_longer_tracked_for_user_incorrectly_believed_to_be_in_room"}
 {"Action":"skip","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_no_longer_tracked_when_failing_to_complete_partial_state_join"}
 {"Action":"skip","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_no_longer_tracked_when_leaving_partial_state_room"}
 {"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_no_longer_tracked_when_new_member_leaves_partial_state_room"}
 {"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracked_for_new_members_in_partial_state_room"}
-{"Action":"fail","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_for_pre-existing_members_in_partial_state_room"}
+{"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_for_pre-existing_members_in_partial_state_room"}
 {"Action":"skip","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_for_user_incorrectly_believed_to_be_in_room_when_they_join_another_shared_room_before_partial_state_join_completes"}
 {"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_for_user_incorrectly_believed_to_be_in_room_when_they_rejoin_after_partial_state_join_completes"}
 {"Action":"skip","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracking_for_user_incorrectly_believed_to_be_in_room_when_they_rejoin_before_partial_state_join_completes"}
@@ -673,7 +673,7 @@
 {"Action":"pass","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_reach_all_servers_in_partial_state_rooms"}
 {"Action":"pass","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_reach_incorrectly_absent_servers_once_partial_state_join_completes"}
 {"Action":"pass","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_reach_incorrectly_absent_servers_once_partial_state_join_completes_even_though_remote_server_left_room"}
-{"Action":"fail","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_reach_incorrectly_kicked_servers_once_partial_state_join_completes"}
+{"Action":"pass","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_reach_incorrectly_kicked_servers_once_partial_state_join_completes"}
 {"Action":"fail","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_reach_incorrectly_kicked_servers_once_partial_state_join_completes_even_though_remote_server_left_room"}
 {"Action":"pass","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_reach_newly_joined_servers_in_partial_state_rooms"}
 {"Action":"pass","Test":"TestPartialStateJoin/PartialStateJoinContinuesAfterRestart"}

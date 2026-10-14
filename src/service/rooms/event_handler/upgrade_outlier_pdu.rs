@@ -11,7 +11,7 @@ use conduwuit::{
 	utils::stream::IterStream,
 	warn,
 };
-use futures::{StreamExt, future::ready};
+use futures::{StreamExt, TryStreamExt, future::ready};
 use slipstream::{CanonicalJsonValue, OwnedEventId, RoomId, ServerName, events::StateEventType};
 
 use super::{get_room_version_id, to_room_version};
@@ -169,13 +169,13 @@ where
 	// A partial-state room omits member events from its state, so the sender's
 	// membership is absent. The event's own auth_events carry it; fall back to
 	// those (only for partial rooms) instead of failing auth.
-	let partial_auth_events: Vec<PduEvent> = if self
+	let partial_room = self
 		.services
 		.state_partial
 		.partial_server(room_id)
 		.await
-		.is_ok_and(|s| s.is_some())
-	{
+		.is_ok_and(|s| s.is_some());
+	let partial_auth_events: Vec<PduEvent> = if partial_room {
 		let mut v = Vec::new();
 		for id in incoming_pdu.auth_events() {
 			if let Ok(pdu) = self.services.timeline.get_pdu(id).await {
@@ -359,9 +359,33 @@ where
 						.await?,
 			};
 			let prev_root = Some(prev_root);
-			let (new_root, pending_nodes) = self
-				.resolve_state(room_id, &room_version_id, state_after)
-				.await?;
+
+			// In a partial-state room the members needed to judge conflicting
+			// forks are unknown, so state resolution would reject events that were
+			// accepted on the strength of their own auth events. Apply the event to
+			// the current state like Synapse does; the resync re-authorises it and
+			// corrects the state if it was wrong.
+			let partial_current = if partial_room {
+				match self.services.state.get_room_state_hamt(room_id).await {
+					| Ok(root) => self
+						.services
+						.state_accessor
+						.state_full_ids_hamt(room_id, &root)
+						.try_collect::<HashMap<u64, OwnedEventId>>()
+						.await
+						.ok(),
+					| Err(_) => None,
+				}
+			} else {
+				None
+			};
+			let (new_root, pending_nodes) = if let Some(mut current) = partial_current {
+				current.insert(shortstatekey, event_id.to_owned());
+				self.state_map_to_root_handle(room_id, &current).await?
+			} else {
+				self.resolve_state(room_id, &room_version_id, state_after)
+					.await?
+			};
 
 			prev_nodes.extend(pending_nodes);
 			(prev_root, Some(new_root), prev_nodes)
