@@ -184,6 +184,11 @@ impl Service {
 			.insert(user_id.to_owned());
 	}
 
+	/// Drop all deferred updates (no partial room remains to place them).
+	pub fn clear_deferred_device_updates(&self) {
+		self.deferred_device_updates.lock().expect("locked").clear();
+	}
+
 	/// Remove and return the deferred updates for the given (now placed) users.
 	pub fn take_deferred_device_updates<'a>(
 		&self,

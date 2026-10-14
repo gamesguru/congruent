@@ -122,6 +122,11 @@ impl Service {
 					for user_id in self.take_deferred_device_updates(&discovered) {
 						self.services.users.mark_device_key_update(&user_id).await;
 					}
+					// With no partial room left, nothing can place the remaining
+					// deferred users, so don't keep them around.
+					if !self.any_partial_rooms().await {
+						self.clear_deferred_device_updates();
+					}
 					return;
 				},
 				| Err(e) => {
@@ -427,6 +432,19 @@ impl Service {
 			}
 		}
 		info!("Repaired state snapshots of {repaired} events in {room_id} after resync");
+	}
+
+	/// Whether any room is still partial.
+	async fn any_partial_rooms(&self) -> bool {
+		let rooms: Vec<OwnedRoomId> = self
+			.db
+			.state_partial_rooms
+			.stream()
+			.ignore_err()
+			.map(|(room_id, _): (OwnedRoomId, OwnedServerName)| room_id)
+			.collect()
+			.await;
+		!rooms.is_empty()
 	}
 
 	/// Rooms whose state is still partial that `server` is known to be in.
