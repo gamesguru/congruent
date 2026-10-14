@@ -1,5 +1,5 @@
 use std::{
-	collections::{BTreeMap, HashMap},
+	collections::{BTreeMap, HashMap, HashSet},
 	sync::Arc,
 	time::Duration,
 };
@@ -18,6 +18,11 @@ use slipstream::{
 };
 
 use crate::rooms::{short::ShortStateKey, state_partial::Service};
+
+enum StateEventLoadError {
+	InvalidResponse(String),
+	Transient(conduwuit::Error),
+}
 
 /// How many times the re-authorised state is rebuilt when the room changes under it.
 const REAUTH_ATTEMPTS: usize = 5;
@@ -59,10 +64,7 @@ impl Service {
 			.map(|(key, value): (&[u8], &[u8])| (key.to_vec(), value.to_vec()))
 			.collect()
 			.await;
-		let pending: Vec<(
-			conduwuit::matrix::RawPduId,
-			std::collections::HashSet<OwnedServerName>,
-		)> = rows
+		let pending: Vec<(conduwuit::matrix::RawPduId, HashSet<OwnedServerName>)> = rows
 			.iter()
 			.filter_map(|(key, value)| {
 				let pdu_id = key.get(prefix.len()..)?;
@@ -113,11 +115,8 @@ impl Service {
 	}
 
 	/// Remote servers we send device-list updates to for this room.
-	async fn device_list_servers(
-		&self,
-		room_id: &RoomId,
-	) -> std::collections::HashSet<OwnedServerName> {
-		let mut servers: std::collections::HashSet<OwnedServerName> = self
+	async fn device_list_servers(&self, room_id: &RoomId) -> HashSet<OwnedServerName> {
+		let mut servers: HashSet<OwnedServerName> = self
 			.services
 			.state_cache
 			.room_servers(room_id)
@@ -136,7 +135,7 @@ impl Service {
 	async fn replay_device_updates(
 		&self,
 		room_id: &RoomId,
-		servers_before: &std::collections::HashSet<OwnedServerName>,
+		servers_before: &HashSet<OwnedServerName>,
 	) {
 		let mut servers = self.device_list_servers(room_id).await;
 		let members = self
@@ -159,8 +158,7 @@ impl Service {
 		}
 
 		let from = self.partial_since(room_id).unwrap_or(0);
-		let mut all_changes =
-			BTreeMap::<u64, std::collections::HashSet<slipstream::OwnedUserId>>::new();
+		let mut all_changes = BTreeMap::<u64, HashSet<slipstream::OwnedUserId>>::new();
 		let mut changes = std::pin::pin!(self.services.users.room_keys_changed(
 			room_id,
 			Some(from),
@@ -265,17 +263,6 @@ impl Service {
 	) -> Result<Vec<slipstream::OwnedUserId>> {
 		debug!("Resyncing room {} starting with server {}", room_id, server_name);
 
-		let (response, remote_server, state_ids) =
-			self.fetch_remote_state(room_id, server_name).await?;
-
-		info!(
-			"Fetched {} state events and {} auth events for partial room {} from {}",
-			response.pdus.len(),
-			response.auth_chain.len(),
-			room_id,
-			remote_server
-		);
-
 		// Need room version to validate payloads (i.e., event_handler computes hashes)
 		let create_pdu = self
 			.services
@@ -285,34 +272,60 @@ impl Service {
 		let room_version = crate::rooms::event_handler::get_room_version_id(&create_pdu)?;
 
 		let room_id = room_id.to_owned();
+		let mut invalid_servers = HashSet::new();
+		let new_state_ids = loop {
+			let (response, remote_server, state_ids) = self
+				.fetch_remote_state(&room_id, server_name, &invalid_servers)
+				.await
+				.map_err(|error| {
+					if invalid_servers.is_empty() {
+						error
+					} else {
+						err!(Request(Unknown(
+							"No usable state response for {room_id}; rejected responses from \
+							 {invalid_servers:?}: {error}"
+						)))
+					}
+				})?;
 
-		// Process auth chain events first.
-		// event_handler natively supports pulling outliers via `handle_incoming_pdu`
-		// ... which validates signature, performs auth check, and saves to DB.
-		self.clone()
-			.process_auth_chain(&room_id, &room_version, &remote_server, response.auth_chain)
-			.await;
+			info!(
+				"Fetched {} state events and {} auth events for partial room {} from {}",
+				response.pdus.len(),
+				response.auth_chain.len(),
+				room_id,
+				remote_server
+			);
 
-		// Process State events
-		let expected = response.pdus.len();
-		let new_state_ids = self
-			.clone()
-			.process_state_events(
-				&room_id,
-				&room_version,
-				&remote_server,
-				response.pdus,
-				&state_ids,
-			)
-			.await?;
-		// A state event that failed to load (a signing key fetch, say) leaves a hole
-		// in the state; fail so the resync is retried rather than marked complete.
-		if new_state_ids.len() < expected {
-			return Err(err!(Request(Unknown(
-				"Loaded {} of {expected} state events; retrying",
-				new_state_ids.len()
-			))));
-		}
+			// Process auth chain events first. The state-event pass below detects
+			// missing dependencies and rejects this server's response if incomplete.
+			self.clone()
+				.process_auth_chain(&room_id, &room_version, &remote_server, response.auth_chain)
+				.await;
+
+			let expected = response.pdus.len();
+			match self
+				.clone()
+				.process_state_events(
+					&room_id,
+					&room_version,
+					&remote_server,
+					response.pdus,
+					&state_ids,
+				)
+				.await
+			{
+				| Ok(state) if state.len() == expected => break state,
+				| Ok(state) => {
+					warn!(%room_id, %remote_server, loaded = state.len(), expected, "state response omitted state keys");
+					invalid_servers.insert(remote_server);
+				},
+				| Err(StateEventLoadError::InvalidResponse(reason)) => {
+					warn!(%room_id, %remote_server, %reason, "rejecting invalid partial-state response; trying another server");
+					invalid_servers.insert(remote_server);
+				},
+				| Err(StateEventLoadError::Transient(error)) => return Err(error),
+			}
+		};
 
 		// Events received while the state was partial were accepted without the
 		// omitted members; re-authorise them against the full state, which also
@@ -353,7 +366,7 @@ impl Service {
 		// Only now that the corrected state is installed: these users missed
 		// updates while out of the room, so refetch their keys.
 		self.flush_users_who_left_in_window(&room_id, left).await;
-		let known: std::collections::HashSet<slipstream::OwnedUserId> = self
+		let known: HashSet<slipstream::OwnedUserId> = self
 			.services
 			.state_cache
 			.room_members(&room_id)
@@ -384,6 +397,7 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		server_name: &ServerName,
+		excluded: &HashSet<OwnedServerName>,
 	) -> Result<(get_room_state::v1::Response, OwnedServerName, Vec<OwnedEventId>)> {
 		// Discovery fallback: collect servers to try
 		let others = self
@@ -400,7 +414,7 @@ impl Service {
 		let servers = sort_servers(server_name, others);
 
 		for server in servers {
-			if server == self.services.globals.server_name() {
+			if server == self.services.globals.server_name() || excluded.contains(&server) {
 				continue;
 			}
 
@@ -502,22 +516,27 @@ impl Service {
 		remote_server: &ServerName,
 		pdus: Vec<RawJsonValue>,
 		expected_ids: &[OwnedEventId],
-	) -> Result<BTreeMap<ShortStateKey, OwnedEventId>> {
+	) -> std::result::Result<BTreeMap<ShortStateKey, OwnedEventId>, StateEventLoadError> {
 		use conduwuit::matrix::event::gen_event_id_canonical_json;
 
-		let expected: std::collections::HashSet<_> = expected_ids.iter().cloned().collect();
-		let mut loaded = std::collections::HashSet::with_capacity(expected.len());
+		let expected: HashSet<_> = expected_ids.iter().cloned().collect();
+		let mut loaded = HashSet::with_capacity(expected.len());
 		let mut state = BTreeMap::new();
 		for pdu_json in pdus {
 			let (event_id, value) = gen_event_id_canonical_json(&pdu_json, room_version)
-				.map_err(|e| err!(Request(Unknown("Could not parse state event: {e}"))))?;
+				.map_err(|e| {
+					StateEventLoadError::InvalidResponse(format!(
+						"could not parse state event: {e}"
+					))
+				})?;
 			if !expected.contains(&event_id) {
-				return Err(err!(Request(Unknown(
-					"State response contained an event absent from /state_ids"
-				))));
+				return Err(StateEventLoadError::InvalidResponse(format!(
+					"state response contained {event_id}, absent from /state_ids"
+				)));
 			}
 
-			self.services
+			if let Err(error) = self
+				.services
 				.event_handler
 				.handle_incoming_pdu(
 					remote_server,
@@ -527,13 +546,47 @@ impl Service {
 					false,
 					room_version,
 				)
-				.await?;
+				.await
+			{
+				// Auth rejection and other client-classified validation failures mean
+				// this server supplied unusable state. Missing auth events are also a
+				// response completeness problem; storage/key-fetch failures remain
+				// transient and use the normal retry backoff.
+				if error.status_code().is_client_error()
+					|| matches!(&error, conduwuit::Error::MissingAuthEvents(_))
+				{
+					return Err(StateEventLoadError::InvalidResponse(format!(
+						"state event {event_id} failed validation: {error}"
+					)));
+				}
+				return Err(StateEventLoadError::Transient(error));
+			}
+
+			let rejected = self
+				.services
+				.pdu_metadata
+				.is_event_rejected(&event_id)
+				.map_err(StateEventLoadError::Transient)?;
+			let pending_auth = self
+				.services
+				.pdu_metadata
+				.is_event_pending_auth_resolution(&event_id)
+				.map_err(StateEventLoadError::Transient)?;
+			if rejected || pending_auth {
+				return Err(StateEventLoadError::InvalidResponse(format!(
+					"state event {event_id} was not accepted during ingestion"
+				)));
+			}
 
 			let pdu = PduEvent::from_id_val(&event_id, value, Some(room_id)).map_err(|e| {
-				err!(Request(Unknown("Could not decode state event {event_id}: {e}")))
+				StateEventLoadError::InvalidResponse(format!(
+					"could not decode state event {event_id}: {e}"
+				))
 			})?;
 			let state_key = pdu.state_key.as_ref().ok_or_else(|| {
-				err!(Request(Unknown("State response contained a non-state event")))
+				StateEventLoadError::InvalidResponse(format!(
+					"state response contained non-state event {event_id}"
+				))
 			})?;
 			let shortstatekey = self
 				.services
@@ -545,9 +598,9 @@ impl Service {
 		}
 
 		if loaded != expected {
-			return Err(err!(Request(Unknown(
-				"State response did not contain every event listed by /state_ids"
-			))));
+			return Err(StateEventLoadError::InvalidResponse(
+				"state response did not contain every event listed by /state_ids".to_owned(),
+			));
 		}
 
 		Ok(state)
@@ -633,7 +686,7 @@ impl Service {
 	async fn flush_users_who_left_in_window(
 		&self,
 		room_id: &RoomId,
-		left: std::collections::HashSet<slipstream::OwnedUserId>,
+		left: HashSet<slipstream::OwnedUserId>,
 	) {
 		use slipstream::events::room::member::{MembershipState, RoomMemberEventContent};
 		for user_id in left {
