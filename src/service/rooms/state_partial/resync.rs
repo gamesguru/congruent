@@ -4,7 +4,7 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use conduwuit::{Event, PduEvent, Result, debug, info, pdu::PduBuilder, warn};
+use conduwuit::{Event, PduEvent, Result, debug, error, info, pdu::PduBuilder, warn};
 use conduwuit_core::{
 	Err, err,
 	utils::stream::{BroadbandExt, IterStream, TryIgnore},
@@ -65,27 +65,34 @@ impl Service {
 	async fn send_pending(&self, room_id: &RoomId) -> Result {
 		let mut prefix = room_id.as_bytes().to_vec();
 		prefix.push(database::SEP);
+		// A scan error must fail the drain: treating it as "nothing pending" would
+		// let the caller clear the partial markers with rows still unsent.
 		let rows: Vec<(Vec<u8>, Vec<u8>)> = self
 			.db
 			.state_partial_pending
 			.raw_stream_prefix(&prefix)
-			.ignore_err()
-			.map(|(key, value): (&[u8], &[u8])| (key.to_vec(), value.to_vec()))
-			.collect()
-			.await;
-		let pending: Vec<(conduwuit::matrix::RawPduId, HashSet<OwnedServerName>)> = rows
-			.iter()
-			.filter_map(|(key, value)| {
-				let pdu_id = key.get(prefix.len()..)?;
-				let pdu_id = <[u8; 16]>::try_from(pdu_id).ok()?;
-				let sent_to = std::str::from_utf8(value)
-					.ok()?
-					.split(',')
-					.filter_map(|server| OwnedServerName::try_from(server).ok())
-					.collect();
-				Some((conduwuit::matrix::RawPduId(pdu_id), sent_to))
-			})
-			.collect();
+			.map_ok(|(key, value): (&[u8], &[u8])| (key.to_vec(), value.to_vec()))
+			.try_collect()
+			.await?;
+		let mut unreadable = HashSet::new();
+		let mut pending = Vec::new();
+		for (key, value) in &rows {
+			let parsed = key
+				.get(prefix.len()..)
+				.and_then(|id| <[u8; 16]>::try_from(id).ok())
+				.zip(std::str::from_utf8(value).ok());
+			let Some((pdu_id, sent_to)) = parsed else {
+				// Keep the row: it can't be sent, but it must not be discarded either.
+				error!(row = ?key, "Unreadable pending row for a partial-state PDU; keeping it");
+				unreadable.insert(key.clone());
+				continue;
+			};
+			let sent_to: HashSet<OwnedServerName> = sent_to
+				.split(',')
+				.filter_map(|server| OwnedServerName::try_from(server).ok())
+				.collect();
+			pending.push((conduwuit::matrix::RawPduId(pdu_id), sent_to));
+		}
 		if pending.is_empty() {
 			return Ok(());
 		}
@@ -122,7 +129,7 @@ impl Service {
 				first_error.get_or_insert(e);
 			}
 		}
-		for (key, _) in &rows {
+		for (key, _) in rows.iter().filter(|(key, _)| !unreadable.contains(key)) {
 			let failed_row = key
 				.get(prefix.len()..)
 				.and_then(|id| <[u8; 16]>::try_from(id).ok())
