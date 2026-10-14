@@ -387,6 +387,12 @@ e2ee args=".*":
     # default. Users can still pass a Go regular expression when diagnosing an
     # independently-known flaky upstream test.
     COMPLEMENT_CRYPTO_SKIP="${COMPLEMENT_CRYPTO_SKIP:-}"
+    # Partial-state joins only exist with fast_joins, so TestPartialStateJoin
+    # cannot pass without it; skip it instead of reporting 66 failures.
+    if grep -Eq '^[[:space:]]*fast_joins[[:space:]]*=[[:space:]]*false' complement/complement.config.toml; then
+        echo "fast_joins = false: skipping TestPartialStateJoin"
+        COMPLEMENT_CRYPTO_SKIP="${COMPLEMENT_CRYPTO_SKIP:+$COMPLEMENT_CRYPTO_SKIP|}^TestPartialStateJoin\$"
+    fi
     GO_TEST_SKIP_ARGS=()
     if [ -n "$COMPLEMENT_CRYPTO_SKIP" ]; then
         GO_TEST_SKIP_ARGS=(-skip "$COMPLEMENT_CRYPTO_SKIP")
