@@ -5,7 +5,7 @@ use std::{
 	time::Duration,
 };
 
-use conduwuit::{PduEvent, Result, debug, info, warn};
+use conduwuit::{Event, PduEvent, Result, debug, info, warn};
 use conduwuit_core::{
 	err,
 	utils::stream::{BroadbandExt, IterStream, TryIgnore},
@@ -624,11 +624,7 @@ impl Service {
 			let rejoined = self
 				.services
 				.state_accessor
-				.room_state_get(
-					room_id,
-					&slipstream::events::StateEventType::RoomMember,
-					user_id.as_str(),
-				)
+				.room_state_get(room_id, &StateEventType::RoomMember, user_id.as_str())
 				.await
 				.is_ok_and(|pdu| {
 					pdu.get_content::<RoomMemberEventContent>()
