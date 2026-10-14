@@ -459,6 +459,9 @@ impl Service {
 		Ok(())
 	}
 
+	/// Fetch and validate full room state, re-authorise events accepted while
+	/// state was partial, and install the corrected state. Return newly discovered
+	/// remote members for device-list updates after the room is resolved.
 	async fn resync_room(
 		self: Arc<Self>,
 		room_id: &RoomId,
@@ -596,6 +599,9 @@ impl Service {
 		))
 	}
 
+	/// Try the preferred server and fallback servers, skipping local and excluded
+	/// servers. Fetch state IDs before full state and return the response, serving
+	/// server, state event IDs, and the event anchoring both requests.
 	async fn fetch_remote_state(
 		&self,
 		room_id: &RoomId,
