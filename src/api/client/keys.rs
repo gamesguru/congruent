@@ -499,6 +499,15 @@ where
 					.next()
 					.await
 					.is_some();
+				// Members of a partial-state room are not in the membership index
+				// yet; their server being in such a room is the best we know.
+				let tracked = tracked
+					|| !services
+						.rooms
+						.state_partial
+						.partial_rooms_via(&user_id.server_name())
+						.await
+						.is_empty();
 				if let Some(cached) = tracked
 					.then(|| services.users.cached_remote_keys(user_id))
 					.flatten()
