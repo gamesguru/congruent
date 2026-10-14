@@ -467,9 +467,12 @@ impl Service {
 				statuses.remove(&msg.dest);
 			}
 		} else if is_flush {
-			// Flush was rejected. `select_events` already rescheduled it for the
-			// end of an active backoff; rescheduling here as well doubled the
-			// pending flushes on every rejection.
+			// Flush was rejected, and this must not schedule another: only the
+			// active-backoff branch of `select_events` reschedules (for the end of
+			// the backoff). A Running/Retrying rejection is followed up by that
+			// transaction's completion, and a Cooldown one by the flush
+			// `handle_response_ok` already queued. Rescheduling here as well
+			// doubled the pending flushes on every rejection.
 			debug!(
 				target: "presence_debug",
 				dest = ?msg.dest, status = ?statuses.get(&msg.dest),
