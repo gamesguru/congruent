@@ -74,6 +74,38 @@ pub async fn update_membership(
 		}
 	}
 
+	// When the last local user leaves, we stop hearing about the room's remote
+	// users' device lists. Their cached keys would go stale unnoticed and be
+	// served again after a rejoin, so drop them unless another room keeps us
+	// subscribed.
+	if self.services.globals.user_is_local(user_id)
+		&& !matches!(membership.membership, MembershipState::Join)
+		&& !self
+			.local_users_in_room(room_id)
+			.ready_any(|local| local != user_id)
+			.await
+	{
+		let remote_members: Vec<_> = self
+			.room_members(room_id)
+			.ready_filter(|member| !self.services.globals.user_is_local(member))
+			.collect()
+			.await;
+		for member in remote_members {
+			let mut others = self.services.users.tracked_remote_rooms(&member);
+			others.extend(self.rooms_joined(&member).collect::<Vec<_>>().await);
+			let mut subscribed_elsewhere = false;
+			for other in others.iter().filter(|other| *other != room_id) {
+				if self.local_users_in_room(other).next().await.is_some() {
+					subscribed_elsewhere = true;
+					break;
+				}
+			}
+			if !subscribed_elsewhere {
+				self.services.users.invalidate_remote_keys(&member);
+			}
+		}
+	}
+
 	match &membership.membership {
 		| MembershipState::Join => {
 			// Check if the user never joined this room
