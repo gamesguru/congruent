@@ -175,6 +175,18 @@ where
 		.partial_server(room_id)
 		.await
 		.is_ok_and(|s| s.is_some());
+	// A user leaving for themselves grants nothing, so it is judged by its own
+	// auth_events even if the provisional state says they already left (e.g. after
+	// a kick accepted on partial state); everything else is judged against the
+	// state at the event, with the auth_events only filling gaps.
+	let claimed_first = partial_room
+		&& *incoming_pdu.kind() == slipstream::events::TimelineEventType::RoomMember
+		&& incoming_pdu.state_key() == Some(incoming_pdu.sender().as_str())
+		&& incoming_pdu
+			.get_content::<slipstream::events::room::member::RoomMemberEventContent>()
+			.is_ok_and(|c| {
+				c.membership == slipstream::events::room::member::MembershipState::Leave
+			});
 	let partial_auth_events: Vec<PduEvent> = if partial_room {
 		let mut v = Vec::new();
 		for id in incoming_pdu.auth_events() {
@@ -196,10 +208,7 @@ where
 	let partial_auth_events = &partial_auth_events;
 	let state_fetch_state = &state_at_incoming_event;
 	let state_fetch = |k: StateEventType, s: StateKey| async move {
-		// With partial state the state at the event may be wrong or incomplete, so
-		// like Synapse the event is judged against its own auth_events first; the
-		// resync re-authorises it against the real state.
-		if partial_room {
+		if claimed_first {
 			let claimed = partial_auth_events.iter().find(|p| {
 				*p.kind() == slipstream::events::TimelineEventType::from(k.clone())
 					&& p.state_key() == Some(s.as_str())
@@ -298,9 +307,8 @@ where
 					})
 					.cloned()
 			};
-			// With partial state the current state may be incomplete or provisional,
-			// so the event's own auth_events take precedence (see the first check).
-			if partial_room {
+			// See `claimed_first` above.
+			if claimed_first {
 				ready(claimed().or_else(|| auth_events.get(&key).map(ToOwned::to_owned)))
 			} else {
 				ready(
