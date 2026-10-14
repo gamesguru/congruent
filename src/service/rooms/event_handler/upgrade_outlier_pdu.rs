@@ -196,6 +196,18 @@ where
 	let partial_auth_events = &partial_auth_events;
 	let state_fetch_state = &state_at_incoming_event;
 	let state_fetch = |k: StateEventType, s: StateKey| async move {
+		// With partial state the state at the event may be wrong or incomplete, so
+		// like Synapse the event is judged against its own auth_events first; the
+		// resync re-authorises it against the real state.
+		if partial_room {
+			let claimed = partial_auth_events.iter().find(|p| {
+				*p.kind() == slipstream::events::TimelineEventType::from(k.clone())
+					&& p.state_key() == Some(s.as_str())
+			});
+			if let Some(claimed) = claimed {
+				return Some(claimed.clone());
+			}
+		}
 		let from_state = async {
 			let shortstatekey = self.services.short.get_shortstatekey(&k, &s).await.ok()?;
 			let event_id = state_fetch_state.get(&shortstatekey)?;
