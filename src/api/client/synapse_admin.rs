@@ -35,7 +35,7 @@ static NONCES: LazyLock<std::sync::Mutex<HashSet<String>>> =
 /// Hands out a single-use nonce for [`synapse_register`].
 pub(crate) async fn synapse_register_nonce(
 	State(services): State<crate::State>,
-) -> std::result::Result<crate::router::response::Response, ApiError> {
+) -> Result<crate::router::response::Response, ApiError> {
 	if services.server.config.registration_shared_secret.is_none() {
 		return Err!(Request(Unrecognized("Shared secret registration is disabled.")))
 			.map_err(Into::into);
@@ -57,7 +57,7 @@ pub(crate) async fn synapse_register_nonce(
 pub(crate) async fn synapse_register(
 	State(services): State<crate::State>,
 	request: hyper::Request<Incoming>,
-) -> std::result::Result<crate::router::response::Response, ApiError> {
+) -> Result<crate::router::response::Response, ApiError> {
 	let Some(secret) = services.server.config.registration_shared_secret.clone() else {
 		return Err!(Request(Unrecognized("Shared secret registration is disabled.")))
 			.map_err(Into::into);
@@ -120,8 +120,10 @@ pub(crate) async fn synapse_register(
 			.chars()
 			.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._=-/+".contains(c))
 	{
-		return Err!(Request(InvalidUsername("User ID can only contain characters a-z, 0-9, or '=_-./+'")))
-			.map_err(Into::into);
+		return Err!(Request(InvalidUsername(
+			"User ID can only contain characters a-z, 0-9, or '=_-./+'"
+		)))
+		.map_err(Into::into);
 	}
 
 	let user_id = OwnedUserId::parse(format!("@{username}:{}", services.globals.server_name()))
@@ -167,7 +169,7 @@ pub(crate) async fn synapse_delete_room(
 	State(services): State<crate::State>,
 	Path(room_id): Path<String>,
 	request: hyper::Request<Incoming>,
-) -> std::result::Result<crate::router::response::Response, ApiError> {
+) -> Result<crate::router::response::Response, ApiError> {
 	let room_id = OwnedRoomId::parse(room_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 	let sender_user =
