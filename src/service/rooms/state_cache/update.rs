@@ -114,6 +114,17 @@ pub async fn update_membership(
 			self.mark_as_joined(user_id, room_id).await;
 		},
 		| MembershipState::Invite => {
+			// Replayed older events (partial-state join promotion, resync) can carry
+			// an invite for a user who has since joined; never undo that join.
+			let already_joined = self.is_joined(user_id, room_id).await;
+			conduwuit::info!(
+				target: "invite_debug",
+				%user_id, %room_id, already_joined, event_id = %pdu.event_id(),
+				"update_membership: invite"
+			);
+			if already_joined {
+				return Ok(());
+			}
 			let invite_state = self.services.state.summary_stripped(pdu, room_id).await;
 			self.mark_as_invited(user_id, room_id, pdu.sender(), Some(invite_state), None)
 				.await?;

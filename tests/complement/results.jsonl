@@ -955,8 +955,8 @@
 {"Action":"pass","Test":"TestSync"}
 {"Action":"pass","Test":"TestSync/parallel"}
 {"Action":"pass","Test":"TestSync/parallel/Can_sync_a_joined_room"}
-{"Action":"fail","Test":"TestSync/parallel/Device_list_tracking"}
-{"Action":"fail","Test":"TestSync/parallel/Device_list_tracking/User_is_correctly_listed_when_they_leave,_even_when_lazy_loading_is_enabled"}
+{"Action":"pass","Test":"TestSync/parallel/Device_list_tracking"}
+{"Action":"pass","Test":"TestSync/parallel/Device_list_tracking/User_is_correctly_listed_when_they_leave,_even_when_lazy_loading_is_enabled"}
 {"Action":"pass","Test":"TestSync/parallel/Full_state_sync_includes_joined_rooms"}
 {"Action":"pass","Test":"TestSync/parallel/Get_presence_for_newly_joined_members_in_incremental_sync"}
 {"Action":"pass","Test":"TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_private_room_`state_after`_includes_all_members_from_timeline"}
