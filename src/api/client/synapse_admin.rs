@@ -227,6 +227,11 @@ static NOTICE_ROOMS: LazyLock<std::sync::Mutex<HashMap<OwnedUserId, OwnedRoomId>
 static NOTICE_TXNS: LazyLock<std::sync::Mutex<HashMap<(OwnedUserId, String), String>>> =
 	LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
+/// Serializes `send_server_notice`, so that retries of one transaction cannot
+/// both miss `NOTICE_TXNS` and send the notice twice.
+static NOTICE_SEND: LazyLock<tokio::sync::Mutex<()>> =
+	LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 /// Whether `room_id` is the server notice room of `user_id`.
 pub(crate) fn is_server_notice_room(user_id: &UserId, room_id: &RoomId) -> bool {
 	NOTICE_ROOMS
@@ -355,6 +360,8 @@ async fn send_server_notice(
 		return Err!(Request(Forbidden("Only server administrators can use this endpoint")))
 			.map_err(Into::into);
 	}
+
+	let _serialized = NOTICE_SEND.lock().await;
 
 	let reply = |event_id: &str| {
 		let mut object = slipstream::ObjectBuilder::new();
