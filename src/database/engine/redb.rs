@@ -110,14 +110,65 @@ impl RedbEngine {
 
 	pub(crate) fn has_corks(&self) -> bool { self.corks.load(Ordering::Relaxed) > 0 }
 
-	pub fn cf_exists(&self, _name: &str) -> bool {
-		let _ = Arc::strong_count(&self.db);
-		true
+	/// Whether the map holds any rows. Maps are only prefixes of one shared
+	/// table, so an empty one is indistinguishable from one that never existed.
+	pub fn cf_exists(&self, name: &str) -> bool {
+		let prefix = composite_key(name, &[]);
+		let upper = prefix_end(&prefix);
+		let Ok(transaction) = self.db.begin_read() else {
+			return false;
+		};
+		let Ok(table) = transaction.open_table(TABLE) else {
+			return false;
+		};
+		let mut iter = match upper.as_deref() {
+			| Some(upper) => table.range::<&[u8]>(prefix.as_slice()..upper),
+			| None => table.range::<&[u8]>(prefix.as_slice()..),
+		};
+
+		let found = iter
+			.as_mut()
+			.is_ok_and(|iter| iter.next().is_some_and(|item| item.is_ok()));
+		found
 	}
 
-	pub fn drop_cf(&self, _name: &str) -> Result<()> {
-		let _ = Arc::strong_count(&self.db);
-		Ok(())
+	/// Deletes every row of the map.
+	pub fn drop_cf(&self, name: &str) -> Result<()> {
+		let prefix = composite_key(name, &[]);
+		let upper = prefix_end(&prefix);
+		let transaction = self
+			.db
+			.begin_write()
+			.map_err(|error| err!(Database("failed to begin redb write: {error}")))?;
+		{
+			let mut table = transaction
+				.open_table(TABLE)
+				.map_err(|error| err!(Database("failed to open redb metadata table: {error}")))?;
+			let keys = {
+				let iter = match upper.as_deref() {
+					| Some(upper) => table.range::<&[u8]>(prefix.as_slice()..upper),
+					| None => table.range::<&[u8]>(prefix.as_slice()..),
+				}
+				.map_err(|error| err!(Database("failed to iterate redb metadata: {error}")))?;
+
+				let mut keys = Vec::new();
+				for item in iter {
+					let (key, _) = item.map_err(|error| {
+						err!(Database("failed to read redb metadata: {error}"))
+					})?;
+					keys.push(key.value().to_vec());
+				}
+				keys
+			};
+			for key in keys {
+				table.remove(key.as_slice()).map_err(|error| {
+					err!(Database("failed to remove redb metadata: {error}"))
+				})?;
+			}
+		}
+		transaction
+			.commit()
+			.map_err(|error| err!(Database("failed to commit redb metadata: {error}")))
 	}
 
 	pub fn file_list(&self) -> impl Iterator<Item = Result<FileInfo>> {
@@ -406,6 +457,11 @@ mod tests {
 		assert_eq!(keys(engine.scan_prefix("a", b"2").unwrap()), ["2"]);
 		assert_eq!(keys(engine.scan_prefix("a", b"").unwrap()), ["1", "2", "3"]);
 		assert!(engine.scan_prefix("a", b"9").unwrap().is_empty());
+
+		assert!(engine.cf_exists("a") && engine.cf_exists("b") && !engine.cf_exists("c"));
+		engine.drop_cf("a").expect("drop");
+		assert!(!engine.cf_exists("a") && engine.cf_exists("b"));
+		assert!(engine.scan("a", IteratorMode::Start).unwrap().is_empty());
 		let _ = std::fs::remove_dir_all(dir);
 	}
 }
