@@ -51,6 +51,18 @@ pub async fn update_membership(
 		let mut others = self.services.users.tracked_remote_rooms(user_id);
 		others.extend(self.rooms_joined(user_id).collect::<Vec<_>>().await);
 		let mut subscribed_elsewhere = false;
+		// A join by someone already believed to be in this very room (a profile
+		// update, or a rejoin we never saw them leave) changes nothing.
+		let already_here = matches!(membership.membership, MembershipState::Join)
+			&& (self.is_joined(user_id, room_id).await
+				|| self
+					.services
+					.users
+					.tracked_remote_rooms(user_id)
+					.contains(&room_id.to_owned()));
+		if already_here && self.local_users_in_room(room_id).next().await.is_some() {
+			subscribed_elsewhere = true;
+		}
 		for other in others.iter().filter(|other| *other != room_id) {
 			if self.local_users_in_room(other).next().await.is_some() {
 				subscribed_elsewhere = true;
