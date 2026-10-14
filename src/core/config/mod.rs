@@ -811,6 +811,13 @@ pub struct Config {
 	/// display: sensitive
 	pub registration_token: Option<String>,
 
+	/// Shared secret enabling Synapse's `/_synapse/admin/v1/register` endpoint,
+	/// which registers (admin) users via an HMAC-SHA1 signature. Disabled when
+	/// unset.
+	///
+	/// display: sensitive
+	pub registration_shared_secret: Option<String>,
+
 	/// A path to a file containing static registration tokens, one per line.
 	/// Tokens in this file do not supersede tokens from other sources, such as
 	/// the `!admin token` command or the `registration_token` configuration

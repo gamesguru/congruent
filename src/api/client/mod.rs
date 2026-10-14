@@ -39,6 +39,7 @@ pub(super) mod typing;
 pub(super) mod unstable;
 pub(super) mod unversioned;
 pub(super) mod user_directory;
+pub(super) mod synapse_admin;
 pub(super) mod voip;
 pub(super) mod well_known;
 
@@ -87,6 +88,7 @@ pub(super) use typing::*;
 pub(super) use unstable::*;
 pub(super) use unversioned::*;
 pub(super) use user_directory::*;
+pub(super) use synapse_admin::*;
 pub(super) use voip::*;
 pub(super) use well_known::*;
 

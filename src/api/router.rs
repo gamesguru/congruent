@@ -327,6 +327,11 @@ pub fn build(
 			"/_matrix/client/unstable/org.continuwuity.dag/{room_id}",
 			get(client::get_room_dag_route),
 		)
+		.route(
+			"/_synapse/admin/v1/register",
+			get(client::synapse_register_nonce).post(client::synapse_register),
+		)
+		.route("/_synapse/admin/v1/rooms/{room_id}", delete(client::synapse_delete_room))
 		.ruma_route(&admin::rooms::ban::ban_room)
 		.ruma_route(&admin::rooms::list::list_rooms);
 

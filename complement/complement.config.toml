@@ -19,6 +19,7 @@ allow_local_presence = true
 # was a coin flip on flush-timer phase.
 federation_presence_interval_s = 1
 allow_registration = true
+registration_shared_secret = "complement"
 database_path = "/var/lib/continuwuity"
 # By default we use info/warn, only for failures/debugging verbose
 log = "info,presence_debug=debug"
