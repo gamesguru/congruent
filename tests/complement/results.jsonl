@@ -509,8 +509,8 @@
 {"Action":"pass","Test":"TestMSC4499Key/Validation/\u00a74/DuplicateJSONKeyRejection/B-then-A"}
 {"Action":"pass","Test":"TestMSC4499Key/Validation/\u00a74/IdenticalCrossMapIsLegal"}
 {"Action":"pass","Test":"TestMSC4499Key/Validation/\u00a74/IntraPayloadRejection"}
-{"Action":"pass","Test":"TestMSC4500State"}
-{"Action":"pass","Test":"TestMSC4500State/Accumulator"}
+{"Action":"fail","Test":"TestMSC4500State"}
+{"Action":"fail","Test":"TestMSC4500State/Accumulator"}
 {"Action":"pass","Test":"TestMSC4500State/Outbound"}
 {"Action":"pass","Test":"TestMSC4500State/StateHashes"}
 {"Action":"pass","Test":"TestMSC4500State/StateHashes/Limited"}
@@ -679,7 +679,7 @@
 {"Action":"pass","Test":"TestPartialStateJoin/PartialStateJoinContinuesAfterRestart"}
 {"Action":"fail","Test":"TestPartialStateJoin/PartialStateJoinSyncsUsingOtherHomeservers"}
 {"Action":"skip","Test":"TestPartialStateJoin/Purge_during_resync"}
-{"Action":"fail","Test":"TestPartialStateJoin/Rejected_events_remain_rejected_after_resync"}
+{"Action":"pass","Test":"TestPartialStateJoin/Rejected_events_remain_rejected_after_resync"}
 {"Action":"pass","Test":"TestPartialStateJoin/Rejects_make_join_during_partial_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/Rejects_make_knock_during_partial_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/Rejects_send_join_during_partial_join"}
