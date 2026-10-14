@@ -2,7 +2,7 @@ pub mod antispam;
 mod appservice;
 mod data;
 mod dest;
-mod sender;
+pub(crate) mod sender;
 pub mod stats;
 
 use std::{

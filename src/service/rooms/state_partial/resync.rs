@@ -87,6 +87,96 @@ impl Service {
 		}
 	}
 
+	/// Remote servers we send device-list updates to for this room.
+	async fn device_list_servers(
+		&self,
+		room_id: &RoomId,
+	) -> std::collections::HashSet<OwnedServerName> {
+		let mut servers: std::collections::HashSet<OwnedServerName> = self
+			.services
+			.state_cache
+			.room_servers(room_id)
+			.collect::<Vec<_>>()
+			.await
+			.into_iter()
+			.collect();
+		servers.extend(self.partial_servers(room_id).await);
+		servers.retain(|server| !self.services.globals.server_is_ours(server));
+		servers
+	}
+
+	/// Like Synapse's `handle_room_un_partial_stated`: servers that only the
+	/// resynced state reveals (members present or past) missed the local device
+	/// list changes made since we joined, so send those to them now.
+	async fn replay_device_updates(
+		&self,
+		room_id: &RoomId,
+		servers_before: &std::collections::HashSet<OwnedServerName>,
+	) {
+		let mut servers = self.device_list_servers(room_id).await;
+		let members = self
+			.services
+			.state_accessor
+			.room_state_keys(room_id, &StateEventType::RoomMember)
+			.await
+			.unwrap_or_default();
+		for member in members {
+			if let Ok(user_id) = slipstream::UserId::parse(member.as_str()) {
+				let server = user_id.server_name().to_owned();
+				if !self.services.globals.server_is_ours(&server) {
+					servers.insert(server);
+				}
+			}
+		}
+		servers.retain(|server| !servers_before.contains(server));
+		if servers.is_empty() {
+			return;
+		}
+
+		let from = self.partial_since(room_id).unwrap_or(0);
+		let mut all_changes =
+			BTreeMap::<u64, std::collections::HashSet<slipstream::OwnedUserId>>::new();
+		let mut changes = std::pin::pin!(self.services.users.room_keys_changed(
+			room_id,
+			Some(from),
+			None
+		));
+		while let Some((user_id, count)) = changes.next().await {
+			if self.services.globals.user_is_local(&user_id) {
+				all_changes.entry(count).or_default().insert(user_id);
+			}
+		}
+
+		let mut user_devices = HashMap::new();
+		for users in all_changes.values() {
+			for user_id in users {
+				if !user_devices.contains_key(user_id) {
+					let devices: Vec<slipstream::OwnedDeviceId> =
+						self.services.users.all_device_ids(user_id).collect().await;
+					user_devices.insert(user_id.clone(), devices);
+				}
+			}
+		}
+
+		let (edus, _) = crate::sending::sender::build_device_list_edus(
+			all_changes,
+			&user_devices,
+			(from, u64::MAX),
+			usize::MAX,
+		);
+		info!(
+			%room_id, ?servers, edus = edus.len(),
+			"Replaying device list updates missed by servers found by the resync"
+		);
+		for server in &servers {
+			for edu in &edus {
+				if let Err(e) = self.services.sending.send_edu_server(server, edu.clone()) {
+					warn!("Failed to replay device list update to {server}: {e}");
+				}
+			}
+		}
+	}
+
 	/// Spawn a resync task for the room unless one is already running.
 	fn start_resync(self: Arc<Self>, room_id: OwnedRoomId) {
 		if !self.active.lock().expect("locked").insert(room_id.clone()) {
@@ -110,12 +200,14 @@ impl Service {
 			};
 
 			debug!("Resyncing partial state for room {} from server {}", room_id, server_name);
+			let servers_before = self.device_list_servers(room_id).await;
 			match self.clone().resync_room(room_id, &server_name).await {
 				| Ok(discovered) => {
 					info!("Successfully resynced partial state for room {}", room_id);
 					self.db.state_partial_rooms.remove(room_id.as_bytes());
 					self.db.state_partial_events.remove(room_id.as_bytes());
 					self.send_pending(room_id).await;
+					self.replay_device_updates(room_id, &servers_before).await;
 					self.notify_resolved(room_id);
 					// Only users whose update was held back while their membership was
 					// unknown are reported; other newly found members had no update.
