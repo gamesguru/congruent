@@ -393,6 +393,13 @@ pub async fn mark_as_joined(&self, user_id: &UserId, room_id: &RoomId) {
 /// The caller MUST call `update_joined_count` after the batch completes.
 #[implement(super::Service)]
 pub async fn mark_as_joined_silent(&self, user_id: &UserId, room_id: &RoomId) {
+	// Remote users are tracked as deactivated accounts (see `update_membership`);
+	// a silent join must still make them enumerable, e.g. for the user directory.
+	if !self.services.globals.user_is_local(user_id) && !self.services.users.exists(user_id).await
+	{
+		self.services.users.create(user_id, None, None).await.ok();
+	}
+
 	let userroom_id = (user_id, room_id);
 	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
 
