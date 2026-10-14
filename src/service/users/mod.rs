@@ -139,6 +139,9 @@ pub struct Service {
 	/// Complete `/keys/query` answers for tracked remote users. In memory only:
 	/// after a restart users are simply fetched again.
 	remote_keys_cache: std::sync::Mutex<HashMap<OwnedUserId, CachedRemoteKeys>>,
+	/// Remote users seen joining a partial-state room after we did: their device
+	/// lists are tracked even though the membership index lacks them.
+	tracked_remote_users: std::sync::Mutex<std::collections::HashSet<OwnedUserId>>,
 	/// Bumped on every invalidation so an answer fetched before one is never
 	/// stored after it.
 	remote_keys_generation: std::sync::atomic::AtomicU64,
@@ -211,6 +214,7 @@ impl crate::Service for Service {
 		Ok(Arc::new(Self {
 			last_device_key_update_count: std::sync::atomic::AtomicU64::new(current_count),
 			remote_keys_cache: std::sync::Mutex::new(HashMap::new()),
+			tracked_remote_users: std::sync::Mutex::new(std::collections::HashSet::new()),
 			remote_keys_generation: std::sync::atomic::AtomicU64::new(0),
 			services: Services {
 				server: args.server.clone(),
@@ -1901,6 +1905,28 @@ impl Service {
 		if current == generation {
 			cache.insert(user_id.to_owned(), keys);
 		}
+	}
+
+	pub fn track_remote_user(&self, user_id: &UserId) {
+		self.tracked_remote_users
+			.lock()
+			.expect("locked")
+			.insert(user_id.to_owned());
+	}
+
+	pub fn untrack_remote_user(&self, user_id: &UserId) {
+		self.tracked_remote_users
+			.lock()
+			.expect("locked")
+			.remove(user_id);
+		self.invalidate_remote_keys(user_id);
+	}
+
+	pub fn is_remote_user_tracked(&self, user_id: &UserId) -> bool {
+		self.tracked_remote_users
+			.lock()
+			.expect("locked")
+			.contains(user_id)
 	}
 
 	fn invalidate_remote_keys(&self, user_id: &UserId) {

@@ -649,11 +649,29 @@ where
 					| None => false,
 				};
 				if !already_joined {
+					self.services.users.track_remote_user(&target);
 					self.services
 						.users
 						.mark_device_key_update_in_room(&target, room_id)
 						.await;
 				}
+			} else if !self.services.globals.user_is_local(&target)
+				&& pdu
+					.get_content::<slipstream::events::room::member::RoomMemberEventContent>()
+					.is_ok_and(|c| {
+						matches!(
+							c.membership,
+							slipstream::events::room::member::MembershipState::Leave
+								| slipstream::events::room::member::MembershipState::Ban
+						)
+					}) && self
+				.services
+				.state_partial
+				.partial_server(room_id)
+				.await
+				.is_ok_and(|server| server.is_some())
+			{
+				self.services.users.untrack_remote_user(&target);
 			}
 		}
 	}

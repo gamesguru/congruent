@@ -499,15 +499,8 @@ where
 					.next()
 					.await
 					.is_some();
-				// Members of a partial-state room are not in the membership index
-				// yet; their server being in such a room is the best we know.
-				let tracked = tracked
-					|| !services
-						.rooms
-						.state_partial
-						.partial_rooms_via(&user_id.server_name())
-						.await
-						.is_empty();
+				// A member seen joining a partial-state room has no membership row yet.
+				let tracked = tracked || services.users.is_remote_user_tracked(user_id);
 				info!(target: "keys_cache_debug", %user_id, tracked, cached = services.users.cached_remote_keys(user_id).is_some(), "remote_keys_cache: lookup");
 				if let Some(cached) = tracked
 					.then(|| services.users.cached_remote_keys(user_id))
