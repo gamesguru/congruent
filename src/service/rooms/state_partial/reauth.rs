@@ -342,22 +342,35 @@ impl Service {
 		for state in states {
 			let mut full_state = state_res::StateMap::new();
 			for (short_key, event_id) in state {
-				let (event_type, state_key) = self
+				let (event_type, state_key) = match self
 					.services
 					.short
 					.get_statekey_from_short(*short_key)
 					.await
-					.ok()?;
+				{
+					| Ok(key) => key,
+					| Err(e) => {
+						warn!(target: "reauth_debug", %room_id, "unknown shortstatekey {short_key:?} in state to resolve: {e}");
+						return None;
+					},
+				};
 				full_state.insert((event_type, state_key), event_id.clone());
 			}
 			full_states.push(full_state);
 		}
 
-		let resolved = self
-			.services
-			.event_handler
-			.state_resolution(room_id, room_version_id, full_states.iter(), None)
-			.ok()?;
+		let resolved = match self.services.event_handler.state_resolution(
+			room_id,
+			room_version_id,
+			full_states.iter(),
+			None,
+		) {
+			| Ok(resolved) => resolved,
+			| Err(e) => {
+				warn!(target: "reauth_debug", %room_id, sets = states.len(), "state resolution failed: {e}");
+				return None;
+			},
+		};
 		let mut short_state = HashMap::with_capacity(resolved.len());
 		for ((event_type, state_key), event_id) in resolved {
 			let short_key = self
