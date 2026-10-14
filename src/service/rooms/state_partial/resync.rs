@@ -548,7 +548,7 @@ impl Service {
 				| Ok(response) => response,
 				| Err(e) => {
 					warn!("Failed to fetch state ids from {}: {}", server, e);
-					answered |= matches!(e, conduwuit::Error::Federation(..));
+					answered |= server_answered(&e);
 					continue;
 				},
 			};
@@ -562,7 +562,7 @@ impl Service {
 				| Ok(response) => return Ok((response, server, ids_response.pdu_ids)),
 				| Err(e) => {
 					warn!("Failed to fetch state from {}: {}", server, e);
-					answered |= matches!(e, conduwuit::Error::Federation(..));
+					answered |= server_answered(&e);
 				},
 			}
 		}
@@ -831,6 +831,15 @@ impl Service {
 			}
 		}
 	}
+}
+
+/// Whether the error came from a server that replied (with an error status or
+/// an unparsable body), as opposed to one that could not be reached.
+fn server_answered(error: &conduwuit::Error) -> bool {
+	matches!(
+		error,
+		conduwuit::Error::Federation(..) | conduwuit::Error::BadServerResponse(_)
+	)
 }
 
 fn sort_servers(suggested: &ServerName, others: Vec<OwnedServerName>) -> Vec<OwnedServerName> {
