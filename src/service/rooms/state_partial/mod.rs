@@ -166,17 +166,19 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		pdu_id: rooms::timeline::RawPduId,
-		sent_to: HashSet<OwnedServerName>,
+		sent_to: &HashSet<OwnedServerName>,
 	) {
 		let mut key = room_id.as_bytes().to_vec();
 		key.push(database::SEP);
 		key.extend_from_slice(pdu_id.as_bytes());
 		let sent_to = sent_to
 			.iter()
-			.map(|server| server.as_str())
+			.map(OwnedServerName::as_str)
 			.collect::<Vec<_>>()
 			.join(",");
-		self.db.state_partial_pending.insert(&key, sent_to.as_bytes());
+		self.db
+			.state_partial_pending
+			.insert(&key, sent_to.as_bytes());
 	}
 
 	/// Record that a room's partial state is now resolved and wake waiters.

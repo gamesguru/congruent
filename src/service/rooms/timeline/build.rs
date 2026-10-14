@@ -242,7 +242,7 @@ pub async fn build_and_append_pdu(
 	{
 		self.services
 			.state_partial
-			.record_partial_send(&room_id, pdu_id, servers);
+			.record_partial_send(&room_id, pdu_id, &servers);
 	}
 
 	trace!("Event {} in room {:?} has been appended", pdu.event_id(), room_id);

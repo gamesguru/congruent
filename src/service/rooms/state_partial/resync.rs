@@ -60,19 +60,22 @@ impl Service {
 			.map(|(key, value): (&[u8], &[u8])| (key.to_vec(), value.to_vec()))
 			.collect()
 			.await;
-		let pending: Vec<(conduwuit::matrix::RawPduId, std::collections::HashSet<OwnedServerName>)> =
-			rows.iter()
-				.filter_map(|(key, value)| {
-					let pdu_id = key.get(prefix.len()..)?;
-					let pdu_id = <[u8; 16]>::try_from(pdu_id).ok()?;
-					let sent_to = std::str::from_utf8(value)
-						.ok()?
-						.split(',')
-						.filter_map(|server| OwnedServerName::try_from(server).ok())
-						.collect();
-					Some((conduwuit::matrix::RawPduId(pdu_id), sent_to))
-				})
-				.collect();
+		let pending: Vec<(
+			conduwuit::matrix::RawPduId,
+			std::collections::HashSet<OwnedServerName>,
+		)> = rows
+			.iter()
+			.filter_map(|(key, value)| {
+				let pdu_id = key.get(prefix.len()..)?;
+				let pdu_id = <[u8; 16]>::try_from(pdu_id).ok()?;
+				let sent_to = std::str::from_utf8(value)
+					.ok()?
+					.split(',')
+					.filter_map(|server| OwnedServerName::try_from(server).ok())
+					.collect();
+				Some((conduwuit::matrix::RawPduId(pdu_id), sent_to))
+			})
+			.collect();
 		if pending.is_empty() {
 			return;
 		}
