@@ -690,7 +690,7 @@
 {"Action":"skip","Test":"TestPartialStateJoin/Room_stats_are_correctly_updated_once_state_re-sync_completes"}
 {"Action":"fail","Test":"TestPartialStateJoin/State_accepted_incorrectly"}
 {"Action":"fail","Test":"TestPartialStateJoin/State_rejected_incorrectly"}
-{"Action":"fail","Test":"TestPartialStateJoin/User_directory_is_correctly_updated_once_state_re-sync_completes"}
+{"Action":"pass","Test":"TestPartialStateJoin/User_directory_is_correctly_updated_once_state_re-sync_completes"}
 {"Action":"pass","Test":"TestPartialStateJoin/joined_members_blocks_during_partial_state_join"}
 {"Action":"pass","Test":"TestPollsLocalPushRules"}
 {"Action":"pass","Test":"TestPollsLocalPushRules/Polls_push_rules_are_correctly_presented_to_the_client"}
