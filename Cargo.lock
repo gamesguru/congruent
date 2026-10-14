@@ -591,7 +591,7 @@ dependencies = [
  "ctor",
  "futures",
  "log",
- "rezzy",
+ "rezzy 0.6.0-rc.1 (git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master)",
  "rustls",
  "smol",
  "toml",
@@ -622,7 +622,7 @@ dependencies = [
  "matchit",
  "percent-encoding",
  "rand",
- "rezzy",
+ "rezzy 0.6.0-rc.1 (git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master)",
  "rustls",
  "serde",
  "serde_urlencoded",
@@ -681,7 +681,7 @@ dependencies = [
  "rand",
  "rand_core 0.6.4",
  "regex",
- "rezzy",
+ "rezzy 0.6.0-rc.1 (git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master)",
  "roaring",
  "rustc-hash",
  "serde",
@@ -751,7 +751,7 @@ name = "conduwuit_mtxdb"
 version = "0.5.10"
 dependencies = [
  "mtxdb",
- "rezzy",
+ "rezzy 0.6.0-rc.1 (git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master)",
  "sha2",
 ]
 
@@ -826,7 +826,7 @@ dependencies = [
  "parking_lot",
  "rand",
  "regex",
- "rezzy",
+ "rezzy 0.6.0-rc.1 (git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master)",
  "roaring",
  "rustls",
  "sd-notify",
@@ -2128,13 +2128,13 @@ dependencies = [
  "bytes",
  "getrandom 0.4.3",
  "http",
- "rezzy",
+ "rezzy 0.6.0-rc.1 (git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha)",
 ]
 
 [[package]]
 name = "mtxdb"
 version = "0.1.0-beta.2"
-source = "git+https://gitlab.com/Wombat-Foundation/mtxdb.git?branch=dev#bff4016eb3d0caa538acd12059d16b57790fb5c8"
+source = "git+https://gitlab.com/Wombat-Foundation/mtxdb.git?branch=dev#a5bd2584e70ff921f86a99ad85c6a883d1cf7db7"
 dependencies = [
  "arc-swap",
  "blake3",
@@ -2144,7 +2144,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "parking_lot",
- "rezzy-recon",
+ "rezzy-recon 0.6.0-rc.1 (git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha)",
  "sha2",
  "zstd",
  "zstd-sys",
@@ -2501,8 +2501,21 @@ dependencies = [
  "blake3",
  "ed25519-zebra",
  "hashbrown 0.17.1",
- "rezzy-json",
- "rezzy-recon",
+ "rezzy-json 0.6.0-rc.1 (git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha)",
+ "rezzy-recon 0.6.0-rc.1 (git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha)",
+ "sha2",
+]
+
+[[package]]
+name = "rezzy"
+version = "0.6.0-rc.1"
+source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master#44c098d0d1f3301053583cb3d1ff7302c6d79722"
+dependencies = [
+ "base64 0.23.1",
+ "blake3",
+ "hashbrown 0.17.1",
+ "rezzy-json 0.6.0-rc.1 (git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master)",
+ "rezzy-recon 0.6.0-rc.1 (git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master)",
  "sha2",
 ]
 
@@ -2515,9 +2528,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "rezzy-json"
+version = "0.6.0-rc.1"
+source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master#44c098d0d1f3301053583cb3d1ff7302c6d79722"
+dependencies = [
+ "ryu",
+]
+
+[[package]]
 name = "rezzy-recon"
 version = "0.6.0-rc.1"
 source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#a6371a77efe06aa102db23f53a3d89e833ef8229"
+dependencies = [
+ "base64 0.23.1",
+ "sha2",
+]
+
+[[package]]
+name = "rezzy-recon"
+version = "0.6.0-rc.1"
+source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master#44c098d0d1f3301053583cb3d1ff7302c6d79722"
 dependencies = [
  "base64 0.23.1",
  "sha2",
