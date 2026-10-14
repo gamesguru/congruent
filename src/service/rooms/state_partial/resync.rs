@@ -153,7 +153,7 @@ impl Service {
 			.await
 			.unwrap_or_default();
 		for member in members {
-			if let Ok(user_id) = slipstream::UserId::parse(member.as_str()) {
+			if let Ok(user_id) = UserId::parse(member.as_str()) {
 				let server = user_id.server_name().clone();
 				if !self.services.globals.server_is_ours(&server) {
 					servers.insert(server);
@@ -166,7 +166,7 @@ impl Service {
 		}
 
 		let from = self.partial_since(room_id).unwrap_or(0);
-		let mut all_changes = BTreeMap::<u64, HashSet<slipstream::OwnedUserId>>::new();
+		let mut all_changes = BTreeMap::<u64, HashSet<OwnedUserId>>::new();
 		let mut changes = std::pin::pin!(self.services.users.room_keys_changed(
 			room_id,
 			Some(from),
@@ -357,7 +357,7 @@ impl Service {
 		self: Arc<Self>,
 		room_id: &RoomId,
 		server_name: &ServerName,
-	) -> Result<Vec<slipstream::OwnedUserId>> {
+	) -> Result<Vec<OwnedUserId>> {
 		debug!("Resyncing room {} starting with server {}", room_id, server_name);
 
 		// Need room version to validate payloads (i.e., event_handler computes hashes)
@@ -463,7 +463,7 @@ impl Service {
 		// Only now that the corrected state is installed: these users missed
 		// updates while out of the room, so refetch their keys.
 		self.flush_users_who_left_in_window(&room_id, left).await;
-		let known: HashSet<slipstream::OwnedUserId> = self
+		let known: HashSet<OwnedUserId> = self
 			.services
 			.state_cache
 			.room_members(&room_id)
@@ -476,7 +476,7 @@ impl Service {
 
 		// Members discovered by the resync joined silently; tell the device list
 		// tracking about the remote ones.
-		let discovered: Vec<slipstream::OwnedUserId> = self
+		let discovered: Vec<OwnedUserId> = self
 			.services
 			.state_cache
 			.room_members(&room_id)
@@ -780,11 +780,7 @@ impl Service {
 		Ok(true)
 	}
 
-	async fn flush_users_who_left_in_window(
-		&self,
-		room_id: &RoomId,
-		left: HashSet<slipstream::OwnedUserId>,
-	) {
+	async fn flush_users_who_left_in_window(&self, room_id: &RoomId, left: HashSet<OwnedUserId>) {
 		use slipstream::events::room::member::{MembershipState, RoomMemberEventContent};
 		for user_id in left {
 			self.services.users.invalidate_remote_keys(&user_id);

@@ -643,7 +643,7 @@
 {"Action":"pass","Test":"TestPartialStateJoin/Can_change_display_name_during_partial_state_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking"}
 {"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_no_longer_tracked_for_user_incorrectly_believed_to_be_in_room"}
-{"Action":"skip","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_no_longer_tracked_when_failing_to_complete_partial_state_join"}
+{"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_no_longer_tracked_when_failing_to_complete_partial_state_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_no_longer_tracked_when_leaving_partial_state_room"}
 {"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_no_longer_tracked_when_new_member_leaves_partial_state_room"}
 {"Action":"pass","Test":"TestPartialStateJoin/Device_list_tracking/Device_list_tracked_for_new_members_in_partial_state_room"}

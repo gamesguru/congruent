@@ -2012,7 +2012,7 @@ impl Service {
 				}
 				!rooms.is_empty()
 			});
-		}
+		};
 		for user_id in &removed {
 			self.invalidate_remote_keys(user_id);
 		}

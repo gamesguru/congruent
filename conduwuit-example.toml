@@ -1355,6 +1355,13 @@
 #
 #fast_joins = false
 
+# How long, in seconds, a partial-state join may keep failing to obtain
+# usable state from any server before it is abandoned: the local users
+# leave the room and its partial state is dropped. Local errors never
+# count towards this. 0 retries forever.
+#
+#partial_state_resync_give_up_after = 15
+
 # Allow receiving incoming read receipts from remote servers.
 #
 #allow_incoming_read_receipts = true
