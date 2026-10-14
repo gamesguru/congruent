@@ -34,6 +34,16 @@ type PrefetchedPrev = (
 	bool,
 );
 
+/// Whether a leave/ban is provably older than the invite it would rescind. With
+/// either timestamp unknown, or equal timestamps, it is not.
+fn leave_predates_invite(leave_ts: Option<i64>, invite_ts: Option<u64>) -> bool {
+	match (leave_ts, invite_ts) {
+		| (Some(leave_ts), Some(invite_ts)) =>
+			u64::try_from(leave_ts).is_ok_and(|leave_ts| leave_ts < invite_ts),
+		| _ => false,
+	}
+}
+
 async fn should_rescind_invite(
 	services: &crate::rooms::event_handler::Services,
 	content: &BTreeMap<String, CanonicalJsonValue>,
@@ -98,12 +108,7 @@ async fn should_rescind_invite(
 				.get("origin_server_ts")
 				.and_then(rezzy::JsonValue::as_i64);
 			let invite_ts = event.get_field::<u64>("origin_server_ts")?;
-			if let (Some(leave_ts), Some(invite_ts)) = (leave_ts, invite_ts) {
-				if u64::try_from(leave_ts).is_ok_and(|leave_ts| leave_ts < invite_ts) {
-					return Ok(false);
-				}
-			}
-			return Ok(true);
+			return Ok(!leave_predates_invite(leave_ts, invite_ts));
 		}
 	}
 
@@ -969,4 +974,32 @@ pub async fn process_timeline_upgrade(
 			.map(|(pdu_id, _)| pdu_id)
 		})
 		.await
+}
+
+#[cfg(test)]
+mod rescind_tests {
+	use super::leave_predates_invite;
+
+	#[test]
+	fn an_older_leave_does_not_rescind() {
+		assert!(leave_predates_invite(Some(99), Some(100)));
+	}
+
+	#[test]
+	fn an_equal_or_newer_leave_rescinds() {
+		assert!(!leave_predates_invite(Some(100), Some(100)));
+		assert!(!leave_predates_invite(Some(101), Some(100)));
+	}
+
+	#[test]
+	fn a_missing_timestamp_keeps_the_old_behaviour() {
+		assert!(!leave_predates_invite(None, Some(100)));
+		assert!(!leave_predates_invite(Some(99), None));
+		assert!(!leave_predates_invite(None, None));
+	}
+
+	#[test]
+	fn a_negative_leave_timestamp_is_not_older() {
+		assert!(!leave_predates_invite(Some(-1), Some(100)));
+	}
 }
