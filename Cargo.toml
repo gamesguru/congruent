@@ -369,9 +369,6 @@ version = "0.4.13"
 [workspace.dependencies.bytesize]
 version = "2.0"
 
-[workspace.dependencies.core_affinity]
-version = "0.8.3"
-
 [workspace.dependencies.libc]
 version = "0.2"
 
@@ -403,11 +400,6 @@ version = "0.11"
 #
 # Patches
 #
-
-# adds affinity masks for selecting more than one core at a time
-[patch.crates-io.core_affinity]
-git = "https://forgejo.ellis.link/continuwuation/core_affinity_rs"
-rev = "7c7a9dea35382743a63837cdd1d977efdb8f1b8a"
 
 #
 # Our crates
