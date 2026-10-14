@@ -190,10 +190,10 @@ impl Service {
 	}
 
 	/// Remove and return the deferred updates for the given (now placed) users.
-	pub fn take_deferred_device_updates<'a>(
-		&self,
-		users: impl IntoIterator<Item = &'a OwnedUserId>,
-	) -> Vec<OwnedUserId> {
+	pub fn take_deferred_device_updates<'a, I>(&self, users: I) -> Vec<OwnedUserId>
+	where
+		I: IntoIterator<Item = &'a OwnedUserId>,
+	{
 		let mut deferred = self.deferred_device_updates.lock().expect("locked");
 		users
 			.into_iter()
