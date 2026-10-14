@@ -746,7 +746,19 @@ where
 
 				// Remember complete answers so the next query can skip federation.
 				for (user_id, devices) in &filtered_device_keys {
-					let all_devices = device_keys_input.get(user_id).is_some_and(Vec::is_empty);
+					// Only a tracked user's answer is kept: an untracked one (a pre-existing
+					// member of a partial room) would go stale unnoticed.
+					let tracked = services.users.is_remote_user_tracked(user_id)
+						|| services
+							.rooms
+							.state_cache
+							.rooms_joined(user_id)
+							.boxed()
+							.next()
+							.await
+							.is_some();
+					let all_devices =
+						tracked && device_keys_input.get(user_id).is_some_and(Vec::is_empty);
 					info!(
 						target: "keys_cache_debug",
 						%user_id, all_devices, devices = devices.len(),
