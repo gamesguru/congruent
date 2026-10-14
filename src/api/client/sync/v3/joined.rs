@@ -397,6 +397,15 @@ async fn build_state_and_timeline(
 		.collect::<Vec<_>>()
 		.await;
 
+	conduwuit::info!(
+		target: "timeline_debug",
+		%room_id,
+		user = %sync_context.syncing_user,
+		since = ?sync_context.last_sync_end_count,
+		events = ?filtered_timeline_pdus.iter().map(|pdu| pdu.event_id.as_str()).collect::<Vec<_>>(),
+		"sync: timeline events after filtering"
+	);
+
 	let timeline_ids: HashSet<&str> = filtered_timeline_pdus
 		.iter()
 		.map(|pdu| &*pdu.event_id)
