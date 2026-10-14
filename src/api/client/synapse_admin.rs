@@ -3,7 +3,7 @@
 
 use std::{collections::HashSet, sync::LazyLock};
 
-use conduwuit::{Err, Result, err, utils};
+use conduwuit::{Err, err, utils};
 use futures::{FutureExt, StreamExt};
 use hmac::{Hmac, KeyInit, Mac};
 use http_body_util::BodyExt;
@@ -36,12 +36,7 @@ static NONCES: LazyLock<std::sync::Mutex<HashSet<String>>> =
 pub(crate) async fn synapse_register_nonce(
 	State(services): State<crate::State>,
 ) -> std::result::Result<crate::router::response::Response, ApiError> {
-	if services
-		.server
-		.config
-		.registration_shared_secret
-		.is_none()
-	{
+	if services.server.config.registration_shared_secret.is_none() {
 		return Err!(Request(Unrecognized("Shared secret registration is disabled.")))
 			.map_err(Into::into);
 	}
@@ -76,8 +71,8 @@ pub(crate) async fn synapse_register(
 		.to_bytes();
 	let body = std::str::from_utf8(&body)
 		.map_err(|e| err!(Request(BadJson("Body is not UTF-8: {e}"))))?;
-	let json: Value = codec::from_str(body)
-		.map_err(|e| err!(Request(BadJson("Invalid JSON body: {e}"))))?;
+	let json: Value =
+		codec::from_str(body).map_err(|e| err!(Request(BadJson("Invalid JSON body: {e}"))))?;
 	let field = |name: &str| {
 		json.get(name)
 			.and_then(|v| v.as_str())
@@ -95,7 +90,11 @@ pub(crate) async fn synapse_register(
 
 	let mac_bytes = (0..mac_hex.len())
 		.step_by(2)
-		.map(|i| mac_hex.get(i..i.saturating_add(2)).and_then(|b| u8::from_str_radix(b, 16).ok()))
+		.map(|i| {
+			mac_hex
+				.get(i..i.saturating_add(2))
+				.and_then(|b| u8::from_str_radix(b, 16).ok())
+		})
 		.collect::<Option<Vec<u8>>>()
 		.ok_or_else(|| err!(Request(Forbidden("Invalid HMAC"))))?;
 	let verify = |admin: &str| {
@@ -114,6 +113,16 @@ pub(crate) async fn synapse_register(
 	} else {
 		return Err!(Request(Forbidden("HMAC incorrect"))).map_err(Into::into);
 	};
+
+	let username = username.to_lowercase();
+	if username.is_empty()
+		|| !username
+			.chars()
+			.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._=-/+".contains(c))
+	{
+		return Err!(Request(InvalidUsername("User ID can only contain characters a-z, 0-9, or '=_-./+'")))
+			.map_err(Into::into);
+	}
 
 	let user_id = OwnedUserId::parse(format!("@{username}:{}", services.globals.server_name()))
 		.map_err(|_| err!(Request(InvalidUsername("Invalid username"))))?;
