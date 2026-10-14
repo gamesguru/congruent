@@ -261,10 +261,23 @@ impl Service {
 					info!("Successfully resynced partial state for room {}", room_id);
 					// Keep the partial markers until both replays are queued, so a
 					// failure retries them.
-					let replayed = match self.send_pending(room_id).await {
-						| Ok(()) => self.replay_device_updates(room_id, &servers_before).await,
-						| Err(e) => Err(e),
-					};
+					let replayed =
+						match self.replay_device_updates(room_id, &servers_before).await {
+							| Ok(()) => {
+								// An append checks the marker and records its pending row
+								// while holding the room's state lock. Holding it here
+								// means every PDU either recorded its row before this drain
+								// or sees no marker and uses the full server list.
+								let _state_lock = self.services.state.mutex.lock(room_id).await;
+								let sent = self.send_pending(room_id).await;
+								if sent.is_ok() {
+									self.db.state_partial_rooms.remove(room_id.as_bytes());
+									self.db.state_partial_events.remove(room_id.as_bytes());
+								}
+								sent
+							},
+							| Err(e) => Err(e),
+						};
 					if let Err(e) = replayed {
 						warn!(
 							"Failed to replay to newly discovered servers for room {room_id}: \
@@ -274,8 +287,6 @@ impl Service {
 						delay = delay.saturating_mul(2).min(Duration::from_secs(60));
 						continue;
 					}
-					self.db.state_partial_rooms.remove(room_id.as_bytes());
-					self.db.state_partial_events.remove(room_id.as_bytes());
 					self.notify_resolved(room_id);
 					// Only users whose update was held back while their membership was
 					// unknown are reported; other newly found members had no update.
