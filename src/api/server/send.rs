@@ -815,6 +815,19 @@ async fn handle_room(
 		.await
 		.map(|_| ());
 
+		// An event that fails auth is stored as rejected, which is a normal
+		// outcome, not a processing error: Synapse reports it as accepted too.
+		let result = match result {
+			| Err(ref e)
+				if matches!(e.kind(), ErrorKind::Forbidden { .. })
+					&& e.to_string().to_lowercase().contains("auth") =>
+			{
+				debug_warn!("Incoming PDU {event_id} rejected on auth: {e}");
+				Ok(())
+			},
+			| other => other,
+		};
+
 		if let Err(ref e) = result {
 			// Only abort the entire transaction for truly local failures
 			// (database errors, internal panics) — NOT for federation connection
