@@ -45,7 +45,27 @@ const DROPPED_CFS: &[&str] = &[
 	"eventid_receivecount",
 	"rejectedeventids",
 	"roomid_outliereventid",
+	"roomid_shortstatehash",
+	"roomuserid_lastprivatereadupdate",
+	"roomuserid_privateread",
+	"roomuserid_privatereadevent",
+	"shorteventid_shortstatehash",
+	"shortstatehash_lthash",
+	"shortstatehash_statediff",
 	"softfailedeventids",
+];
+
+/// Retired tables dropped on every startup once the migrations that consumed
+/// them (up to v24) have run.
+const RETIRED_CFS: &[&str] = &[
+	"rejectedeventids",
+	"roomid_shortstatehash",
+	"roomuserid_lastprivatereadupdate",
+	"roomuserid_privateread",
+	"roomuserid_privatereadevent",
+	"shorteventid_shortstatehash",
+	"shortstatehash_lthash",
+	"shortstatehash_statediff",
 ];
 
 /// Compute schema fingerprint from the static column family name list,
@@ -336,13 +356,18 @@ async fn migrate(services: &Services) -> Result<()> {
 			.map_err(|e| err!("Failed to run v19 migrations: {e}"))?;
 	}
 
-	// Rejections live in the event verdicts now; the old table is dead weight.
-	if services.db.db.cf_exists("rejectedeventids") {
-		services
-			.db
-			.db
-			.drop_cf("rejectedeventids")
-			.unwrap_or_else(|e| warn!("Failed to drop rejectedeventids: {e}"));
+	// Tables whose contents have been consumed by a migration or superseded
+	// (rejections live in the event verdicts now) are dead weight.
+	if services.globals.db.database_version().await >= 24 {
+		for name in RETIRED_CFS {
+			if services.db.db.cf_exists(name) {
+				services
+					.db
+					.db
+					.drop_cf(name)
+					.unwrap_or_else(|e| warn!("Failed to drop {name}: {e}"));
+			}
+		}
 	}
 
 	if db["global"]
@@ -2507,13 +2532,20 @@ struct StateDiff {
 	removed: Arc<std::collections::HashSet<[u8; 16]>>,
 }
 
+/// A table from a retired schema, opened by name: it is no longer part of the
+/// active map list, only read by the migrations that consume it.
+fn legacy_map(services: &Services, name: &'static str) -> Result<std::sync::Arc<database::Map>> {
+	database::Map::open(&services.db.db, name)
+}
+
 async fn legacy_get_statediff(
 	services: &Services,
 	shortstatehash: ShortStateHash,
 ) -> Result<StateDiff> {
 	const STRIDE: usize = size_of::<ShortStateHash>();
 
-	let value = services.db["shortstatehash_statediff"]
+	let statediff_map = legacy_map(services, "shortstatehash_statediff")?;
+	let value = statediff_map
 		.get(&shortstatehash.to_be_bytes())
 		.await
 		.map_err(|e| err!(Database("Failed to find StateDiff: {e}")))?;
@@ -2789,9 +2821,10 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 
 	info!("Running v20 migration (building HAMT roots for existing rooms)...");
 
+	let roomid_shortstatehash = legacy_map(services, "roomid_shortstatehash")?;
 	let mut room_stream = services.rooms.metadata.iter_ids();
 	while let Some(room_id) = room_stream.next().await {
-		match services.db["roomid_shortstatehash"]
+		match roomid_shortstatehash
 			.get(&room_id)
 			.await
 			.deserialized()
@@ -2876,7 +2909,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 	let roothandle_map = services.db["shorteventid_roothandle"].clone();
 	let mut batch = conduwuit_database::Batch::new();
 
-	let statediff_map = services.db["shortstatehash_statediff"].clone();
+	let statediff_map = legacy_map(services, "shortstatehash_statediff")?.clone();
 	let mut diff_stream = statediff_map.raw_stream();
 	while let Some(result) = diff_stream.next().await {
 		let (key, value): database::KeyVal<'_> = result?;
@@ -3005,13 +3038,7 @@ async fn db_lt_24(services: &Services) -> Result<()> {
 	let cork = db.cork_and_sync();
 	let mut total = 0_usize;
 
-	for map_name in [
-		"shortstatehash_statediff",
-		"roomid_shortstatehash",
-		"shorteventid_shortstatehash",
-		"shortstatehash_lthash",
-		"roomsynctoken_shortstatehash",
-	] {
+	for map_name in ["roomsynctoken_shortstatehash"] {
 		let map = db[map_name].clone();
 		let cleared = map
 			.raw_stream()

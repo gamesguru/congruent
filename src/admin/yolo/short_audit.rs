@@ -11,6 +11,11 @@ use conduwuit_database::{Get, Map};
 use conduwuit_service::Services;
 use futures::{StreamExt, pin_mut, stream};
 
+/// A table from a retired schema; empty on databases that never had it.
+fn legacy_map(services: &Services, name: &'static str) -> Arc<Map> {
+	Map::open(&services.db.db, name).expect("opening a map by name does not fail")
+}
+
 /// Bitmap over the short-ID space; one bit per id up to the global counter.
 type Bits = Vec<u64>;
 
@@ -278,11 +283,11 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 
 	// State-hash family.
 	let (statediff, statediff_rows, statediff_malformed) =
-		reverse_keys(&services.db["shortstatehash_statediff"], words).await;
+		reverse_keys(&legacy_map(services, "shortstatehash_statediff"), words).await;
 	audit.statediff_rows = statediff_rows;
 	audit.statediff_malformed = statediff_malformed;
 	audit.statediff_missing_parents =
-		statediff_missing_parents(&services.db["shortstatehash_statediff"], &statediff).await;
+		statediff_missing_parents(&legacy_map(services, "shortstatehash_statediff"), &statediff).await;
 
 	let (digest_rows, digest_dups, digest_malformed) =
 		digest_claims(&services.db["statehash_shortstatehash"], words).await;
@@ -291,7 +296,7 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 	audit.digest_malformed = digest_malformed;
 
 	let (esh_rows, esh_dangling, esh_malformed) =
-		event_statehash(&services.db["shorteventid_shortstatehash"], &statediff, counter).await;
+		event_statehash(&legacy_map(services, "shorteventid_shortstatehash"), &statediff, counter).await;
 	audit.event_statehash_rows = esh_rows;
 	audit.event_statehash_dangling = esh_dangling;
 	audit.event_statehash_malformed = esh_malformed;
