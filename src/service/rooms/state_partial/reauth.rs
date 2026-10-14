@@ -111,30 +111,20 @@ impl Service {
 			let event_id = pdu.event_id().to_owned();
 
 			// State before this event: that after its predecessors.
-			let mut before: Option<StateMap> = None;
+			let mut predecessor_states: Vec<StateMap> = Vec::new();
 			for prev in pdu.prev_events() {
 				let Some(prev_state) = after.get(prev) else {
 					continue;
 				};
-				match before.as_mut() {
-					| None => before = Some(prev_state.clone()),
-					| Some(merged) =>
-						if merged != prev_state {
-							debug!(
-								target: "reauth_debug",
-								%event_id, %prev,
-								"predecessors disagree; keeping the first and filling gaps"
-							);
-							for (key, id) in prev_state {
-								merged.entry(*key).or_insert_with(|| id.clone());
-							}
-						},
-				}
+				predecessor_states.push(prev_state.clone());
 			}
-			let Some(before) = before else {
-				debug!(target: "reauth_debug", %event_id, "no known predecessor state; skipped");
-				continue;
-			};
+			if predecessor_states.is_empty() {
+				warn!(target: "reauth_debug", %event_id, "no known predecessor state; cannot re-authorise window");
+				return None;
+			}
+			let before = self
+				.resolve_short_state_maps(room_id, &room_version_id, &predecessor_states)
+				.await?;
 
 			let was_rejected = self
 				.services
@@ -258,7 +248,7 @@ impl Service {
 			after.insert(event_id, state);
 		}
 
-		// Current state: the deepest extremity's, completed by the others.
+		// Current state is the room-version resolution of all forward-tip states.
 		let mut tips: Vec<(&OwnedEventId, &StateMap, u64)> = Vec::new();
 		for extremity in &extremities {
 			if let (Some(state), Some(pdu)) = (after.get(extremity), window.get(extremity)) {
@@ -269,17 +259,62 @@ impl Service {
 				}
 			}
 		}
-		tips.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(b.0)));
-		let mut tips = tips.into_iter();
-		let mut current = tips.next()?.1.clone();
-		for (_, state, _) in tips {
-			for (key, id) in state {
-				current.entry(*key).or_insert_with(|| id.clone());
-			}
+		if tips.is_empty() {
+			return None;
 		}
+		let tip_states: Vec<StateMap> =
+			tips.iter().map(|(_, state, _)| (*state).clone()).collect();
+		let current = self
+			.resolve_short_state_maps(room_id, &room_version_id, &tip_states)
+			.await?;
 		let mut seen = extremities;
 		seen.sort();
 		Some((current, left, seen))
+	}
+
+	/// Resolve short-keyed state maps with the room-version state-resolution
+	/// algorithm. This is needed both when a DAG event has conflicting
+	/// predecessor states and when the room has multiple forward extremities.
+	async fn resolve_short_state_maps(
+		&self,
+		room_id: &RoomId,
+		room_version_id: &slipstream::RoomVersionId,
+		states: &[StateMap],
+	) -> Option<StateMap> {
+		if states.len() == 1 {
+			return states.first().cloned();
+		}
+
+		let mut full_states = Vec::with_capacity(states.len());
+		for state in states {
+			let mut full_state = state_res::StateMap::new();
+			for (short_key, event_id) in state {
+				let (event_type, state_key) = self
+					.services
+					.short
+					.get_statekey_from_short(*short_key)
+					.await
+					.ok()?;
+				full_state.insert((event_type, state_key), event_id.clone());
+			}
+			full_states.push(full_state);
+		}
+
+		let resolved = self
+			.services
+			.event_handler
+			.state_resolution(room_id, room_version_id, full_states.iter(), None)
+			.ok()?;
+		let mut short_state = HashMap::with_capacity(resolved.len());
+		for ((event_type, state_key), event_id) in resolved {
+			let short_key = self
+				.services
+				.short
+				.get_or_create_shortstatekey(&event_type, state_key.as_str())
+				.await;
+			short_state.insert(short_key, event_id);
+		}
+		Some(short_state)
 	}
 
 	async fn was_joined(&self, state: &StateMap, user_id: &UserId) -> bool {

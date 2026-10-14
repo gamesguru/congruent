@@ -309,39 +309,22 @@ pub(crate) async fn user_can_perform_restricted_join(
 					.state_cache
 					.is_joined(user_id, &membership.room_id)
 					.await;
-				let user_state_membership = services
-					.rooms
-					.state_accessor
-					.get_member(&membership.room_id, user_id)
-					.await
-					.map_or_else(|e| format!("<{e}>"), |m| format!("{:?}", m.membership));
-				info!(
+				debug!(
 					%user_id,
 					%room_id,
 					allowed_room = %membership.room_id,
 					server_in_allowed,
 					user_joined_allowed,
-					user_state_membership,
 					"restricted join: allow-rule membership check"
 				);
-				if !services
-					.rooms
-					.state_cache
-					.server_in_room(services.globals.server_name(), &membership.room_id)
-					.await
-				{
+				if !server_in_allowed {
 					// Since we can't check this room, mark could_satisfy as false
 					// so that we can return M_UNABLE_TO_AUTHORIZE_JOIN later.
 					could_satisfy = false;
 					continue;
 				}
 
-				if services
-					.rooms
-					.state_cache
-					.is_joined(user_id, &membership.room_id)
-					.await
-				{
+				if user_joined_allowed {
 					debug!(
 						"User {} is allowed to join room {} via membership in room {}",
 						user_id, room_id, membership.room_id

@@ -1,6 +1,5 @@
 use std::{
 	collections::{BTreeMap, HashMap},
-	ops::Bound,
 	sync::Arc,
 	time::Duration,
 };
@@ -266,7 +265,8 @@ impl Service {
 	) -> Result<Vec<slipstream::OwnedUserId>> {
 		debug!("Resyncing room {} starting with server {}", room_id, server_name);
 
-		let (response, remote_server) = self.fetch_remote_state(room_id, server_name).await?;
+		let (response, remote_server, state_ids) =
+			self.fetch_remote_state(room_id, server_name).await?;
 
 		info!(
 			"Fetched {} state events and {} auth events for partial room {} from {}",
@@ -297,8 +297,14 @@ impl Service {
 		let expected = response.pdus.len();
 		let new_state_ids = self
 			.clone()
-			.process_state_events(&room_id, &room_version, &remote_server, response.pdus)
-			.await;
+			.process_state_events(
+				&room_id,
+				&room_version,
+				&remote_server,
+				response.pdus,
+				&state_ids,
+			)
+			.await?;
 		// A state event that failed to load (a signing key fetch, say) leaves a hole
 		// in the state; fail so the resync is retried rather than marked complete.
 		if new_state_ids.len() < expected {
@@ -341,17 +347,12 @@ impl Service {
 		if gave_up {
 			return Err!("room {room_id} kept changing during re-authorisation");
 		}
-		if let Some(left) = reauthed {
-			// Only now that the corrected state is installed: these users missed
-			// updates while out of the room, so refetch their keys. (Only the
-			// re-auth path finds them; the merge fallback below does not.)
-			self.flush_users_who_left_in_window(&room_id, left).await;
-		} else {
-			// Update room state graph (amend the partial state)
-			self.update_state_graph(&room_id, new_state_ids.clone())
-				.await?;
-			self.repair_event_states(&room_id, &new_state_ids).await;
-		}
+		let Some(left) = reauthed else {
+			return Err!("could not reconstruct partial-state event window for {room_id}");
+		};
+		// Only now that the corrected state is installed: these users missed
+		// updates while out of the room, so refetch their keys.
+		self.flush_users_who_left_in_window(&room_id, left).await;
 		let known: std::collections::HashSet<slipstream::OwnedUserId> = self
 			.services
 			.state_cache
@@ -383,7 +384,7 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		server_name: &ServerName,
-	) -> Result<(get_room_state::v1::Response, OwnedServerName)> {
+	) -> Result<(get_room_state::v1::Response, OwnedServerName, Vec<OwnedEventId>)> {
 		// Discovery fallback: collect servers to try
 		let others = self
 			.services
@@ -425,15 +426,18 @@ impl Service {
 				request.event_id.clone(),
 				request.room_id.clone(),
 			);
-			if let Err(e) = self
+			let ids_response = match self
 				.services
 				.sending
 				.send_federation_request(&server, ids_request)
 				.await
 			{
-				warn!("Failed to fetch state ids from {}: {}", server, e);
-				continue;
-			}
+				| Ok(response) => response,
+				| Err(e) => {
+					warn!("Failed to fetch state ids from {}: {}", server, e);
+					continue;
+				},
+			};
 
 			match self
 				.services
@@ -441,7 +445,7 @@ impl Service {
 				.send_federation_request(&server, request)
 				.await
 			{
-				| Ok(response) => return Ok((response, server)),
+				| Ok(response) => return Ok((response, server, ids_response.pdu_ids)),
 				| Err(e) => warn!("Failed to fetch state from {}: {}", server, e),
 			}
 		}
@@ -497,111 +501,56 @@ impl Service {
 		room_version: &RoomVersionId,
 		remote_server: &ServerName,
 		pdus: Vec<RawJsonValue>,
-	) -> BTreeMap<ShortStateKey, OwnedEventId> {
+		expected_ids: &[OwnedEventId],
+	) -> Result<BTreeMap<ShortStateKey, OwnedEventId>> {
 		use conduwuit::matrix::event::gen_event_id_canonical_json;
 
-		pdus.into_iter()
-			.stream()
-			.broad_filter_map(move |pdu_json: RawJsonValue| {
-				let room_version = room_version.clone();
-				let remote_server = remote_server.to_owned();
-				let room_id = room_id.to_owned();
-				let self_copy = self.clone();
-				async move {
-					let (calculated_event_id, value) =
-						gen_event_id_canonical_json(&pdu_json, &room_version).ok()?;
+		let expected: std::collections::HashSet<_> = expected_ids.iter().cloned().collect();
+		let mut loaded = std::collections::HashSet::with_capacity(expected.len());
+		let mut state = BTreeMap::new();
+		for pdu_json in pdus {
+			let (event_id, value) = gen_event_id_canonical_json(&pdu_json, room_version)
+				.map_err(|e| err!(Request(Unknown("Could not parse state event: {e}"))))?;
+			if !expected.contains(&event_id) {
+				return Err(err!(Request(Unknown(
+					"State response contained an event absent from /state_ids"
+				))));
+			}
 
-					// Validate and save
-					self_copy
-						.services
-						.event_handler
-						.handle_incoming_pdu(
-							&remote_server,
-							&room_id,
-							&calculated_event_id,
-							value.clone(),
-							// minimize work, store as outliers
-							false,
-							&room_version,
-						)
-						.await
-						.ok()?;
+			self.services
+				.event_handler
+				.handle_incoming_pdu(
+					remote_server,
+					room_id,
+					&event_id,
+					value.clone(),
+					false,
+					room_version,
+				)
+				.await?;
 
-					// Collect newly received state events into Map (shortstatekey -> event_id)
-					let pdu = PduEvent::from_id_val(&calculated_event_id, value, Some(&room_id))
-						.ok()?;
-					let state_key = pdu.state_key.as_ref()?;
-					let shortstatekey = self_copy
-						.services
-						.short
-						.get_or_create_shortstatekey(&pdu.kind.to_string().into(), state_key)
-						.await;
-
-					Some((shortstatekey, calculated_event_id))
-				}
-			})
-			.collect()
-			.await
-	}
-
-	async fn repair_event_states(
-		&self,
-		room_id: &RoomId,
-		resync: &BTreeMap<ShortStateKey, OwnedEventId>,
-	) {
-		let from = match self.resync_event_id(room_id).await {
-			| Some(event_id) => self.services.timeline.get_pdu_count(&event_id).await.ok(),
-			| None => None,
-		};
-		let bound = from.map_or(Bound::Unbounded, Bound::Included);
-
-		let mut repaired = 0_usize;
-		let mut pdus = std::pin::pin!(self.services.timeline.pdus(room_id, bound));
-		while let Some(Ok((_, pdu))) = pdus.next().await {
-			let shorteventid = self
+			let pdu = PduEvent::from_id_val(&event_id, value, Some(room_id)).map_err(|e| {
+				err!(Request(Unknown("Could not decode state event {event_id}: {e}")))
+			})?;
+			let state_key = pdu.state_key.as_ref().ok_or_else(|| {
+				err!(Request(Unknown("State response contained a non-state event")))
+			})?;
+			let shortstatekey = self
 				.services
 				.short
-				.get_or_create_shorteventid(&pdu.event_id)
+				.get_or_create_shortstatekey(&pdu.kind.to_string().into(), state_key)
 				.await;
-			let Ok(root) = self.services.state.get_roothandle(shorteventid).await else {
-				continue;
-			};
-			let Ok(existing) = self
-				.services
-				.state_accessor
-				.state_full_ids_hamt(room_id, &root)
-				.try_collect::<HashMap<ShortStateKey, OwnedEventId>>()
-				.await
-			else {
-				continue;
-			};
-
-			let mut merged: HashMap<ShortStateKey, OwnedEventId> =
-				resync.iter().map(|(k, v)| (*k, v.clone())).collect();
-			merged.extend(existing.iter().map(|(k, v)| (*k, v.clone())));
-			if merged.len() == existing.len() {
-				continue;
-			}
-
-			let Ok((new_root, nodes)) = self
-				.services
-				.event_handler
-				.state_map_to_root_handle(room_id, &merged)
-				.await
-			else {
-				continue;
-			};
-			if self
-				.services
-				.state
-				.set_event_roothandle_with_nodes(room_id, &pdu.event_id, &new_root, &nodes)
-				.await
-				.is_ok()
-			{
-				repaired = repaired.saturating_add(1);
-			}
+			state.insert(shortstatekey, event_id.clone());
+			loaded.insert(event_id);
 		}
-		info!("Repaired state snapshots of {repaired} events in {room_id} after resync");
+
+		if loaded != expected {
+			return Err(err!(Request(Unknown(
+				"State response did not contain every event listed by /state_ids"
+			))));
+		}
+
+		Ok(state)
 	}
 
 	/// Whether any room is still partial.
@@ -723,39 +672,6 @@ impl Service {
 					.await;
 			}
 		}
-	}
-
-	async fn update_state_graph(
-		&self,
-		room_id: &RoomId,
-		new_state_ids: BTreeMap<ShortStateKey, OwnedEventId>,
-	) -> Result<()> {
-		info!("Updating state graph for partial room {}", room_id);
-		let _state_lock = self.services.state.mutex.lock(room_id).await;
-
-		let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
-		let mut new_state = self
-			.services
-			.state_accessor
-			.state_full_ids_hamt(room_id, &root_handle)
-			.try_collect::<HashMap<ShortStateKey, OwnedEventId>>()
-			.await?;
-
-		// The resync state is the room at the join point; whatever we already hold
-		// (including events accepted since the join, e.g. a later leave) is newer.
-		for (key, event_id) in new_state_ids {
-			new_state.entry(key).or_insert(event_id);
-		}
-
-		let (new_root, pending_nodes) = self
-			.services
-			.event_handler
-			.state_map_to_root_handle(room_id, &new_state)
-			.await?;
-		self.services
-			.state
-			.set_room_state_hamt_with_nodes(room_id, &new_root, &pending_nodes)?;
-		Ok(())
 	}
 }
 

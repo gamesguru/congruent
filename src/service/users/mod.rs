@@ -756,6 +756,28 @@ impl Service {
 		initial_device_display_name: Option<String>,
 		client_ip: Option<String>,
 	) -> Result<()> {
+		let lock_key = Self::device_lock_key(user_id, device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+		self.create_device_with_ttl_locked(
+			user_id,
+			device_id,
+			token,
+			ttl,
+			initial_device_display_name,
+			client_ip,
+		)
+		.await
+	}
+
+	async fn create_device_with_ttl_locked(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		token: &str,
+		ttl: Option<u64>,
+		initial_device_display_name: Option<String>,
+		client_ip: Option<String>,
+	) -> Result<()> {
 		if !self.exists(user_id).await {
 			return Err!(Request(InvalidParam(error!(
 				"Called create_device for non-existent user {user_id}"
@@ -772,8 +794,53 @@ impl Service {
 
 		increment(&self.db.userid_devicelistversion, user_id.as_bytes());
 		self.db.userdeviceid_metadata.put(key, Json(val));
-		self.set_token_with_ttl(user_id, device_id, token, ttl)
+		self.store_access_token(user_id, device_id, token, ttl)
 			.await
+	}
+
+	/// Stores the login access token and optional refresh token while holding
+	/// the device credential lock for the entire operation.
+	#[allow(clippy::too_many_arguments)]
+	pub async fn login_device_with_ttl(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		token: &str,
+		ttl: Option<u64>,
+		may_reuse_device: bool,
+		initial_device_display_name: Option<String>,
+		client_ip: Option<String>,
+	) -> Result<Option<String>> {
+		let lock_key = Self::device_lock_key(user_id, device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+
+		let device_exists = may_reuse_device
+			&& self
+				.db
+				.userdeviceid_metadata
+				.qry(&(user_id, device_id))
+				.await
+				.is_ok();
+		if device_exists {
+			self.store_access_token(user_id, device_id, token, ttl)
+				.await?;
+		} else {
+			self.create_device_with_ttl_locked(
+				user_id,
+				device_id,
+				token,
+				ttl,
+				initial_device_display_name,
+				client_ip,
+			)
+			.await?;
+		}
+
+		Ok(if ttl.is_some() {
+			Some(self.issue_refresh_token_locked(user_id, device_id).await)
+		} else {
+			None
+		})
 	}
 
 	/// Removes a device from a user.
@@ -1004,7 +1071,10 @@ impl Service {
 	pub async fn issue_refresh_token(&self, user_id: &UserId, device_id: &DeviceId) -> String {
 		let lock_key = Self::device_lock_key(user_id, device_id);
 		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+		self.issue_refresh_token_locked(user_id, device_id).await
+	}
 
+	async fn issue_refresh_token_locked(&self, user_id: &UserId, device_id: &DeviceId) -> String {
 		let key = (user_id, device_id);
 		let revoked = [
 			self.device_refresh_token(&self.db.userdeviceid_refreshtoken, key)
@@ -1902,7 +1972,7 @@ impl Service {
 	pub fn store_remote_keys(&self, user_id: &UserId, keys: CachedRemoteKeys, generation: u64) {
 		let mut cache = self.remote_keys_cache.lock().expect("locked");
 		let current = self.remote_keys_generation();
-		conduwuit::info!(target: "keys_cache_debug", %user_id, generation, current, "remote_keys_cache: store");
+		conduwuit::debug!(target: "keys_cache_debug", %user_id, generation, current, "remote_keys_cache: store");
 		if current == generation {
 			cache.insert(user_id.to_owned(), keys);
 		}
@@ -1943,7 +2013,7 @@ impl Service {
 
 	pub fn invalidate_remote_keys(&self, user_id: &UserId) {
 		let mut cache = self.remote_keys_cache.lock().expect("locked");
-		conduwuit::info!(target: "keys_cache_debug", %user_id, "remote_keys_cache: invalidate");
+		conduwuit::debug!(target: "keys_cache_debug", %user_id, "remote_keys_cache: invalidate");
 		self.remote_keys_generation
 			.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 		cache.remove(user_id);
@@ -1971,7 +2041,7 @@ impl Service {
 			self.invalidate_remote_keys(user_id);
 		}
 
-		conduwuit::info!(%user_id, ?only_room, "mark_device_key_update called");
+		conduwuit::debug!(%user_id, ?only_room, "mark_device_key_update called");
 
 		let mut joined_rooms = if let Some(room_id) = only_room {
 			vec![room_id.to_owned()]

@@ -541,7 +541,7 @@ where
 			// is answered locally without asking their server again.
 			if device_ids.is_empty() {
 				let tracked = remote_user_tracked(services, user_id).await;
-				info!(target: "keys_cache_debug", %user_id, tracked, "remote_keys_cache: lookup");
+				debug!(target: "keys_cache_debug", %user_id, tracked, "remote_keys_cache: lookup");
 				if let Some(cached) = tracked
 					.then(|| services.users.cached_remote_keys(user_id))
 					.flatten()
@@ -672,7 +672,7 @@ where
 	for (server, requested_users, response) in futures {
 		match response {
 			| Ok(response) => {
-				info!(
+				debug!(
 					target: "keys_cache_debug",
 					%server,
 					?requested_users,
@@ -771,7 +771,7 @@ where
 					let tracked = remote_user_tracked(services, user_id).await;
 					let all_devices =
 						tracked && device_keys_input.get(user_id).is_some_and(Vec::is_empty);
-					info!(
+					debug!(
 						target: "keys_cache_debug",
 						%user_id, all_devices, devices = devices.len(),
 						"remote_keys_cache: store candidate"
