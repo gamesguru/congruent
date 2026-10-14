@@ -117,7 +117,9 @@ impl Service {
 					self.db.state_partial_events.remove(room_id.as_bytes());
 					self.send_pending(room_id).await;
 					self.notify_resolved(room_id);
-					for user_id in discovered {
+					// Only users whose update was held back while their membership was
+					// unknown are reported; other newly found members had no update.
+					for user_id in self.take_deferred_device_updates(&discovered) {
 						self.services.users.mark_device_key_update(&user_id).await;
 					}
 					return;

@@ -9,7 +9,9 @@ use std::{
 use async_trait::async_trait;
 use conduwuit::Result;
 use database::{Deserialized, Map};
-use slipstream::{EventId, OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, ServerName};
+use slipstream::{
+	EventId, OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, ServerName,
+};
 
 use crate::{Dep, rooms};
 
@@ -36,6 +38,9 @@ pub struct Service {
 	partial_since: Mutex<std::collections::HashMap<OwnedRoomId, u64>>,
 	/// `servers_in_room` from the send_join response of each partial room.
 	extra_servers: Mutex<std::collections::HashMap<OwnedRoomId, Vec<OwnedServerName>>>,
+	/// Remote users whose device-list update arrived while their room membership
+	/// was unknown; marked changed once a resync confirms them as members.
+	deferred_device_updates: Mutex<HashSet<OwnedUserId>>,
 	resync_tx: loole::Sender<OwnedRoomId>,
 	resync_rx: loole::Receiver<OwnedRoomId>,
 }
@@ -69,6 +74,7 @@ impl crate::Service for Service {
 			resolved_at: Mutex::new(std::collections::HashMap::new()),
 			partial_since: Mutex::new(std::collections::HashMap::new()),
 			extra_servers: Mutex::new(std::collections::HashMap::new()),
+			deferred_device_updates: Mutex::new(HashSet::new()),
 			resync_tx,
 			resync_rx,
 			db: Data {
@@ -167,6 +173,28 @@ impl Service {
 			.expect("locked")
 			.insert(room_id.to_owned(), count);
 		self.resolved.notify_waiters();
+	}
+
+	/// Remember a device-list update from `user_id` that cannot be placed in a
+	/// room yet.
+	pub fn defer_device_update(&self, user_id: &slipstream::UserId) {
+		self.deferred_device_updates
+			.lock()
+			.expect("locked")
+			.insert(user_id.to_owned());
+	}
+
+	/// Remove and return the deferred updates for the given (now placed) users.
+	pub fn take_deferred_device_updates<'a>(
+		&self,
+		users: impl IntoIterator<Item = &'a OwnedUserId>,
+	) -> Vec<OwnedUserId> {
+		let mut deferred = self.deferred_device_updates.lock().expect("locked");
+		users
+			.into_iter()
+			.filter(|user| deferred.remove(*user))
+			.cloned()
+			.collect()
 	}
 
 	/// The global count at which we partially joined this room, if since
