@@ -27,8 +27,9 @@ use crate::rooms::{pdu_metadata::RejectionCode, short::ShortStateKey, state_part
 
 type StateMap = HashMap<ShortStateKey, OwnedEventId>;
 
-/// Upper bound on the events re-authorised in one resync.
-const WINDOW_LIMIT: usize = 20_000;
+/// Sanity ceiling on the events re-authorised in one resync. Past it the resync
+/// fails and is retried; it is never completed without re-authorising.
+const WINDOW_LIMIT: usize = 500_000;
 
 impl Service {
 	/// Re-authorise the events between the resync point (`anchor`, whose full
@@ -105,7 +106,21 @@ impl Service {
 
 		let mut left: HashSet<OwnedUserId> = HashSet::new();
 		let mut after: HashMap<OwnedEventId, StateMap> = HashMap::new();
+		// Stands in for predecessors older than the anchor, whose own state is not
+		// reconstructed.
+		let pre_anchor_state = anchor_state.clone();
 		after.insert(anchor.to_owned(), anchor_state);
+
+		// A state map is only needed until its last in-window child has used it, so
+		// the retained state maps follow the width of the DAG. (The PDUs of the
+		// whole window are still held in memory.)
+		let mut children: HashMap<OwnedEventId, usize> = HashMap::new();
+		for pdu in &order {
+			for prev in pdu.prev_events() {
+				let count = children.entry(prev.to_owned()).or_default();
+				*count = count.saturating_add(1);
+			}
+		}
 
 		for pdu in order {
 			let event_id = pdu.event_id().to_owned();
@@ -113,13 +128,18 @@ impl Service {
 			// State before this event: that after its predecessors.
 			let mut predecessor_states: Vec<StateMap> = Vec::new();
 			for prev in pdu.prev_events() {
-				let Some(prev_state) = after.get(prev) else {
-					continue;
-				};
-				predecessor_states.push(prev_state.clone());
+				if let Some(prev_state) = after.get(prev) {
+					predecessor_states.push(prev_state.clone());
+				} else if window.contains_key(prev) {
+					// Inside the window, so it must have been processed already.
+					warn!(target: "reauth_debug", %event_id, %prev, "predecessor state missing; cannot re-authorise window");
+					return None;
+				} else {
+					predecessor_states.push(pre_anchor_state.clone());
+				}
 			}
 			if predecessor_states.is_empty() {
-				warn!(target: "reauth_debug", %event_id, "no known predecessor state; cannot re-authorise window");
+				warn!(target: "reauth_debug", %event_id, "event has no prev_events; cannot re-authorise window");
 				return None;
 			}
 			let before = self
@@ -246,6 +266,15 @@ impl Service {
 				},
 			}
 			after.insert(event_id, state);
+
+			for prev in pdu.prev_events() {
+				if let Some(remaining) = children.get_mut(prev) {
+					*remaining = remaining.saturating_sub(1);
+					if *remaining == 0 && !extremities.iter().any(|e| e == prev) {
+						after.remove(prev);
+					}
+				}
+			}
 		}
 
 		// Current state is the room-version resolution of all forward-tip states.
