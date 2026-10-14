@@ -1645,14 +1645,6 @@ pub struct Config {
 	#[serde(default)]
 	pub fast_joins: bool,
 
-	/// How many consecutive failed attempts to resync a partial-state room
-	/// before giving up: the local users leave the room and the join is
-	/// abandoned. Attempts back off from 1s up to 60s apart.
-	///
-	/// 0 retries forever (the default).
-	#[serde(default)]
-	pub fast_joins_resync_max_attempts: u32,
-
 	/// Allow receiving incoming read receipts from remote servers.
 	#[serde(default = "true_fn")]
 	pub allow_incoming_read_receipts: bool,

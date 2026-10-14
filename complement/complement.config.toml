@@ -27,7 +27,6 @@ log = "info,presence_debug=debug"
 port = [8008, 8448]
 default_room_version = "12"
 fast_joins = true
-fast_joins_resync_max_attempts = 3
 trusted_servers = []
 only_query_trusted_key_servers = false
 query_trusted_key_servers_first = false

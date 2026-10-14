@@ -194,7 +194,6 @@ impl Service {
 	/// room is no longer partial.
 	async fn resync_with_backoff(self: Arc<Self>, room_id: &RoomId) {
 		let mut delay = Duration::from_secs(1);
-		let mut failures = 0_u32;
 		loop {
 			let Ok(Some(server_name)) = self.partial_server(room_id).await else {
 				return;
@@ -227,78 +226,10 @@ impl Service {
 				},
 				| Err(e) => {
 					warn!("Failed to resync partial state for room {}: {}", room_id, e);
-					failures = failures.saturating_add(1);
-					let max = self.services.server.config.fast_joins_resync_max_attempts;
-					if max != 0 && failures >= max {
-						self.abort_partial_join(room_id).await;
-						return;
-					}
 					async_io::Timer::after(delay).await;
 					delay = delay.saturating_mul(2).min(Duration::from_secs(60));
 				},
 			}
-		}
-	}
-
-	/// Give up on a join whose state could not be completed: the local users
-	/// leave the room (so its device-list tracking is dropped like any other
-	/// leave) and the partial-state bookkeeping is discarded.
-	async fn abort_partial_join(&self, room_id: &RoomId) {
-		use conduwuit::matrix::pdu::PduBuilder;
-		use slipstream::events::room::member::{MembershipState, RoomMemberEventContent};
-
-		warn!(%room_id, "giving up on completing the partial state join; leaving the room");
-		let users: Vec<slipstream::OwnedUserId> = self
-			.services
-			.state_cache
-			.local_users_in_room(room_id)
-			.collect()
-			.await;
-		// Leave first: while the room is still partial the leave is sent to the
-		// server we joined through.
-		for user_id in users {
-			let state_lock = self.services.state.mutex.lock(room_id).await;
-			let Ok(content) = self
-				.services
-				.state_accessor
-				.room_state_get_content::<RoomMemberEventContent>(
-					room_id,
-					&StateEventType::RoomMember,
-					user_id.as_str(),
-				)
-				.await
-			else {
-				continue;
-			};
-			let leave = self
-				.services
-				.timeline
-				.build_and_append_pdu(
-					PduBuilder::state(user_id.to_string(), &RoomMemberEventContent {
-						membership: MembershipState::Leave,
-						reason: Some("Failed to complete the partial state join".to_owned()),
-						join_authorized_via_users_server: None,
-						is_direct: None,
-						..content
-					}),
-					&user_id,
-					Some(room_id),
-					&state_lock,
-				)
-				.await;
-			drop(state_lock);
-			if let Err(e) = leave {
-				warn!(%room_id, %user_id, "failed to leave after aborting the join: {e}");
-			}
-		}
-
-		self.db.state_partial_rooms.remove(room_id.as_bytes());
-		self.db.state_partial_events.remove(room_id.as_bytes());
-		self.pending_sends.lock().expect("locked").remove(room_id);
-		self.extra_servers.lock().expect("locked").remove(room_id);
-		self.notify_resolved(room_id);
-		if !self.any_partial_rooms().await {
-			self.clear_deferred_device_updates();
 		}
 	}
 
