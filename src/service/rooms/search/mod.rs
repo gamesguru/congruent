@@ -207,11 +207,11 @@ fn search_pdu_ids_query_words<'a>(
 
 /// Iterate over raw database results for a word
 #[implement(Service)]
-fn search_pdu_ids_query_word<'a>(
-	&'a self,
+fn search_pdu_ids_query_word(
+	&self,
 	shortroomid: ShortRoomId,
-	word: &'a str,
-) -> impl Stream<Item = Val<'a>> + Send + 'a + use<'a> {
+	word: &str,
+) -> impl Stream<Item = Val<'static>> + Send {
 	// rustc says const'ing this not yet stable
 	let end_id: RawPduId = PduId {
 		shortroomid,

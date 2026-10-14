@@ -1,5 +1,6 @@
 #![type_length_limit = "8192"]
 #![allow(refining_impl_trait)]
+#![allow(clippy::disallowed_macros)]
 #![recursion_limit = "256"]
 
 extern crate conduwuit_core as conduwuit;
@@ -43,6 +44,11 @@ pub mod uiaa;
 pub mod users;
 
 pub(crate) use service::{Args, Dep, Service};
+
+// RocksDB's default Env is process-global. Serializing tests that open full
+// service databases prevents one test's teardown from disrupting another.
+#[cfg(test)]
+pub(crate) static DB_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub use crate::services::Services;
 

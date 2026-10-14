@@ -1,5 +1,6 @@
 #![type_length_limit = "32768"] //TODO: reduce me
 #![recursion_limit = "256"] //TODO: reduce me
+#![allow(clippy::disallowed_macros)]
 
 mod layers;
 mod request;

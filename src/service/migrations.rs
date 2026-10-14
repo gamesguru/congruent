@@ -2435,7 +2435,7 @@ mod tests {
 		}
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_cached_full_state_matches_chain_walk() {
 		// 1 <- 2 <- 3 <- 4, with forks 5 (from 2) and 6 (from 5).
 		let diffs: HashMap<u64, StateDiff> = HashMap::from([
@@ -2711,7 +2711,7 @@ async fn legacy_added_events_roothandles(
 			.rooms
 			.state_hamt
 			.store
-			.persist_node_recursive(root_node);
+			.persist_node_recursive(room_id.as_bytes(), root_node)?;
 
 		let serialized = crate::rooms::state::root_handle_to_bytes(&root_handle);
 		for shorteventid in shorteventids {
@@ -2733,7 +2733,7 @@ async fn legacy_build_root_handle_for_state(
 	})
 	.await?;
 
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	let mut entries = Vec::with_capacity(full_state.len());
 
 	for state_event in full_state.iter() {
@@ -2794,7 +2794,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 			| Ok(shortstatehash) => {
 				let full_state = legacy_get_full_state(services, shortstatehash).await?;
 
-				let mut lattice = rezzy::state::LtHash::default();
+				let mut lattice = rezzy::incremental::LtHash::default();
 				let mut entries = Vec::with_capacity(full_state.len());
 
 				for state_event in full_state {
@@ -2833,7 +2833,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 					.rooms
 					.state_hamt
 					.store
-					.persist_node_recursive(root_node);
+					.persist_node_recursive(room_id.as_bytes(), root_node)?;
 
 				// Write the same flat-48-byte encoding used by set_room_state_hamt,
 				// so get_room_state_hamt can read the value back.
@@ -2921,7 +2921,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 			&services.globals.server_secret,
 			&room_id,
 		);
-		let empty_lattice = rezzy::state::LtHash::default();
+		let empty_lattice = rezzy::incremental::LtHash::default();
 		let (empty_root, empty_node) =
 			rezzy::hamt::build_hamt_root_handle(&structural_key, &empty_lattice, Vec::new())
 				.map_err(|e| {
@@ -2931,7 +2931,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 			.rooms
 			.state_hamt
 			.store
-			.persist_node_recursive(empty_node);
+			.persist_node_recursive(room_id.as_bytes(), empty_node)?;
 
 		// `all_pdus` yields events oldest-first; walk forward so each non-state
 		// event inherits the root of the most recent preceding state event.

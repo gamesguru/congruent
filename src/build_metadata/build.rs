@@ -1,37 +1,51 @@
-use std::{collections::BTreeMap, env, fmt::Write as FmtWrite, fs, io::Write, path::Path};
-
-use cargo_metadata::MetadataCommand;
+use std::{
+	collections::BTreeMap,
+	env,
+	fmt::Write as FmtWrite,
+	fs,
+	io::Write,
+	path::{Path, PathBuf},
+};
 
 fn main() {
 	println!("cargo:rerun-if-changed=Cargo.toml");
 
-	let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap(); // Cargo.toml path
-	let manifest_path = Path::new(&manifest_dir).join("Cargo.toml");
+	let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+	let workspace_root = manifest_dir
+		.parent()
+		.and_then(Path::parent)
+		.expect("build metadata crate must be inside the workspace");
+	let workspace_manifest = workspace_root.join("Cargo.toml");
+	let workspace = read_table(&workspace_manifest);
 
-	let metadata = MetadataCommand::new()
-		.manifest_path(&manifest_path)
-		.no_deps()
-		.exec()
-		.expect("failed to parse `cargo metadata`");
-
-	let workspace_packages = metadata
-		.workspace_members
-		.iter()
-		.map(|package| {
-			let package = metadata.packages.iter().find(|p| p.id == *package).unwrap();
-			println!("cargo:rerun-if-changed={}", package.manifest_path.as_str());
-			package
+	println!("cargo:rerun-if-changed={}", workspace_manifest.display());
+	let workspace_packages = workspace_members(workspace_root, &workspace)
+		.into_iter()
+		.map(|manifest_path| {
+			println!("cargo:rerun-if-changed={}", manifest_path.display());
+			let manifest = read_table(&manifest_path);
+			let package = manifest
+				.get("package")
+				.and_then(toml::Value::as_table)
+				.cloned()
+				.expect("workspace member is missing [package]");
+			(package, manifest_path)
 		})
 		.collect::<Vec<_>>();
 
 	// Extract available features from workspace packages
 	let mut available_features: BTreeMap<String, Vec<String>> = BTreeMap::new();
-	for package in &workspace_packages {
+	for (package, _) in &workspace_packages {
 		let crate_name = package
-			.name
+			.get("name")
+			.and_then(toml::Value::as_str)
+			.expect("workspace package is missing a name")
 			.trim_start_matches("conduwuit-")
 			.replace('-', "_");
-		let features: Vec<String> = package.features.keys().cloned().collect();
+		let features = package
+			.get("features")
+			.and_then(toml::Value::as_table)
+			.map_or_else(Vec::new, |features| features.keys().cloned().collect());
 		if !features.is_empty() {
 			available_features.insert(crate_name, features);
 		}
@@ -86,6 +100,41 @@ fn main() {
 			String::from_utf8_lossy(&rustc.stdout).trim()
 		);
 	}
+}
+
+fn read_table(path: &Path) -> toml::Table {
+	fs::read_to_string(path)
+		.unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
+		.parse()
+		.unwrap_or_else(|error| panic!("failed to parse {}: {error}", path.display()))
+}
+
+fn workspace_members(root: &Path, workspace: &toml::Table) -> Vec<PathBuf> {
+	let members = workspace
+		.get("workspace")
+		.and_then(toml::Value::as_table)
+		.and_then(|workspace| workspace.get("members"))
+		.and_then(toml::Value::as_array)
+		.expect("workspace is missing members");
+
+	members
+		.iter()
+		.flat_map(|member| {
+			let pattern = member.as_str().expect("workspace member must be a string");
+			let path = Path::new(pattern);
+			if path.file_name() == Some(std::ffi::OsStr::new("*")) {
+				let parent = root.join(path.parent().unwrap_or_else(|| Path::new(".")));
+				fs::read_dir(parent)
+					.expect("failed to read workspace member directory")
+					.filter_map(Result::ok)
+					.map(|entry| entry.path().join("Cargo.toml"))
+					.filter(|manifest| manifest.is_file())
+					.collect::<Vec<_>>()
+			} else {
+				vec![root.join(path).join("Cargo.toml")]
+			}
+		})
+		.collect()
 }
 
 fn generate_features_code(features: &BTreeMap<String, Vec<String>>) -> String {

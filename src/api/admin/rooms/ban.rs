@@ -1,4 +1,3 @@
-use axum::extract::State;
 use conduwuit::{Err, Result, info, utils::ReadyExt, warn};
 use futures::{FutureExt, StreamExt};
 use slipstream::{
@@ -6,7 +5,7 @@ use slipstream::{
 	events::room::message::RoomMessageEventContent,
 };
 
-use crate::{Ruma, client::leave_room};
+use crate::{Ruma, client::leave_room, router::extract::State};
 
 /// # `PUT /_continuwuity/admin/rooms/{roomID}/ban`
 ///

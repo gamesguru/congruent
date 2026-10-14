@@ -6,9 +6,8 @@ use std::{
 };
 
 use conduwuit::{Result, err, utils::stream::TryIgnore};
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt, pin_mut};
 use loole::Receiver;
-use tokio::{select, time::sleep};
 
 use super::{DELAY_ID_SIZE, ScheduledDelayedEvent, Service};
 
@@ -67,29 +66,39 @@ pub(crate) async fn worker(service: &Service) -> Result<()> {
 		// will not wake early and will continue sleeping for the originally-peeked
 		// duration. This behavior is intentional, acceptable, and avoids complex
 		// sleep-interrupt mechanisms for this use case.
-		let next_submit = async {
-			let (time, _) = queue.queue.peek()?;
-			if let Ok(sleep_duration) = time.0.duration_since(SystemTime::now()) {
-				sleep(sleep_duration).await;
-			}
-			let (_, delay_id) = queue.queue.pop()?;
-			Some(delay_id)
+		let next_submit = match queue.queue.peek() {
+			| Some((Reverse(time), _)) => {
+				let sleep_duration = time.duration_since(SystemTime::now()).unwrap_or_default();
+				async move {
+					smol::Timer::after(sleep_duration).await;
+					Some(())
+				}
+				.boxed()
+			},
+			| None => futures::future::pending().boxed(),
 		};
-
-		let next_receive = receiver.recv_async();
+		let next_submit = next_submit.fuse();
+		let next_receive = receiver.recv_async().fuse();
+		let stop_check = FutureExt::fuse(smol::Timer::after(Duration::from_secs(2)));
+		pin_mut!(next_submit, next_receive, stop_check);
 
 		// RescvFuture is cancellation-safe
-		select! {
-			Some(delay_id) = next_submit => {
-				if let Some((time, delay_id)) = Box::pin(service.send_event_if_ready(delay_id)).await {
-					queue.queue.push((Reverse(time), delay_id));
-				}
+		futures::select_biased! {
+				submit = next_submit => match submit {
+					Some(()) => {
+						let Some((_, delay_id)) = queue.queue.pop() else { continue };
+						if let Some((time, delay_id)) = Box::pin(service.send_event_if_ready(delay_id)).await {
+						queue.queue.push((Reverse(time), delay_id));
+					}
+				},
+				None => break,
 			},
-			Ok((time, delay_id)) = next_receive => {
-				queue.queue.push((Reverse(time), delay_id));
+			receive = next_receive => match receive {
+				Ok((time, delay_id)) => queue.queue.push((Reverse(time), delay_id)),
+				Err(_) => break,
 			},
 			// Loop regularly to check if the service needs to stop even when there are no in-flight delayed events
-			() = sleep(Duration::from_secs(2)) => (),
+			_ = stop_check => (),
 		}
 	}
 

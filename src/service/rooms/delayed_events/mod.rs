@@ -166,7 +166,7 @@ impl DelayedEventData {
 	}
 }
 use submission_queue::SubmissionQueue;
-use tokio::{sync::Mutex, time::sleep};
+use tokio::sync::Mutex;
 
 use crate::{Dep, rooms};
 
@@ -419,7 +419,7 @@ impl Service {
 			// There are no synchronization primitives ensuring that the finalized event has
 			// made it to the database before we look for it. A best-effort answer is
 			// acceptable here, so we simply wait a bit and look again.
-			sleep(Duration::from_millis(200)).await;
+			smol::Timer::after(Duration::from_millis(200)).await;
 			finalized_event = self.db.delayid_finalizeddelayedevent.get(delay_id).await;
 		}
 

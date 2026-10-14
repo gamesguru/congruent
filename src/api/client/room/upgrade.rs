@@ -1,6 +1,5 @@
 use std::cmp::max;
 
-use axum::extract::State;
 use conduwuit::{
 	Err, Error, Event, Result, RoomVersion, debug, err,
 	matrix::{StateKey, pdu::PduBuilder},
@@ -21,7 +20,7 @@ use slipstream::{
 	int,
 };
 
-use crate::router::Ruma;
+use crate::router::{Ruma, extract::State};
 
 /// Recommended transferable state events list from the spec
 const TRANSFERABLE_STATE_EVENTS: &[StateEventType; 11] = &[

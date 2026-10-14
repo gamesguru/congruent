@@ -45,6 +45,20 @@ pub fn config_example_generator(args: TokenStream, input: TokenStream) -> TokenS
 	attribute_macro::<ItemStruct, _>(args, input, config::example_generator)
 }
 
+/// Runs an async test body on the smol executor without requiring a runtime
+/// specific test attribute.
+#[proc_macro_attribute]
+pub fn async_test(_args: TokenStream, input: TokenStream) -> TokenStream {
+	let mut function = parse_macro_input!(input as ItemFn);
+	function.sig.asyncness = None;
+	function.attrs.push(syn::parse_quote!(#[test]));
+	let body = function.block;
+	function.block = Box::new(syn::parse_quote!({
+		smol::block_on(async move #body)
+	}));
+	quote::quote!(#function).into()
+}
+
 #[proc_macro]
 pub fn introspect_crate(input: TokenStream) -> TokenStream {
 	build_info::introspect(input.into())

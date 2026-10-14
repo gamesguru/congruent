@@ -789,43 +789,6 @@
 #
 #default_room_version = "12"
 
-# Enable OpenTelemetry OTLP tracing export. This replaces the deprecated
-# Jaeger exporter. Traces will be sent via OTLP to a collector (such as
-# Jaeger) that supports the OpenTelemetry Protocol.
-#
-# Configure your OTLP endpoint using the OTEL_EXPORTER_OTLP_ENDPOINT
-# environment variable (defaults to http://localhost:4318).
-#
-#allow_otlp = false
-
-# Filter for OTLP tracing spans. This controls which spans are exported
-# to the OTLP collector.
-#
-#otlp_filter = "info"
-
-# Protocol to use for OTLP tracing export. Options are "http" or "grpc".
-# The HTTP protocol uses port 4318 by default, while gRPC uses port 4317.
-#
-#otlp_protocol = "http"
-
-# If the 'perf_measurements' compile-time feature is enabled, enables
-# collecting folded stack trace profile of tracing spans using
-# tracing_flame. The resulting profile can be visualized with inferno[1],
-# speedscope[2], or a number of other tools.
-#
-# [1]: https://github.com/jonhoo/inferno
-# [2]: www.speedscope.app
-#
-#tracing_flame = false
-
-# This item is undocumented. Please contribute documentation for it.
-#
-#tracing_flame_filter = "info"
-
-# This item is undocumented. Please contribute documentation for it.
-#
-#tracing_flame_output_path = "./tracing.folded"
-
 # Examples:
 #
 # - No proxy (default):
@@ -924,10 +887,10 @@
 # log = "info,federation=debug"
 #
 # See also:
-# https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
+# Log filter directives use the configured log syntax.
 #
 # **Caveat**:
-# For release builds, the tracing crate is configured at compile-time to
+# For release builds, logging is configured at compile-time to
 # automatically strip out `debug` and `trace` macros (compiling only
 # `info` and above) to avoid unnecessary overhead in the binary
 # execution. For debug builds, this restriction is not applied.
@@ -943,29 +906,14 @@
 #log_span_events = "none"
 
 # Configures whether CONTINUWUITY_LOG EnvFilter matches values using
-# regular expressions. See the tracing_subscriber documentation on
+# regular expressions.
 # Directives.
 #
 #log_filter_regex = true
 
-# Toggles the display of ThreadId in tracing log output.
+# Toggles the display of ThreadId in log output.
 #
 #log_thread_ids = false
-
-# Enable journald logging on Unix platforms
-#
-# When enabled, log output will be sent to the systemd journal
-# This is only supported on Unix platforms
-#
-#log_to_journald = false
-
-# The syslog identifier to use with journald logging
-#
-# Only used when journald logging is enabled
-#
-# Defaults to the binary name
-#
-#journald_identifier =
 
 # OpenID token expiration/TTL in seconds.
 #
@@ -1066,7 +1014,7 @@
 # RocksDB log level. This is not the same as continuwuity's log level.
 # This is the log level for the RocksDB engine/library which show up in
 # your database folder/path as `LOG` files. continuwuity will log RocksDB
-# errors as normal through tracing or panics if severe for safety.
+# errors as normal through logging or panics if severe for safety.
 #
 #rocksdb_log_level = "error"
 
@@ -1127,12 +1075,12 @@
 
 # Type of RocksDB database compression to use.
 #
-# Available options are "zstd", "bz2", "lz4", or "none".
+# Available options are "zstd" or "none".
 #
-# It is best to use ZSTD as an overall good balance between
-# speed/performance, storage, IO amplification, and CPU usage. For more
-# performance but less compression (more storage used) and less CPU usage,
-# use LZ4.
+# Only zstd is compiled in; it is an overall good balance between
+# speed/performance, storage, IO amplification, and CPU usage. Note that a
+# database written with any other codec can not be read back by this
+# build, so this may not be changed on an existing database.
 #
 # For more details, see:
 # https://github.com/facebook/rocksdb/wiki/Compression
@@ -1440,27 +1388,6 @@
 # before deciding to enable this.
 #
 #zstd_compression = false
-
-# Set this to true for continuwuity to compress HTTP response bodies using
-# gzip. This option does nothing if continuwuity was not built with
-# `gzip_compression` feature. Please be aware that enabling HTTP
-# compression may weaken TLS. Most users should not need to enable this.
-# See https://breachattack.com/ and https://wikipedia.org/wiki/BREACH before
-# deciding to enable this.
-#
-# If you are in a large amount of rooms, you may find that enabling this
-# is necessary to reduce the significantly large response bodies.
-#
-#gzip_compression = false
-
-# Set this to true for continuwuity to compress HTTP response bodies using
-# brotli. This option does nothing if continuwuity was not built with
-# `brotli_compression` feature. Please be aware that enabling HTTP
-# compression may weaken TLS. Most users should not need to enable this.
-# See https://breachattack.com/ and https://wikipedia.org/wiki/BREACH
-# before deciding to enable this.
-#
-#brotli_compression = false
 
 # Set to true to allow user type "guest" registrations. Some clients like
 # Element attempt to register guest users automatically.
@@ -1878,56 +1805,6 @@
 #
 #admins_from_room = true
 
-# Sentry.io crash/panic reporting, performance monitoring/metrics, etc.
-# This is NOT enabled by default.
-#
-#sentry = false
-
-# Sentry reporting URL, if a custom one is desired.
-#
-#sentry_endpoint = ""
-
-# Report your continuwuity server_name in Sentry.io crash reports and
-# metrics.
-#
-#sentry_send_server_name = false
-
-# Performance monitoring/tracing sample rate for Sentry.io.
-#
-# Note that too high values may impact performance, and can be disabled by
-# setting it to 0.0 (0%) This value is read as a percentage to Sentry,
-# represented as a decimal. Defaults to 15% of traces (0.15)
-#
-#sentry_traces_sample_rate = 0.15
-
-# Whether to attach a stacktrace to Sentry reports.
-#
-#sentry_attach_stacktrace = false
-
-# Send panics to Sentry. This is true by default, but Sentry has to be
-# enabled. The global `sentry` config option must be enabled to send any
-# data.
-#
-#sentry_send_panic = true
-
-# Send errors to sentry. This is true by default, but sentry has to be
-# enabled. This option is only effective in release-mode; forced to false
-# in debug-mode.
-#
-#sentry_send_error = true
-
-# Controls the tracing log level for Sentry to send things like
-# breadcrumbs and transactions
-#
-#sentry_filter = "info"
-
-# Enable the tokio-console. This option is only relevant to developers.
-#
-#    For more information, see:
-# https://continuwuity.org/development.html#debugging-with-tokio-console
-#
-#tokio_console = false
-
 # This item is undocumented. Please contribute documentation for it.
 #
 #test = false
@@ -2306,33 +2183,24 @@
 #
 #msc4500_resolution_inputs = false
 
-#[global.smtp]
+#[global.email]
 
-# A `smtp://`` URI which will be used to connect to a mail server.
-# Uncommenting the [global.smtp] group and setting this option enables
+# HTTP endpoint which accepts the email webhook payload.
+# Uncommenting the [global.email] group and setting this option enables
 # features which depend on the ability to send email,
 # such as self-service password resets.
 #
-# For most modern mail servers, format the URI like this:
-# 	`smtps://username:password@hostname:port`
-# Note that you will need to URL-encode the username and password. If your
-# username _is_ your email address, you will need to replace the `@` with
-# `%40`.
+# The endpoint receives `{from, to, subject, text}` as JSON.
 #
-# For a guide on the accepted URI syntax, consult Lettre's documentation:
-# https://docs.rs/lettre/latest/lettre/transport/smtp/struct.AsyncSmtpTransport.html#method.from_url
-#
-#connection_uri =
+#webhook_url =
 
 # The outgoing address which will be used for sending emails.
 #
-# For a syntax guide, see https://datatracker.ietf.org/doc/html/rfc2822#section-3.4
-#
-# ...or if you don't want to read the RFC, for some reason:
-# - `Name <address@domain.org>` to specify a sender name
-# - `address@domain.org` to not use a name
-#
 #sender =
+
+# Optional bearer token sent to the webhook provider.
+#
+#webhook_token = false
 
 # Whether to require that users provide an email address when they
 # register.

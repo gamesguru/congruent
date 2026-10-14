@@ -136,6 +136,11 @@ impl Data {
 			status_msg,
 		);
 
+		// Hold the barrier from count allocation until the rows are written so a
+		// concurrent /sync cannot take a batch token past this count before the
+		// update is visible (see `globals::Service::edu_barrier`).
+		let _barrier = self.services.globals.edu_barrier.read().await;
+
 		let count = self.services.globals.next_count()?;
 		let key = presenceid_key(count, user_id);
 

@@ -1,6 +1,5 @@
 use std::{borrow::Borrow, iter::once};
 
-use axum::extract::State;
 use conduwuit::{Err, Error, Event, Result, info, utils::stream::ReadyExt};
 use futures::StreamExt;
 use slipstream::api::{
@@ -8,7 +7,7 @@ use slipstream::api::{
 };
 
 use super::AccessCheck;
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}`
 ///

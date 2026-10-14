@@ -7,7 +7,8 @@ use conduwuit::{
 	utils::stream::{IterStream, ReadyExt, WidebandExt},
 	warn,
 };
-use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{StreamExt, TryFutureExt, TryStreamExt};
+use parking_lot::RwLock;
 use slipstream::{OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
 
 use crate::rooms::short::{ShortEventId, ShortStateKey};
@@ -15,8 +16,41 @@ use crate::rooms::short::{ShortEventId, ShortStateKey};
 /// Pre-loaded event cache to avoid per-event RocksDB lookups during
 /// state resolution. Populated once at the start of bulk operations
 /// like rebuild_state.
-pub(crate) type PduCache =
-	Arc<tokio::sync::RwLock<HashMap<OwnedEventId, Arc<conduwuit_core::PduEvent>>>>;
+pub(crate) type PduCache = Arc<RwLock<HashMap<OwnedEventId, Arc<conduwuit_core::PduEvent>>>>;
+
+struct LocalArenaProvider<'a, F> {
+	global_cache:
+		&'a moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String, rezzy::JsonValue>>>,
+	arena: typed_arena::Arena<Arc<rezzy::LeanEvent<String, rezzy::JsonValue>>>,
+	version: rezzy::StateResVersion,
+	fetch_pdu: F,
+}
+
+impl<F> rezzy::basespec::rezzy_types::EventProvider<String, rezzy::JsonValue>
+	for LocalArenaProvider<'_, F>
+where
+	F: Fn(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
+{
+	fn get_event(&self, id: &String) -> Option<&rezzy::LeanEvent<String, rezzy::JsonValue>> {
+		let event_id = OwnedEventId::parse(id.as_str()).ok()?;
+
+		if let Some(cached_arc) = self.global_cache.get(&event_id) {
+			let local_arc = self.arena.alloc(cached_arc);
+			return Some(&**local_arc);
+		}
+
+		let pdu = (self.fetch_pdu)(&event_id)?;
+		let power_level = sender_power_level_from_auth(self.version, &pdu, |auth_event_id| {
+			(self.fetch_pdu)(auth_event_id)
+		});
+		let lean = Arc::new(pdu_to_lean(&pdu, power_level));
+
+		self.global_cache.insert(event_id, lean.clone());
+
+		let local_arc = self.arena.alloc(lean);
+		Some(&**local_arc)
+	}
+}
 
 fn copy_state_map(map: &StateMap<OwnedEventId>) -> StateMap<OwnedEventId> {
 	map.iter()
@@ -27,13 +61,12 @@ fn copy_state_map(map: &StateMap<OwnedEventId>) -> StateMap<OwnedEventId> {
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "resolve", level = "debug", skip_all)]
 pub async fn resolve_state(
 	&self,
 	room_id: &RoomId,
 	room_version_id: &RoomVersionId,
 	incomingstate: HashMap<u64, OwnedEventId>,
-) -> Result<rezzy::hamt::RootHandle> {
+) -> Result<(rezzy::hamt::RootHandle, Vec<crate::rooms::state_hamt::store::PendingNode>)> {
 	trace!("Loading current room state ids");
 	let current_root_handle = self
 		.services
@@ -45,7 +78,7 @@ pub async fn resolve_state(
 	let currentstate_ids: HashMap<_, _> = self
 		.services
 		.state_accessor
-		.state_full_ids_hamt(&current_root_handle)
+		.state_full_ids_hamt(room_id, &current_root_handle)
 		.try_collect()
 		.await?;
 
@@ -70,10 +103,8 @@ pub async fn resolve_state(
 	let forkstates = forkstates.await?;
 
 	trace!("Resolving state");
-	let state: StateMap<OwnedEventId> = self
-		.state_resolution(room_id, room_version_id, forkstates.iter(), None)
-		.boxed()
-		.await?;
+	let state: StateMap<OwnedEventId> =
+		self.state_resolution(room_id, room_version_id, forkstates.iter(), None)?;
 
 	trace!("State resolution done.");
 
@@ -82,7 +113,7 @@ pub async fn resolve_state(
 	// for deciding which leaves actually changed.
 	let previous_statemap = &forkstates[0];
 
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	// Only the changed leaves become mutations, so this stays proportional to
 	// the state delta rather than the state size.
 	let mut mutations: Vec<(ShortStateKey, Option<ShortEventId>)> = Vec::new();
@@ -126,6 +157,7 @@ pub async fn resolve_state(
 	// incoming state event.
 	self.services.globals.with_cork_and_flush(|| {
 		self.services.state.persist_state_hamt_mutations(
+			room_id,
 			&structural_key,
 			&current_root_handle,
 			mutations,
@@ -135,13 +167,12 @@ pub async fn resolve_state(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "rezzy", level = "debug", skip_all, fields(%room_id))]
-pub async fn state_resolution<'a, StateSets>(
+pub fn state_resolution<'a, StateSets>(
 	&'a self,
 	room_id: &RoomId,
 	room_version: &'a RoomVersionId,
 	state_sets: StateSets,
-	prefetch_cache: Option<PduCache>,
+	prefetch_cache: Option<&PduCache>,
 ) -> Result<StateMap<OwnedEventId>>
 where
 	StateSets: Iterator<Item = &'a StateMap<OwnedEventId>> + Clone + Send,
@@ -176,63 +207,42 @@ where
 		| _ => rezzy::StateResVersion::V2_1_1,
 	};
 
-	struct LocalArenaProvider<'a, F> {
-		global_cache:
-			&'a moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String, rezzy::JsonValue>>>,
-		arena: typed_arena::Arena<Arc<rezzy::LeanEvent<String, rezzy::JsonValue>>>,
-		version: rezzy::StateResVersion,
-		fetch_pdu: F,
-	}
-
-	impl<F> rezzy::basespec::rezzy_types::EventProvider<String, rezzy::JsonValue>
-		for LocalArenaProvider<'_, F>
-	where
-		F: Fn(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
-	{
-		fn get_event(&self, id: &String) -> Option<&rezzy::LeanEvent<String, rezzy::JsonValue>> {
-			let event_id = OwnedEventId::parse(id.as_str()).ok()?;
-
-			if let Some(cached_arc) = self.global_cache.get(&event_id) {
-				let local_arc = self.arena.alloc(cached_arc);
-				return Some(&**local_arc);
-			}
-
-			let pdu = (self.fetch_pdu)(&event_id)?;
-			let power_level = sender_power_level_from_auth(self.version, &pdu, |auth_event_id| {
-				(self.fetch_pdu)(auth_event_id)
-			});
-			let lean = Arc::new(pdu_to_lean(&pdu, power_level));
-
-			self.global_cache.insert(event_id, lean.clone());
-
-			let local_arc = self.arena.alloc(lean);
-			Some(&**local_arc)
-		}
-	}
-
 	let timeline = &self.services.timeline;
-	let prefetch_cache_ref = prefetch_cache.as_ref();
+	let prefetch_cache_ref = prefetch_cache;
 	let meta = &self.services.pdu_metadata;
-	let handle = tokio::runtime::Handle::current();
-
 	let fetch_pdu = move |eid: &OwnedEventId| -> Option<conduwuit_core::PduEvent> {
-		let do_fetch = |handle: &tokio::runtime::Handle, eid: &OwnedEventId| {
-			handle.block_on(async {
+		// This synchronous provider may block only on database-pool I/O. The
+		// prefetch cache uses a synchronous lock so cache hits never depend on
+		// another executor task making progress.
+		let do_fetch = |eid: &OwnedEventId| {
+			smol::block_on(async {
 				if let Some(cache) = prefetch_cache_ref {
-					if let Some(pdu) = cache.read().await.get(eid) {
-						return Some((**pdu).clone());
+					let cached = cache.read().get(eid).cloned();
+					if let Some(pdu) = cached {
+						return Some(pdu.as_ref().clone());
 					}
 				}
 
 				if let Ok(mut pdu) = timeline.get_pdu_in_room(Some(room_id), eid).await {
-					if meta.is_event_rejected(&pdu.event_id).await
-						&& timeline.non_outlier_pdu_exists(&pdu.event_id).await
-					{
+					let rejected = match meta.is_event_rejected(&pdu.event_id) {
+						| Ok(rejected) => rejected,
+						| Err(error) => {
+							warn!(
+								%error,
+								event_id = %pdu.event_id,
+								"state_res: failed to read rejection flag; treating event as unavailable"
+							);
+							return None;
+						},
+					};
+					if rejected && timeline.non_outlier_pdu_exists(&pdu.event_id).await {
 						warn!(
 							event_id = %pdu.event_id,
 							"state_res: clearing stale rejection flag on timeline event"
 						);
-						meta.unmark_event_rejected(&pdu.event_id);
+						if let Err(error) = meta.unmark_event_rejected(&pdu.event_id) {
+							warn!(%error, event_id = %pdu.event_id, "state_res: failed to clear stale rejection flag");
+						}
 						pdu.rejected = false;
 					}
 					Some(pdu)
@@ -242,16 +252,7 @@ where
 			})
 		};
 
-		// block_in_place yields the current worker slot so other tasks can
-		// progress while we block.  On CurrentThread runtimes (unit tests)
-		// there is no spare worker, so we spawn a dedicated thread instead.
-		if matches!(handle.runtime_flavor(), tokio::runtime::RuntimeFlavor::MultiThread) {
-			tokio::task::block_in_place(|| do_fetch(&handle, eid))
-		} else {
-			let eid = eid.clone();
-			let handle = handle.clone();
-			std::thread::scope(|s| s.spawn(|| do_fetch(&handle, &eid)).join().unwrap())
-		}
+		do_fetch(eid)
 	};
 
 	let provider = LocalArenaProvider {

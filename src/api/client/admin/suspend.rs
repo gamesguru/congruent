@@ -1,9 +1,8 @@
-use axum::extract::State;
 use conduwuit::{Err, Result};
 use futures::future::{join, join3};
 use slipstream::api::client::admin::{get_suspended, set_suspended};
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/client/v1/admin/suspend/{userId}`
 ///

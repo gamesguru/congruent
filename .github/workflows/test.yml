@@ -70,6 +70,8 @@ jobs:
           rustup toolchain install nightly --component rustfmt --component clippy --component llvm-tools-preview
           rustup default nightly
           rustup component add rustfmt --toolchain nightly
+          # .pre-commit-config.yaml's cargo-fmt hook pins this exact dated toolchain.
+          rustup toolchain install nightly-2026-08-20 --profile minimal --component rustfmt --component llvm-tools-preview
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -85,8 +87,15 @@ jobs:
           RUSTUP_TOOLCHAIN: nightly
         run: make format
 
+      - name: Export fixtures match their manifest
+        env:
+          # Optional: raw URL of the peer repo's SHA256SUMS, set under
+          # /settings/variables/actions, to also compare the two repos.
+          EXPORT_FIXTURES_PEER: ${{ vars.EXPORT_FIXTURES_PEER_URL }}
+        run: scripts/check-export-fixtures.sh
+
       - name: Test
-        run: set -o pipefail; make test 2>&1 | tee test-results.txt
+        run: set -o pipefail; make -j4 test 2>&1 | tee test-results.txt
 
       - name: DNS Integration Test (Respects /etc/hosts)
         env:
@@ -96,12 +105,13 @@ jobs:
           cargo test --quiet --package conduwuit_service --lib resolver::tests::test_dns_resolution_integration
 
       - name: Code Coverage
-        continue-on-error: true
         run: |
-          cargo +nightly llvm-cov --lib --all-features \
+          set -eo pipefail
+          cargo +nightly-2026-08-20 llvm-cov --lib --all-features \
             --codecov --output-path coverage.json
-          cargo +nightly llvm-cov --lib --all-features \
+          cargo +nightly-2026-08-20 llvm-cov --lib --all-features \
             --html --output-dir .coverage
+          test -s coverage.json
 
       - name: Upload Test Results
         if: always()
@@ -119,6 +129,7 @@ jobs:
           path: |
             coverage.json
             .coverage/
+          if-no-files-found: error
           retention-days: 30
 
       - name: Test Summary
@@ -143,7 +154,7 @@ jobs:
           fail_ci_if_error: false
 
       - name: Lint
-        run: make lint
+        run: make -j4 lint
 
   publish-badge:
     needs: clippy-checks

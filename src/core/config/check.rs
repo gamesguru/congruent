@@ -1,9 +1,8 @@
 use std::env::consts::OS;
 
 use either::Either;
-use figment::Figment;
 
-use super::DEPRECATED_KEYS;
+use super::{DEPRECATED_KEYS, RawConfig};
 use crate::{Config, Err, Result, Server, debug, debug_info, debug_warn, error, warn};
 
 /// Performs check() with additional checks specific to reloading old config
@@ -35,18 +34,8 @@ pub fn check(config: &Config) -> Result {
 	warn_deprecated(config);
 	warn_unknown_key(config);
 
-	if config.sentry && config.sentry_endpoint.is_none() {
-		return Err!(Config(
-			"sentry_endpoint",
-			"Sentry cannot be enabled without an endpoint set"
-		));
-	}
-
-	if cfg!(all(feature = "hardened_malloc", feature = "jemalloc", not(target_env = "msvc"))) {
-		debug_warn!(
-			"hardened_malloc and jemalloc compile-time features are both enabled, this causes \
-			 jemalloc to be used."
-		);
+	if cfg!(all(feature = "hardened_malloc", feature = "mimalloc", not(target_env = "msvc"))) {
+		debug_warn!("hardened_malloc and mimalloc compile-time features are both enabled.");
 	}
 
 	if cfg!(not(unix)) && config.unix_socket_path.is_some() {
@@ -152,16 +141,6 @@ pub fn check(config: &Config) -> Result {
 			"Max request size is less than 10MB. Please increase it as this is too low for \
 			 operable federation."
 		));
-	}
-
-	// check if user specified valid IP CIDR ranges on startup
-	for cidr in &config.ip_range_denylist {
-		if let Err(e) = ipaddress::IPAddress::parse(cidr) {
-			return Err!(Config(
-				"ip_range_denylist",
-				"Parsing specified IP CIDR range from string failed: {e}."
-			));
-		}
 	}
 
 	if config.recaptcha_site_key.is_some() && config.recaptcha_private_site_key.is_none() {
@@ -294,7 +273,7 @@ fn warn_unknown_key(config: &Config) {
 
 /// Checks the presence of the `address` and `unix_socket_path` keys in the
 /// raw_config, exiting the process if both keys were detected.
-pub(super) fn is_dual_listening(raw_config: &Figment) -> Result<()> {
+pub(super) fn is_dual_listening(raw_config: &RawConfig) -> Result<()> {
 	let contains_address = raw_config.contains("address");
 	let contains_unix_socket = raw_config.contains("unix_socket_path");
 	if contains_address && contains_unix_socket {

@@ -23,7 +23,10 @@ use slipstream::{
 use super::{PduId, RawPduId, backward_extremities};
 use crate::{Dep, rooms, rooms::short::ShortRoomId};
 
+#[derive(Clone)]
 pub(super) struct Data {
+	mtxdb_events: conduwuit_mtxdb::events::EventAdapter,
+	mtxdb_verdicts: conduwuit_mtxdb::verdicts::VerdictAdapter,
 	eventid_pduid: Arc<Map>,
 	userroomid_highlightcount: Arc<Map>,
 	userroomid_notificationcount: Arc<Map>,
@@ -37,6 +40,7 @@ pub(super) struct Data {
 	services: Services,
 }
 
+#[derive(Clone)]
 struct Services {
 	short: Dep<rooms::short::Service>,
 }
@@ -48,6 +52,8 @@ impl Data {
 	pub(super) fn new(args: &crate::Args<'_>) -> Self {
 		let db = &args.db;
 		Self {
+			mtxdb_events: conduwuit_mtxdb::events::EventAdapter::new(args.mtxdb.clone()),
+			mtxdb_verdicts: conduwuit_mtxdb::verdicts::VerdictAdapter::new(args.mtxdb.clone()),
 			eventid_pduid: db["eventid_pduid"].clone(),
 			userroomid_highlightcount: db["userroomid_highlightcount"].clone(),
 			userroomid_notificationcount: db["userroomid_notificationcount"].clone(),
@@ -323,7 +329,7 @@ impl Data {
 				}
 			}
 			if all_event_ids.len().is_multiple_of(10000) {
-				tokio::task::yield_now().await;
+				smol::future::yield_now().await;
 			}
 		}
 
@@ -381,7 +387,7 @@ impl Data {
 					"collect_reorder_entries: processed {} events so far...",
 					entries.len()
 				);
-				tokio::task::yield_now().await;
+				smol::future::yield_now().await;
 			}
 		}
 
@@ -1172,7 +1178,59 @@ impl Data {
 		self.eventid_pdu.apply_batch(batch);
 	}
 
+	/// Persist the event body and its prev/auth edges in mtxdb. Keyed by event
+	/// id and idempotent, so it needs no stream count and can run before one is
+	/// allocated. A failure is logged and leaves the event unrecorded there.
+	pub(super) fn write_event_to_mtxdb(&self, pdu: &PduEvent, json: &CanonicalJsonObject) {
+		let event_id_bytes = pdu.event_id.as_bytes();
+		let room_id_bytes = pdu
+			.room_id
+			.as_ref()
+			.map(OwnedRoomId::as_bytes)
+			.expect("room_id present on PDU");
+		let event_json = slipstream::codec::to_string(json);
+		let prev_events = pdu.prev_events().map(EventId::as_bytes).collect::<Vec<_>>();
+		let auth_events = pdu.auth_events().map(EventId::as_bytes).collect::<Vec<_>>();
+		if let Err(error) = self.mtxdb_events.write_event_with_edges(
+			room_id_bytes,
+			event_id_bytes,
+			event_json.as_bytes(),
+			&prev_events,
+			&auth_events,
+		) {
+			conduwuit::warn!(?error, event_id = %pdu.event_id, "Failed shadow-writing event in mtxdb");
+		}
+	}
+
+	/// Like [`Self::append_pdu`], for a caller that already ran
+	/// [`Self::write_event_to_mtxdb`] for this event.
+	pub(super) async fn append_pdu_prewritten(
+		&self,
+		pdu_id: &RawPduId,
+		pdu: &PduEvent,
+		json: &CanonicalJsonObject,
+		count: PduCount,
+	) {
+		let mut batch = database::Batch::new();
+		self.append_pdu_batch_rows(&mut batch, pdu_id, pdu, json, count)
+			.await;
+		self.eventid_pdu.apply_batch(batch);
+	}
+
 	pub(super) async fn append_pdu_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
+		pdu_id: &RawPduId,
+		pdu: &PduEvent,
+		json: &CanonicalJsonObject,
+		count: PduCount,
+	) {
+		self.write_event_to_mtxdb(pdu, json);
+		self.append_pdu_batch_rows(batch, pdu_id, pdu, json, count)
+			.await;
+	}
+
+	async fn append_pdu_batch_rows<'a>(
 		&'a self,
 		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
@@ -1442,6 +1500,17 @@ impl Data {
 
 		self.record_backward_extremities_into_batch(batch, pdu_id, pdu)
 			.await;
+	}
+
+	/// Persist the redaction edge in the authoritative mtxdb verdict.
+	pub(super) fn persist_redaction(&self, event_id: &EventId, redacted_by: &EventId) -> Result {
+		self.mtxdb_verdicts
+			.update(event_id.as_bytes(), |verdict| {
+				verdict.redacted_by = Some(redacted_by.as_bytes().to_vec());
+			})
+			.map_err(|error| {
+				err!(Database("Failed to persist mtxdb redaction for {event_id}: {error}"))
+			})
 	}
 
 	/// Removes a pdu and creates a new one with the same id.
@@ -2112,7 +2181,7 @@ impl Data {
 
 	fn parse_topo_stream<'a>(
 		&'a self,
-		stream: impl Stream<Item = Result<KeyVal<'a>>> + Send + 'a,
+		stream: impl Stream<Item = Result<KeyVal<'static>>> + Send + 'a,
 		prefix: Vec<u8>,
 	) -> impl Stream<Item = Result<TopoIterItem>> + Send + 'a {
 		stream
@@ -2446,13 +2515,13 @@ impl Data {
 						};
 
 						if k.len() != 25 {
-							tracing::warn!("Invalid timestamp index key length: {}", k.len());
+							conduwuit::warn!("Invalid timestamp index key length: {}", k.len());
 							return None;
 						}
 
 						let variant = k[16];
 						if variant != 0 && variant != 1 {
-							tracing::warn!("Invalid timestamp index variant byte: {}", variant);
+							conduwuit::warn!("Invalid timestamp index variant byte: {}", variant);
 							return None;
 						}
 
@@ -2542,7 +2611,7 @@ mod tests {
 	/// Helper: build a RawPduId from (room, count).
 	fn make_pdu_id(room: u64, count: i64) -> RawPduId {
 		let shorteventid = if count >= 0 {
-			PduCount::Normal(count as u64)
+			PduCount::Normal(count.cast_unsigned())
 		} else {
 			PduCount::Backfilled(count)
 		};
@@ -2564,7 +2633,9 @@ mod tests {
 	/// The fork at C (depth=5) is the scenario that triggers max() inflation:
 	/// when paginating backward from E and hitting C's depth, the old code
 	/// would inflate the seek position.
-	fn build_forked_dag() -> (HashMap<String, LeanEvent>, Vec<(String, u64, i64)>) {
+	type DagFixture = (HashMap<String, LeanEvent>, Vec<(String, u64, i64)>);
+
+	fn build_forked_dag() -> DagFixture {
 		let events: Vec<LeanEvent<String>> = vec![
 			LeanEvent {
 				event_id: "A".into(),
@@ -2815,7 +2886,11 @@ mod tests {
 
 			let seek_key = seek_from.map(|(token_depth, token_count)| {
 				let adjacent_depth = depth_by_count
-					.get(&(token_count - 1))
+					.get(
+						&(token_count
+							.checked_sub(1)
+							.expect("token count must be non-zero")),
+					)
 					.copied()
 					.unwrap_or(token_depth);
 
@@ -2943,7 +3018,7 @@ mod tests {
 	/// No events are missed because G has the highest depth.
 	///
 	/// But what if the remote branch has HIGHER depth than local?
-	fn build_partition_dag() -> (HashMap<String, LeanEvent>, Vec<(String, u64, i64)>) {
+	fn build_partition_dag() -> DagFixture {
 		let events: Vec<LeanEvent<String>> = vec![
 			LeanEvent {
 				event_id: "A".into(),
@@ -3114,9 +3189,9 @@ mod tests {
 
 		// Must not contain any post-sync events
 		assert!(
-			!all_events.contains(&"E".to_string())
-				&& !all_events.contains(&"F".to_string())
-				&& !all_events.contains(&"G".to_string()),
+			!all_events.contains(&"E".to_owned())
+				&& !all_events.contains(&"F".to_owned())
+				&& !all_events.contains(&"G".to_owned()),
 			"backward pagination must NOT return events after sync position (got {all_events:?})"
 		);
 
@@ -3199,7 +3274,7 @@ mod tests {
 		}
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_pdus_by_timestamp_complex_walk() -> Result<()> {
 		// Test a messy timeline where timestamps don't always go up in order.
 		//
@@ -3235,7 +3310,7 @@ mod tests {
 		Ok(())
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_pdus_by_timestamp_large_sparse_gaps() -> Result<()> {
 		// Check we jump straight to the next event, not scan huge empty gaps.
 
@@ -3262,12 +3337,22 @@ mod tests {
 		Ok(())
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_pdus_by_timestamp_wild_jitter_staircase() -> Result<()> {
 		// Create 1000 events where the time generally goes up but sometimes jumps back
 		let timeline = (0..1000_u64).map(|i| {
 			let i_signed = i64::try_from(i).expect("test index fits in i64");
-			let ts = i_signed * 10 + (i_signed % 11) * 5 - (i_signed % 13) * 7;
+			let ts = i_signed
+				.checked_mul(10)
+				.and_then(|value| {
+					let jitter = (i_signed % 11).checked_mul(5)?;
+					value.checked_add(jitter)
+				})
+				.and_then(|value| {
+					let jitter = (i_signed % 13).checked_mul(7)?;
+					value.checked_sub(jitter)
+				})
+				.expect("test timestamp arithmetic overflow");
 			(u64::try_from(ts.max(0)).expect("test timestamp is non-negative"), i)
 		});
 

@@ -1,119 +1,121 @@
-use axum::{
-	Router,
-	extract::{
-		Query, State,
-		rejection::{FormRejection, QueryRejection},
-	},
-	http::StatusCode,
-	response::{IntoResponse, Response},
-	routing::get,
-};
-use serde::Deserialize;
-use validator::Validate;
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::{Request, Response, body::Incoming};
 
-use crate::{
-	WebError, form,
-	pages::components::{UserCard, form::Form},
-	template,
-};
+use crate::WebError;
 
 const INVALID_TOKEN_ERROR: &str = "Invalid reset token. Your reset link may have expired.";
 
-template! {
-	struct PasswordReset<'a> use "password_reset.html.j2" {
-		user_card: UserCard<'a>,
-		body: PasswordResetBody
-	}
+fn response(body: String) -> Response<Full<Bytes>> {
+	Response::builder()
+		.header(http::header::CONTENT_TYPE, "text/html; charset=utf-8")
+		.body(Full::from(Bytes::from(body)))
+		.expect("static response headers are valid")
 }
 
-#[derive(Debug)]
-enum PasswordResetBody {
-	Form(Form<'static>),
-	Success,
+fn form_page(message: Option<&str>) -> Response<Full<Bytes>> {
+	let message =
+		message.map_or(String::new(), |message| format!("<p><strong>{message}</strong></p>"));
+	response(format!(
+		"<!doctype html><title>Reset password</title><h1>Reset password</h1>{message}<form \
+		 method=\"post\"><label>New password <input type=\"password\" name=\"new_password\" \
+		 required></label><label>Confirm password <input type=\"password\" \
+		 name=\"confirm_new_password\" required></label><button type=\"submit\">Reset \
+		 password</button></form>"
+	))
 }
 
-form! {
-	struct PasswordResetForm {
-		#[validate(length(min = 1, message = "Password cannot be empty"))]
-		new_password: String where {
-			input_type: "password",
-			label: "New password",
-			autocomplete: "new-password"
-		},
-
-		#[validate(must_match(other = "new_password", message = "Passwords must match"))]
-		confirm_new_password: String where {
-			input_type: "password",
-			label: "Confirm new password",
-			autocomplete: "new-password"
+fn percent_decode(value: &str) -> Option<String> {
+	let mut decoded = Vec::with_capacity(value.len());
+	let mut bytes = value.bytes();
+	while let Some(byte) = bytes.next() {
+		match byte {
+			| b'+' => decoded.push(b' '),
+			| b'%' => {
+				let high = hex_value(bytes.next()?)?;
+				let low = hex_value(bytes.next()?)?;
+				decoded.push((high << 4) | low);
+			},
+			| byte => decoded.push(byte),
 		}
+	}
+	String::from_utf8(decoded).ok()
+}
 
-		submit: "Reset Password"
+fn hex_value(byte: u8) -> Option<u8> {
+	match byte {
+		| b'0'..=b'9' => byte.checked_sub(b'0'),
+		| b'a'..=b'f' => byte.checked_sub(b'a')?.checked_add(10),
+		| b'A'..=b'F' => byte.checked_sub(b'A')?.checked_add(10),
+		| _ => None,
 	}
 }
 
-pub(crate) fn build() -> Router<crate::State> {
-	Router::new()
-		.route("/account/reset_password", get(get_password_reset).post(post_password_reset))
+fn field(body: &[u8], wanted: &str) -> Option<String> {
+	let body = std::str::from_utf8(body).ok()?;
+	body.split('&').find_map(|pair| {
+		let (name, value) = pair.split_once('=')?;
+		(percent_decode(name)? == wanted)
+			.then(|| percent_decode(value))
+			.flatten()
+	})
 }
 
-#[derive(Deserialize)]
-struct PasswordResetQuery {
-	token: String,
+fn token(raw_query: Option<&str>) -> Result<String, WebError> {
+	raw_query
+		.and_then(|query| field(query.as_bytes(), "token"))
+		.filter(|token| !token.is_empty())
+		.ok_or_else(|| WebError::BadRequest(INVALID_TOKEN_ERROR.to_owned()))
 }
 
-async fn password_reset_form(
+pub(crate) async fn get_password_reset(
+	request: Request<Incoming>,
 	services: crate::State,
-	query: PasswordResetQuery,
-	reset_form: Form<'static>,
-) -> Result<impl IntoResponse, WebError> {
-	let Some(token) = services.password_reset.check_token(&query.token).await else {
+) -> Result<Response<Full<Bytes>>, WebError> {
+	let token = token(request.uri().query())?;
+	if services.password_reset.check_token(&token).await.is_none() {
 		return Err(WebError::BadRequest(INVALID_TOKEN_ERROR.to_owned()));
+	}
+
+	Ok(form_page(None))
+}
+
+pub(crate) async fn post_password_reset(
+	request: Request<Incoming>,
+	services: crate::State,
+) -> Result<Response<Full<Bytes>>, WebError> {
+	let token = token(request.uri().query())?;
+	let body = request
+		.into_body()
+		.collect()
+		.await
+		.map_err(|e| WebError::BadRequest(e.to_string()))?
+		.to_bytes();
+	let Some(new_password) = field(&body, "new_password") else {
+		return Ok(form_page(Some("Password cannot be empty.")));
+	};
+	let Some(confirm_new_password) = field(&body, "confirm_new_password") else {
+		return Ok(form_page(Some("Passwords must match.")));
 	};
 
-	let user_card = UserCard::for_local_user(&services, &token.info.user).await;
-
-	Ok(PasswordReset::new(&services, user_card, PasswordResetBody::Form(reset_form))
-		.into_response())
-}
-
-async fn get_password_reset(
-	State(services): State<crate::State>,
-	query: Result<Query<PasswordResetQuery>, QueryRejection>,
-) -> Result<impl IntoResponse, WebError> {
-	let Query(query) = query?;
-
-	password_reset_form(services, query, PasswordResetForm::build(None)).await
-}
-
-async fn post_password_reset(
-	State(services): State<crate::State>,
-	query: Result<Query<PasswordResetQuery>, QueryRejection>,
-	form: Result<axum::Form<PasswordResetForm>, FormRejection>,
-) -> Result<Response, WebError> {
-	let Query(query) = query?;
-	let axum::Form(form) = form?;
-
-	match form.validate() {
-		| Ok(()) => {
-			let Some(token) = services.password_reset.check_token(&query.token).await else {
-				return Err(WebError::BadRequest(INVALID_TOKEN_ERROR.to_owned()));
-			};
-			let user_id = token.info.user.clone();
-
-			services
-				.password_reset
-				.consume_token(token, &form.new_password)
-				.await?;
-
-			let user_card = UserCard::for_local_user(&services, &user_id).await;
-			Ok(PasswordReset::new(&services, user_card, PasswordResetBody::Success)
-				.into_response())
-		},
-		| Err(err) => Ok((
-			StatusCode::BAD_REQUEST,
-			password_reset_form(services, query, PasswordResetForm::build(Some(err))).await,
-		)
-			.into_response()),
+	if new_password.is_empty() {
+		return Ok(form_page(Some("Password cannot be empty.")));
 	}
+	if new_password != confirm_new_password {
+		return Ok(form_page(Some("Passwords must match.")));
+	}
+
+	let Some(token) = services.password_reset.check_token(&token).await else {
+		return Err(WebError::BadRequest(INVALID_TOKEN_ERROR.to_owned()));
+	};
+	services
+		.password_reset
+		.consume_token(token, &new_password)
+		.await?;
+
+	Ok(response(
+		"<!doctype html><title>Password reset</title><h1>Password reset</h1><p>Your password \
+		 has been reset successfully.</p>"
+			.to_owned(),
+	))
 }

@@ -31,6 +31,8 @@ pub struct AppendPduContext<'a> {
 	pub state_lock: &'a RoomMutexGuard,
 	pub room_id: &'a slipstream::RoomId,
 	pub state_root_handle: Option<rezzy::hamt::RootHandle>,
+	/// Nodes built for `state_root_handle`, held until the root is published.
+	pub pending_nodes: Vec<crate::rooms::state_hamt::store::PendingNode>,
 	pub prev_state_root_handle: Option<rezzy::hamt::RootHandle>,
 	pub advance_current_state: bool,
 	/// Membership of the event's state key in this room, sampled *before* a
@@ -53,7 +55,6 @@ pub(super) struct PduPushEval<'a> {
 /// Append the incoming event setting the state snapshot to the state from
 /// the server that sent the event.
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip_all)]
 #[allow(clippy::too_many_arguments)]
 pub async fn append_incoming_pdu<'a, Leaves>(
 	&'a self,
@@ -71,6 +72,7 @@ where
 		state_lock,
 		room_id,
 		state_root_handle,
+		pending_nodes,
 		prev_state_root_handle,
 		advance_current_state,
 		was_joined_before_state_install,
@@ -91,13 +93,18 @@ where
 		{
 			self.services
 				.state
-				.set_event_roothandle(pdu.event_id(), root_handle)
+				.set_event_roothandle_with_nodes(
+					room_id,
+					pdu.event_id(),
+					root_handle,
+					&pending_nodes,
+				)
 				.await?;
 		}
 
 		self.services
 			.pdu_metadata
-			.unmark_event_rejected(pdu.event_id());
+			.unmark_event_rejected(pdu.event_id())?;
 
 		conduwuit::debug_warn!(
 			event_id = %pdu.event_id,
@@ -111,6 +118,7 @@ where
 			state_lock,
 			room_id,
 			state_root_handle,
+			pending_nodes,
 			prev_state_root_handle,
 			advance_current_state,
 			was_joined_before_state_install,
@@ -129,7 +137,7 @@ where
 	// resolution. Soft-fail flags are intentional and must persist.
 	self.services
 		.pdu_metadata
-		.unmark_event_rejected(pdu.event_id());
+		.unmark_event_rejected(pdu.event_id())?;
 
 	// Process admin commands for federation events
 	if *pdu.kind() == TimelineEventType::RoomMessage {
@@ -162,7 +170,6 @@ where
 /// Returns pdu id
 #[implement(super::Service)]
 #[allow(clippy::too_many_arguments)]
-#[tracing::instrument(level = "debug", skip_all)]
 pub async fn append_pdu<'a, Leaves>(
 	&'a self,
 	pdu: &'a PduEvent,
@@ -178,6 +185,7 @@ where
 		state_lock,
 		room_id,
 		state_root_handle,
+		pending_nodes,
 		prev_state_root_handle,
 		advance_current_state,
 		was_joined_before_state_install,
@@ -266,7 +274,7 @@ where
 			Some(pdu.event_id()),
 			state_lock,
 		)
-		.await;
+		.await?;
 
 	let insert_lock = self.mutex_insert.lock(room_id).await;
 	info!(
@@ -294,10 +302,30 @@ where
 		None
 	};
 
+	// MSC2836: index the parent->child edge before the PDU becomes visible to
+	// sync. A client that sees the child and immediately queries
+	// /event_relationships must find the edge (it is idempotent, so a
+	// redundant call for an already-present PDU is harmless).
+	if let Ok(content) = pdu.get_content::<super::ExtractMsc2836Relationship>() {
+		if let Some(relationship) = content.relationship {
+			self.services.pdu_metadata.msc2836_add_child(
+				&relationship.event_id,
+				pdu.event_id(),
+				&relationship.rel_type,
+			);
+		}
+	}
+
 	self.services
 		.user
 		.reset_notification_counts(pdu.sender(), room_id);
 
+	// The mtxdb event write is keyed by event id, not by stream count, so it runs
+	// before the sync barrier is taken. That keeps the span between allocating a
+	// count and making its row visible down to the RocksDB batch apply.
+	if existing_pdu.is_none() {
+		self.db.write_event_to_mtxdb(pdu, &pdu_json);
+	}
 	let (pdu_id, pdu_count, private_read_count) = if let Some((existing_id, existing_count)) =
 		existing_pdu
 	{
@@ -306,6 +334,10 @@ where
 			| PduCount::Backfilled(_) => None,
 		})
 	} else {
+		// Sync snapshots `current_count()` under the barrier's write side. Hold
+		// the read side from count allocation until this PDU is visible, so sync
+		// cannot advance past a count whose event is still being written.
+		let _barrier = self.services.globals.edu_barrier.read().await;
 		let count = self.services.globals.next_count()?;
 		let pdu_count = PduCount::Normal(count);
 		let pdu_id: RawPduId = PduId { shortroomid, shorteventid: pdu_count }.into();
@@ -314,7 +346,9 @@ where
 		info!(target: "timeline_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: about to insert");
 
 		// Write first, then publish the count
-		self.db.append_pdu(&pdu_id, pdu, &pdu_json, pdu_count).await;
+		self.db
+			.append_pdu_prewritten(&pdu_id, pdu, &pdu_json, pdu_count)
+			.await;
 		info!(target: "timeline_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: insert complete");
 
 		info!(
@@ -328,16 +362,18 @@ where
 		(pdu_id, pdu_count, Some(count))
 	};
 
-	// Commit the event's state association inside the same cork as the timeline
-	// write, so a flush never exposes the PDU without its state root.
+	// Must stay after the timeline row is inserted and its count published: this
+	// applies the membership change and wakes sync, which has to find the PDU.
 	Box::pin(self.services.state.set_event_state_with_root(
 		room_id,
 		pdu,
 		state_lock,
 		state_root_handle.as_ref(),
 		prev_state_root_handle.as_ref(),
+		&pending_nodes,
 	))
 	.await?;
+
 	// Recovered outlier timelines carry no state event of their own, so the batch
 	// above did not advance the room pointer for them. A state event already had
 	// it committed inside that batch, so re-writing it here would be redundant.
@@ -347,7 +383,7 @@ where
 	{
 		self.services
 			.state
-			.set_room_state_hamt(room_id, root_handle, state_lock);
+			.set_room_state_hamt(room_id, root_handle, state_lock)?;
 	}
 	drop(cork);
 	let receipt_content = BTreeMap::from_iter([(
@@ -550,8 +586,7 @@ where
 				{
 					if content.membership
 						== slipstream::events::room::member::MembershipState::Join
-						&& !was_joined
-						&& self.services.globals.user_is_local(&target_user_id)
+						&& !was_joined && self.services.globals.user_is_local(&target_user_id)
 					{
 						self.services
 							.users
@@ -619,16 +654,6 @@ where
 				}
 			},
 			| _ => {}, // TODO: Aggregate other types
-		}
-	}
-
-	if let Ok(content) = pdu.get_content::<super::ExtractMsc2836Relationship>() {
-		if let Some(relationship) = content.relationship {
-			self.services.pdu_metadata.msc2836_add_child(
-				&relationship.event_id,
-				pdu.event_id(),
-				&relationship.rel_type,
-			);
 		}
 	}
 

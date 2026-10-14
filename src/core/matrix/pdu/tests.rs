@@ -212,8 +212,11 @@ mod golden {
 		let pdu: Pdu = from_str(&fixture).expect("fixture parses");
 
 		assert_eq!(pdu.state_key.as_deref(), Some("@alice:example.org"));
-		assert_eq!(pdu.redacts.as_ref().map(|id| id.as_str()), Some(ID_B));
-		assert_eq!(pdu.origin.as_ref().map(|o| o.as_str()), Some("example.org"));
+		assert_eq!(pdu.redacts.as_ref().map(slipstream::OwnedEventId::as_str), Some(ID_B));
+		assert_eq!(
+			pdu.origin.as_ref().map(slipstream::OwnedServerName::as_str),
+			Some("example.org")
+		);
 		assert!(pdu.unsigned.is_none() && pdu.signatures.is_none());
 
 		// Absent optional fields stay absent (no `"unsigned":null` etc.).
@@ -242,14 +245,11 @@ mod golden {
 		// what hashing and signature checks operate on.
 		let shuffled = format!(
 			r#"{{ "type": "m.room.member", "sender": "@alice:example.org",
-			"room_id": "!room:example.org", "redacts": "{b}", "prev_events": ["{c}"],
+			"room_id": "!room:example.org", "redacts": "{ID_B}", "prev_events": ["{ID_C}"],
 			"origin_server_ts": 1, "origin": "example.org",
-			"hashes": {{"sha256": "aGFzaA"}}, "event_id": "{a}", "depth": 3,
+			"hashes": {{"sha256": "aGFzaA"}}, "event_id": "{ID_A}", "depth": 3,
 			"state_key": "@alice:example.org",
-			"content": {{ "membership": "join" }}, "auth_events": ["{b}"] }}"#,
-			a = ID_A,
-			b = ID_B,
-			c = ID_C,
+			"content": {{ "membership": "join" }}, "auth_events": ["{ID_B}"] }}"#,
 		);
 		let pdu: Pdu = from_str(&shuffled).expect("parses");
 
@@ -316,7 +316,7 @@ mod serde_parity {
 	/// drops it, turning a state event into a timeline event.
 	#[test]
 	fn non_string_state_key_is_rejected() {
-		assert!(from_str::<Pdu>(&base(r#","state_key":5"#)).is_err());
+		from_str::<Pdu>(&base(r#","state_key":5"#)).unwrap_err();
 	}
 
 	/// serde: `Option` fields accept `null` as `None` and omit them on output.
@@ -333,7 +333,7 @@ mod serde_parity {
 	#[test]
 	fn depth_above_js_safe_integer_is_rejected() {
 		let big = base("").replace(r#""depth":1"#, r#""depth":9007199254740993"#);
-		assert!(from_str::<Pdu>(&big).is_err());
+		from_str::<Pdu>(&big).unwrap_err();
 	}
 
 	/// serde: `content` has no default, so a missing `content` is an error. The
@@ -341,7 +341,7 @@ mod serde_parity {
 	#[test]
 	fn missing_content_is_rejected() {
 		let text = base("").replace(r#""content":{},"#, "");
-		assert!(from_str::<Pdu>(&text).is_err());
+		from_str::<Pdu>(&text).unwrap_err();
 	}
 
 	#[test]
@@ -356,6 +356,6 @@ mod serde_parity {
 	#[test]
 	fn null_content_is_rejected() {
 		let text = base("").replace(r#""content":{},"#, r#""content":null,"#);
-		assert!(from_str::<Pdu>(&text).is_err());
+		from_str::<Pdu>(&text).unwrap_err();
 	}
 }

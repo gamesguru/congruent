@@ -1,8 +1,6 @@
 #![allow(deprecated)]
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
-use conduwuit::{Err, Result, err, utils::math::ruma_from_usize};
+use conduwuit::{Err, Result, debug, err, utils::math::ruma_from_usize};
 use conduwuit_service::media::{CACHE_CONTROL_IMMUTABLE, CORP_CROSS_ORIGIN, Dim, FileMeta};
 use slipstream::{
 	Mxc,
@@ -12,7 +10,14 @@ use slipstream::{
 	},
 };
 
-use crate::{Ruma, RumaResponse, client::create_content_route};
+use crate::{
+	Ruma, RumaResponse,
+	client::create_content_route,
+	router::{
+		ApiError,
+		extract::{ClientIp, State},
+	},
+};
 
 /// # `POST /_matrix/media/v1/create`
 ///
@@ -118,21 +123,22 @@ pub(crate) async fn get_media_config_legacy_route(
 pub(crate) async fn get_media_config_legacy_legacy_route(
 	State(services): State<crate::State>,
 	body: Ruma<get_media_config::v3::Request>,
-) -> Result<RumaResponse<get_media_config::v3::Response>> {
+) -> std::result::Result<RumaResponse<get_media_config::v3::Response>, ApiError> {
 	get_media_config_legacy_route(State(services), body)
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }
 
 /// # `GET /_matrix/media/v3/preview_url`
 ///
 /// Returns URL preview.
-#[tracing::instrument(skip_all, fields(%client), name = "url_preview_legacy", level = "debug")]
 pub(crate) async fn get_media_preview_legacy_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_media_preview::v3::Request>,
 ) -> Result<get_media_preview::v3::Response> {
+	debug!(%client, "legacy media preview request");
 	let sender_user = body.sender_user();
 
 	let url = &body.url;
@@ -170,10 +176,11 @@ pub(crate) async fn get_media_preview_legacy_legacy_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_media_preview::v3::Request>,
-) -> Result<RumaResponse<get_media_preview::v3::Response>> {
+) -> std::result::Result<RumaResponse<get_media_preview::v3::Response>, ApiError> {
 	get_media_preview_legacy_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }
 
 /// # `POST /_matrix/media/v1/upload`
@@ -190,10 +197,11 @@ pub(crate) async fn create_content_legacy_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<create_content::v3::Request>,
-) -> Result<RumaResponse<create_content::v3::Response>> {
+) -> std::result::Result<RumaResponse<create_content::v3::Response>, ApiError> {
 	create_content_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }
 
 /// # `GET /_matrix/media/v3/download/{serverName}/{mediaId}`
@@ -204,12 +212,12 @@ pub(crate) async fn create_content_legacy_route(
 /// - Only redirects if `allow_redirect` is true
 /// - Uses client-provided `timeout_ms` if available, else defaults to 20
 ///   seconds
-#[tracing::instrument(skip_all, fields(%client), name = "media_get_legacy", level = "debug")]
 pub(crate) async fn get_content_legacy_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_content::v3::Request>,
 ) -> Result<get_content::v3::Response> {
+	debug!(%client, "legacy media download request");
 	let mxc = Mxc {
 		server_name: &body.server_name,
 		media_id: &body.media_id,
@@ -274,15 +282,15 @@ pub(crate) async fn get_content_legacy_route(
 /// - Only redirects if `allow_redirect` is true
 /// - Uses client-provided `timeout_ms` if available, else defaults to 20
 ///   seconds
-#[tracing::instrument(skip_all, fields(%client), name = "media_get_legacy", level = "debug")]
 pub(crate) async fn get_content_legacy_legacy_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_content::v3::Request>,
-) -> Result<RumaResponse<get_content::v3::Response>> {
+) -> std::result::Result<RumaResponse<get_content::v3::Response>, ApiError> {
 	get_content_legacy_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }
 
 /// # `GET /_matrix/media/v3/download/{serverName}/{mediaId}/{fileName}`
@@ -293,12 +301,12 @@ pub(crate) async fn get_content_legacy_legacy_route(
 /// - Only redirects if `allow_redirect` is true
 /// - Uses client-provided `timeout_ms` if available, else defaults to 20
 ///   seconds
-#[tracing::instrument(skip_all, fields(%client), name = "media_get_legacy", level = "debug")]
 pub(crate) async fn get_content_as_filename_legacy_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_content_as_filename::v3::Request>,
 ) -> Result<get_content_as_filename::v3::Response> {
+	debug!(%client, "legacy media filename request");
 	let mxc = Mxc {
 		server_name: &body.server_name,
 		media_id: &body.media_id,
@@ -369,10 +377,11 @@ pub(crate) async fn get_content_as_filename_legacy_legacy_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_content_as_filename::v3::Request>,
-) -> Result<RumaResponse<get_content_as_filename::v3::Response>> {
+) -> std::result::Result<RumaResponse<get_content_as_filename::v3::Response>, ApiError> {
 	get_content_as_filename_legacy_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }
 
 /// # `GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}`
@@ -383,12 +392,12 @@ pub(crate) async fn get_content_as_filename_legacy_legacy_route(
 /// - Only redirects if `allow_redirect` is true
 /// - Uses client-provided `timeout_ms` if available, else defaults to 20
 ///   seconds
-#[tracing::instrument(skip_all, fields(%client), name = "media_thumbnail_get_legacy", level = "debug")]
 pub(crate) async fn get_content_thumbnail_legacy_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_content_thumbnail::v3::Request>,
 ) -> Result<get_content_thumbnail::v3::Response> {
+	debug!(%client, "legacy media thumbnail request");
 	let mxc = Mxc {
 		server_name: &body.server_name,
 		media_id: &body.media_id,
@@ -454,8 +463,9 @@ pub(crate) async fn get_content_thumbnail_legacy_legacy_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_content_thumbnail::v3::Request>,
-) -> Result<RumaResponse<get_content_thumbnail::v3::Response>> {
+) -> std::result::Result<RumaResponse<get_content_thumbnail::v3::Response>, ApiError> {
 	get_content_thumbnail_legacy_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }

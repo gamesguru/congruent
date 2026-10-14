@@ -235,7 +235,6 @@ pub async fn reset_notification_counts_for_thread(
 }
 
 #[implement(Service)]
-#[tracing::instrument(level = "debug", skip(self), ret(level = "trace"))]
 pub async fn notification_count(&self, user_id: &UserId, room_id: &RoomId) -> u64 {
 	let key = (user_id, room_id);
 	self.db
@@ -247,7 +246,6 @@ pub async fn notification_count(&self, user_id: &UserId, room_id: &RoomId) -> u6
 }
 
 #[implement(Service)]
-#[tracing::instrument(level = "debug", skip(self), ret(level = "trace"))]
 pub async fn highlight_count(&self, user_id: &UserId, room_id: &RoomId) -> u64 {
 	let key = (user_id, room_id);
 	self.db
@@ -260,7 +258,6 @@ pub async fn highlight_count(&self, user_id: &UserId, room_id: &RoomId) -> u64 {
 
 /// Per-thread `(notification, highlight)` counts for one room and user.
 #[implement(Service)]
-#[tracing::instrument(level = "debug", skip(self))]
 pub async fn thread_notification_counts(
 	&self,
 	user_id: &UserId,
@@ -309,7 +306,6 @@ fn merge_thread_count(
 }
 
 #[implement(Service)]
-#[tracing::instrument(level = "debug", skip(self), ret(level = "trace"))]
 pub async fn last_notification_read(&self, user_id: &UserId, room_id: &RoomId) -> u64 {
 	let key = (room_id, user_id);
 	self.db
@@ -322,7 +318,6 @@ pub async fn last_notification_read(&self, user_id: &UserId, room_id: &RoomId) -
 
 /// Per-thread last-read counts for one room and user.
 #[implement(Service)]
-#[tracing::instrument(level = "debug", skip(self))]
 pub async fn thread_last_notification_reads(
 	&self,
 	user_id: &UserId,

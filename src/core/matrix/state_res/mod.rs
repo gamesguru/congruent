@@ -92,8 +92,6 @@ const STATE_RES_MAX_CONFLICTED: usize = 200_000;
 /// The caller of `resolve` must ensure that all the events are from the same
 /// room. Although this function takes a `RoomId` it does not check that each
 /// event is part of the same room.
-//#[tracing::instrument(level = "debug", skip(state_sets, auth_chain_sets,
-//#[tracing::instrument(level event_fetch))]
 #[allow(clippy::cognitive_complexity)]
 pub async fn resolve<
 	'a,
@@ -290,7 +288,7 @@ where
 	}
 
 	let conflicted_set_start = std::time::Instant::now();
-	let all_conflicted: HashSet<_> = all_conflicted_ids
+	let all_conflicted: HashSet<OwnedEventId> = all_conflicted_ids
 		.into_iter()
 		.stream()
 		// Filter out non-existent events and non-state events in a single fetch.
@@ -351,7 +349,7 @@ where
 	//    Running this for V2 was a regression that tripled auth-check work.
 	let mut global_pl_context = None;
 	if stateres_version == StateResolutionVersion::V2_1 {
-		let conflicted_pl_events: Vec<_> = all_conflicted
+		let conflicted_pl_events: Vec<OwnedEventId> = all_conflicted
 			.iter()
 			.stream()
 			.wide_filter_map(async |id| {
@@ -446,7 +444,7 @@ where
 
 	// Get only the control events with a state_key: "" or ban/kick event (sender !=
 	// state_key)
-	let mut control_events: Vec<_> = all_conflicted
+	let mut control_events: Vec<OwnedEventId> = all_conflicted
 		.iter()
 		.stream()
 		.wide_filter_map(async |id| {
@@ -512,14 +510,14 @@ where
 
 	// At this point the control_events have been resolved we now have to
 	// sort the remaining events using the mainline of the resolved power level.
-	let deduped_power_ev: HashSet<_> = sorted_control_levels.into_iter().collect();
+	let deduped_power_ev: HashSet<OwnedEventId> = sorted_control_levels.into_iter().collect();
 
 	debug!(count = deduped_power_ev.len(), "deduped power events");
 	trace!(set = ?deduped_power_ev, "deduped power events");
 
 	// This removes the control events that passed auth and more importantly those
 	// that failed auth
-	let mut events_to_resolve: Vec<_> = all_conflicted
+	let mut events_to_resolve: Vec<OwnedEventId> = all_conflicted
 		.iter()
 		.filter(|&id| !deduped_power_ev.contains(id))
 		.cloned()
@@ -788,7 +786,6 @@ where
 ///
 /// The power level is negative because a higher power level is equated to an
 /// earlier (further back in time) origin server timestamp.
-#[tracing::instrument(level = "debug", skip_all)]
 async fn reverse_topological_power_sort<E, F, Fut>(
 	events_to_sort: Vec<OwnedEventId>,
 	auth_diff: &HashSet<OwnedEventId>,
@@ -923,7 +920,6 @@ where
 ///
 /// `key_fn` is used as to obtain the power level and age of an event for
 /// breaking ties (together with the event ID).
-#[tracing::instrument(level = "debug", skip_all)]
 pub async fn lexicographical_topological_sort<Id, F, Fut, Hasher, S>(
 	graph: &HashMap<Id, HashSet<Id, Hasher>, S>,
 	key_fn: &F,
@@ -1126,7 +1122,6 @@ where
 /// For each `events_to_check` event we gather the events needed to auth it from
 /// the the `fetch_event` closure and verify each event using the
 /// `event_auth::auth_check` function.
-#[tracing::instrument(level = "trace", skip_all)]
 async fn iterative_auth_check<'a, E, F, Fut, S, BatchFetch, BatchFut, IsCached>(
 	room_version: &RoomVersion,
 	events_to_check: S,
@@ -1800,10 +1795,6 @@ mod tests {
 
 	async fn test_event_sort() {
 		use futures::future::ready;
-
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let events = INITIAL_EVENTS();
 
 		let event_map = events
@@ -1888,10 +1879,6 @@ mod tests {
 	// NOTE(2025-09-17): Disabled due to unknown "create event must exist" bug
 	//#[tokio::test]
 	async fn ban_vs_power_level() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let events = &[
 			to_init_pdu_event(
 				"PA",
@@ -1936,12 +1923,8 @@ mod tests {
 		do_check(events, edges, expected_state_ids).await;
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn topic_basic() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let events = &[
 			to_init_pdu_event(
 				"T1",
@@ -2001,12 +1984,8 @@ mod tests {
 		do_check(events, edges, expected_state_ids).await;
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn topic_reset() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let events = &[
 			to_init_pdu_event(
 				"T1",
@@ -2051,12 +2030,8 @@ mod tests {
 		do_check(events, edges, expected_state_ids).await;
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn join_rule_evasion() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let events = &[
 			to_init_pdu_event(
 				"JR",
@@ -2084,12 +2059,8 @@ mod tests {
 		do_check(events, edges, expected_state_ids).await;
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn offtopic_power_level() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let events = &[
 			to_init_pdu_event(
 				"PA",
@@ -2124,12 +2095,8 @@ mod tests {
 		do_check(events, edges, expected_state_ids).await;
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn topic_setting() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let events = &[
 			to_init_pdu_event(
 				"T1",
@@ -2204,13 +2171,9 @@ mod tests {
 		do_check(events, edges, expected_state_ids).await;
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_event_map_none() {
 		use futures::future::ready;
-
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 
 		let mut store = TestStore::<PduEvent>(hashmap! {});
 
@@ -2243,12 +2206,8 @@ mod tests {
 		assert_eq!(expected, resolved);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_lexicographical_sort() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let graph = hashmap! {
 			event_id("l") => hashset![event_id("o")],
 			event_id("m") => hashset![event_id("n"), event_id("o")],
@@ -2272,11 +2231,8 @@ mod tests {
 		);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn ban_with_auth_chains() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let ban = BAN_STATE_SET();
 
 		let edges = vec![vec!["END", "MB", "PA", "START"], vec!["END", "IME", "MB"]]
@@ -2292,13 +2248,9 @@ mod tests {
 		do_check(&ban.values().cloned().collect::<Vec<_>>(), edges, expected_state_ids).await;
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn ban_with_auth_chains2() {
 		use futures::future::ready;
-
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let init = INITIAL_EVENTS();
 		let ban = BAN_STATE_SET();
 
@@ -2378,7 +2330,7 @@ mod tests {
 		assert_eq!(expected.len(), resolved.len());
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn join_rule_with_auth_chain() {
 		let join_rule = JOIN_RULE();
 
@@ -2560,7 +2512,7 @@ mod tests {
 		],);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn v2_1_conflicted_subgraph_uses_auth_chains() {
 		use futures::future::ready;
 
@@ -2597,7 +2549,7 @@ mod tests {
 		);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn synapse_v21_conflicted_subgraph_preserves_power_levels() {
 		use futures::future::ready;
 		use slipstream::{OwnedEventId, OwnedRoomId, json};

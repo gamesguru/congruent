@@ -1,12 +1,34 @@
 use std::borrow::Borrow;
 
-use conduwuit::{Err, Result, debug_error, debug_warn, err, implement, trace};
+use conduwuit::{Err, Result, debug_error, debug_warn, err, implement, trace, warn};
 use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, RoomVersionId, ServerName,
 	ServerSigningKeyId, api::federation::discovery::VerifyKey,
 };
 
 use super::{PubKeyMap, PubKeys, extract_key};
+
+/// Whether event signature verification enforces a key's `valid_until_ts`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ValidUntilPolicy {
+	/// Ignore `valid_until_ts`, as required by room versions 1 through 4.
+	Ignore,
+	/// Require the key's validity window to cover the event timestamp.
+	Enforce,
+}
+
+fn validity_policy_for_version(version: &RoomVersionId) -> ValidUntilPolicy {
+	if matches!(
+		version,
+		RoomVersionId::V1 | RoomVersionId::V2 | RoomVersionId::V3 | RoomVersionId::V4
+	) {
+		ValidUntilPolicy::Ignore
+	} else {
+		ValidUntilPolicy::Enforce
+	}
+}
+
+fn missing_key_record_is_allowed(error: &conduwuit::Error) -> bool { error.is_not_found() }
 
 #[implement(super::Service)]
 pub async fn get_event_keys(
@@ -36,10 +58,19 @@ pub async fn get_event_keys(
 		.map(MilliSecondsSinceUnixEpoch)
 		.ok_or_else(|| err!(BadServerResponse("Event missing or malformed origin_server_ts")))?;
 
+	// Room versions 5 and later require the signing key's valid_until_ts to
+	// cover the event's origin_server_ts; versions 1-4 ignore valid_until_ts.
+	let validity_policy = validity_policy_for_version(version);
+
 	let mut keys = PubKeyMap::new();
 	for (server, key_ids) in &required {
 		let pubkeys = self
-			.get_pubkeys_for_event(server, key_ids.iter().map(Borrow::borrow), origin_server_ts)
+			.get_pubkeys_for_event(
+				server,
+				key_ids.iter().map(Borrow::borrow),
+				origin_server_ts,
+				validity_policy,
+			)
 			.await;
 		keys.insert(server.to_owned(), pubkeys);
 	}
@@ -77,16 +108,18 @@ where
 	keys
 }
 
-/// Like `get_pubkeys_for`, but filters out expired keys based on the event
-/// timestamp. Per MSC4499: an event signed at time T is valid iff T <
-/// expired_ts. Keys in `old_verify_keys` whose `expired_ts` <=
-/// `origin_server_ts` are excluded.
+/// Like `get_pubkeys_for`, but filters keys based on the event timestamp.
+/// Per MSC4499, keys in `old_verify_keys` whose `expired_ts` is at or before
+/// `origin_server_ts` are excluded. `valid_until_ts` is enforced according to
+/// `validity_policy`: when enforced, the event timestamp must be covered by
+/// the key's validity window.
 #[implement(super::Service)]
-pub async fn get_pubkeys_for_event<'a, I>(
+pub(super) async fn get_pubkeys_for_event<'a, I>(
 	&self,
 	origin: &ServerName,
 	key_ids: I,
 	origin_server_ts: MilliSecondsSinceUnixEpoch,
+	validity_policy: ValidUntilPolicy,
 ) -> PubKeys
 where
 	I: Iterator<Item = &'a ServerSigningKeyId> + Send,
@@ -106,11 +139,69 @@ where
 				);
 				continue;
 			}
+			if validity_policy == ValidUntilPolicy::Enforce
+				&& !self
+					.is_key_valid_for_event(origin, key_id, origin_server_ts)
+					.await
+			{
+				debug_warn!(
+					%origin, %key_id,
+					"Rejecting key for event verification (key valid_until_ts is before \
+					 event origin_server_ts)"
+				);
+				continue;
+			}
 			keys.insert(key_id.into(), verify_key.key);
 		}
 	}
 
 	keys
+}
+
+/// Whether the origin's key record is valid until at least the event's
+/// `origin_server_ts` (room version 5 and later). A record that does not cover
+/// it may only be stale, so the origin is asked for a fresh one before the key
+/// is refused. A retired key is judged by its `expired_ts` instead, and an
+/// origin without a stored record has no validity window to enforce. Other
+/// cache read errors fail closed and reject the key.
+#[implement(super::Service)]
+async fn is_key_valid_for_event(
+	&self,
+	origin: &ServerName,
+	key_id: &ServerSigningKeyId,
+	event_ts: MilliSecondsSinceUnixEpoch,
+) -> bool {
+	let cached = match self.merged_signing_keys_for(origin).await {
+		| Ok(cached) => cached,
+		| Err(error) if missing_key_record_is_allowed(&error) => return true,
+		| Err(error) => {
+			warn!(%origin, "Failed to read cached signing-key validity; refusing key: {error}");
+			return false;
+		},
+	};
+	if cached.old_verify_keys.contains_key(key_id) || cached.valid_until_ts >= event_ts {
+		return true;
+	}
+
+	let Ok(raw) = self
+		.server_request_coalesced(origin, Some(event_ts), &[key_id])
+		.await
+	else {
+		return false;
+	};
+	if let Err(e) = self
+		.add_signing_keys(&raw, super::FetchSource::Direct)
+		.await
+	{
+		debug_error!("Failed to add refreshed signing keys: {e}");
+		return false;
+	}
+
+	self.merged_signing_keys_for(origin)
+		.await
+		.is_ok_and(|fresh| {
+			fresh.old_verify_keys.contains_key(key_id) || fresh.valid_until_ts >= event_ts
+		})
 }
 
 /// Checks if a key from old_verify_keys has an expired_ts that is at or before
@@ -134,7 +225,6 @@ async fn is_key_expired_for_event(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn get_verify_key(
 	&self,
 	origin: &ServerName,
@@ -234,7 +324,6 @@ async fn get_verify_key_from_origin(
 /// Per MSC4499 / Matrix federation specification, requests must only be authenticated
 /// with active keys in `verify_keys`, not retired keys in `old_verify_keys`.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn get_active_verify_key(
 	&self,
 	origin: &ServerName,
@@ -352,4 +441,29 @@ async fn get_active_verify_key_from_origin(
 	}
 
 	Err!(Request(NotFound("Failed to fetch active signing-key from origin")))
+}
+
+#[cfg(test)]
+mod tests {
+	use slipstream::RoomVersionId;
+
+	use super::{ValidUntilPolicy, missing_key_record_is_allowed, validity_policy_for_version};
+
+	#[test]
+	fn missing_key_record_is_allowed_but_storage_errors_are_not() {
+		let missing = conduwuit::err!(Request(NotFound("No signing-key record")));
+		let storage = conduwuit::err!(Database("signing-key read failed"));
+		assert!(missing_key_record_is_allowed(&missing));
+		assert!(!missing_key_record_is_allowed(&storage));
+	}
+
+	#[test]
+	fn valid_until_policy_matches_room_version_rules() {
+		for version in
+			[RoomVersionId::V1, RoomVersionId::V2, RoomVersionId::V3, RoomVersionId::V4]
+		{
+			assert_eq!(validity_policy_for_version(&version), ValidUntilPolicy::Ignore);
+		}
+		assert_eq!(validity_policy_for_version(&RoomVersionId::V5), ValidUntilPolicy::Enforce);
+	}
 }

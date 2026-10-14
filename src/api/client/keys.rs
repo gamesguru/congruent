@@ -3,7 +3,6 @@ use std::{
 	time::Duration,
 };
 
-use axum::extract::State;
 use conduwuit::{
 	Err, Error, Result, debug, debug_warn, err, info,
 	result::NotFound,
@@ -31,7 +30,7 @@ use slipstream::{
 	sswire::Raw,
 };
 
-use crate::{Ruma, json_util::single_field};
+use crate::{Ruma, json_util::single_field, router::extract::State};
 
 /// # `POST /_matrix/client/r0/keys/upload`
 ///
@@ -223,9 +222,10 @@ pub(crate) async fn claim_keys_route(
 ///
 /// - Requires UIAA to verify password
 pub(crate) async fn upload_signing_keys_route(
-	State(services): State<crate::State>,
+	State(state): State<crate::State>,
 	body: Ruma<upload_signing_keys::v3::Request>,
 ) -> Result<upload_signing_keys::v3::Response> {
+	let services = state.services();
 	let (sender_user, sender_device) = body.sender();
 
 	info!(
@@ -235,7 +235,7 @@ pub(crate) async fn upload_signing_keys_route(
 	);
 
 	match check_for_new_keys(
-		services,
+		state,
 		sender_user,
 		body.self_signing_key.as_ref(),
 		body.user_signing_key.as_ref(),
@@ -584,7 +584,7 @@ where
 			// which cascades into client-side send timeouts. The caller is told
 			// about the missing server via `failures` and can retry.
 			let fed_timeout = timeout.min(Duration::from_secs(3));
-			let response = tokio::time::timeout(
+			let response = conduwuit::timeout(
 				fed_timeout,
 				services.sending.send_federation_request(&server, request),
 			)
@@ -770,7 +770,7 @@ pub(crate) async fn claim_keys_helper(
 			for (user_id, keys) in vec {
 				one_time_keys_input_fed.insert(user_id.clone(), keys.clone());
 			}
-			let response = tokio::time::timeout(
+			let response = conduwuit::timeout(
 				timeout.min(Duration::from_secs(3)),
 				services.sending.send_federation_request(
 					&server,

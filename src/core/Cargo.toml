@@ -15,60 +15,35 @@ crate-type = [
 #	"dylib",
 ]
 
-# `serde_regex` is used only as a string path in `#[serde(with = "serde_regex")]`,
-# which cargo-machete's path-based scan cannot detect.
-[package.metadata.cargo-machete]
-ignored = ["serde_regex"]
-
 [features]
-brotli_compression = [
-	"reqwest/brotli",
-]
 conduwuit_mods = [
     "dep:libloading"
-]
-gzip_compression = [
-	"reqwest/gzip",
 ]
 hardened_malloc = [
 	"dep:hardened_malloc-rs"
 ]
-jemalloc = [
-	"dep:tikv-jemalloc-sys",
-	"dep:tikv-jemalloc-ctl",
-	"dep:tikv-jemallocator",
+mimalloc = [
+	"dep:mimalloc",
 ]
-jemalloc_conf = []
-jemalloc_prof = [
-	"tikv-jemalloc-sys/profiling",
-]
-jemalloc_stats = [
-    "tikv-jemalloc-sys/stats",
-    "tikv-jemalloc-ctl/stats",
-    "tikv-jemallocator/stats",
-]
-perf_measurements = []
+mimalloc_conf = []
+mimalloc_prof = []
+mimalloc_stats = []
 release_max_log_level = [
-	"tracing/max_level_trace",
-	"tracing/release_max_level_info",
 	"log/max_level_trace",
 	"log/release_max_level_info",
 ]
-sentry_telemetry = []
-tokio_metrics = ["dep:tokio-metrics"]
 zstd_compression = [
-    "reqwest/zstd",
+    # "reqwest/zstd",
 ]
 
 [dependencies]
+async-executor.workspace = true
 argon2.workspace = true
 arrayvec.workspace = true
-axum.workspace = true
+blocking.workspace = true
 base64.workspace = true
-axum-extra.workspace = true
 bytes.workspace = true
 bytesize.workspace = true
-cargo_toml.workspace = true
 checked_ops.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -78,50 +53,35 @@ core_affinity.workspace = true
 ctor.workspace = true
 cyborgtime.workspace = true
 either.workspace = true
-figment.workspace = true
 futures.workspace = true
-http-body-util.workspace = true
+futures-io.workspace = true
 http.workspace = true
-ipaddress.workspace = true
+hyper.workspace = true
 libc.workspace = true
 libloading.workspace = true
 libloading.optional = true
 log.workspace = true
-lettre.workspace = true
 num-traits.workspace = true
 rand.workspace = true
 # tied to passwordhash 0.5.0
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 regex.workspace = true
-reqwest.workspace = true
 rezzy.workspace = true
 slipstream.workspace = true
 sha2.workspace = true
-sanitize-filename.workspace = true
-serde_regex.workspace = true
-serde-saphyr.workspace = true
 serde.workspace = true
 smallvec.workspace = true
 smallstr.workspace = true
 thiserror.workspace = true
-tikv-jemallocator.optional = true
-tikv-jemallocator.workspace = true
-tikv-jemalloc-ctl.optional = true
-tikv-jemalloc-ctl.workspace = true
-tikv-jemalloc-sys.optional = true
-tikv-jemalloc-sys.workspace = true
+mimalloc.optional = true
+mimalloc.workspace = true
+smol.workspace = true
 tokio.workspace = true
-tokio-metrics.optional = true
-tokio-metrics.workspace = true
 toml.workspace = true
-tracing-core.workspace = true
-tracing-subscriber.workspace = true
-tracing.workspace = true
 url.workspace = true
 roaring.workspace = true
 parking_lot.workspace = true
 lock_api.workspace = true
-hyper-util.workspace = true
 dashmap.workspace = true
 rustc-hash.workspace = true
 

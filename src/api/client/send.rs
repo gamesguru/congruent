@@ -1,11 +1,14 @@
-use axum::{extract::State, response::IntoResponse};
-use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, err, utils};
 use slipstream::{OwnedEventId, api::client::message::send_message_event};
 
 use crate::{
 	Ruma, RumaResponse,
 	json_util::{json_response, require_object_content, single_field},
+	router::{
+		ApiError,
+		extract::{ClientIp, State},
+		response::{IntoResponse, Response},
+	},
 };
 
 const SEND_TXN_EVENT_ID_PREFIX: &[u8] = b"\xFFevent_id:";
@@ -57,7 +60,7 @@ fn parse_cached_send_txn_response(
 fn cached_send_txn_response(
 	data: &[u8],
 	legacy_is_delay_id: bool,
-) -> Result<axum::response::Response> {
+) -> std::result::Result<Response, ApiError> {
 	match parse_cached_send_txn_response(data, legacy_is_delay_id)? {
 		| CachedSendTxnResponse::EventId(event_id) =>
 			Ok(RumaResponse(send_message_event::v3::Response { event_id }).into_response()),
@@ -65,7 +68,7 @@ fn cached_send_txn_response(
 	}
 }
 
-fn delay_id_response(delay_id: &str) -> axum::response::Response {
+fn delay_id_response(delay_id: &str) -> Response {
 	json_response(single_field("delay_id", &delay_id))
 }
 
@@ -82,12 +85,13 @@ pub(crate) async fn send_message_event_route(
 	State(services): State<crate::State>,
 	ClientIp(client_ip): ClientIp,
 	body: Ruma<send_message_event::v3::Request>,
-) -> Result<axum::response::Response> {
+) -> std::result::Result<Response, ApiError> {
 	let sender_user = body.sender_user();
 	let sender_device = body.sender_device_opt();
 	let appservice_info = body.appservice_info.as_ref();
 	if services.users.is_suspended(sender_user).await? {
-		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
+		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")))
+			.map_err(Into::into);
 	}
 
 	require_object_content(&body.body.body)?;
@@ -107,7 +111,8 @@ pub(crate) async fn send_message_event_route(
 			if response.is_empty() {
 				return Err!(Request(InvalidParam(
 					"Tried to use txn id already used for an incompatible endpoint."
-				)));
+				)))
+				.map_err(Into::into);
 			}
 			return cached_send_txn_response(&response, true);
 		}
@@ -127,7 +132,8 @@ pub(crate) async fn send_message_event_route(
 			if response.is_empty() {
 				return Err!(Request(InvalidParam(
 					"Tried to use txn id already used for an incompatible endpoint."
-				)));
+				)))
+				.map_err(Into::into);
 			}
 			return cached_send_txn_response(&response, true);
 		}
@@ -171,7 +177,8 @@ pub(crate) async fn send_message_event_route(
 		if response.is_empty() {
 			return Err!(Request(InvalidParam(
 				"Tried to use txn id already used for an incompatible endpoint."
-			)));
+			)))
+			.map_err(Into::into);
 		}
 
 		return cached_send_txn_response(&response, false);
@@ -194,7 +201,8 @@ pub(crate) async fn send_message_event_route(
 		if response.is_empty() {
 			return Err!(Request(InvalidParam(
 				"Tried to use txn id already used for an incompatible endpoint."
-			)));
+			)))
+			.map_err(Into::into);
 		}
 
 		return cached_send_txn_response(&response, false);
@@ -214,7 +222,8 @@ pub(crate) async fn send_message_event_route(
 		if response.is_empty() {
 			return Err!(Request(InvalidParam(
 				"Tried to use txn id already used for an incompatible endpoint."
-			)));
+			)))
+			.map_err(Into::into);
 		}
 
 		return cached_send_txn_response(&response, false);

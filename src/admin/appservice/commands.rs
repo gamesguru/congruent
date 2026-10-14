@@ -17,9 +17,9 @@ pub(super) async fn register(&self) -> Result {
 	let range = 1..checked!(body_len - 1)?;
 	let appservice_config_body = body[range].join("\n");
 	let parsed_config =
-		conduwuit_service::appservice::registration_from_yaml(&appservice_config_body);
+		conduwuit_service::appservice::registration_from_json(&appservice_config_body);
 	match parsed_config {
-		| Err(e) => return Err!("Could not parse appservice config as YAML: {e}"),
+		| Err(e) => return Err!("Could not parse appservice config as JSON: {e}"),
 		| Ok(registration) => match self
 			.services
 			.appservice
@@ -58,8 +58,8 @@ pub(super) async fn show_appservice_config(&self, appservice_identifier: String)
 	{
 		| None => return Err!("Appservice does not exist."),
 		| Some(config) => {
-			let config_str = conduwuit_service::appservice::registration_to_yaml(&config)?;
-			write!(self, "Config for {appservice_identifier}:\n\n```yaml\n{config_str}\n```")
+			let config_str = conduwuit_service::appservice::registration_to_json(&config)?;
+			write!(self, "Config for {appservice_identifier}:\n\n```json\n{config_str}\n```")
 		},
 	}
 	.await

@@ -11,8 +11,6 @@ Group=conduwuit
 Type=notify
 ExecReload=/bin/kill -USR1 $MAINPID
 
-Environment="CONTINUWUITY_LOG_TO_JOURNALD=true"
-Environment="CONTINUWUITY_JOURNALD_IDENTIFIER=%N"
 Environment="CONTINUWUITY_DATABASE_PATH=%S/conduwuit"
 Environment="CONTINUWUITY_CONFIG_RELOAD_SIGNAL=true"
 

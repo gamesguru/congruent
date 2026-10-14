@@ -1,6 +1,5 @@
 use std::cmp;
 
-use axum::extract::State;
 use conduwuit::{
 	Event, Pdu, PduCount, Result, err, info,
 	result::LogErr,
@@ -10,7 +9,7 @@ use futures::{FutureExt, StreamExt, TryStreamExt};
 use slipstream::{MilliSecondsSinceUnixEpoch, api::federation::backfill::get_backfill};
 
 use super::AccessCheck;
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// arbitrary number but synapse's is 100 and we can handle lots of these
 /// anyways

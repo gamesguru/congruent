@@ -1,6 +1,4 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
-use conduwuit::{Err, Result, at};
+use conduwuit::{Err, Result, at, debug};
 use futures::StreamExt;
 use slipstream::api::client::dehydrated_device::{
 	delete_dehydrated_device::unstable as delete_dehydrated_device,
@@ -8,19 +6,22 @@ use slipstream::api::client::dehydrated_device::{
 	put_dehydrated_device::unstable as put_dehydrated_device,
 };
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 const MAX_BATCH_EVENTS: usize = 50;
 
 /// # `PUT /_matrix/client/../dehydrated_device`
 ///
 /// Creates or overwrites the user's dehydrated device.
-#[tracing::instrument(skip_all, fields(%client))]
 pub(crate) async fn put_dehydrated_device_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<put_dehydrated_device::Request>,
 ) -> Result<put_dehydrated_device::Response> {
+	debug!(%client, "put dehydrated device request");
 	let sender_user = body.sender_user().to_owned();
 
 	let device_id = body.body.device_id.clone();
@@ -36,12 +37,12 @@ pub(crate) async fn put_dehydrated_device_route(
 /// # `DELETE /_matrix/client/../dehydrated_device`
 ///
 /// Deletes the user's dehydrated device without replacement.
-#[tracing::instrument(skip_all, fields(%client))]
 pub(crate) async fn delete_dehydrated_device_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<delete_dehydrated_device::Request>,
 ) -> Result<delete_dehydrated_device::Response> {
+	debug!(%client, "delete dehydrated device request");
 	let sender_user = body.sender_user();
 
 	let device_id = services.users.get_dehydrated_device_id(sender_user).await?;
@@ -54,12 +55,12 @@ pub(crate) async fn delete_dehydrated_device_route(
 /// # `GET /_matrix/client/../dehydrated_device`
 ///
 /// Gets the user's dehydrated device
-#[tracing::instrument(skip_all, fields(%client))]
 pub(crate) async fn get_dehydrated_device_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_dehydrated_device::Request>,
 ) -> Result<get_dehydrated_device::Response> {
+	debug!(%client, "get dehydrated device request");
 	let sender_user = body.sender_user();
 
 	let device = services.users.get_dehydrated_device(sender_user).await?;
@@ -73,12 +74,12 @@ pub(crate) async fn get_dehydrated_device_route(
 /// # `GET /_matrix/client/../dehydrated_device/{device_id}/events`
 ///
 /// Paginates the events of the dehydrated device.
-#[tracing::instrument(skip_all, fields(%client))]
 pub(crate) async fn get_dehydrated_events_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_events::Request>,
 ) -> Result<get_events::Response> {
+	debug!(%client, "get dehydrated events request");
 	let sender_user = body.sender_user();
 
 	let device_id = &body.body.device_id;

@@ -1,4 +1,5 @@
 #![type_length_limit = "12288"]
+#![allow(clippy::disallowed_macros)]
 
 pub mod alloc;
 pub mod config;
@@ -10,6 +11,7 @@ pub mod log;
 pub mod matrix;
 pub mod metrics;
 pub mod mods;
+pub mod rt;
 pub mod server;
 pub mod utils;
 
@@ -19,7 +21,6 @@ pub use ::slipstream;
 pub use ::smallstr;
 pub use ::smallvec;
 pub use ::toml;
-pub use ::tracing;
 pub use config::Config;
 pub use error::Error;
 pub use info::{
@@ -30,8 +31,9 @@ pub use matrix::{
 	Event, EventTypeExt, Pdu, PduCount, PduEvent, PduId, RoomVersion, pdu, state_res,
 };
 pub use parking_lot::{Mutex as SyncMutex, RwLock as SyncRwLock};
+pub use rt::{JoinError, JoinHandle, JoinSet, RuntimeHandle, TimeoutError, timeout, timeout_at};
 pub use server::Server;
-pub use utils::{implement, result, result::Result};
+pub use utils::{SmolIo, implement, result, result::Result};
 
 pub use crate as conduwuit_core;
 

@@ -5,6 +5,7 @@ pub mod proxy;
 
 use std::{
 	collections::{BTreeMap, BTreeSet, HashMap},
+	fs,
 	net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
 	path::PathBuf,
 };
@@ -14,15 +15,13 @@ use either::{
 	Either,
 	Either::{Left, Right},
 };
-use figment::providers::{Env, Format, Toml};
-pub use figment::{Figment, value::Value as FigmentValue};
-use lettre::message::Mailbox;
 use regex::RegexSet;
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, RoomVersionId,
 	api::client::discovery::{discover_homeserver::RtcFocusInfo, discover_support::ContactRole},
 };
+use toml::{Table, Value};
 use url::Url;
 
 use self::proxy::ProxyConfig;
@@ -36,6 +35,14 @@ where
 {
 	let value = crate::utils::SerdeValue::deserialize(deserializer)?.0;
 	slipstream::codec::from_value(&value).map_err(serde::de::Error::custom)
+}
+
+fn deserialize_regex_set<'de, D>(deserializer: D) -> Result<RegexSet, D::Error>
+where
+	D: serde::Deserializer<'de>,
+{
+	let patterns = Vec::<String>::deserialize(deserializer)?;
+	RegexSet::new(patterns).map_err(serde::de::Error::custom)
 }
 
 fn deserialize_slipstream_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
@@ -1003,48 +1010,7 @@ pub struct Config {
 	pub well_known: WellKnownConfig,
 
 	/// display: nested
-	pub smtp: Option<SmtpConfig>,
-
-	/// Enable OpenTelemetry OTLP tracing export. This replaces the deprecated
-	/// Jaeger exporter. Traces will be sent via OTLP to a collector (such as
-	/// Jaeger) that supports the OpenTelemetry Protocol.
-	///
-	/// Configure your OTLP endpoint using the OTEL_EXPORTER_OTLP_ENDPOINT
-	/// environment variable (defaults to http://localhost:4318).
-	#[serde(default, alias = "allow_jaeger")]
-	pub allow_otlp: bool,
-
-	/// Filter for OTLP tracing spans. This controls which spans are exported
-	/// to the OTLP collector.
-	///
-	/// default: "info"
-	#[serde(default = "default_otlp_filter", alias = "jaeger_filter")]
-	pub otlp_filter: String,
-
-	/// Protocol to use for OTLP tracing export. Options are "http" or "grpc".
-	/// The HTTP protocol uses port 4318 by default, while gRPC uses port 4317.
-	///
-	/// default: "http"
-	#[serde(default = "default_otlp_protocol")]
-	pub otlp_protocol: String,
-
-	/// If the 'perf_measurements' compile-time feature is enabled, enables
-	/// collecting folded stack trace profile of tracing spans using
-	/// tracing_flame. The resulting profile can be visualized with inferno[1],
-	/// speedscope[2], or a number of other tools.
-	///
-	/// [1]: https://github.com/jonhoo/inferno
-	/// [2]: www.speedscope.app
-	#[serde(default)]
-	pub tracing_flame: bool,
-
-	/// default: "info"
-	#[serde(default = "default_tracing_flame_filter")]
-	pub tracing_flame_filter: String,
-
-	/// default: "./tracing.folded"
-	#[serde(default = "default_tracing_flame_output_path")]
-	pub tracing_flame_output_path: String,
+	pub email: Option<EmailConfig>,
 
 	#[cfg(not(doctest))]
 	/// Examples:
@@ -1156,10 +1122,10 @@ pub struct Config {
 	/// log = "info,federation=debug"
 	///
 	/// See also:
-	/// https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
+	/// Log filter directives use the configured log syntax.
 	///
 	/// **Caveat**:
-	/// For release builds, the tracing crate is configured at compile-time to
+	/// For release builds, logging is configured at compile-time to
 	/// automatically strip out `debug` and `trace` macros (compiling only
 	/// `info` and above) to avoid unnecessary overhead in the binary
 	/// execution. For debug builds, this restriction is not applied.
@@ -1179,36 +1145,18 @@ pub struct Config {
 	pub log_span_events: String,
 
 	/// Configures whether CONTINUWUITY_LOG EnvFilter matches values using
-	/// regular expressions. See the tracing_subscriber documentation on
+	/// regular expressions.
 	/// Directives.
 	///
 	/// default: true
 	#[serde(default = "true_fn")]
 	pub log_filter_regex: bool,
 
-	/// Toggles the display of ThreadId in tracing log output.
+	/// Toggles the display of ThreadId in log output.
 	///
 	/// default: false
 	#[serde(default)]
 	pub log_thread_ids: bool,
-
-	/// Enable journald logging on Unix platforms
-	///
-	/// When enabled, log output will be sent to the systemd journal
-	/// This is only supported on Unix platforms
-	///
-	/// default: false
-	#[cfg(target_family = "unix")]
-	#[serde(default)]
-	pub log_to_journald: bool,
-
-	/// The syslog identifier to use with journald logging
-	///
-	/// Only used when journald logging is enabled
-	///
-	/// Defaults to the binary name
-	#[cfg(target_family = "unix")]
-	pub journald_identifier: Option<String>,
 
 	/// OpenID token expiration/TTL in seconds.
 	///
@@ -1323,7 +1271,7 @@ pub struct Config {
 	/// RocksDB log level. This is not the same as continuwuity's log level.
 	/// This is the log level for the RocksDB engine/library which show up in
 	/// your database folder/path as `LOG` files. continuwuity will log RocksDB
-	/// errors as normal through tracing or panics if severe for safety.
+	/// errors as normal through logging or panics if severe for safety.
 	///
 	/// default: "error"
 	#[serde(default = "default_rocksdb_log_level")]
@@ -1393,12 +1341,12 @@ pub struct Config {
 
 	/// Type of RocksDB database compression to use.
 	///
-	/// Available options are "zstd", "bz2", "lz4", or "none".
+	/// Available options are "zstd" or "none".
 	///
-	/// It is best to use ZSTD as an overall good balance between
-	/// speed/performance, storage, IO amplification, and CPU usage. For more
-	/// performance but less compression (more storage used) and less CPU usage,
-	/// use LZ4.
+	/// Only zstd is compiled in; it is an overall good balance between
+	/// speed/performance, storage, IO amplification, and CPU usage. Note that a
+	/// database written with any other codec can not be read back by this
+	/// build, so this may not be changed on an existing database.
 	///
 	/// For more details, see:
 	/// https://github.com/facebook/rocksdb/wiki/Compression
@@ -1734,27 +1682,6 @@ pub struct Config {
 	#[serde(default)]
 	pub zstd_compression: bool,
 
-	/// Set this to true for continuwuity to compress HTTP response bodies using
-	/// gzip. This option does nothing if continuwuity was not built with
-	/// `gzip_compression` feature. Please be aware that enabling HTTP
-	/// compression may weaken TLS. Most users should not need to enable this.
-	/// See https://breachattack.com/ and https://wikipedia.org/wiki/BREACH before
-	/// deciding to enable this.
-	///
-	/// If you are in a large amount of rooms, you may find that enabling this
-	/// is necessary to reduce the significantly large response bodies.
-	#[serde(default)]
-	pub gzip_compression: bool,
-
-	/// Set this to true for continuwuity to compress HTTP response bodies using
-	/// brotli. This option does nothing if continuwuity was not built with
-	/// `brotli_compression` feature. Please be aware that enabling HTTP
-	/// compression may weaken TLS. Most users should not need to enable this.
-	/// See https://breachattack.com/ and https://wikipedia.org/wiki/BREACH
-	/// before deciding to enable this.
-	#[serde(default)]
-	pub brotli_compression: bool,
-
 	/// Set to true to allow user type "guest" registrations. Some clients like
 	/// Element attempt to register guest users automatically.
 	#[serde(default)]
@@ -1848,7 +1775,7 @@ pub struct Config {
 	/// example: ["badserver\\.tld$", "badphrase", "19dollarfortnitecards"]
 	///
 	/// default: []
-	#[serde(default, with = "serde_regex")]
+	#[serde(default, deserialize_with = "deserialize_regex_set")]
 	pub forbidden_remote_server_names: RegexSet,
 
 	/// List of allowed server names via regex patterns that we will allow,
@@ -1859,7 +1786,7 @@ pub struct Config {
 	/// example: ["goodserver\\.tld$", "goodphrase"]
 	///
 	/// default: []
-	#[serde(default, with = "serde_regex")]
+	#[serde(default, deserialize_with = "deserialize_regex_set")]
 	pub allowed_remote_server_names: RegexSet,
 
 	/// Vector list of regex patterns of server names that continuwuity will
@@ -1868,7 +1795,7 @@ pub struct Config {
 	/// example: ["badserver\.tld$", "badphrase", "19dollarfortnitecards"]
 	///
 	/// default: []
-	#[serde(default, with = "serde_regex")]
+	#[serde(default, deserialize_with = "deserialize_regex_set")]
 	pub prevent_media_downloads_from: RegexSet,
 
 	/// List of forbidden server names via regex patterns that we will block all
@@ -1878,7 +1805,7 @@ pub struct Config {
 	/// example: ["badserver\.tld$", "badphrase", "19dollarfortnitecards"]
 	///
 	/// default: []
-	#[serde(default, with = "serde_regex")]
+	#[serde(default, deserialize_with = "deserialize_regex_set")]
 	pub forbidden_remote_room_directory_server_names: RegexSet,
 
 	/// Vector list of regex patterns of server names that continuwuity will not
@@ -1893,7 +1820,7 @@ pub struct Config {
 	/// "69dollarfortnitecards"]
 	///
 	/// default: []
-	#[serde(default, with = "serde_regex")]
+	#[serde(default, deserialize_with = "deserialize_regex_set")]
 	pub ignore_messages_from_server_names: RegexSet,
 
 	/// List of server names that continuwuity will deprioritize (try last) when
@@ -1943,7 +1870,7 @@ pub struct Config {
 	/// "203.0.113.0/24", "224.0.0.0/4", "::1/128", "fe80::/10", "fc00::/7",
 	/// "2001:db8::/32", "ff00::/8", "fec0::/10"]
 	#[serde(default = "default_ip_range_denylist")]
-	pub ip_range_denylist: Vec<String>,
+	pub ip_range_denylist: Vec<crate::utils::IpCidr>,
 
 	/// Optional IP address or network interface-name to bind as the source of
 	/// URL preview requests. If not set, it will not bind to a specific
@@ -2083,7 +2010,7 @@ pub struct Config {
 	/// example: ["19dollarfortnitecards", "b[4a]droom", "badphrase"]
 	///
 	/// default: []
-	#[serde(default, with = "serde_regex")]
+	#[serde(default, deserialize_with = "deserialize_regex_set")]
 	pub forbidden_alias_names: RegexSet,
 
 	/// List of forbidden username patterns/strings.
@@ -2098,7 +2025,7 @@ pub struct Config {
 	/// example: ["administrator", "b[a4]dusernam[3e]", "badphrase"]
 	///
 	/// default: []
-	#[serde(default, with = "serde_regex")]
+	#[serde(default, deserialize_with = "deserialize_regex_set")]
 	pub forbidden_usernames: RegexSet,
 
 	/// Retry failed and incomplete messages to remote servers immediately upon
@@ -2222,63 +2149,6 @@ pub struct Config {
 	/// default: true
 	#[serde(default = "true_fn")]
 	pub admins_from_room: bool,
-
-	/// Sentry.io crash/panic reporting, performance monitoring/metrics, etc.
-	/// This is NOT enabled by default.
-	#[serde(default)]
-	pub sentry: bool,
-
-	/// Sentry reporting URL, if a custom one is desired.
-	///
-	/// display: sensitive
-	/// default: ""
-	#[serde(default = "default_sentry_endpoint")]
-	pub sentry_endpoint: Option<Url>,
-
-	/// Report your continuwuity server_name in Sentry.io crash reports and
-	/// metrics.
-	#[serde(default)]
-	pub sentry_send_server_name: bool,
-
-	/// Performance monitoring/tracing sample rate for Sentry.io.
-	///
-	/// Note that too high values may impact performance, and can be disabled by
-	/// setting it to 0.0 (0%) This value is read as a percentage to Sentry,
-	/// represented as a decimal. Defaults to 15% of traces (0.15)
-	///
-	/// default: 0.15
-	#[serde(default = "default_sentry_traces_sample_rate")]
-	pub sentry_traces_sample_rate: f32,
-
-	/// Whether to attach a stacktrace to Sentry reports.
-	#[serde(default)]
-	pub sentry_attach_stacktrace: bool,
-
-	/// Send panics to Sentry. This is true by default, but Sentry has to be
-	/// enabled. The global `sentry` config option must be enabled to send any
-	/// data.
-	#[serde(default = "true_fn")]
-	pub sentry_send_panic: bool,
-
-	/// Send errors to sentry. This is true by default, but sentry has to be
-	/// enabled. This option is only effective in release-mode; forced to false
-	/// in debug-mode.
-	#[serde(default = "true_fn")]
-	pub sentry_send_error: bool,
-
-	/// Controls the tracing log level for Sentry to send things like
-	/// breadcrumbs and transactions
-	///
-	/// default: "info"
-	#[serde(default = "default_sentry_filter")]
-	pub sentry_filter: String,
-
-	/// Enable the tokio-console. This option is only relevant to developers.
-	///
-	///    For more information, see:
-	/// https://continuwuity.org/development.html#debugging-with-tokio-console
-	#[serde(default)]
-	pub tokio_console: bool,
 
 	#[serde(default)]
 	pub test: BTreeSet<String>,
@@ -2489,7 +2359,7 @@ pub struct WellKnownConfig {
 	/// should not be a URL.
 	///
 	/// example: "matrix.example.com:443"
-	#[serde(deserialize_with = "deserialize_slipstream_opt")]
+	#[serde(deserialize_with = "deserialize_slipstream_opt", default)]
 	pub server: Option<OwnedServerName>,
 
 	/// URL to a support page for the server, which will be served as part of
@@ -2501,7 +2371,7 @@ pub struct WellKnownConfig {
 	/// MSC1929 server support endpoint at /.well-known/matrix/support.
 	///
 	/// default: "m.role.admin"
-	#[serde(deserialize_with = "deserialize_slipstream_opt")]
+	#[serde(deserialize_with = "deserialize_slipstream_opt", default)]
 	pub support_role: Option<ContactRole>,
 
 	/// Email address for server support contacts, to be served as part of the
@@ -2515,7 +2385,7 @@ pub struct WellKnownConfig {
 	///
 	/// If no email or mxid is specified, all of the server's admins will be
 	/// listed.
-	#[serde(deserialize_with = "deserialize_slipstream_opt")]
+	#[serde(deserialize_with = "deserialize_slipstream_opt", default)]
 	pub support_mxid: Option<OwnedUserId>,
 
 	/// PGP key URI for server support contacts, to be served as part of the
@@ -2865,33 +2735,24 @@ impl Default for ExperimentalConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[config_example_generator(
 	filename = "conduwuit-example.toml",
-	section = "global.smtp",
+	section = "global.email",
 	optional = "true"
 )]
-pub struct SmtpConfig {
-	/// A `smtp://`` URI which will be used to connect to a mail server.
-	/// Uncommenting the [global.smtp] group and setting this option enables
+pub struct EmailConfig {
+	/// HTTP endpoint which accepts the email webhook payload.
+	/// Uncommenting the [global.email] group and setting this option enables
 	/// features which depend on the ability to send email,
 	/// such as self-service password resets.
 	///
-	/// For most modern mail servers, format the URI like this:
-	/// 	`smtps://username:password@hostname:port`
-	/// Note that you will need to URL-encode the username and password. If your
-	/// username _is_ your email address, you will need to replace the `@` with
-	/// `%40`.
-	///
-	/// For a guide on the accepted URI syntax, consult Lettre's documentation:
-	/// https://docs.rs/lettre/latest/lettre/transport/smtp/struct.AsyncSmtpTransport.html#method.from_url
-	pub connection_uri: String,
+	/// The endpoint receives `{from, to, subject, text}` as JSON.
+	pub webhook_url: String,
 
 	/// The outgoing address which will be used for sending emails.
-	///
-	/// For a syntax guide, see https://datatracker.ietf.org/doc/html/rfc2822#section-3.4
-	///
-	/// ...or if you don't want to read the RFC, for some reason:
-	/// - `Name <address@domain.org>` to specify a sender name
-	/// - `address@domain.org` to not use a name
-	pub sender: Mailbox,
+	pub sender: String,
+
+	/// Optional bearer token sent to the webhook provider.
+	#[serde(default)]
+	pub webhook_token: Option<String>,
 
 	/// Whether to require that users provide an email address when they
 	/// register.
@@ -2931,14 +2792,169 @@ const DEPRECATED_KEYS: &[&str] = &[
 	"well_known.rtc_focus_server_urls",
 ];
 
+/// Layered, untyped configuration values assembled from files, environment,
+/// and command-line overrides before deserializing into [`Config`].
+#[derive(Clone, Debug)]
+pub struct RawConfig {
+	inner: Value,
+}
+
+impl RawConfig {
+	#[must_use]
+	pub fn new() -> Self { Self { inner: Value::Table(Table::new()) } }
+
+	fn merge_value(a: &mut Value, b: Value) {
+		match (a, b) {
+			| (Value::Table(a), Value::Table(b)) =>
+				for (key, value) in b {
+					Self::merge_value(a.entry(key).or_insert(Value::Table(Table::new())), value);
+				},
+			| (a, b) => *a = b,
+		}
+	}
+
+	fn insert(&mut self, path: impl IntoIterator<Item = String>, value: Value) {
+		let mut path = path.into_iter().peekable();
+		let mut current = &mut self.inner;
+		while let Some(key) = path.next() {
+			if path.peek().is_none() {
+				if let Value::Table(table) = current {
+					table.insert(key, value);
+				}
+				return;
+			}
+
+			if !current.is_table() {
+				*current = Value::Table(Table::new());
+			}
+			current = current
+				.as_table_mut()
+				.expect("configuration value was made into a table")
+				.entry(key)
+				.or_insert(Value::Table(Table::new()));
+		}
+	}
+
+	fn parse_scalar(value: &str) -> Value {
+		let document = format!("value = {value}");
+		match toml::from_str::<Value>(&document) {
+			| Ok(Value::Table(mut table)) => table
+				.remove("value")
+				.unwrap_or_else(|| Value::String(value.to_owned())),
+			| _ => Value::String(value.to_owned()),
+		}
+	}
+
+	fn config_profile(value: Value) -> Value {
+		let Value::Table(mut table) = value else { return value };
+		table.remove("global").unwrap_or(Value::Table(table))
+	}
+
+	pub fn load_file(&mut self, path: &std::path::Path) -> Result<()> {
+		let content = match fs::read_to_string(path) {
+			| Ok(content) => content,
+			| Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+			| Err(error) => return Err(error.into()),
+		};
+		let parsed = toml::from_str::<Value>(&content).map_err(|error| {
+			let path = path.display().to_string();
+			err!(Config("config", "Failed to parse TOML {path}: {error}"))
+		})?;
+		Self::merge_value(&mut self.inner, Self::config_profile(parsed));
+		Ok(())
+	}
+
+	pub fn from_toml(input: &str) -> Result<Self> {
+		let mut config = Self::new();
+		let parsed = toml::from_str::<Value>(input)
+			.map_err(|error| err!(Config("config", "Failed to parse TOML: {error}")))?;
+		Self::merge_value(&mut config.inner, Self::config_profile(parsed));
+		Ok(config)
+	}
+
+	pub fn load_env(&mut self, prefix: &str) {
+		for (key, value) in std::env::vars() {
+			let Some(key) = key.strip_prefix(prefix) else { continue };
+			let path = key
+				.split("__")
+				.filter(|part| !part.is_empty())
+				.map(str::to_ascii_lowercase);
+			self.insert(path, Self::parse_scalar(&value));
+		}
+	}
+
+	pub fn set_override(&mut self, key: &str, value: Value) {
+		self.insert(key.split('.').map(str::to_owned), value);
+	}
+
+	pub fn append_strings(&mut self, key: &str, values: &[String]) {
+		if values.is_empty() {
+			return;
+		}
+
+		let mut parts = key.split('.').peekable();
+		let mut current = &mut self.inner;
+		while let Some(part) = parts.next() {
+			if parts.peek().is_none() {
+				let Value::Table(table) = current else { return };
+				let appended = values.iter().cloned().map(Value::String);
+				match table.entry(part.to_owned()) {
+					| toml::map::Entry::Vacant(entry) => {
+						entry.insert(Value::Array(appended.collect()));
+					},
+					| toml::map::Entry::Occupied(mut entry) => {
+						if let Value::Array(existing) = entry.get_mut() {
+							existing.extend(appended);
+						} else {
+							let previous =
+								std::mem::replace(entry.get_mut(), Value::Array(Vec::new()));
+							let Value::Array(existing) = entry.get_mut() else { unreachable!() };
+							existing.push(previous);
+							existing.extend(appended);
+						}
+					},
+				}
+				return;
+			}
+
+			if !current.is_table() {
+				*current = Value::Table(Table::new());
+			}
+			current = current
+				.as_table_mut()
+				.expect("configuration value was made into a table")
+				.entry(part.to_owned())
+				.or_insert(Value::Table(Table::new()));
+		}
+	}
+
+	#[must_use]
+	pub fn contains(&self, key: &str) -> bool {
+		let mut current = &self.inner;
+		for part in key.split('.') {
+			let Some(table) = current.as_table() else { return false };
+			let Some(value) = table.get(part) else { return false };
+			current = value;
+		}
+		true
+	}
+
+	pub fn extract<T: for<'de> Deserialize<'de>>(&self) -> Result<T> {
+		self.inner
+			.clone()
+			.try_into()
+			.map_err(|error| err!(Config("config", "Failed to deserialize config: {error}")))
+	}
+}
+
+impl Default for RawConfig {
+	fn default() -> Self { Self::new() }
+}
+
 impl Config {
 	/// Pre-initialize config
-	pub fn load(paths: &[PathBuf]) -> Result<Figment> {
-		let envs = [
-			Env::var("CONDUIT_CONFIG"),
-			Env::var("CONDUWUIT_CONFIG"),
-			Env::var("CONTINUWUITY_CONFIG"),
-		];
+	pub fn load(paths: &[PathBuf]) -> Result<RawConfig> {
+		let envs = ["CONDUIT_CONFIG", "CONDUWUIT_CONFIG", "CONTINUWUITY_CONFIG"];
 		let mut runtime_paths = Vec::new();
 		for path in paths {
 			let mut p = path.clone();
@@ -2949,27 +2965,34 @@ impl Config {
 			runtime_paths.push(PathBuf::from("conduwuit-runtime.toml"));
 		}
 
-		let mut config = envs
-			.into_iter()
-			.flatten()
-			.map(Toml::file)
-			.chain(paths.iter().cloned().map(Toml::file))
-			.chain(runtime_paths.iter().cloned().map(Toml::file))
-			.fold(Figment::new(), |config, file| config.merge(file.nested()))
-			.merge(Env::prefixed("CONDUIT_").global().split("__"))
-			.merge(Env::prefixed("CONDUWUIT_").global().split("__"))
-			.merge(Env::prefixed("CONTINUWUITY_").global().split("__"));
-
-		config = config.join(("config_paths", paths));
+		let mut config = RawConfig::new();
+		for env in envs {
+			if let Ok(path) = std::env::var(env) {
+				config.load_file(std::path::Path::new(&path))?;
+			}
+		}
+		for path in paths.iter().chain(runtime_paths.iter()) {
+			config.load_file(path)?;
+		}
+		config.load_env("CONDUIT_");
+		config.load_env("CONDUWUIT_");
+		config.load_env("CONTINUWUITY_");
+		config.set_override(
+			"config_paths",
+			Value::Array(
+				paths
+					.iter()
+					.map(|path| Value::String(path.to_string_lossy().into_owned()))
+					.collect(),
+			),
+		);
 
 		Ok(config)
 	}
 
 	/// Finalize config
-	pub fn new(raw_config: &Figment) -> Result<Self> {
-		let mut config = raw_config
-			.extract::<Self>()
-			.map_err(|e| err!("There was a problem with your configuration file: {e}"))?;
+	pub fn new(raw_config: &RawConfig) -> Result<Self> {
+		let mut config = raw_config.extract::<Self>()?;
 
 		// Evaluate user-agent templates
 		let replace_template = |s: &str| {
@@ -3202,26 +3225,8 @@ fn default_state_hamt_node_sweep_interval_secs() -> u64 { 60 * 60 * 6 }
 
 fn default_transaction_id_cache_max_entries() -> usize { 8192 }
 
-fn default_tracing_flame_filter() -> String {
-	cfg!(debug_assertions)
-		.then_some("trace,h2=off")
-		.unwrap_or("info")
-		.to_owned()
-}
-
-fn default_otlp_filter() -> String {
-	cfg!(debug_assertions)
-		.then_some("trace,h2=off")
-		.unwrap_or("info")
-		.to_owned()
-}
-
-fn default_otlp_protocol() -> String { "http".to_owned() }
-
-fn default_tracing_flame_output_path() -> String { "./tracing.folded".to_owned() }
-
 fn default_trusted_servers() -> Vec<OwnedServerName> {
-	vec![OwnedServerName::parse("matrix.org").expect("valid default server name")]
+	vec![OwnedServerName::try_from("matrix.org").unwrap()]
 }
 
 /// do debug logging by default for debug builds
@@ -3297,7 +3302,7 @@ fn default_rocksdb_stats_level() -> u8 { 1 }
 #[inline]
 pub fn default_default_room_version() -> RoomVersionId { RoomVersionId::V12 }
 
-fn default_ip_range_denylist() -> Vec<String> {
+fn default_ip_range_denylist() -> Vec<crate::utils::IpCidr> {
 	vec![
 		"127.0.0.0/8".to_owned(),
 		"10.0.0.0/8".to_owned(),
@@ -3319,6 +3324,9 @@ fn default_ip_range_denylist() -> Vec<String> {
 		"ff00::/8".to_owned(),
 		"fec0::/10".to_owned(),
 	]
+	.into_iter()
+	.map(|cidr| cidr.parse().expect("default CIDR must be valid"))
+	.collect()
 }
 
 fn default_url_preview_max_spider_size() -> usize {
@@ -3329,13 +3337,7 @@ fn default_url_preview_timeout() -> u64 { 120 }
 
 fn default_new_user_displayname_suffix() -> String { "🏳️‍⚧️".to_owned() }
 
-fn default_sentry_endpoint() -> Option<Url> { None }
-
 fn default_user_agent() -> String { "$PROJECT_NAME/$PROJECT_VERSION_FULL".to_owned() }
-
-fn default_sentry_traces_sample_rate() -> f32 { 0.15 }
-
-fn default_sentry_filter() -> String { "info".to_owned() }
 
 fn default_startup_netburst_keep() -> i64 { 50 }
 

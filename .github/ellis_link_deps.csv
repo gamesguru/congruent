@@ -30,4 +30,3 @@ tikv-jemalloc-sys,0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7,https:
 tikv-jemallocator,0.6.1,https://forgejo.ellis.link/continuwuation/jemallocator,df86ff89d4b1e223b9f7d2dd2fbb7f202da7f554
 zstd,1.5.7,https://github.com/facebook/zstd.git,v1.5.7
 rustyline-async,0.4.9,https://forgejo.ellis.link/continuwuation/rustyline-async,b13aca2cc08d5f78303746cd192d9a03d73e768e
-aws-lc,1.69.0,https://github.com/aws/aws-lc.git,v1.69.0

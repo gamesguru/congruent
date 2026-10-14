@@ -1,6 +1,6 @@
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 
-use tokio::sync::OwnedMutexGuard as Omg;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::{Result, SyncMutex, err};
 
@@ -22,7 +22,8 @@ where
 type Map<Key, Val> = Arc<MapMutex<Key, Val>>;
 type MapMutex<Key, Val> = SyncMutex<HashMap<Key, Val>>;
 type HashMap<Key, Val> = std::collections::HashMap<Key, Value<Val>>;
-type Value<Val> = Arc<tokio::sync::Mutex<Val>>;
+type Omg<Val> = OwnedMutexGuard<Val>;
+type Value<Val> = Arc<Mutex<Val>>;
 
 impl<Key, Val> MutexMap<Key, Val>
 where
@@ -36,7 +37,6 @@ where
 		}
 	}
 
-	#[tracing::instrument(level = "trace", skip(self))]
 	pub async fn lock<'a, K>(&'a self, k: &'a K) -> Guard<Key, Val>
 	where
 		K: Debug + Send + ?Sized + Sync,
@@ -53,7 +53,6 @@ where
 		}
 	}
 
-	#[tracing::instrument(level = "trace", skip(self))]
 	pub fn try_lock<'a, K>(&self, k: &'a K) -> Result<Guard<Key, Val>>
 	where
 		K: Debug + Send + ?Sized + Sync,
@@ -70,7 +69,6 @@ where
 		})
 	}
 
-	#[tracing::instrument(level = "trace", skip(self))]
 	pub fn try_try_lock<'a, K>(&self, k: &'a K) -> Result<Guard<Key, Val>>
 	where
 		K: Debug + Send + ?Sized + Sync,
@@ -116,9 +114,8 @@ where
 	Key: Clone + Eq + Hash + Send,
 	Val: Default + Send,
 {
-	#[tracing::instrument(name = "unlock", level = "trace", skip_all)]
 	fn drop(&mut self) {
-		if Arc::strong_count(Omg::mutex(&self.val)) <= 2 {
+		if Arc::strong_count(OwnedMutexGuard::mutex(&self.val)) <= 2 {
 			self.map.lock().remove(&self.key);
 		}
 	}

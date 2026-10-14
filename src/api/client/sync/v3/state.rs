@@ -6,6 +6,7 @@ use conduwuit::{
 		Event,
 		pdu::{PduCount, PduEvent},
 	},
+	trace,
 	utils::{
 		BoolExt, IterStream, ReadyExt, TryFutureExtExt,
 		stream::{BroadbandExt, TryIgnore},
@@ -16,7 +17,6 @@ use futures::{FutureExt, StreamExt, TryStreamExt};
 use itertools::Itertools;
 use service::rooms::short::ShortEventId;
 use slipstream::{OwnedEventId, RoomId, UserId, events::StateEventType};
-use tracing::trace;
 
 use crate::client::TimelinePdus;
 
@@ -25,15 +25,10 @@ use crate::client::TimelinePdus;
 /// If lazy-loading is enabled (`lazily_loaded_members` is Some), the returned
 /// Vec will include the membership events of exclusively the members in
 /// `lazily_loaded_members`.
-#[tracing::instrument(
-	name = "initial",
-	level = "trace",
-	skip_all,
-	fields(timeline_start_root_handle)
-)]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn build_state_initial(
 	services: &Services,
+	room_id: &RoomId,
 	sender_user: &UserId,
 	timeline_start_root_handle: &rezzy::hamt::RootHandle,
 	lazily_loaded_members: Option<&MemberSet>,
@@ -42,7 +37,7 @@ pub(super) async fn build_state_initial(
 	let (shortstatekeys, event_ids): (Vec<_>, Vec<_>) = services
 		.rooms
 		.state_accessor
-		.state_full_ids_hamt(timeline_start_root_handle)
+		.state_full_ids_hamt(room_id, timeline_start_root_handle)
 		.try_collect::<Vec<_>>()
 		.await?
 		.into_iter()
@@ -86,7 +81,6 @@ pub(super) async fn build_state_initial(
 /// If lazy-loading is enabled (`lazily_loaded_members` is Some), the returned
 /// Vec will include the membership events of all the members in
 /// `lazily_loaded_members`.
-#[tracing::instrument(name = "incremental", level = "trace", skip_all)]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn build_state_incremental<'a>(
 	services: &Services,
@@ -249,8 +243,7 @@ pub(super) async fn build_state_incremental<'a>(
 			services
 				.rooms
 				.state_accessor
-				.state_added_hamt((last_sync_end_root_handle, timeline_end_root_handle))
-				.await?
+				.state_added_hamt(room_id, (last_sync_end_root_handle, timeline_end_root_handle))?
 				.stream()
 				.ready_filter_map(|(_, shorteventid)| {
 					if state_events_in_timeline.contains(&shorteventid) {

@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 
-use conduwuit::{Err, Event, PduEvent, Result, err};
+use conduwuit::{Err, Event, PduEvent, Result, err, info};
 use conduwuit_service::{Services, rooms::event_handler::AuthRecoveryStage};
 use futures::StreamExt;
 use slipstream::{
@@ -213,6 +213,13 @@ async fn persist_federation_events(
 			.await
 			{
 				| Ok((pdu, _)) => {
+					info!(
+						target: "msc2836_debug",
+						event_id = %pdu.event_id(),
+						reported = ?report,
+						has_parent = parent_of(&pdu).is_some(),
+						"persist_federation_events: persisted"
+					);
 					if let Some((counts, hash)) = report {
 						services.rooms.pdu_metadata.msc2836_set_reported_children(
 							pdu.event_id(),
@@ -230,7 +237,12 @@ async fn persist_federation_events(
 					persisted.push(pdu);
 					made_progress = true;
 				},
-				| Err(_) => {
+				| Err(e) => {
+					info!(
+						target: "msc2836_debug",
+						%event_id,
+						"persist_federation_events: handle_outlier_pdu failed (will retry): {e}"
+					);
 					still_pending.push((event_id, value, report));
 				},
 			}
@@ -239,6 +251,13 @@ async fn persist_federation_events(
 		if !made_progress {
 			break;
 		}
+	}
+	for (event_id, ..) in &pending {
+		info!(
+			target: "msc2836_debug",
+			%event_id,
+			"persist_federation_events: gave up on event after retries"
+		);
 	}
 	persisted
 }
@@ -583,6 +602,12 @@ pub(crate) async fn to_raw_json_with_children(
 		.msc2836_children_unsigned(pdu.event_id())
 		.await;
 
+	info!(
+		target: "msc2836_debug",
+		event_id = %pdu.event_id(),
+		counts = ?counts,
+		"to_raw_json_with_children"
+	);
 	let mut value = pdu.to_canonical_object();
 	if !counts.is_empty() {
 		let unsigned = value.entry("unsigned".to_owned()).or_insert_with(|| {

@@ -136,7 +136,14 @@ while true; do
 		chown -R "${CONDUWUIT_UID}:${CONDUWUIT_GID}" "$CONDUWUIT_DATABASE_PATH"
 		NEEDS_DB_WIPE=0
 	fi
-	setpriv --reuid="${CONDUWUIT_UID}" --regid="${CONDUWUIT_GID}" --clear-groups /usr/local/bin/conduwuit --config /etc/continuwuity/config.toml &
+	# Test containers are disposable: turn fsync into a no-op (libeatmydata) so
+	# every redb commit does not wait on the disk. Set COMPLEMENT_FSYNC=1 to keep
+	# real fsyncs, e.g. when measuring durability cost.
+	EATMYDATA=""
+	if [ "${COMPLEMENT_FSYNC:-0}" != "1" ] && command -v eatmydata >/dev/null 2>&1; then
+		EATMYDATA="eatmydata"
+	fi
+	setpriv --reuid="${CONDUWUIT_UID}" --regid="${CONDUWUIT_GID}" --clear-groups $EATMYDATA /usr/local/bin/conduwuit --config /etc/continuwuity/config.toml &
 	CONDUWUIT_PID=$!
 	rc=0
 	wait "$CONDUWUIT_PID" || rc=$?

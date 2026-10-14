@@ -69,7 +69,7 @@ jobs:
       - name: Build continuwuity (dev-quick, shared)
         env:
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
-        run: SKIP_CONFIRM=1 make build PROFILE=${{ env.PROFILE }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ env.PROFILE }} --features direct_tls,url_preview"
+        run: SKIP_CONFIRM=1 make -j4 build PROFILE=${{ env.PROFILE }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ env.PROFILE }} --features direct_tls,url_preview"
 
       - name: Upload shared binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

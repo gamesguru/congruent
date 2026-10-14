@@ -1,7 +1,5 @@
 use std::{borrow::Borrow, collections::HashMap, iter::once};
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Result, debug_info, debug_warn, err, info,
 	matrix::{
@@ -34,12 +32,14 @@ use slipstream::{
 };
 
 use super::{banned_room_check, join::join_room_by_id_helper, validate_remote_member_event_stub};
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `POST /_matrix/client/*/knock/{roomIdOrAlias}`
 ///
 /// Tries to knock the room to ask permission to join for the sender user.
-#[tracing::instrument(skip_all, fields(%client), name = "knock", level = "info")]
 pub(crate) async fn knock_room_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -426,16 +426,11 @@ async fn knock_room_helper_local(
 			.map_err(|e| err!(BadServerResponse("Invalid knock event PDU: {e:?}")))?;
 	let previous_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
-	let (current_root_handle, state_node) = services
+	let (current_root_handle, _state_node, pending_nodes) = services
 		.rooms
 		.state
 		.append_to_state(&parsed_knock_pdu, room_id, &state_lock, None)
 		.await?;
-	services
-		.rooms
-		.state_hamt
-		.store
-		.persist_node_recursive(state_node);
 
 	// update_membership is handled automatically by append_pdu
 	info!("Appending room knock event locally");
@@ -448,6 +443,7 @@ async fn knock_room_helper_local(
 			state_lock: &state_lock,
 			room_id,
 			state_root_handle: Some(current_root_handle),
+			pending_nodes,
 			prev_state_root_handle: previous_root_handle,
 			advance_current_state: false,
 			was_joined_before_state_install: None,
@@ -559,7 +555,7 @@ async fn knock_room_helper_remote(
 		.filter_map(Result::ok);
 
 	let mut state_map: HashMap<u64, OwnedEventId> = HashMap::new();
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 
 	for event in state {
 		let Some(state_key) = event.get("state_key") else {
@@ -611,30 +607,24 @@ async fn knock_room_helper_remote(
 	let (root_handle, root_node) =
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root for knock: {e:?}")))?;
-
-	services
+	let pending_nodes = services
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive(root_node);
+		.persist_node_recursive_deferred(room_id.as_bytes(), root_node)?;
 
 	services
 		.rooms
 		.state
-		.set_room_state_hamt(room_id, &root_handle, &state_lock);
+		.set_room_state_hamt_with_nodes(room_id, &root_handle, &pending_nodes)?;
 
 	// We append to state before appending the pdu, so we never have the pdu
 	// without its state.
-	let (state_root_handle, state_node) = services
+	let (state_root_handle, _state_node, pending_nodes) = services
 		.rooms
 		.state
 		.append_to_state(&parsed_knock_pdu, room_id, &state_lock, Some(&root_handle))
 		.await?;
-	services
-		.rooms
-		.state_hamt
-		.store
-		.persist_node_recursive(state_node);
 
 	// update_membership is handled automatically by append_pdu
 
@@ -648,6 +638,7 @@ async fn knock_room_helper_remote(
 			state_lock: &state_lock,
 			room_id,
 			state_root_handle: Some(state_root_handle),
+			pending_nodes,
 			prev_state_root_handle: previous_root_handle,
 			advance_current_state: false,
 			was_joined_before_state_install: None,
@@ -658,17 +649,21 @@ async fn knock_room_helper_remote(
 	// Installing the resolved state root makes append_pdu skip its normal
 	// membership-cache update. Persist the local knock explicitly so the
 	// knocker's next /sync includes this room in `rooms.knock`.
-	services.rooms.state_cache.mark_as_knocked(
-		sender_user,
-		room_id,
-		Some(
-			send_knock_response
-				.knock_room_state
-				.iter()
-				.map(Raw::cast)
-				.collect(),
-		),
-	);
+	services
+		.rooms
+		.state_cache
+		.mark_as_knocked(
+			sender_user,
+			room_id,
+			Some(
+				send_knock_response
+					.knock_room_state
+					.iter()
+					.map(Raw::cast)
+					.collect(),
+			),
+		)
+		.await;
 
 	info!("Successfully set final room state for new room");
 

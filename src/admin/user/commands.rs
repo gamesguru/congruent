@@ -14,7 +14,6 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, StreamExt};
-use lettre::Address;
 use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId,
 	events::{
@@ -775,14 +774,13 @@ pub(super) async fn force_demote(&self, user_id: String, room_id: OwnedRoomOrAli
 		.is_some_and(|power_levels_content| {
 			RoomPowerLevels::from(power_levels_content.clone())
 				.user_can_change_user_power_level(&user_id, &user_id)
-		})
-		|| self
-			.services
-			.rooms
-			.state_accessor
-			.room_state_get(&room_id, &StateEventType::RoomCreate, "")
-			.await
-			.is_ok_and(|event| *event.sender() == user_id);
+		}) || self
+		.services
+		.rooms
+		.state_accessor
+		.room_state_get(&room_id, &StateEventType::RoomCreate, "")
+		.await
+		.is_ok_and(|event| *event.sender() == user_id);
 
 	if !user_can_demote_self {
 		return Err!("User is not allowed to modify their own power levels in the room.",);
@@ -1162,9 +1160,9 @@ pub(super) async fn get_email(&self, user_id: String) -> Result {
 pub(super) async fn get_user_by_email(&self, email: String) -> Result {
 	self.bail_restricted()?;
 
-	let Ok(email) = Address::try_from(email) else {
+	if !email.contains('@') {
 		return Err!("Invalid email address.");
-	};
+	}
 
 	match self.services.threepid.get_localpart_for_email(&email).await {
 		| Some(localpart) => {
@@ -1188,12 +1186,13 @@ pub(super) async fn change_email(&self, user_id: String, email: Option<String>) 
 	self.bail_restricted()?;
 
 	let user_id = parse_local_user_id(self.services, &user_id)?;
-	let Ok(new_email) = email.map(Address::try_from).transpose() else {
+	let new_email = email.as_ref().filter(|email| email.contains('@')).cloned();
+	if email.is_some() && new_email.is_none() {
 		return Err!("Invalid email address.");
-	};
+	}
 
 	if self.services.mailer.mailer().is_none() {
-		warn!("SMTP has not been configured on this server, emails cannot be sent.");
+		warn!("Email webhook has not been configured on this server, emails cannot be sent.");
 	}
 
 	let current_email = self

@@ -21,58 +21,42 @@ crate-type = [
 ignored = ["const-str", "ctor"]
 
 [features]
-io_uring = [
-	"rust-rocksdb/io-uring",
+mimalloc = [
+	"conduwuit-core/mimalloc",
 ]
-jemalloc = [
-	"conduwuit-core/jemalloc",
-	"rust-rocksdb/jemalloc",
+mimalloc_conf = [
+	"conduwuit-core/mimalloc_conf",
 ]
-jemalloc_conf = [
-	"conduwuit-core/jemalloc_conf",
+mimalloc_prof = [
+	"conduwuit-core/mimalloc_prof",
 ]
-jemalloc_prof = [
-	"conduwuit-core/jemalloc_prof",
-]
-jemalloc_stats = [
-	"conduwuit-core/jemalloc_stats",
+mimalloc_stats = [
+	"conduwuit-core/mimalloc_stats",
 ]
 release_max_log_level = [
 	"conduwuit-core/release_max_log_level",
 	"log/max_level_trace",
 	"log/release_max_level_info",
-	"tracing/max_level_trace",
-	"tracing/release_max_level_info",
 ]
 zstd_compression = [
 	"conduwuit-core/zstd_compression",
-	"rust-rocksdb/zstd",
-]
-bindgen-static = [
-    "rust-rocksdb/mt_static"
-]
-bindgen-runtime = [
-    "rust-rocksdb/bindgen-runtime"
 ]
 
 [dependencies]
-async-channel.workspace = true
+event-listener.workspace = true
 conduwuit-core.workspace = true
 conduwuit-macros.workspace = true
 const-str.workspace = true
 ctor.workspace = true
 futures.workspace = true
 log.workspace = true
-minicbor.workspace = true
-minicbor-serde.workspace = true
-rust-rocksdb.workspace = true
+redb = "4.3.0"
 serde.workspace = true
 slipstream.workspace = true
+smol.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
-figment.workspace = true
 
 [lints]
 workspace = true

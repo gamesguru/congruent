@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use axum::extract::State;
 use conduwuit::{Error, Result, err};
 use futures::StreamExt;
 use get_profile_information::v1::ProfileField;
@@ -13,7 +12,7 @@ use slipstream::{
 	},
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/federation/v1/query/directory`
 ///

@@ -1,9 +1,8 @@
-use axum::extract::State;
 use conduwuit::{Err, Result};
 use futures::StreamExt;
 use slipstream::api::client::room::aliases;
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/client/r0/rooms/{roomId}/aliases`
 ///

@@ -1,7 +1,5 @@
 use std::{collections::HashMap, fmt::Write};
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Result, debug_info, err, error, info,
 	utils::{self},
@@ -9,7 +7,6 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt};
-use lettre::{Address, message::Mailbox};
 use register::RegistrationKind;
 use service::mailer::messages;
 use slipstream::{
@@ -27,7 +24,10 @@ use slipstream::{
 };
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH, join_room_by_id_helper};
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 const RANDOM_USER_ID_LENGTH: usize = 10;
 
@@ -35,9 +35,8 @@ const RANDOM_USER_ID_LENGTH: usize = 10;
 ///
 /// Register an account on this homeserver.
 ///
-/// You can use [`GET
-/// /_matrix/client/v3/register/available`](fn.get_register_available_route.
-/// html) to check if the user id is valid and available.
+/// You can use [`GET /_matrix/client/v3/register/available`](fn.get_register_available_route.html)
+/// to check if the user id is valid and available.
 ///
 /// - Only works if registration is enabled
 /// - If type is guest: ignores all parameters except
@@ -49,7 +48,6 @@ const RANDOM_USER_ID_LENGTH: usize = 10;
 /// - If `inhibit_login` is false: Creates a device and returns device id and
 ///   access_token
 #[allow(clippy::doc_markdown)]
-#[tracing::instrument(skip_all, fields(%client), name = "register", level = "info")]
 pub(crate) async fn register_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -157,13 +155,10 @@ pub(crate) async fn register_route(
 	// the email's user as their initial localpart to avoid falling back to
 	// a randomly generated localpart
 	let supplied_username = body.username.clone().or_else(|| {
-		if let Some(identity) = &identity
-			&& let Some(email) = &identity.email
-		{
-			Some(email.user().to_owned())
-		} else {
-			None
-		}
+		identity
+			.as_ref()
+			.and_then(|identity| identity.email.as_deref())
+			.and_then(|email| email.split_once('@').map(|(user, _)| user.to_owned()))
 	});
 
 	let user_id = determine_registration_user_id(
@@ -449,8 +444,8 @@ async fn create_registration_uiaa_session(
 			// Trusted registration flow with a token is available
 			let mut token_flow = AuthFlow::new(vec![AuthType::RegistrationToken]);
 
-			if let Some(smtp) = &services.config.smtp
-				&& smtp.require_email_for_token_registration
+			if let Some(email) = &services.config.email
+				&& email.require_email_for_token_registration
 			{
 				// Email is required for token registrations
 				token_flow.stages.push(AuthType::EmailIdentity);
@@ -472,8 +467,8 @@ async fn create_registration_uiaa_session(
 			}
 		}
 
-		if let Some(smtp) = &services.config.smtp
-			&& smtp.require_email_for_registration
+		if let Some(email) = &services.config.email
+			&& email.require_email_for_registration
 		{
 			// Email is required for untrusted registrations
 			untrusted_flow.stages.push(AuthType::EmailIdentity);
@@ -629,9 +624,10 @@ pub(crate) async fn request_registration_token_via_email_route(
 	State(services): State<crate::State>,
 	body: Ruma<request_registration_token_via_email::v3::Request>,
 ) -> Result<request_registration_token_via_email::v3::Response> {
-	let Ok(email) = Address::try_from(body.email.clone()) else {
+	let email = body.email.clone();
+	if !email.contains('@') {
 		return Err!(Request(InvalidParam("Invalid email address.")));
-	};
+	}
 
 	if services
 		.threepid
@@ -645,7 +641,7 @@ pub(crate) async fn request_registration_token_via_email_route(
 	let session = services
 		.threepid
 		.send_validation_email(
-			Mailbox::new(None, email),
+			email,
 			|verification_link| messages::NewAccount {
 				server_name: services.config.server_name.as_ref(),
 				verification_link,

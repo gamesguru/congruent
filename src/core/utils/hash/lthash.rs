@@ -1,5 +1,5 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use rezzy::LtHash;
+use rezzy::incremental::LtHash;
 
 /// Converts an LtHash into a little-endian byte vector.
 #[must_use]

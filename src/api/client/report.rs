@@ -1,8 +1,8 @@
 use std::{fmt::Write as _, time::Duration};
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
-use conduwuit::{Err, Event, Result, debug_info, info, matrix::pdu::PduEvent, utils::ReadyExt};
+use conduwuit::{
+	Err, Event, Result, debug, debug_info, info, matrix::pdu::PduEvent, utils::ReadyExt,
+};
 use conduwuit_service::Services;
 use slipstream::{
 	EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
@@ -12,9 +12,11 @@ use slipstream::{
 	},
 	events::{Mentions, room::message::RoomMessageEventContent},
 };
-use tokio::time::sleep;
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 struct Report {
 	sender: OwnedUserId,
@@ -28,12 +30,12 @@ struct Report {
 /// # `POST /_matrix/client/v3/rooms/{roomId}/report`
 ///
 /// Reports an abusive room to homeserver admins
-#[tracing::instrument(skip_all, fields(%client), name = "report_room", level = "info")]
 pub(crate) async fn report_room_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<report_room::v3::Request>,
 ) -> Result<report_room::v3::Response> {
+	debug!(%client, "report room request");
 	let sender_user = body.sender_user();
 	if services.users.is_suspended(sender_user).await? {
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
@@ -84,12 +86,12 @@ pub(crate) async fn report_room_route(
 /// # `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}`
 ///
 /// Reports an inappropriate event to homeserver admins
-#[tracing::instrument(skip_all, fields(%client), name = "report_event", level = "info")]
 pub(crate) async fn report_event_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<report_content::v3::Request>,
 ) -> Result<report_content::v3::Response> {
+	debug!(%client, "report event request");
 	// user authentication
 	let sender_user = body.sender_user();
 	if services.users.is_suspended(sender_user).await? {
@@ -132,12 +134,12 @@ pub(crate) async fn report_event_route(
 	Ok(report_content::v3::Response {})
 }
 
-#[tracing::instrument(skip_all, fields(%client), name = "report_user", level = "info")]
 pub(crate) async fn report_user_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<report_user::v3::Request>,
 ) -> Result<report_user::v3::Response> {
+	debug!(%client, "report user request");
 	// user authentication
 	let sender_user = body.sender_user.as_ref().expect("user is authenticated");
 	if services.users.is_suspended(sender_user).await? {
@@ -249,5 +251,5 @@ async fn delay_response() {
 		 successful response."
 	);
 
-	sleep(Duration::from_secs(time_to_wait)).await;
+	smol::Timer::after(Duration::from_secs(time_to_wait)).await;
 }

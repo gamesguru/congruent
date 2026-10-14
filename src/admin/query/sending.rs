@@ -67,7 +67,7 @@ pub(super) async fn process(subcommand: SendingCommand, context: &Context<'_>) -
 
 	match subcommand {
 		| SendingCommand::ActiveRequests => {
-			let timer = tokio::time::Instant::now();
+			let timer = std::time::Instant::now();
 			let results = services.sending.db.active_requests();
 			let active_requests = results.collect::<Vec<_>>().await;
 			let query_time = timer.elapsed();
@@ -85,7 +85,7 @@ pub(super) async fn process(subcommand: SendingCommand, context: &Context<'_>) -
 			push_key,
 		} => {
 			let destination = get_destination(appservice_id, server_name, user_id, push_key)?;
-			let timer = tokio::time::Instant::now();
+			let timer = std::time::Instant::now();
 			let queued_requests = services
 				.sending
 				.db
@@ -107,7 +107,7 @@ pub(super) async fn process(subcommand: SendingCommand, context: &Context<'_>) -
 			push_key,
 		} => {
 			let destination = get_destination(appservice_id, server_name, user_id, push_key)?;
-			let timer = tokio::time::Instant::now();
+			let timer = std::time::Instant::now();
 			let active_requests = services
 				.sending
 				.db
@@ -123,7 +123,7 @@ pub(super) async fn process(subcommand: SendingCommand, context: &Context<'_>) -
 				.await
 		},
 		| SendingCommand::GetLatestEduCount { server_name } => {
-			let timer = tokio::time::Instant::now();
+			let timer = std::time::Instant::now();
 			let results = services.sending.db.get_latest_educount(&server_name).await;
 			let query_time = timer.elapsed();
 

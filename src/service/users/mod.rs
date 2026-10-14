@@ -249,21 +249,65 @@ impl Service {
 	}
 
 	fn glob_match(glob: &str, target: &str) -> bool {
-		let mut regex_str = String::with_capacity(glob.len().saturating_mul(2).saturating_add(2));
-		regex_str.push('^');
-		for c in glob.chars() {
-			match c {
-				| '*' => regex_str.push_str(".*"),
-				| '?' => regex_str.push('.'),
-				| '.' | '+' | '(' | ')' | '|' | '^' | '$' | '[' | ']' | '{' | '}' | '\\' => {
-					regex_str.push('\\');
-					regex_str.push(c);
-				},
-				| _ => regex_str.push(c),
+		let glob: Vec<char> = glob.chars().collect();
+		let target: Vec<char> = target.chars().collect();
+		let target_width = target
+			.len()
+			.checked_add(1)
+			.expect("glob target is too large");
+		let glob_height = glob
+			.len()
+			.checked_add(1)
+			.expect("glob pattern is too large");
+		let mut matched = vec![vec![false; target_width]; glob_height];
+		matched[0][0] = true;
+
+		for (glob_index, pattern) in glob.iter().enumerate() {
+			if *pattern == '*' {
+				let next_glob_index = glob_index
+					.checked_add(1)
+					.expect("glob pattern is too large");
+				matched[next_glob_index][0] = matched[glob_index][0];
 			}
 		}
-		regex_str.push('$');
-		regex::Regex::new(&regex_str).is_ok_and(|re| re.is_match(target))
+
+		for glob_index in 0..glob.len() {
+			for target_index in 0..=target.len() {
+				if !matched[glob_index][target_index] {
+					continue;
+				}
+				if target_index == target.len() {
+					if glob[glob_index] == '*' {
+						let next_glob_index = glob_index
+							.checked_add(1)
+							.expect("glob pattern is too large");
+						matched[next_glob_index][target_index] = true;
+					}
+					continue;
+				}
+
+				if glob[glob_index] == '*' {
+					let next_glob_index = glob_index
+						.checked_add(1)
+						.expect("glob pattern is too large");
+					let next_target_index = target_index
+						.checked_add(1)
+						.expect("glob target is too large");
+					matched[next_glob_index][target_index] = true;
+					matched[glob_index][next_target_index] = true;
+				} else if glob[glob_index] == '?' || glob[glob_index] == target[target_index] {
+					let next_glob_index = glob_index
+						.checked_add(1)
+						.expect("glob pattern is too large");
+					let next_target_index = target_index
+						.checked_add(1)
+						.expect("glob target is too large");
+					matched[next_glob_index][next_target_index] = true;
+				}
+			}
+		}
+
+		matched[glob.len()][target.len()]
 	}
 
 	/// Returns the recipient's filter level for an invite from the sender.
@@ -1061,7 +1105,7 @@ impl Service {
 				let Some(one_time_key_id) = key.rsplit(|&b| b == 0xFF).next().and_then(
 					decode_json_slice::<OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>>,
 				) else {
-					tracing::warn!(
+					conduwuit::warn!(
 						"count_one_time_keys: skipping unparsable key id for \
 						 {user_id}|{device_id}"
 					);
@@ -1469,9 +1513,12 @@ impl Service {
 	}
 
 	pub async fn mark_device_key_update(&self, user_id: &UserId) {
+		// Keep the sender from reading its EDU window bound between allocating the
+		// count and writing the rows below (see `globals::Service::edu_barrier`).
+		let _barrier = self.services.globals.edu_barrier.read().await;
 		let count = self.services.globals.next_count().unwrap();
 
-		tracing::info!(%user_id, "mark_device_key_update called");
+		conduwuit::info!(%user_id, "mark_device_key_update called");
 
 		let mut joined_rooms = self
 			.services
@@ -1502,7 +1549,7 @@ impl Service {
 			}
 
 			if !joined_rooms.is_empty() {
-				tracing::warn!(
+				conduwuit::warn!(
 					%user_id,
 					rooms = joined_rooms.len(),
 					"Recovered remote device-key update rooms via server-room fallback"
@@ -1510,6 +1557,7 @@ impl Service {
 			}
 		}
 
+		let mut flush_rooms = Vec::with_capacity(joined_rooms.len());
 		for room_id in joined_rooms {
 			// TODO: replace these ad hoc fanout writes with a single typed
 			// "device-key change projection" helper shared by the write path and the
@@ -1526,20 +1574,27 @@ impl Service {
 				})
 				.await;
 
-			tracing::info!(%user_id, %room_id, "Flushing room for device key update");
-
-			let sending = self.services.sending.clone();
-			self.services.server.runtime().spawn(async move {
-				let _ = sending.flush_room(&room_id).await;
-			});
+			flush_rooms.push(room_id);
 		}
 
 		let key = (user_id, count);
 		self.db.keychangeid_userid.put_raw(key, user_id);
 
-		// Keep the published watermark monotonic across concurrent calls.
+		// Keep the published watermark monotonic across concurrent calls. This must
+		// be published before any flush is scheduled: the sender gates device-list
+		// EDU selection on this watermark and then advances its cursor past `count`,
+		// so a flush that wins the race would skip this change permanently.
 		self.last_device_key_update_count
 			.fetch_max(count, std::sync::atomic::Ordering::AcqRel);
+
+		for room_id in flush_rooms {
+			conduwuit::info!(%user_id, %room_id, "Flushing room for device key update");
+
+			let sending = self.services.sending.clone();
+			drop(self.services.server.runtime().spawn(async move {
+				let _ = sending.flush_room(&room_id).await;
+			}));
+		}
 	}
 
 	pub fn mark_device_list_left(&self, user_id: &UserId, left_user: &UserId, count: u64) {

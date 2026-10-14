@@ -80,7 +80,7 @@ mod tests {
 	// ---------------------------------------------------------------
 	// Test 1: Single linear chain — extremity collapses to 1
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn linear_chain_collapses() {
 		let a = event_id!("$aaa:example.org").to_owned();
 		let b_id = event_id!("$bbb:example.org");
@@ -95,13 +95,13 @@ mod tests {
 		)
 		.await;
 
-		assert_eq!(result, vec![b_id.to_owned()]);
+		assert_eq!(result, vec![b_id.clone()]);
 	}
 
 	// ---------------------------------------------------------------
 	// Test 2: Fork from 2 servers — both tips present
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn fork_creates_two_tips() {
 		let a = event_id!("$aaa:example.org").to_owned();
 		let b_id = event_id!("$bbb:example.org");
@@ -117,7 +117,7 @@ mod tests {
 		)
 		.await;
 
-		assert_eq!(after_b, vec![b_id.to_owned()]);
+		assert_eq!(after_b, vec![b_id.clone()]);
 
 		// Server 2 sends C also referencing A
 		// But A is already referenced (marked by B), so we simulate that
@@ -125,7 +125,7 @@ mod tests {
 		let is_referenced = |eid: &EventId| ready(*eid == event_id!("$aaa:example.org"));
 
 		let after_c = calculate_forward_extremities(
-			vec![b_id.to_owned()],
+			vec![b_id.clone()],
 			&c_id,
 			&[a.as_ref()],
 			false,
@@ -136,13 +136,13 @@ mod tests {
 
 		// B is not referenced by C's prev_events, and not referenced in DB
 		// C is added as new tip
-		assert_eq!(after_c, vec![b_id.to_owned(), c_id.to_owned()]);
+		assert_eq!(after_c, vec![b_id.clone(), c_id.clone()]);
 	}
 
 	// ---------------------------------------------------------------
 	// Test 3: Merge event collapses fork
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn merge_collapses_fork() {
 		let b = event_id!("$bbb:example.org").to_owned();
 		let c = event_id!("$ccc:example.org").to_owned();
@@ -158,13 +158,13 @@ mod tests {
 		)
 		.await;
 
-		assert_eq!(result, vec![d_id.to_owned()]);
+		assert_eq!(result, vec![d_id.clone()]);
 	}
 
 	// ---------------------------------------------------------------
 	// Test 4: Soft-fail does NOT create extremity
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn soft_fail_does_not_modify() {
 		let a = event_id!("$aaa:example.org").to_owned();
 		let b_id = event_id!("$bbb:example.org");
@@ -186,7 +186,7 @@ mod tests {
 	// ---------------------------------------------------------------
 	// Test 5: Concurrent joins from 3 servers, then merge
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn concurrent_joins_then_merge() {
 		let a = event_id!("$aaa:example.org").to_owned();
 		let j1_id = event_id!("$j1:server1.org");
@@ -204,12 +204,12 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(after_j1, vec![j1_id.to_owned()]);
+		assert_eq!(after_j1, vec![j1_id.clone()]);
 
 		// J2 also references A (which is now marked as referenced in DB)
 		let a_is_referenced = |eid: &EventId| ready(*eid == event_id!("$aaa:example.org"));
 		let after_j2 = calculate_forward_extremities(
-			vec![j1_id.to_owned()],
+			vec![j1_id.clone()],
 			&j2_id,
 			&[a.as_ref()],
 			false,
@@ -217,11 +217,11 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(after_j2, vec![j1_id.to_owned(), j2_id.to_owned()]);
+		assert_eq!(after_j2, vec![j1_id.clone(), j2_id.clone()]);
 
 		// J3 also references A
 		let after_j3 = calculate_forward_extremities(
-			vec![j1_id.to_owned(), j2_id.to_owned()],
+			vec![j1_id.clone(), j2_id.clone()],
 			&j3_id,
 			&[a.as_ref()],
 			false,
@@ -229,12 +229,12 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(after_j3, vec![j1_id.to_owned(), j2_id.to_owned(), j3_id.to_owned()]);
+		assert_eq!(after_j3, vec![j1_id.clone(), j2_id.clone(), j3_id.clone()]);
 
 		// Merge event references all three
 		let m_id = event_id!("$merge:example.org");
 		let result = calculate_forward_extremities(
-			vec![j1_id.to_owned(), j2_id.to_owned(), j3_id.to_owned()],
+			vec![j1_id.clone(), j2_id.clone(), j3_id.clone()],
 			&m_id,
 			&[&j1_id, &j2_id, &j3_id],
 			false,
@@ -242,13 +242,13 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(result, vec![m_id.to_owned()]);
+		assert_eq!(result, vec![m_id.clone()]);
 	}
 
 	// ---------------------------------------------------------------
 	// Test 6: Concurrent membership updates (profile changes + message)
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn concurrent_membership_and_messages() {
 		let a = event_id!("$aaa:example.org").to_owned();
 		let rename_id = event_id!("$rename:server1.org");
@@ -265,12 +265,12 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(after_rename, vec![rename_id.to_owned()]);
+		assert_eq!(after_rename, vec![rename_id.clone()]);
 
 		// Avatar change also references A (now referenced in DB)
 		let a_referenced = |eid: &EventId| ready(*eid == event_id!("$aaa:example.org"));
 		let after_avatar = calculate_forward_extremities(
-			vec![rename_id.to_owned()],
+			vec![rename_id.clone()],
 			&avatar_id,
 			&[a.as_ref()],
 			false,
@@ -278,11 +278,11 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(after_avatar, vec![rename_id.to_owned(), avatar_id.to_owned()]);
+		assert_eq!(after_avatar, vec![rename_id.clone(), avatar_id.clone()]);
 
 		// Message also references A
 		let after_msg = calculate_forward_extremities(
-			vec![rename_id.to_owned(), avatar_id.to_owned()],
+			vec![rename_id.clone(), avatar_id.clone()],
 			&msg_id,
 			&[a.as_ref()],
 			false,
@@ -290,16 +290,12 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(after_msg, vec![
-			rename_id.to_owned(),
-			avatar_id.to_owned(),
-			msg_id.to_owned()
-		]);
+		assert_eq!(after_msg, vec![rename_id.clone(), avatar_id.clone(), msg_id.clone()]);
 
 		// Merge collapses all three
 		let merge_id = event_id!("$merge:example.org");
 		let result = calculate_forward_extremities(
-			vec![rename_id.to_owned(), avatar_id.to_owned(), msg_id.to_owned()],
+			vec![rename_id.clone(), avatar_id.clone(), msg_id.clone()],
 			&merge_id,
 			&[&rename_id, &avatar_id, &msg_id],
 			false,
@@ -307,13 +303,13 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(result, vec![merge_id.to_owned()]);
+		assert_eq!(result, vec![merge_id.clone()]);
 	}
 
 	// ---------------------------------------------------------------
 	// Test 7: Partial merge — only some tips referenced
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn partial_merge() {
 		let b = event_id!("$bbb:example.org").to_owned();
 		let c = event_id!("$ccc:example.org").to_owned();
@@ -331,13 +327,13 @@ mod tests {
 		)
 		.await;
 
-		assert_eq!(result, vec![d, e_id.to_owned()]);
+		assert_eq!(result, vec![d, e_id.clone()]);
 	}
 
 	// ---------------------------------------------------------------
 	// Test 8: Already-referenced extremity gets pruned
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn already_referenced_pruned() {
 		let a = event_id!("$aaa:example.org").to_owned();
 		let b = event_id!("$bbb:example.org").to_owned();
@@ -358,13 +354,13 @@ mod tests {
 		.await;
 
 		// A collapsed via prev_events, B collapsed via is_referenced, only C remains
-		assert_eq!(result, vec![c_id.to_owned()]);
+		assert_eq!(result, vec![c_id.clone()]);
 	}
 
 	// ---------------------------------------------------------------
 	// Test 9: Idempotent re-processing
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn idempotent_processing() {
 		let a = event_id!("$aaa:example.org").to_owned();
 		let b_id = event_id!("$bbb:example.org");
@@ -391,10 +387,10 @@ mod tests {
 		.await;
 
 		// B should appear exactly once, A is not in the set anymore
-		assert_eq!(first, vec![b_id.to_owned()]);
+		assert_eq!(first, vec![b_id.clone()]);
 		assert_eq!(
 			second,
-			vec![b_id.to_owned(), b_id.to_owned()],
+			vec![b_id.clone(), b_id.clone()],
 			"re-processing adds the event again since it's not in prev_events"
 		);
 		// NOTE: In practice, the caller (upgrade_outlier_pdu) short-circuits
@@ -406,7 +402,7 @@ mod tests {
 	// ---------------------------------------------------------------
 	// Test 10: Large fan-in — 10 concurrent senders
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn large_fan_in() {
 		// Build 10 events all referencing A
 		let event_ids: Vec<OwnedEventId> = (1..=10)
@@ -431,6 +427,6 @@ mod tests {
 		)
 		.await;
 
-		assert_eq!(result, vec![merge_id.to_owned()]);
+		assert_eq!(result, vec![merge_id.clone()]);
 	}
 }

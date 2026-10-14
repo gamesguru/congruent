@@ -20,11 +20,6 @@ use crate::rooms::short::ShortStateKey;
 /// server's response to some extent, but we still do a lot of checks
 /// on the events.
 #[implement(super::Service)]
-#[tracing::instrument(
-	level = "debug",
-	skip_all,
-	fields(%origin),
-)]
 pub(crate) async fn fetch_state<Pdu>(
 	&self,
 	origin: &ServerName,
@@ -59,7 +54,7 @@ where
 			);
 
 			let timeout = Duration::from_secs(self.services.server.config.federation_timeout);
-			let state_ids_res = match tokio::time::timeout(timeout, req).await {
+			let state_ids_res = match conduwuit::timeout(timeout, req).await {
 				| Ok(Ok(res)) => res,
 				| Ok(Err(e)) => {
 					info!(%server, "fetch_state /state_ids failed: {e}");
@@ -264,14 +259,17 @@ where
 										None,
 									) {
 										conduwuit::warn!("Redaction failed for {eid}: {e:?}");
-										self.services
+										if let Err(error) = self
+											.services
 											.pdu_metadata
 											.mark_event_rejected(
 												&eid,
 												&crate::rooms::pdu_metadata::RejectionCode::InvalidPduFormat
 													.with_detail("redaction failed after hash mismatch"),
 											)
-											.await;
+										{
+											conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
+										}
 										val.insert(
 											"event_id".to_owned(),
 											slipstream::CanonicalJsonValue::String(
@@ -319,14 +317,17 @@ where
 							| _ => {
 								// Event sig failed; persist as rejected outlier so we don't
 								// re-fetch
-								self.services
+								if let Err(error) = self
+									.services
 									.pdu_metadata
 									.mark_event_rejected(
 										&eid,
 										crate::rooms::pdu_metadata::RejectionCode::SignatureVerificationFailed
 											.tag(),
 									)
-									.await;
+								{
+									conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
+								}
 								val.insert(
 									"event_id".to_owned(),
 									slipstream::CanonicalJsonValue::String(
@@ -386,7 +387,7 @@ where
 			continue;
 		};
 		let Some(state_key) = pdu.state_key() else {
-			if self.services.pdu_metadata.is_event_rejected(&eid).await {
+			if self.services.pdu_metadata.is_event_rejected(&eid)? {
 				continue;
 			}
 			return Err!(Database("Found non-state pdu in state events."));
@@ -396,7 +397,7 @@ where
 		// chain) must never represent resolved room state. If we have a valid
 		// local prior state event for this slot, use the local event ID;
 		// otherwise skip the slot completely.
-		let target_eid = if self.services.pdu_metadata.is_event_rejected(&eid).await
+		let target_eid = if self.services.pdu_metadata.is_event_rejected(&eid)?
 			&& !self
 				.services
 				.pdu_metadata

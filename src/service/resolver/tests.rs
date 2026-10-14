@@ -40,7 +40,7 @@ fn hostnames_keep_custom_ports() {
 	);
 }
 
-#[tokio::test]
+#[conduwuit_macros::async_test]
 async fn test_dns_resolution_integration() {
 	// This is a minimal test that verifies the hickory-resolver can initialize
 	// and perform a lookup. We can't easily run a full Server here, but we
@@ -48,11 +48,10 @@ async fn test_dns_resolution_integration() {
 	let (sys_conf, mut opts) = hickory_resolver::system_conf::read_system_conf().unwrap();
 	opts.use_hosts_file = hickory_resolver::config::ResolveHosts::Always;
 
-	let rt_prov = hickory_resolver::proto::runtime::TokioRuntimeProvider::new();
-	let conn_prov = hickory_resolver::name_server::TokioConnectionProvider::new(rt_prov);
-	let mut builder = hickory_resolver::TokioResolver::builder_with_config(sys_conf, conn_prov);
+	let rt_prov = super::dns::SmolRuntimeProvider::new(conduwuit_core::RuntimeHandle::new());
+	let mut builder = hickory_resolver::Resolver::builder_with_config(sys_conf, rt_prov);
 	*builder.options_mut() = opts;
-	let resolver = builder.build();
+	let resolver = builder.build().unwrap();
 
 	// Test resolving localhost, which should be in /etc/hosts on almost any system
 	let result = resolver.lookup_ip("localhost").await;

@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use conduwuit_core::{debug_error, trace, warn};
+use futures::{FutureExt, pin_mut};
 use tokio::signal;
 
 use super::server::Server;
 
 #[cfg(unix)]
-#[tracing::instrument(skip_all, level = "info")]
 pub(super) async fn signal(server: Arc<Server>) {
 	use signal::unix;
 	use unix::SignalKind;
@@ -21,12 +21,18 @@ pub(super) async fn signal(server: Arc<Server>) {
 	loop {
 		trace!("Installed signal handlers");
 		let sig: &'static str;
-		tokio::select! {
-			_ = signal::ctrl_c() => { sig = "SIGINT"; },
-			_ = quit.recv() => { sig = "SIGQUIT"; },
-			_ = term.recv() => { sig = "SIGTERM"; },
-			_ = usr1.recv() => { sig = "SIGUSR1"; },
-			_ = usr2.recv() => { sig = "SIGUSR2"; },
+		let ctrl_c = signal::ctrl_c().fuse();
+		let quit_signal = quit.recv().fuse();
+		let term_signal = term.recv().fuse();
+		let usr1_signal = usr1.recv().fuse();
+		let usr2_signal = usr2.recv().fuse();
+		pin_mut!(ctrl_c, quit_signal, term_signal, usr1_signal, usr2_signal);
+		futures::select! {
+			_ = ctrl_c => { sig = "SIGINT"; },
+			_ = quit_signal => { sig = "SIGQUIT"; },
+			_ = term_signal => { sig = "SIGTERM"; },
+			_ = usr1_signal => { sig = "SIGUSR1"; },
+			_ = usr2_signal => { sig = "SIGUSR2"; },
 		}
 
 		warn!("Received {sig}");
@@ -45,16 +51,12 @@ pub(super) async fn signal(server: Arc<Server>) {
 }
 
 #[cfg(not(unix))]
-#[tracing::instrument(skip_all, level = "info")]
 pub(super) async fn signal(server: Arc<Server>) {
 	loop {
-		tokio::select! {
-			_ = signal::ctrl_c() => {
-				warn!("Received Ctrl+C");
-				if let Err(e) = server.server.signal.send("SIGINT") {
-					debug_error!("signal channel: {e}");
-				}
-			},
+		signal::ctrl_c().await.expect("Ctrl+C handler");
+		warn!("Received Ctrl+C");
+		if let Err(e) = server.server.signal.send("SIGINT") {
+			debug_error!("signal channel: {e}");
 		}
 	}
 }

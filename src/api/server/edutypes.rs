@@ -1,8 +1,7 @@
-use axum::extract::State;
 use conduwuit::Result;
 use slipstream::api::federation::edutypes::get_edutypes;
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/federation/v1/edutypes`
 ///

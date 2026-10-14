@@ -1,11 +1,10 @@
-use axum::extract::State;
 use conduwuit::Result;
 use slipstream::{
 	api::federation::membership::prepare_leave_event,
 	events::room::member::{MembershipState, RoomMemberEventContent},
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/federation/v1/make_leave/{roomId}/{eventId}`
 ///

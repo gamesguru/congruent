@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use axum::extract::State;
 use conduwuit::{Error, Result};
 use futures::{FutureExt, StreamExt, TryFutureExt};
 use slipstream::api::{
@@ -14,6 +13,7 @@ use slipstream::api::{
 use crate::{
 	Ruma,
 	client::{claim_keys_helper, get_keys_helper},
+	router::extract::State,
 };
 
 /// # `GET /_matrix/federation/v1/user/devices/{userId}`
