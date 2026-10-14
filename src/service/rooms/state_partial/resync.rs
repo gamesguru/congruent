@@ -510,6 +510,8 @@ impl Service {
 
 		let servers = sort_servers(server_name, others);
 
+		// Whether any server answered with an error, as opposed to being unreachable.
+		let mut answered = false;
 		for server in servers {
 			if server == self.services.globals.server_name() || excluded.contains(&server) {
 				continue;
@@ -546,6 +548,7 @@ impl Service {
 				| Ok(response) => response,
 				| Err(e) => {
 					warn!("Failed to fetch state ids from {}: {}", server, e);
+					answered |= matches!(e, conduwuit::Error::Federation(..));
 					continue;
 				},
 			};
@@ -557,11 +560,20 @@ impl Service {
 				.await
 			{
 				| Ok(response) => return Ok((response, server, ids_response.pdu_ids)),
-				| Err(e) => warn!("Failed to fetch state from {}: {}", server, e),
+				| Err(e) => {
+					warn!("Failed to fetch state from {}: {}", server, e);
+					answered |= matches!(e, conduwuit::Error::Federation(..));
+				},
 			}
 		}
 
-		Err(err!(Request(NotFound("No reachable server available to resync state"))))
+		// Only servers that answered without usable state count towards giving
+		// up; unreachable ones are retried indefinitely.
+		if answered {
+			Err(err!(Request(NotFound("No usable state: every server answered with an error"))))
+		} else {
+			Err(err!(Request(NotFound("No reachable server available to resync state"))))
+		}
 	}
 
 	async fn process_auth_chain(
