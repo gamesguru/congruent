@@ -319,6 +319,13 @@ impl RouteSpec {
 		self
 	}
 
+	pub(crate) fn post<H, T>(self, handler: H) -> Self
+	where
+		H: RouteHandler<T> + Copy + Sync + 'static,
+	{
+		self.add(Method::POST, handler)
+	}
+
 	pub(crate) fn put<H, T>(self, handler: H) -> Self
 	where
 		H: RouteHandler<T> + Copy + Sync + 'static,
