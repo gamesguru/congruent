@@ -1183,7 +1183,7 @@ async fn handle_edu_device_list_update(
 		if !services
 			.rooms
 			.state_partial
-			.partial_rooms_via(user_id.server_name())
+			.partial_rooms_via(&user_id.server_name())
 			.await
 			.is_empty()
 			&& services
