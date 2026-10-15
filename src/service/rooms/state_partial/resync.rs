@@ -40,9 +40,9 @@ struct Resynced {
 	extremities: Vec<OwnedEventId>,
 }
 
-/// Prefix of the errors meaning no server gave usable state, the only failures
-/// that count towards `partial_state_resync_give_up_after`.
-const NO_USABLE_STATE: &str = "No usable state";
+/// Errors meaning no remote server gave usable state, the only failures that
+/// count towards `partial_state_resync_give_up_after`.
+const REMOTE_FAILURES: [&str; 2] = ["No usable state", "No reachable server"];
 
 /// How many times the re-authorised state is rebuilt when the room changes under it.
 const REAUTH_ATTEMPTS: usize = 5;
@@ -327,7 +327,7 @@ impl Service {
 	async fn resync_with_backoff(self: Arc<Self>, room_id: &RoomId) {
 		let mut delay = Duration::from_secs(1);
 		// When the failures to get usable state from any server began.
-		let mut unusable_since: Option<Instant> = None;
+		let mut failing_since: Option<Instant> = None;
 		let mut servers_before: Option<HashSet<OwnedServerName>> = None;
 		// Members found by every resync so far; a repeat resync only reports new ones.
 		let mut found: HashSet<OwnedUserId> = HashSet::new();
@@ -357,7 +357,7 @@ impl Service {
 					},
 					| Err(e) => {
 						warn!("Failed to resync partial state for room {}: {}", room_id, e);
-						if self.should_give_up(&e, &mut unusable_since) {
+						if self.should_give_up(&e, &mut failing_since) {
 							warn!(%room_id, "No server gave usable state in time; abandoning the join");
 							self.abandon_until_done(room_id, delay).await;
 							return;
@@ -500,15 +500,18 @@ impl Service {
 		}
 	}
 
-	/// Whether the failures to obtain usable state have lasted the configured
-	/// budget. `unusable_since` tracks when they began; any other error resets it.
+	/// Whether the remote failures have lasted the configured budget. An
+	/// unreachable server counts as much as an unusable answer, so a join whose
+	/// remote has vanished is not retried forever. `failing_since` tracks when
+	/// they began; any other error resets it.
 	fn should_give_up(
 		&self,
 		error: &conduwuit::Error,
-		unusable_since: &mut Option<Instant>,
+		failing_since: &mut Option<Instant>,
 	) -> bool {
-		if !error.to_string().contains(NO_USABLE_STATE) {
-			*unusable_since = None;
+		let message = error.to_string();
+		if !REMOTE_FAILURES.iter().any(|f| message.contains(f)) {
+			*failing_since = None;
 			return false;
 		}
 
@@ -517,7 +520,7 @@ impl Service {
 			.server
 			.config
 			.partial_state_resync_give_up_after;
-		let since = *unusable_since.get_or_insert_with(Instant::now);
+		let since = *failing_since.get_or_insert_with(Instant::now);
 		budget > 0 && since.elapsed() >= Duration::from_secs(budget)
 	}
 
