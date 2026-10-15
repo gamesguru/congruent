@@ -415,11 +415,16 @@ impl Service {
 			}
 			match self.send_pending(room_id).await {
 				| Ok(0) => {},
-				| Ok(unreadable) => warn!(
-					%room_id,
-					unreadable,
-					"Unreadable pending rows kept; their PDUs were not replayed"
-				),
+				| Ok(unreadable) => {
+					warn!(
+						%room_id,
+						unreadable,
+						"Unreadable pending rows kept; their PDUs were not replayed"
+					);
+					drop(state_lock);
+					back_off(&mut delay).await;
+					continue;
+				},
 				| Err(e) => {
 					warn!("Failed to replay pending PDUs for room {room_id}: {e}");
 					drop(state_lock);
@@ -544,11 +549,14 @@ impl Service {
 			}
 		}
 
-		// Leaves above may themselves have been recorded as pending. Best-effort
-		// drain; the lock prevents a new append from recording another row or mark
-		// between this drain and the marker removal.
+		// Leaves above may themselves have been recorded as pending. The lock
+		// prevents a new append from recording another row or mark between this
+		// drain and marker removal; any unreadable row keeps the markers for retry.
 		let state_lock = self.services.state.mutex.lock(room_id).await;
-		self.send_pending(room_id).await?;
+		let unreadable = self.send_pending(room_id).await?;
+		if unreadable != 0 {
+			return Err!("{unreadable} unreadable pending partial-state PDU row(s)");
+		}
 		self.clear_partial_markers(room_id).await;
 		drop(state_lock);
 		self.services.users.untrack_remote_users_in_room(room_id);
