@@ -1107,9 +1107,26 @@ impl Service {
 			"sending empty transaction"
 		);
 		match dest {
-			| Destination::Federation(server) => self
-				.send_events_dest_federation(server, events, edu_count)
-				.boxed(),
+			| Destination::Federation(server) => {
+				let count = events.len();
+				async move {
+					let started = Instant::now();
+					let log_server = server.clone();
+					let result = self
+						.send_events_dest_federation(server, events, edu_count)
+						.await;
+					debug!(
+						target: "sender_debug",
+						server = %log_server,
+						events = count,
+						elapsed = ?started.elapsed(),
+						ok = result.is_ok(),
+						"federation transaction finished"
+					);
+					result
+				}
+				.boxed()
+			},
 			| Destination::Appservice(id) => self.send_events_dest_appservice(id, events).boxed(),
 			| Destination::Push(user_id, pushkey) =>
 				self.send_events_dest_push(user_id, pushkey, events).boxed(),
