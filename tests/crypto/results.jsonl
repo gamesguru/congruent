@@ -64,11 +64,11 @@
 {"Action":"pass","Test":"TestNewUserCannotGetKeysForOfflineServer"}
 {"Action":"pass","Test":"TestNewUserCannotGetKeysForOfflineServer/js"}
 {"Action":"pass","Test":"TestNewUserCannotGetKeysForOfflineServer/rust"}
-{"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom"}
+{"Action":"fail","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom"}
 {"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{js_hs1}"}
-{"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{rust_hs1}"}
+{"Action":"fail","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom"}
 {"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{rust_hs1}"}
