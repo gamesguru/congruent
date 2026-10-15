@@ -48,7 +48,7 @@ where
 		Vec<(OwnedEventId, conduwuit::matrix::pdu::RawJson)>,
 	) = 'found: {
 		while let Some(server) = pool.next_scored(weights) {
-			debug!(target: "state_ids_debug", %server, %origin, %room_id, %event_id, "fetch_state: sending /state_ids");
+			info!(target: "state_ids_debug", %server, %origin, %room_id, %event_id, "fetch_state: sending /state_ids");
 			let req = self.services.sending.send_federation_request(
 				&server,
 				get_room_state_ids::v1::Request::new(event_id.to_owned(), room_id.to_owned()),

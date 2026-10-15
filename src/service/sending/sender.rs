@@ -1115,7 +1115,7 @@ impl Service {
 					let result = self
 						.send_events_dest_federation(server, events, edu_count)
 						.await;
-					debug!(
+					info!(
 						target: "sender_debug",
 						server = %log_server,
 						events = count,
