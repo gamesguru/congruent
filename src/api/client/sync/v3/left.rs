@@ -221,6 +221,7 @@ pub(super) async fn load_left_room(
 				syncing_user,
 				&root_handle,
 				lazily_loaded_members.as_ref(),
+				None,
 			)
 			.await?
 			.into_iter()
@@ -458,6 +459,7 @@ async fn build_left_state_and_timeline(
 				syncing_user,
 				&timeline_start_root_handle,
 				lazily_loaded_members.as_ref(),
+				None,
 			)
 			.await?,
 	};

@@ -251,7 +251,7 @@ pub(super) async fn import_pdus(
 						pdu_val,
 						true,
 						skip_sig_verify,
-						Some(&room_version),
+						&room_version,
 						AuthRecoveryStage::BeforeStateIds,
 					))
 					.await;

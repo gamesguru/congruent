@@ -36,13 +36,37 @@ use crate::{
 /// - If database is opened at lesser version we apply migrations up to this.
 ///   Note that named-feature migrations may also be performed when opening at
 ///   equal or lesser version. These are expected to be backward-compatible.
-pub(crate) const DATABASE_VERSION: u64 = 24;
+pub(crate) const DATABASE_VERSION: u64 = 25;
 
 /// Column families explicitly dropped in migrations. These are included
 /// in the fingerprint hash (prefixed with '-') so that a branch which
 /// still has them as live CFs produces a different fingerprint.
-const DROPPED_CFS: &[&str] =
-	&["eventid_receivecount", "roomid_outliereventid", "softfailedeventids"];
+const DROPPED_CFS: &[&str] = &[
+	"eventid_receivecount",
+	"rejectedeventids",
+	"roomid_outliereventid",
+	"roomid_shortstatehash",
+	"roomuserid_lastprivatereadupdate",
+	"roomuserid_privateread",
+	"roomuserid_privatereadevent",
+	"shorteventid_shortstatehash",
+	"shortstatehash_lthash",
+	"shortstatehash_statediff",
+	"softfailedeventids",
+];
+
+/// Column families physically dropped by the v25 migration, after their
+/// contents have been consumed by earlier migrations.
+const V25_RETIRED_CFS: &[&str] = &[
+	"rejectedeventids",
+	"roomid_shortstatehash",
+	"roomuserid_lastprivatereadupdate",
+	"roomuserid_privateread",
+	"roomuserid_privatereadevent",
+	"shorteventid_shortstatehash",
+	"shortstatehash_lthash",
+	"shortstatehash_statediff",
+];
 
 /// Compute schema fingerprint from the static column family name list,
 /// explicitly dropped CFs, and the schema version number.
@@ -417,6 +441,14 @@ async fn migrate(services: &Services) -> Result<()> {
 		Box::pin(db_lt_24(services))
 			.await
 			.map_err(|e| err!("Failed to run v24 migrations: {e}"))?;
+	}
+
+	// Version 25 - remove retired column families after all migrations that
+	// consume their contents have completed.
+	if services.globals.db.database_version().await < 25 {
+		db_lt_25(services)
+			.await
+			.map_err(|e| err!("Failed to run v25 migrations: {e}"))?;
 	}
 
 	if services.globals.db.database_version().await != DATABASE_VERSION {
@@ -2314,6 +2346,7 @@ mod tests {
 
 		// Verify the CF names we expect are present
 		assert!(DROPPED_CFS.contains(&"softfailedeventids"));
+		assert!(DROPPED_CFS.contains(&"rejectedeventids"));
 		assert!(DROPPED_CFS.contains(&"eventid_receivecount"));
 		assert!(DROPPED_CFS.contains(&"roomid_outliereventid"));
 	}
@@ -2323,7 +2356,7 @@ mod tests {
 		// The hash includes DATABASE_VERSION.to_be_bytes() as first input.
 		// We can't easily test mutation, but we verify the constant is
 		// included by confirming it matches the expected value.
-		assert_eq!(DATABASE_VERSION, 24);
+		assert_eq!(DATABASE_VERSION, 25);
 	}
 
 	#[test]
@@ -2493,13 +2526,20 @@ struct StateDiff {
 	removed: Arc<std::collections::HashSet<[u8; 16]>>,
 }
 
+/// A table from a retired schema, opened by name: it is no longer part of the
+/// active map list, only read by the migrations that consume it.
+fn legacy_map(services: &Services, name: &'static str) -> Result<Arc<database::Map>> {
+	database::Map::open(&services.db.db, name)
+}
+
 async fn legacy_get_statediff(
 	services: &Services,
 	shortstatehash: ShortStateHash,
 ) -> Result<StateDiff> {
 	const STRIDE: usize = size_of::<ShortStateHash>();
 
-	let value = services.db["shortstatehash_statediff"]
+	let statediff_map = legacy_map(services, "shortstatehash_statediff")?;
+	let value = statediff_map
 		.get(&shortstatehash.to_be_bytes())
 		.await
 		.map_err(|e| err!(Database("Failed to find StateDiff: {e}")))?;
@@ -2775,13 +2815,10 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 
 	info!("Running v20 migration (building HAMT roots for existing rooms)...");
 
+	let roomid_shortstatehash = legacy_map(services, "roomid_shortstatehash")?;
 	let mut room_stream = services.rooms.metadata.iter_ids();
 	while let Some(room_id) = room_stream.next().await {
-		match services.db["roomid_shortstatehash"]
-			.get(&room_id)
-			.await
-			.deserialized()
-		{
+		match roomid_shortstatehash.get(&room_id).await.deserialized() {
 			| Err(e) if e.is_not_found() => {
 				// Room has no state yet (e.g. partial join); skip.
 				debug_warn!(
@@ -2862,7 +2899,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 	let roothandle_map = services.db["shorteventid_roothandle"].clone();
 	let mut batch = conduwuit_database::Batch::new();
 
-	let statediff_map = services.db["shortstatehash_statediff"].clone();
+	let statediff_map = legacy_map(services, "shortstatehash_statediff")?.clone();
 	let mut diff_stream = statediff_map.raw_stream();
 	while let Some(result) = diff_stream.next().await {
 		let (key, value): database::KeyVal<'_> = result?;
@@ -2977,10 +3014,8 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 ///
 /// The legacy state maps were only read as inputs to the v23 migration; at
 /// runtime the state layer now reads HAMT roots exclusively. Their contents are
-/// no longer consulted, so we clear them to reclaim the space. We deliberately
-/// do **not** remove the column families or the legacy accessor helpers: fresh
-/// databases arriving from schema `< 23` still need both the columns and the
-/// helpers to run v23 for the first time.
+/// no longer consulted. The retired column families themselves are dropped by
+/// v25; v24 only clears `roomsynctoken_shortstatehash`, which stays live.
 ///
 /// This runs only after v23 has bumped the schema version to 23, so the data we
 /// clear here is guaranteed to have already been consumed.
@@ -2991,13 +3026,7 @@ async fn db_lt_24(services: &Services) -> Result<()> {
 	let cork = db.cork_and_sync();
 	let mut total = 0_usize;
 
-	for map_name in [
-		"shortstatehash_statediff",
-		"roomid_shortstatehash",
-		"shorteventid_shortstatehash",
-		"shortstatehash_lthash",
-		"roomsynctoken_shortstatehash",
-	] {
+	for map_name in ["roomsynctoken_shortstatehash"] {
 		let map = db[map_name].clone();
 		let cleared = map
 			.raw_stream()
@@ -3019,5 +3048,23 @@ async fn db_lt_24(services: &Services) -> Result<()> {
 	info!(?total, "Cleared legacy shortstatehash table data.");
 
 	services.globals.db.bump_database_version(24);
+	Ok(())
+}
+
+/// Drop retired column families after their contents have been consumed by
+/// earlier migrations. Keep these names in `DROPPED_CFS` for schema
+/// fingerprinting, but remove them from the live database only once.
+async fn db_lt_25(services: &Services) -> Result<()> {
+	info!("Running v25 migration (dropping retired column families)...");
+
+	for name in V25_RETIRED_CFS {
+		if services.db.db.cf_exists(name) {
+			services.db.db.drop_cf(name).map_err(|e| {
+				err!(Database("Failed to drop retired column family {name}: {e}"))
+			})?;
+		}
+	}
+
+	services.globals.db.bump_database_version(25);
 	Ok(())
 }

@@ -122,6 +122,7 @@ impl Services {
 				state: build!(rooms::state::Service),
 				state_accessor: build!(rooms::state_accessor::Service),
 				state_cache: build!(rooms::state_cache::Service),
+				state_partial: build!(rooms::state_partial::Service),
 				state_hamt: build!(rooms::state_hamt::Service),
 				threads: build!(rooms::threads::Service),
 				timeline: build!(rooms::timeline::Service),

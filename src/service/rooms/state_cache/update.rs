@@ -45,6 +45,65 @@ pub async fn update_membership(
 		if !self.services.users.exists(user_id).await {
 			self.services.users.create(user_id, None, None).await?;
 		}
+		// A change that starts or stops us hearing about their device list means an
+		// earlier /keys/query answer can no longer be trusted. If another room
+		// already kept us subscribed, the cached answer stays valid.
+		let mut others = self.services.users.tracked_remote_rooms(user_id);
+		others.extend(self.rooms_joined(user_id).collect::<Vec<_>>().await);
+		let mut subscribed_elsewhere = false;
+		// A join by someone already believed to be in this very room (a profile
+		// update, or a rejoin we never saw them leave) changes nothing.
+		let already_here = matches!(membership.membership, MembershipState::Join)
+			&& (self.is_joined(user_id, room_id).await
+				|| self
+					.services
+					.users
+					.tracked_remote_rooms(user_id)
+					.contains(&room_id.to_owned()));
+		if already_here && self.local_users_in_room(room_id).next().await.is_some() {
+			subscribed_elsewhere = true;
+		}
+		for other in others.iter().filter(|other| *other != room_id) {
+			if self.local_users_in_room(other).next().await.is_some() {
+				subscribed_elsewhere = true;
+				break;
+			}
+		}
+		if !subscribed_elsewhere {
+			self.services.users.invalidate_remote_keys(user_id);
+		}
+	}
+
+	// When the last local user leaves, we stop hearing about the room's remote
+	// users' device lists. Their cached keys would go stale unnoticed and be
+	// served again after a rejoin, so drop them unless another room keeps us
+	// subscribed.
+	if self.services.globals.user_is_local(user_id)
+		&& !matches!(membership.membership, MembershipState::Join)
+		&& !self
+			.local_users_in_room(room_id)
+			.ready_any(|local| local != user_id)
+			.await
+	{
+		let remote_members: Vec<_> = self
+			.room_members(room_id)
+			.ready_filter(|member| !self.services.globals.user_is_local(member))
+			.collect()
+			.await;
+		for member in remote_members {
+			let mut others = self.services.users.tracked_remote_rooms(&member);
+			others.extend(self.rooms_joined(&member).collect::<Vec<_>>().await);
+			let mut subscribed_elsewhere = false;
+			for other in others.iter().filter(|other| *other != room_id) {
+				if self.local_users_in_room(other).next().await.is_some() {
+					subscribed_elsewhere = true;
+					break;
+				}
+			}
+			if !subscribed_elsewhere {
+				self.services.users.invalidate_remote_keys(&member);
+			}
+		}
 	}
 
 	match &membership.membership {
@@ -114,6 +173,17 @@ pub async fn update_membership(
 			self.mark_as_joined(user_id, room_id).await;
 		},
 		| MembershipState::Invite => {
+			// Replayed older events (partial-state join promotion, resync) can carry
+			// an invite for a user who has since joined; never undo that join.
+			let already_joined = self.is_joined(user_id, room_id).await;
+			conduwuit::info!(
+				target: "invite_debug",
+				%user_id, %room_id, already_joined, event_id = %pdu.event_id(),
+				"update_membership: invite"
+			);
+			if already_joined {
+				return Ok(());
+			}
 			let invite_state = self.services.state.summary_stripped(pdu, room_id).await;
 			self.mark_as_invited(user_id, room_id, pdu.sender(), Some(invite_state), None)
 				.await?;
@@ -382,6 +452,13 @@ pub async fn mark_as_joined(&self, user_id: &UserId, room_id: &RoomId) {
 /// The caller MUST call `update_joined_count` after the batch completes.
 #[implement(super::Service)]
 pub async fn mark_as_joined_silent(&self, user_id: &UserId, room_id: &RoomId) {
+	// Remote users are tracked as deactivated accounts (see `update_membership`);
+	// a silent join must still make them enumerable, e.g. for the user directory.
+	if !self.services.globals.user_is_local(user_id) && !self.services.users.exists(user_id).await
+	{
+		self.services.users.create(user_id, None, None).await.ok();
+	}
+
 	let userroom_id = (user_id, room_id);
 	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
 
@@ -959,10 +1036,19 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 	}
 
 	for user_id in state_joined.difference(&cached_joined) {
+		info!(%room_id, %user_id, "reconcile_membership: marking joined from state");
 		self.mark_as_joined_silent(user_id, room_id).await;
 		members_synced = members_synced.saturating_add(1);
 	}
 	for user_id in state_invited.difference(&cached_invited) {
+		// The snapshot may predate a join we already made (e.g. a partial-state
+		// resync at the join's prev events still shows our invite); don't
+		// re-invite a joined user.
+		if cached_joined.contains(user_id) {
+			info!(%room_id, %user_id, "reconcile_membership: keeping joined user despite invite in state");
+			continue;
+		}
+		info!(%room_id, %user_id, "reconcile_membership: marking invited from state");
 		if let Some(room_root) = room_root_opt.as_ref() {
 			if let Ok(pdu) = self
 				.services

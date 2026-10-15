@@ -23,6 +23,8 @@ jobs:
     runs-on: ${{ matrix.os }}${{ matrix.arch == 'arm64' && '-arm' || '' }}
     env:
       COMPLEMENT_PARALLEL: 4
+      COMPLEMENT_TEST_PARALLEL: 1
+      COMPLEMENT_ENABLE_DIRTY_RUNS: 1
       FEATURES: "direct_tls,url_preview"
 
     strategy:

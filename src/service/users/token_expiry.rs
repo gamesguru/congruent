@@ -17,8 +17,9 @@ pub(super) fn has_expired(expires_at: Option<u64>, now: u64) -> bool {
 pub(super) fn superseded_on_refresh(expires_at: Option<u64>) -> bool { expires_at.is_some() }
 
 /// The tokens of a device (paired with their recorded expiry) which a refresh
-/// replaces, in their original order. The most recent expiring token is kept:
-/// a client which lost the previous refresh response may still hold it.
+/// replaces, in their original order. `tokens` is in issue order, and the most
+/// recently issued expiring token is kept: a client which lost the previous
+/// refresh response may still hold it.
 pub(super) fn superseded_tokens(tokens: Vec<(String, Option<u64>)>) -> Vec<String> {
 	let mut expiring: Vec<String> = tokens
 		.into_iter()
@@ -102,6 +103,13 @@ mod tests {
 		assert!(superseded_tokens(vec![owned("lapsed", Some(0))]).is_empty());
 		let tokens = vec![owned("a", Some(1)), owned("b", Some(2)), owned("c", Some(3))];
 		assert_eq!(superseded_tokens(tokens), ["a", "b"]);
+	}
+
+	/// Verifies that the kept token is the last issued, not the latest expiring.
+	#[test]
+	fn the_last_issued_token_survives_whatever_its_expiry() {
+		let tokens = vec![owned("first", Some(9)), owned("last", Some(1))];
+		assert_eq!(superseded_tokens(tokens), ["first"]);
 	}
 
 	/// Verifies that revocation preserves other device tokens in their original order.

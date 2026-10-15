@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fmt::Write};
+use std::{
+	collections::HashMap,
+	fmt::Write,
+	sync::{LazyLock, Mutex},
+	time::{Duration, Instant},
+};
 
 use conduwuit::{
 	Err, Result, debug_info, err, error, info,
@@ -30,6 +35,40 @@ use crate::{
 };
 
 const RANDOM_USER_ID_LENGTH: usize = 10;
+
+/// Registration attempts (client address and username) that were issued a
+/// challenge, and when. Binding it to the address keeps a stranger's request
+/// for a username from changing how someone else's registration is judged.
+static CHALLENGED: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(Mutex::default);
+
+const CHALLENGE_TTL: Duration = Duration::from_mins(15);
+const CHALLENGE_LIMIT: usize = 10_000;
+
+fn challenge_key(client: impl std::fmt::Display, username: &str) -> String {
+	format!("{client}/{}", username.to_lowercase())
+}
+
+fn note_challenge(key: String) {
+	let now = Instant::now();
+	let mut challenged = CHALLENGED.lock().expect("locked");
+	challenged.retain(|_, issued| now.duration_since(*issued) < CHALLENGE_TTL);
+	// Past the limit nothing new is tracked, so the map cannot grow without bound.
+	if challenged.len() < CHALLENGE_LIMIT {
+		challenged.insert(key, now);
+	}
+}
+
+fn forget_challenge(key: &str) { CHALLENGED.lock().expect("locked").remove(key); }
+
+/// Whether this attempt was issued a challenge that is still outstanding.
+fn challenge_outstanding(key: &str) -> bool {
+	let now = Instant::now();
+	CHALLENGED
+		.lock()
+		.expect("locked")
+		.get(key)
+		.is_some_and(|issued| now.duration_since(*issued) < CHALLENGE_TTL)
+}
 
 /// # `POST /_matrix/client/v3/register`
 ///
@@ -143,10 +182,25 @@ pub(crate) async fn register_route(
 		// Perform UIAA to determine the user's identity
 		let (flows, params) = create_registration_uiaa_session(&services).await?;
 
+		// The spec requires the client to pass back the session it was issued, but
+		// an auth dict with none is how a client starts with existing credentials.
+		// Only refuse it for a username that has an outstanding challenge.
+		let auth = match (&body.username, &body.auth) {
+			| (Some(username), None) => {
+				note_challenge(challenge_key(client, username));
+				&body.auth
+			},
+			| (Some(username), Some(auth))
+				if auth.session().is_none()
+					&& challenge_outstanding(&challenge_key(client, username)) =>
+				&None,
+			| _ => &body.auth,
+		};
+
 		Some(
 			services
 				.uiaa
-				.authenticate(&body.auth, flows, params, None)
+				.authenticate(auth, flows, params, None)
 				.await?,
 		)
 	};
@@ -195,6 +249,9 @@ pub(crate) async fn register_route(
 
 	// Create user
 	services.users.create(&user_id, password, None).await?;
+	if let Some(username) = body.username.as_deref() {
+		forget_challenge(&challenge_key(client, username));
+	}
 
 	// Set an initial display name
 	let mut displayname = user_id.localpart().to_owned();
@@ -429,7 +486,7 @@ pub(crate) async fn register_route(
 		user_id,
 		device_id: device,
 		refresh_token,
-		expires_in: expires_in.map(std::time::Duration::from_millis),
+		expires_in: expires_in.map(Duration::from_millis),
 	})
 }
 

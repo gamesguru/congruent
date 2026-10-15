@@ -397,6 +397,15 @@ async fn build_state_and_timeline(
 		.collect::<Vec<_>>()
 		.await;
 
+	conduwuit::debug!(
+		target: "timeline_debug",
+		%room_id,
+		user = %sync_context.syncing_user,
+		since = ?sync_context.last_sync_end_count,
+		event_count = filtered_timeline_pdus.len(),
+		"sync: timeline events after filtering"
+	);
+
 	let timeline_ids: HashSet<&str> = filtered_timeline_pdus
 		.iter()
 		.map(|pdu| &*pdu.event_id)
@@ -529,11 +538,34 @@ async fn build_timeline(
 		.and_then(|limit| limit.try_into().ok())
 		.unwrap_or(DEFAULT_TIMELINE_LIMIT);
 
-	let starting_count = if joined_since_last_sync {
+	let mut starting_count = if joined_since_last_sync {
 		None
 	} else {
 		last_sync_end_count.map(PduCount::Normal)
 	};
+
+	// A partial-state join promotes the remote room's state events into the
+	// timeline; once the resync is done the user should see those as state and
+	// the timeline should begin at their own join.
+	if starting_count.is_none() && services.rooms.state_partial.resolved_at(room_id).is_some() {
+		if let Ok(join) = services
+			.rooms
+			.state_accessor
+			.room_state_get(room_id, &StateEventType::RoomMember, syncing_user.as_str())
+			.await
+		{
+			let is_join = join
+				.get_content::<RoomMemberEventContent>()
+				.is_ok_and(|content| content.membership == MembershipState::Join);
+			if is_join {
+				if let Ok(PduCount::Normal(count)) =
+					services.rooms.timeline.get_pdu_count(&join.event_id).await
+				{
+					starting_count = Some(PduCount::Normal(count.saturating_sub(1)));
+				}
+			}
+		}
+	}
 
 	load_timeline(
 		services,
@@ -637,6 +669,7 @@ async fn build_state_events(
 				syncing_user,
 				&timeline_start_root_handle,
 				lazily_loaded_members.as_ref(),
+				Some(timeline),
 			)
 			.boxed()
 			.await,
@@ -669,6 +702,7 @@ async fn build_state_after(
 		syncing_user,
 		&current_root_handle,
 		lazily_loaded_members.as_ref(),
+		Some(timeline),
 	)
 	.boxed()
 	.await
@@ -1054,7 +1088,12 @@ async fn build_heroes(
 /// Collect updates to users' device lists for E2EE.
 async fn build_device_list_updates(
 	services: &Services,
-	SyncContext { syncing_user, last_sync_end_count, .. }: SyncContext<'_>,
+	SyncContext {
+		syncing_user,
+		last_sync_end_count,
+		redelivered_since,
+		..
+	}: SyncContext<'_>,
 	room_id: &RoomId,
 	RootHandles { .. }: RootHandles,
 	timeline: &TimelinePdus,
@@ -1062,9 +1101,11 @@ async fn build_device_list_updates(
 	joined_since_last_sync: bool,
 ) -> Result<DeviceListUpdates> {
 	// initial syncs don't include device updates, so return early
-	if last_sync_end_count.is_none() {
+	if last_sync_end_count.is_none() && redelivered_since.is_none() {
 		return Ok(DeviceListUpdates::new());
 	}
+	let joined_since_last_sync = joined_since_last_sync || redelivered_since.is_some();
+	let last_sync_end_count = last_sync_end_count.or(redelivered_since);
 
 	let mut device_list_updates = DeviceListUpdates::new();
 
@@ -1128,6 +1169,11 @@ async fn build_device_list_updates(
 			if matches!(content.membership, Leave | Join) {
 				let shares_room =
 					shares_a_room(services, syncing_user, &user_id, Some(room_id)).await;
+				conduwuit::debug!(
+					%room_id, %user_id, membership = ?content.membership, shares_room,
+					changed = ?device_list_updates.changed,
+					"device_list_debug: membership event in device list update"
+				);
 				match content.membership {
 					| Leave if !shares_room => {
 						device_list_updates.left.insert(user_id);

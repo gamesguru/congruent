@@ -1,9 +1,11 @@
 pub(super) mod dehydrated_device;
 mod token_expiry;
 
-#[cfg(feature = "ldap")]
-use std::collections::HashMap;
-use std::{collections::BTreeMap, net::IpAddr, sync::Arc};
+use std::{
+	collections::{BTreeMap, HashMap},
+	net::IpAddr,
+	sync::Arc,
+};
 
 #[cfg(feature = "ldap")]
 use conduwuit::result::LogErr;
@@ -127,8 +129,27 @@ impl Deserialize for ProfileUpdate {
 	}
 }
 
+/// What a remote server last told us about a user's keys, kept until a
+/// device-list or signing-key change for that user invalidates it.
+#[derive(Clone, Default)]
+pub struct CachedRemoteKeys {
+	pub device_keys: BTreeMap<OwnedDeviceId, Raw<DeviceKeys>>,
+	pub master_key: Option<Raw<CrossSigningKey>>,
+	pub self_signing_key: Option<Raw<CrossSigningKey>>,
+}
+
 pub struct Service {
 	pub last_device_key_update_count: std::sync::atomic::AtomicU64,
+	/// Complete `/keys/query` answers for tracked remote users. In memory only:
+	/// after a restart users are simply fetched again.
+	remote_keys_cache: std::sync::Mutex<HashMap<OwnedUserId, CachedRemoteKeys>>,
+	/// Remote users seen joining a partial-state room after we did: their device
+	/// lists are tracked even though the membership index lacks them.
+	tracked_remote_users:
+		std::sync::Mutex<HashMap<OwnedUserId, std::collections::HashSet<OwnedRoomId>>>,
+	/// Bumped on every invalidation so an answer fetched before one is never
+	/// stored after it.
+	remote_keys_generation: std::sync::atomic::AtomicU64,
 	services: Services,
 	db: Data,
 	/// Serializes one-time-key claims per (user, device) so concurrent
@@ -149,6 +170,7 @@ struct Services {
 	globals: Dep<globals::Service>,
 	sending: Dep<crate::sending::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
+	state_partial: Dep<rooms::state_partial::Service>,
 }
 
 struct Data {
@@ -196,6 +218,9 @@ impl crate::Service for Service {
 			.unwrap_or(0);
 		Ok(Arc::new(Self {
 			last_device_key_update_count: std::sync::atomic::AtomicU64::new(current_count),
+			remote_keys_cache: std::sync::Mutex::new(HashMap::new()),
+			tracked_remote_users: std::sync::Mutex::new(HashMap::new()),
+			remote_keys_generation: std::sync::atomic::AtomicU64::new(0),
 			services: Services {
 				server: args.server.clone(),
 				account_data: args.depend::<account_data::Service>("account_data"),
@@ -204,6 +229,8 @@ impl crate::Service for Service {
 				globals: args.depend::<globals::Service>("globals"),
 				sending: args.depend::<crate::sending::Service>("sending"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
+				state_partial: args
+					.depend::<rooms::state_partial::Service>("rooms::state_partial"),
 			},
 			db: Data {
 				deviceleftid_userid: args.db["deviceleftid_userid"].clone(),
@@ -733,6 +760,28 @@ impl Service {
 		initial_device_display_name: Option<String>,
 		client_ip: Option<String>,
 	) -> Result<()> {
+		let lock_key = Self::device_lock_key(user_id, device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+		self.create_device_with_ttl_locked(
+			user_id,
+			device_id,
+			token,
+			ttl,
+			initial_device_display_name,
+			client_ip,
+		)
+		.await
+	}
+
+	async fn create_device_with_ttl_locked(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		token: &str,
+		ttl: Option<u64>,
+		initial_device_display_name: Option<String>,
+		client_ip: Option<String>,
+	) -> Result<()> {
 		if !self.exists(user_id).await {
 			return Err!(Request(InvalidParam(error!(
 				"Called create_device for non-existent user {user_id}"
@@ -749,8 +798,53 @@ impl Service {
 
 		increment(&self.db.userid_devicelistversion, user_id.as_bytes());
 		self.db.userdeviceid_metadata.put(key, Json(val));
-		self.set_token_with_ttl(user_id, device_id, token, ttl)
+		self.store_access_token(user_id, device_id, token, ttl)
 			.await
+	}
+
+	/// Stores the login access token and optional refresh token while holding
+	/// the device credential lock for the entire operation.
+	#[allow(clippy::too_many_arguments)]
+	pub async fn login_device_with_ttl(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		token: &str,
+		ttl: Option<u64>,
+		may_reuse_device: bool,
+		initial_device_display_name: Option<String>,
+		client_ip: Option<String>,
+	) -> Result<Option<String>> {
+		let lock_key = Self::device_lock_key(user_id, device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+
+		let device_exists = may_reuse_device
+			&& self
+				.db
+				.userdeviceid_metadata
+				.qry(&(user_id, device_id))
+				.await
+				.is_ok();
+		if device_exists {
+			self.store_access_token(user_id, device_id, token, ttl)
+				.await?;
+		} else {
+			self.create_device_with_ttl_locked(
+				user_id,
+				device_id,
+				token,
+				ttl,
+				initial_device_display_name,
+				client_ip,
+			)
+			.await?;
+		}
+
+		Ok(if ttl.is_some() {
+			Some(self.issue_refresh_token_locked(user_id, device_id).await)
+		} else {
+			None
+		})
 	}
 
 	/// Removes a device from a user.
@@ -981,7 +1075,10 @@ impl Service {
 	pub async fn issue_refresh_token(&self, user_id: &UserId, device_id: &DeviceId) -> String {
 		let lock_key = Self::device_lock_key(user_id, device_id);
 		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+		self.issue_refresh_token_locked(user_id, device_id).await
+	}
 
+	async fn issue_refresh_token_locked(&self, user_id: &UserId, device_id: &DeviceId) -> String {
 		let key = (user_id, device_id);
 		let revoked = [
 			self.device_refresh_token(&self.db.userdeviceid_refreshtoken, key)
@@ -1887,22 +1984,127 @@ impl Service {
 			.map(move |((_, count), changed_user): KeyVal<'_>| (changed_user, count))
 	}
 
+	pub fn remote_keys_generation(&self) -> u64 {
+		self.remote_keys_generation
+			.load(std::sync::atomic::Ordering::Acquire)
+	}
+
+	pub fn cached_remote_keys(&self, user_id: &UserId) -> Option<CachedRemoteKeys> {
+		self.remote_keys_cache
+			.lock()
+			.expect("locked")
+			.get(user_id)
+			.cloned()
+	}
+
+	/// Remember a complete answer fetched when the generation was `generation`;
+	/// dropped if any user's keys were invalidated since.
+	pub fn store_remote_keys(&self, user_id: &UserId, keys: CachedRemoteKeys, generation: u64) {
+		let mut cache = self.remote_keys_cache.lock().expect("locked");
+		let current = self.remote_keys_generation();
+		conduwuit::debug!(target: "keys_cache_debug", %user_id, generation, current, "remote_keys_cache: store");
+		if current == generation {
+			cache.insert(user_id.to_owned(), keys);
+		}
+	}
+
+	/// Remember that `user_id` was seen joining the partial-state `room_id`.
+	pub fn track_remote_user(&self, user_id: &UserId, room_id: &RoomId) {
+		self.tracked_remote_users
+			.lock()
+			.expect("locked")
+			.entry(user_id.to_owned())
+			.or_default()
+			.insert(room_id.to_owned());
+	}
+
+	pub fn untrack_remote_user(&self, user_id: &UserId, room_id: &RoomId) {
+		{
+			let mut tracked = self.tracked_remote_users.lock().expect("locked");
+			if let Some(rooms) = tracked.get_mut(user_id) {
+				rooms.remove(room_id);
+				if rooms.is_empty() {
+					tracked.remove(user_id);
+				}
+			}
+		}
+		self.invalidate_remote_keys(user_id);
+	}
+
+	/// Forget every user tracked as joining the partial-state `room_id`.
+	pub fn untrack_remote_users_in_room(&self, room_id: &RoomId) -> Vec<OwnedUserId> {
+		let mut removed = Vec::new();
+		{
+			let mut tracked = self.tracked_remote_users.lock().expect("locked");
+			tracked.retain(|user_id, rooms| {
+				if rooms.remove(room_id) {
+					removed.push(user_id.clone());
+				}
+				!rooms.is_empty()
+			});
+		};
+		for user_id in &removed {
+			self.invalidate_remote_keys(user_id);
+		}
+		removed
+	}
+
+	/// The partial-state rooms in which `user_id` was seen joining.
+	pub fn tracked_remote_rooms(&self, user_id: &UserId) -> Vec<OwnedRoomId> {
+		self.tracked_remote_users
+			.lock()
+			.expect("locked")
+			.get(user_id)
+			.map(|rooms| rooms.iter().cloned().collect())
+			.unwrap_or_default()
+	}
+
+	pub fn invalidate_remote_keys(&self, user_id: &UserId) {
+		let mut cache = self.remote_keys_cache.lock().expect("locked");
+		conduwuit::debug!(target: "keys_cache_debug", %user_id, "remote_keys_cache: invalidate");
+		self.remote_keys_generation
+			.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+		cache.remove(user_id);
+	}
+
 	pub async fn mark_device_key_update(&self, user_id: &UserId) {
+		self.mark_device_key_update_inner(user_id, None).await;
+	}
+
+	/// Like `mark_device_key_update`, but only in `room_id`. Used when a partial
+	/// state resync confirms the user in that room: other rooms (which may still
+	/// be partial) must not be notified on its account.
+	pub async fn mark_device_key_update_in_room(&self, user_id: &UserId, room_id: &RoomId) {
+		self.mark_device_key_update_inner(user_id, Some(room_id))
+			.await;
+	}
+
+	async fn mark_device_key_update_inner(&self, user_id: &UserId, only_room: Option<&RoomId>) {
 		// Keep the sender from reading its EDU window bound between allocating the
 		// count and writing the rows below (see `globals::Service::edu_barrier`).
 		let _barrier = self.services.globals.edu_barrier.read().await;
 		let count = self.services.globals.next_count().unwrap();
 
-		conduwuit::info!(%user_id, "mark_device_key_update called");
+		if !self.services.globals.user_is_local(user_id) {
+			self.invalidate_remote_keys(user_id);
+		}
 
-		let mut joined_rooms = self
-			.services
-			.state_cache
-			.rooms_joined(user_id)
-			.collect::<Vec<_>>()
-			.await;
+		conduwuit::debug!(%user_id, ?only_room, "mark_device_key_update called");
 
-		if joined_rooms.is_empty() && !self.services.globals.user_is_local(user_id) {
+		let mut joined_rooms = if let Some(room_id) = only_room {
+			vec![room_id.to_owned()]
+		} else {
+			self.services
+				.state_cache
+				.rooms_joined(user_id)
+				.collect::<Vec<_>>()
+				.await
+		};
+
+		if only_room.is_none()
+			&& joined_rooms.is_empty()
+			&& !self.services.globals.user_is_local(user_id)
+		{
 			let mut server_rooms = self
 				.services
 				.state_cache
@@ -1929,6 +2131,22 @@ impl Service {
 					rooms = joined_rooms.len(),
 					"Recovered remote device-key update rooms via server-room fallback"
 				);
+			}
+		}
+
+		// Members of a partial-state room are not all known yet; a remote user
+		// whose server we joined through may well be in it.
+		if only_room.is_none() && !self.services.globals.user_is_local(user_id) {
+			let server_name = user_id.server_name();
+			for room_id in self
+				.services
+				.state_partial
+				.partial_rooms_via(&server_name)
+				.await
+			{
+				if !joined_rooms.contains(&room_id) {
+					joined_rooms.push(room_id);
+				}
 			}
 		}
 

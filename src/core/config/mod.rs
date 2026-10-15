@@ -811,6 +811,13 @@ pub struct Config {
 	/// display: sensitive
 	pub registration_token: Option<String>,
 
+	/// Shared secret enabling Synapse's `/_synapse/admin/v1/register` endpoint,
+	/// which registers (admin) users via an HMAC-SHA1 signature. Disabled when
+	/// unset.
+	///
+	/// display: sensitive
+	pub registration_shared_secret: Option<String>,
+
 	/// A path to a file containing static registration tokens, one per line.
 	/// Tokens in this file do not supersede tokens from other sources, such as
 	/// the `!admin token` command or the `registration_token` configuration
@@ -1629,6 +1636,23 @@ pub struct Config {
 	/// receipts.
 	#[serde(default = "true_fn")]
 	pub allow_local_read_receipts: bool,
+
+	/// MSC3902: Faster Joins.
+	///
+	/// Enable this to allow skipping full state resolution of massive
+	/// lists of offline members from remote servers during joins.
+	/// This allows handling large federation events with ease.
+	#[serde(default)]
+	pub fast_joins: bool,
+
+	/// How long, in seconds, a partial-state join may keep failing to obtain
+	/// usable state from any server before it is abandoned: the local users
+	/// leave the room and its partial state is dropped. Local errors never
+	/// count towards this. 0 retries forever.
+	///
+	/// default: 0
+	#[serde(default = "default_partial_state_resync_give_up_after")]
+	pub partial_state_resync_give_up_after: u64,
 
 	/// Allow receiving incoming read receipts from remote servers.
 	#[serde(default = "true_fn")]
@@ -3257,6 +3281,8 @@ fn default_login_token_ttl() -> u64 { 2 * 60 * 1000 }
 
 /// Returns the default access-token lifetime of five minutes in milliseconds.
 fn default_access_token_ttl() -> u64 { 5 * 60 * 1000 }
+
+fn default_partial_state_resync_give_up_after() -> u64 { 0 }
 
 fn default_turn_ttl() -> u64 { 60 * 60 * 24 }
 

@@ -158,7 +158,9 @@ where
 	let config = load_tls_config(certs_path, key_path).await?;
 
 	if tls.dual_protocol {
-		warn!("dual_protocol is enabled; plain HTTP is also accepted on the TLS ports (insecure)");
+		warn!(
+			"dual_protocol is enabled; plain HTTP is also accepted on the TLS ports (insecure)"
+		);
 	}
 
 	let mut listeners = Vec::with_capacity(addrs.len());

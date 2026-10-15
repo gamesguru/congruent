@@ -48,13 +48,28 @@ pub(crate) fn authenticate_user<'a>(
 	metadata: &'a slipstream::api::Metadata,
 ) -> BoxFuture<'a, Result<OwnedUserId>> {
 	Box::pin(async move {
+		authenticate_user_with_body(request, services, metadata)
+			.await
+			.map(|(user, _)| user)
+	})
+}
+
+/// Like [`authenticate_user`], also returning the request body.
+pub(crate) fn authenticate_user_with_body<'a>(
+	request: hyper::Request<Incoming>,
+	services: &'a State,
+	metadata: &'a slipstream::api::Metadata,
+) -> BoxFuture<'a, Result<(OwnedUserId, Bytes)>> {
+	Box::pin(async move {
 		let request = request::from(services, request).await?;
 		let json_body = std::str::from_utf8(&request.body)
 			.ok()
 			.and_then(|body| slipstream::canonical_json::from_json_str(body).ok());
 		let auth = auth::auth(services, &request, json_body.as_ref(), metadata).await?;
-		auth.sender_user
-			.ok_or_else(|| err!(Request(MissingToken("Missing access token."))))
+		let user = auth
+			.sender_user
+			.ok_or_else(|| err!(Request(MissingToken("Missing access token."))))?;
+		Ok((user, request.body))
 	})
 }
 

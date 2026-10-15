@@ -13,7 +13,7 @@
 	fetch = ^refs/heads/gh-pages
 
 [remote "gitlab"]
-	fetch = +refs/heads/*:refs/remotes/origin/*
+	fetch = +refs/heads/*:refs/remotes/gitlab/*
 	fetch = ^refs/heads/_metadata/badges
 	fetch = ^refs/heads/badges
 	fetch = ^refs/heads/gh-pages

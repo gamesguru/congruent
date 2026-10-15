@@ -2,7 +2,7 @@ pub mod antispam;
 mod appservice;
 mod data;
 mod dest;
-mod sender;
+pub(crate) mod sender;
 pub mod stats;
 
 use std::{
@@ -56,6 +56,7 @@ struct Services {
 	state: Dep<rooms::state::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
+	state_partial: Dep<rooms::state_partial::Service>,
 	user: Dep<rooms::user::Service>,
 	users: Dep<users::Service>,
 	presence: Dep<presence::Service>,
@@ -107,6 +108,8 @@ impl crate::Service for Service {
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
+				state_partial: args
+					.depend::<rooms::state_partial::Service>("rooms::state_partial"),
 				user: args.depend::<rooms::user::Service>("rooms::user"),
 				users: args.depend::<users::Service>("users"),
 				presence: args.depend::<presence::Service>("presence"),
@@ -222,13 +225,39 @@ impl Service {
 	}
 
 	pub async fn send_pdu_room(&self, room_id: &RoomId, pdu_id: &RawPduId) -> Result {
-		let servers = self
+		self.send_pdu_room_except(room_id, pdu_id, None).await
+	}
+
+	/// Like `send_pdu_room`, but skips `except`: the server an event came from
+	/// has it already (e.g. a joining server must not be sent its own join).
+	pub async fn send_pdu_room_except(
+		&self,
+		room_id: &RoomId,
+		pdu_id: &RawPduId,
+		except: Option<&ServerName>,
+	) -> Result {
+		// In a partial-state room the member list is incomplete, so the server we
+		// joined through may be absent from `room_servers`; always include it.
+		let mut servers = self
 			.services
 			.state_cache
 			.room_servers(room_id)
-			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name));
+			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name))
+			.collect::<Vec<_>>()
+			.await;
+		for partial_server in self.services.state_partial.partial_servers(room_id).await {
+			if !self.services.globals.server_is_ours(&partial_server)
+				&& !servers.contains(&partial_server)
+			{
+				servers.push(partial_server);
+			}
+		}
 
-		let num_servers = self.send_pdu_servers(servers, pdu_id).await?;
+		servers.retain(|server| except.is_none_or(|except| except != &**server));
+
+		let num_servers = self
+			.send_pdu_servers(futures::stream::iter(servers), pdu_id)
+			.await?;
 
 		if num_servers > 100 {
 			warn!("Broadcasting PDU in {room_id} to {num_servers} servers");
@@ -288,13 +317,23 @@ impl Service {
 	}
 
 	pub async fn send_edu_room(&self, room_id: &RoomId, serialized: EduBuf) -> Result {
-		let servers = self
+		let mut servers = self
 			.services
 			.state_cache
 			.room_servers(room_id)
-			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name));
+			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name))
+			.collect::<Vec<_>>()
+			.await;
+		for partial_server in self.services.state_partial.partial_servers(room_id).await {
+			if !self.services.globals.server_is_ours(&partial_server)
+				&& !servers.contains(&partial_server)
+			{
+				servers.push(partial_server);
+			}
+		}
 
-		self.send_edu_servers(servers, serialized).await
+		self.send_edu_servers(futures::stream::iter(servers), serialized)
+			.await
 	}
 
 	pub async fn send_edu_servers<'a, S>(&self, servers: S, serialized: EduBuf) -> Result
@@ -325,13 +364,22 @@ impl Service {
 	}
 
 	pub async fn flush_room(&self, room_id: &RoomId) -> Result<()> {
-		let servers = self
+		let mut servers = self
 			.services
 			.state_cache
 			.room_servers(room_id)
-			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name));
+			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name))
+			.collect::<Vec<_>>()
+			.await;
+		for partial_server in self.services.state_partial.partial_servers(room_id).await {
+			if !self.services.globals.server_is_ours(&partial_server)
+				&& !servers.contains(&partial_server)
+			{
+				servers.push(partial_server);
+			}
+		}
 
-		self.flush_servers(servers).await
+		self.flush_servers(futures::stream::iter(servers)).await
 	}
 
 	pub async fn wait_for_pdu_servers(

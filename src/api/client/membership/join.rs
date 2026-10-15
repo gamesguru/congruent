@@ -18,7 +18,7 @@ use service::{
 };
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedRoomAliasId, OwnedRoomId, OwnedServerName,
-	OwnedUserId, RoomId, RoomVersionId, UserId,
+	OwnedUserId, RoomId, RoomVersionId, ServerName, UserId,
 	api::{
 		client::{
 			error::ErrorKind,
@@ -444,11 +444,26 @@ async fn join_room_by_id_helper_remote(
 	// It has enough fields to be called a proper event now
 	let mut join_event = join_event_stub;
 
-	info!("Asking {remote_server} for send_join in room {room_id}");
+	// A partial join omits other servers' members, which is only safe for a server
+	// with no members of its own in the room: otherwise installing the response's
+	// state would erase the local users already joined.
+	let already_in_room = services
+		.rooms
+		.state_cache
+		.local_users_in_room(room_id)
+		.boxed()
+		.next()
+		.await
+		.is_some();
+	info!(
+		"Asking {remote_server} for send_join in room {room_id} \
+		 (already_in_room={already_in_room})"
+	);
 	let send_join_request = federation::membership::create_join_event::v2::Request {
 		room_id: room_id.to_owned(),
 		event_id: event_id.clone(),
-		omit_members: false,
+
+		omit_members: services.server.config.fast_joins && !already_in_room,
 		pdu: services
 			.sending
 			.convert_to_outgoing_federation_event(join_event.clone())
@@ -749,6 +764,19 @@ async fn join_room_by_id_helper_remote_process(
 		}
 	}
 
+	// With omitted members (MSC3902) the response `state` lacks member events,
+	// but the join event's own auth events (e.g. the authorising user's
+	// membership for a restricted join) arrive in the auth chain.
+	for auth_event_id in &parsed_join_pdu.auth_events {
+		if let Ok(pdu) = services.rooms.timeline.get_pdu(auth_event_id).await {
+			if let Some(sk) = pdu.state_key.clone() {
+				auth_events
+					.entry((StateEventType::from(pdu.kind.to_string()), sk))
+					.or_insert(pdu);
+			}
+		}
+	}
+
 	let state_provider =
 		conduwuit_service::rooms::auth_adapter::PduStateProvider::from_ruma_map(&auth_events);
 	let auth_check = conduwuit_service::rooms::auth_adapter::rezzy_auth_check(
@@ -853,39 +881,18 @@ async fn join_room_by_id_helper_remote_process(
 	// on this exact room, with no state mutation in between -- a second
 	// explicit call here would just re-read the same numbers it just wrote.
 
-	let post_force_count = services
-		.rooms
-		.state_cache
-		.room_joined_count(room_id)
-		.await
-		.unwrap_or(0);
-	info!(
-		"join: after force_state+reconcile_membership for {room_id}: \
-		 joined_count={post_force_count}"
-	);
-
-	// Collect missing extremities from the remote server's DAG tips. We need to
-	// handle these differently for first-join vs re-join to avoid race conditions.
+	let resync_event_id = remote_latest_events.first().cloned();
 	let mut missing_latest = Vec::new();
-	let mut is_rejoin = false;
-	if !remote_latest_events.is_empty() {
-		for event_id in &remote_latest_events {
+	if !send_join_response.room_state.members_omitted {
+		for event_id in remote_latest_events {
 			if !services
 				.rooms
 				.timeline
-				.non_outlier_pdu_exists(event_id)
+				.non_outlier_pdu_exists(&event_id)
 				.await
 			{
-				missing_latest.push(event_id.clone());
+				missing_latest.push(event_id);
 			}
-		}
-		if !missing_latest.is_empty() {
-			// Determine whether this is a first join or a re-join. For first
-			// joins the room has no timeline events yet, so pre-join
-			// extremities should be inserted as Backfilled (historical). For re-joins
-			// the room already has events from prior membership, so extremities that
-			// occurred while away should be Normal (live).
-			is_rejoin = had_timeline_before_join;
 		}
 	}
 
@@ -899,6 +906,15 @@ async fn join_room_by_id_helper_remote_process(
 	// can indeed fail, in which case the local membership cache may be left in an
 	// inconsistent state (where the user appears joined in the cache but the join
 	// PDU is not persisted).
+	// Mark the room partial first so appending our own join does not announce
+	// our device list to a server we only partially know the room of.
+	if send_join_response.room_state.members_omitted {
+		services.rooms.state_partial.register_partial(
+			room_id,
+			&remote_server,
+			resync_event_id.as_ref(),
+		);
+	}
 	let (state_root_handle, _state_node, pending_nodes) = services
 		.rooms
 		.state
@@ -923,30 +939,74 @@ async fn join_room_by_id_helper_remote_process(
 	))
 	.await?;
 
-	// Phase 2: For RE-JOINS only, forward-fill extremities AFTER the join event
-	// is committed to the timeline and room state is set. This ensures that
-	// handle_incoming_pdu's server_in_room check succeeds (our join PDU proves
-	// participation) and prevents the "not participating" race condition.
-	if !missing_latest.is_empty() && is_rejoin {
-		info!(
-			room_id = %room_id,
-			count = missing_latest.len(),
-			"join bootstrap using timeline extremity ingestion for rejoin"
-		);
+	// Match the established bootstrap behavior: only re-joins need extremities
+	// fetched here, and fetch them after our join event makes us a participant.
+	// First-join history is obtained by the client's normal backfill flow.
+	if had_timeline_before_join && !missing_latest.is_empty() {
 		drop(state_lock);
+		handle_missing_join_extremities(
+			services,
+			room_id,
+			&room_version_id,
+			&remote_server,
+			missing_latest,
+		)
+		.await?;
+	}
 
-		info!(
-			"Forward-filling {} missing extremities from {} after joining room {}",
-			missing_latest.len(),
-			remote_server,
-			room_id
-		);
-		for event_id in missing_latest {
-			if let Err(e) =
-				fetch_missing_extremity(services, &remote_server, room_id, &event_id).await
-			{
-				warn!("Failed to fetch missing extremity {event_id}: {e}");
-			}
+	// Deal with partial joins
+	if send_join_response.room_state.members_omitted {
+		info!("Room {room_id} joined with omitted members (MSC3902). Marking as partial state.");
+		if let Some(servers) = &send_join_response.room_state.servers_in_room {
+			services.rooms.state_partial.set_extra_servers(
+				room_id,
+				servers
+					.iter()
+					.filter_map(|server| ServerName::parse(server).ok())
+					.collect(),
+			);
+		}
+		services.rooms.state_partial.signal_resync(room_id);
+	}
+
+	Ok(())
+}
+
+async fn handle_missing_join_extremities(
+	services: &Services,
+	room_id: &RoomId,
+	room_version_id: &RoomVersionId,
+	remote_server: &OwnedServerName,
+	remote_latest_events: Vec<slipstream::OwnedEventId>,
+) -> Result<()> {
+	let mut missing_latest = Vec::new();
+	for event_id in &remote_latest_events {
+		if !services
+			.rooms
+			.timeline
+			.non_outlier_pdu_exists(event_id)
+			.await
+		{
+			missing_latest.push(event_id.clone());
+		}
+	}
+	if missing_latest.is_empty() {
+		return Ok(());
+	}
+
+	info!(
+		"Forward-filling {} missing extremities from {} after joining room {}",
+		missing_latest.len(),
+		remote_server,
+		room_id
+	);
+
+	for event_id in missing_latest {
+		if let Err(e) =
+			fetch_missing_extremity(services, room_version_id, remote_server, room_id, &event_id)
+				.await
+		{
+			warn!("Failed to fetch missing extremity {event_id}: {e}");
 		}
 	}
 
@@ -1193,13 +1253,24 @@ async fn join_restricted_via_remote(
 	let servers = if has_remote_servers {
 		servers
 	} else {
-		discovered_servers = services
+		let mut found = services
 			.rooms
 			.state_cache
 			.room_servers(room_id)
 			.ready_filter(|server| !services.globals.server_is_ours(server))
 			.collect::<Vec<_>>()
 			.await;
+
+		// A partial-state room has an incomplete member list; the server we
+		// joined through is still a valid remote to ask.
+		if let Ok(Some(partial_server)) =
+			services.rooms.state_partial.partial_server(room_id).await
+		{
+			if !found.contains(&partial_server) {
+				found.push(partial_server);
+			}
+		}
+		discovered_servers = found;
 
 		if discovered_servers.is_empty() {
 			return Err!(Request(Forbidden(
@@ -1367,6 +1438,7 @@ fn deprioritize(
 
 async fn fetch_missing_extremity(
 	services: &Services,
+	room_version_id: &RoomVersionId,
 	remote_server: &OwnedServerName,
 	room_id: &RoomId,
 	event_id: &slipstream::OwnedEventId,
@@ -1410,7 +1482,14 @@ async fn fetch_missing_extremity(
 			services
 				.rooms
 				.event_handler
-				.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true, None)
+				.handle_incoming_pdu(
+					remote_server,
+					room_id,
+					&parsed_event_id,
+					value,
+					true,
+					room_version_id,
+				)
 				.await?;
 			return Ok(());
 		}
@@ -1449,7 +1528,14 @@ async fn fetch_missing_extremity(
 	services
 		.rooms
 		.event_handler
-		.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true, None)
+		.handle_incoming_pdu(
+			remote_server,
+			room_id,
+			&parsed_event_id,
+			value,
+			true,
+			room_version_id,
+		)
 		.await?;
 
 	Ok(())

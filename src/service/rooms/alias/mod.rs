@@ -42,6 +42,7 @@ struct Services {
 	state: Dep<rooms::state::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
+	state_partial: Dep<rooms::state_partial::Service>,
 }
 
 impl crate::Service for Service {
@@ -61,6 +62,8 @@ impl crate::Service for Service {
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
+				state_partial: args
+					.depend::<rooms::state_partial::Service>("rooms::state_partial"),
 			},
 		}))
 	}
@@ -253,12 +256,19 @@ impl Service {
 		};
 
 		if let Some(room_id) = room_id {
-			let servers: Vec<OwnedServerName> = self
+			let mut servers: Vec<OwnedServerName> = self
 				.services
 				.state_cache
 				.room_servers(&room_id)
 				.collect()
 				.await;
+			// While the room's state is partial we only know of the server we
+			// joined through.
+			if let Ok(Some(server)) = self.services.state_partial.partial_server(&room_id).await {
+				if !servers.contains(&server) {
+					servers.push(server);
+				}
+			}
 			return Ok((room_id, servers));
 		}
 

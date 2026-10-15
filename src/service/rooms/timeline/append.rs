@@ -326,6 +326,9 @@ where
 	if existing_pdu.is_none() {
 		self.db.write_event_to_mtxdb(pdu, &pdu_json);
 	}
+	// Held (for a new PDU) until the state association below has run, so sync
+	// cannot snapshot a count whose membership change is not yet applied.
+	let mut sync_barrier = None;
 	let (pdu_id, pdu_count, private_read_count) = if let Some((existing_id, existing_count)) =
 		existing_pdu
 	{
@@ -337,7 +340,7 @@ where
 		// Sync snapshots `current_count()` under the barrier's write side. Hold
 		// the read side from count allocation until this PDU is visible, so sync
 		// cannot advance past a count whose event is still being written.
-		let _barrier = self.services.globals.edu_barrier.read().await;
+		sync_barrier = Some(self.services.globals.edu_barrier.read().await);
 		let count = self.services.globals.next_count()?;
 		let pdu_count = PduCount::Normal(count);
 		let pdu_id: RawPduId = PduId { shortroomid, shorteventid: pdu_count }.into();
@@ -373,6 +376,7 @@ where
 		&pending_nodes,
 	))
 	.await?;
+	drop(sync_barrier);
 
 	// Recovered outlier timelines carry no state event of their own, so the batch
 	// above did not advance the room pointer for them. A state event already had
@@ -587,6 +591,12 @@ where
 					if content.membership
 						== slipstream::events::room::member::MembershipState::Join
 						&& !was_joined && self.services.globals.user_is_local(&target_user_id)
+						&& !self
+							.services
+							.state_partial
+							.partial_server(room_id)
+							.await
+							.is_ok_and(|server| server.is_some())
 					{
 						self.services
 							.users
@@ -610,6 +620,60 @@ where
 			self.index_pdu_search(shortroomid, &pdu_id, pdu);
 		},
 		| _ => {},
+	}
+
+	// Sync hides a partial-state room, so a remote user joining during the
+	// window would never be reported as newly tracked: record it now. This runs
+	// even when resolved state was already applied, which skips the arm above.
+	if *pdu.kind() == TimelineEventType::RoomMember {
+		if let Some(target) = pdu.state_key().and_then(|k| UserId::parse(k).ok()) {
+			if !self.services.globals.user_is_local(&target)
+				&& pdu
+					.get_content::<slipstream::events::room::member::RoomMemberEventContent>()
+					.is_ok_and(|c| {
+						c.membership == slipstream::events::room::member::MembershipState::Join
+					}) && self
+				.services
+				.state_partial
+				.partial_server(room_id)
+				.await
+				.is_ok_and(|server| server.is_some())
+			{
+				// A profile update for someone already joined is not a new member.
+				let already_joined = match prev_state_root_handle.as_ref() {
+					| Some(handle) =>
+						self.services
+							.state_accessor
+							.user_membership_hamt(room_id, handle, &target)
+							.await == slipstream::events::room::member::MembershipState::Join,
+					| None => false,
+				};
+				if !already_joined {
+					self.services.users.track_remote_user(&target, room_id);
+					self.services
+						.users
+						.mark_device_key_update_in_room(&target, room_id)
+						.await;
+				}
+			} else if !self.services.globals.user_is_local(&target)
+				&& pdu
+					.get_content::<slipstream::events::room::member::RoomMemberEventContent>()
+					.is_ok_and(|c| {
+						matches!(
+							c.membership,
+							slipstream::events::room::member::MembershipState::Leave
+								| slipstream::events::room::member::MembershipState::Ban
+						)
+					}) && self
+				.services
+				.state_partial
+				.partial_server(room_id)
+				.await
+				.is_ok_and(|server| server.is_some())
+			{
+				self.services.users.untrack_remote_user(&target, room_id);
+			}
+		}
 	}
 
 	// CONCERN: If we receive events with a relation out-of-order, we never write

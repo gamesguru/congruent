@@ -39,7 +39,7 @@ async fn create_leave_event(
 	room_id: &RoomId,
 	pdu: &RawJsonValue,
 ) -> Result {
-	let (event_id, value, _, _, _origin_sender, _state_key) =
+	let (event_id, value, _, room_version_id, _origin_sender, _state_key) =
 		super::utils::verify_send_membership(
 			services,
 			origin,
@@ -49,8 +49,15 @@ async fn create_leave_event(
 		)
 		.await?;
 
-	super::utils::handle_and_send_incoming_pdu(services, origin, room_id, &event_id, value, None)
-		.await?;
+	super::utils::handle_and_send_incoming_pdu(
+		services,
+		origin,
+		room_id,
+		&event_id,
+		value,
+		&room_version_id,
+	)
+	.await?;
 
 	Ok(())
 }

@@ -33,7 +33,7 @@ impl VerdictAdapter {
 		for bucket in 0..EVENT_LOCATOR_BUCKETS {
 			let mut node = [0_u8; 16];
 			node[..4].copy_from_slice(&bucket.to_le_bytes());
-			let collection = crate::keys::event_verdict_collection_id(&node);
+			let collection = event_verdict_collection_id(&node);
 			if self.store.has_records(ShardType::EventDag, &collection)? {
 				return Ok(true);
 			}

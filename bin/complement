@@ -20,10 +20,19 @@ RESULTS_FILE="${3:-"${RESULTS_FILE:-$RESULTS_DIR/results.jsonl}"}"
 # after running `cargo build`. Only the debug binary is used.
 COMPLEMENT_BASE_IMAGE="${COMPLEMENT_BASE_IMAGE:-continuwuity:complement}"
 
-# Complement tests that are skipped due to flakiness/reliability issues or we don't implement such features and won't for a long time
-# This can be overridden by environment variable
-DEFAULT_SKIPPED_TESTS='TestPartialStateJoin.*'
-SKIPPED_COMPLEMENT_TESTS="${SKIPPED_COMPLEMENT_TESTS:-"$DEFAULT_SKIPPED_TESTS"}"
+# Complement tests that are skipped due to flakiness/reliability issues or we
+# don't implement such features and won't for a long time.
+# This can be overridden by environment variable. TestPartialStateJoin runs by
+# default (fast_joins is enabled in complement.config.toml).
+SKIPPED_COMPLEMENT_TESTS="${SKIPPED_COMPLEMENT_TESTS:-""}"
+
+# Partial-state joins only exist with fast_joins, so TestPartialStateJoin cannot
+# pass without it; skip it rather than report its subtests as failures.
+if grep -Eq '^[[:space:]]*fast_joins[[:space:]]*=[[:space:]]*false' \
+	"$(dirname "$0")/../complement/complement.config.toml"; then
+	echo "fast_joins = false: skipping TestPartialStateJoin"
+	SKIPPED_COMPLEMENT_TESTS="${SKIPPED_COMPLEMENT_TESTS:+$SKIPPED_COMPLEMENT_TESTS|}^TestPartialStateJoin\$"
+fi
 
 # A regex for tests to run.
 RUN_TESTS="${COMPLEMENT_RUN:-.}"
@@ -382,7 +391,7 @@ run_one_pattern() {
 	fi
 
 	local -a flags=(
-		-tags "conduwuit_blacklist"
+		-tags "congruent_blacklist"
 		-skip "$SKIPPED_COMPLEMENT_TESTS"
 		-run "$pattern"
 		-p "$COMPLEMENT_PACKAGE_PARALLEL"
