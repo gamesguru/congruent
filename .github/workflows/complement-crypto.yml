@@ -124,13 +124,14 @@ jobs:
       - name: Build matrix-rust-sdk FFI
         env:
           # Wombat-Foundation/matrix-rust-sdk (guru/fix/time-invite-mem-races)
-          RUST_SDK_REF: 6c35f386b5b944989cf88b821e72cb21f682893e
+          RUST_SDK_REF: 1d923d6b949f46b91e9ae2c6bb0f72ae23421cd3
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-          mkdir -p matrix-rust-sdk
-          curl -fsSL "https://gitlab.com/Wombat-Foundation/matrix-rust-sdk/-/archive/$RUST_SDK_REF/matrix-rust-sdk-$RUST_SDK_REF.tar.gz" \
-            | tar -xz --strip-components=1 -C matrix-rust-sdk
+          git init matrix-rust-sdk
+          git -C matrix-rust-sdk remote add origin https://gitlab.com/Wombat-Foundation/matrix-rust-sdk.git
+          git -C matrix-rust-sdk fetch --depth=1 origin "$RUST_SDK_REF"
+          git -C matrix-rust-sdk checkout --detach FETCH_HEAD
           cd complement-crypto-src
           just install-uniffi-bindgen
           just rebuild-rust-sdk "$GITHUB_WORKSPACE/matrix-rust-sdk"
@@ -283,6 +284,7 @@ jobs:
             tests/crypto/results.jsonl
             tests/crypto/test_results.*.jsonl
             tests/crypto/logs.*.jsonl
+            complement-crypto-src/tests/logs/
           retention-days: 90
 
       # Publish a per-variant complement-crypto badge

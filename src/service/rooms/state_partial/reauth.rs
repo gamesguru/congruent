@@ -25,7 +25,22 @@ use slipstream::{
 
 use crate::rooms::{pdu_metadata::RejectionCode, short::ShortStateKey, state_partial::Service};
 
-type StateMap = HashMap<ShortStateKey, OwnedEventId>;
+pub(super) type StateMap = HashMap<ShortStateKey, OwnedEventId>;
+
+/// The corrected state rebuilt from a partial-state room's window.
+pub(super) struct Reauthed {
+	/// The window's resolved current state.
+	pub current: StateMap,
+	/// Remote users who joined and then left or were banned within the window.
+	pub left: HashSet<OwnedUserId>,
+	/// The forward extremities `current` was built from (sorted).
+	pub extremities: Vec<OwnedEventId>,
+	/// The events this pass re-authorised.
+	pub window: HashSet<OwnedEventId>,
+	/// The anchor event's depth, or `None` when its PDU is not held, in which
+	/// case the walk pruned nothing by depth.
+	pub anchor_depth: Option<u64>,
+}
 
 /// Sanity ceiling on the events re-authorised in one resync. Past it the resync
 /// fails and is retried; it is never completed without re-authorising.
@@ -75,16 +90,15 @@ impl Service {
 	/// Re-authorise the events between the resync point (`anchor`, whose full
 	/// state is `anchor_state`) and the room's forward extremities.
 	///
-	/// Returns the room's new current state, the remote users who were
-	/// joined and then left or banned within the window, and the forward
-	/// extremities it was built from (sorted), or `None` if the window could not
-	/// be reconstructed (the caller then falls back to merging).
+	/// Returns the corrected state with the window it covered, or `None` if the
+	/// window could not be reconstructed (the caller then falls back to
+	/// merging).
 	pub(super) async fn reauth_window(
 		&self,
 		room_id: &RoomId,
 		anchor: &EventId,
 		anchor_state: StateMap,
-	) -> Option<(StateMap, HashSet<OwnedUserId>, Vec<OwnedEventId>)> {
+	) -> Option<Reauthed> {
 		let create_pdu = self
 			.services
 			.state_accessor
@@ -363,7 +377,13 @@ impl Service {
 			.await?;
 		let mut seen = extremities;
 		seen.sort();
-		Some((current, left, seen))
+		Some(Reauthed {
+			current,
+			left,
+			extremities: seen,
+			window: window.into_keys().collect(),
+			anchor_depth,
+		})
 	}
 
 	/// Resolve short-keyed state maps with the room-version state-resolution

@@ -276,6 +276,22 @@ where
 		)
 		.await?;
 
+	// An event accepted while the room's state is partial is outside every
+	// re-authorised window until a resync has seen it, so record it under the
+	// state lock the extremity update just used: the resync reads the marks
+	// back under that same lock before dropping the room's markers.
+	if self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|server| server.is_some())
+	{
+		self.services
+			.state_partial
+			.mark_pending_event(room_id, pdu.event_id());
+	}
+
 	let insert_lock = self.mutex_insert.lock(room_id).await;
 	info!(
 		target: "watermark_debug",

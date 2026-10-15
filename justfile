@@ -421,6 +421,25 @@ e2ee args=".*":
         echo "linked complement-crypto runtime logs -> $RESULTS_FILE_STAGING/logs"
     fi
 
+    # The per-test console lines above are pass/fail only; dump the captured
+    # output of each failed test (parents and subtests alike; go emits a
+    # parent's output separately from its subtests') so the cause is visible in
+    # the CI job log without downloading the log artifact.
+    if [ -s "$LOG_FILE" ]; then
+        failed_tests="$(jq -r 'select(.Action == "fail" and .Test != null) | .Test' "$LOG_FILE" 2>/dev/null | sort -u || true)"
+        if [ -n "$failed_tests" ]; then
+            echo ""
+            echo "==================== FAILED TEST OUTPUT ===================="
+            while IFS= read -r ft; do
+                [ -n "$ft" ] || continue
+                echo "--- $ft ---"
+                jq -rj --arg t "$ft" 'select(.Action == "output" and .Test == $t) | .Output' "$LOG_FILE" 2>/dev/null | tail -n 200 || true
+                echo ""
+            done <<<"$failed_tests"
+            echo "============================================================"
+        fi
+    fi
+
     _pass=$(jq -s '[.[] | select(.Action == "pass")] | length' "$RESULTS_FILE" 2>/dev/null || true)
     _fail=$(jq -s '[.[] | select(.Action == "fail")] | length' "$RESULTS_FILE" 2>/dev/null || true)
     _skip=$(jq -s '[.[] | select(.Action == "skip")] | length' "$RESULTS_FILE" 2>/dev/null || true)
