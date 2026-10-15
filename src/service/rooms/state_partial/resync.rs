@@ -11,8 +11,8 @@ use conduwuit_core::{
 };
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use slipstream::{
-	OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, RoomVersionId, ServerName,
-	UserId,
+	EventId, OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, RoomVersionId,
+	ServerName, UserId,
 	api::federation::event::{get_room_state, get_room_state_ids},
 	events::{
 		StateEventType,
@@ -21,11 +21,23 @@ use slipstream::{
 	sswire::RawJsonValue,
 };
 
+use super::reauth::{Reauthed, StateMap};
 use crate::rooms::{short::ShortStateKey, state_partial::Service};
 
 enum StateEventLoadError {
 	InvalidResponse(String),
 	Transient(conduwuit::Error),
+}
+
+/// A successful resync's fetched state and the corrected state installed from
+/// it, kept so later drift can be rebuilt locally instead of refetching.
+struct Resynced {
+	/// The event the full state was fetched at.
+	anchor: OwnedEventId,
+	/// That event's full state.
+	anchor_state: StateMap,
+	/// The forward extremities the installed state was built from (sorted).
+	extremities: Vec<OwnedEventId>,
 }
 
 /// Prefix of the errors meaning no server gave usable state, the only failures
@@ -60,9 +72,10 @@ impl Service {
 	}
 
 	/// Send PDUs created during the partial join to servers that were only
-	/// discovered by the resync. Rows of PDUs that could not be queued are kept
-	/// and the first error is returned, so the caller can retry.
-	async fn send_pending(&self, room_id: &RoomId) -> Result {
+	/// discovered by the resync. Rows that cannot be read are kept and counted
+	/// in the returned value; only a scan or send failure is an error, so the
+	/// caller can retry it.
+	async fn send_pending(&self, room_id: &RoomId) -> Result<usize> {
 		let mut prefix = room_id.as_bytes().to_vec();
 		prefix.push(database::SEP);
 		// A scan error must fail the drain: treating it as "nothing pending" would
@@ -74,31 +87,40 @@ impl Service {
 			.map_ok(|(key, value): (&[u8], &[u8])| (key.to_vec(), value.to_vec()))
 			.try_collect()
 			.await?;
-		let mut unreadable = HashSet::new();
+		let mut unreadable = 0_usize;
 		let mut pending = Vec::new();
 		for (key, value) in &rows {
-			let parsed = key
+			// Key and value are judged separately: a value that went bad only loses
+			// the list of servers already sent to, and the PDU is then (re)sent to
+			// every server, which federation deduplicates by event ID; a key that
+			// went bad can never be sent at all.
+			let Some(pdu_id) = key
 				.get(prefix.len()..)
 				.and_then(|id| <[u8; 16]>::try_from(id).ok())
-				.zip(std::str::from_utf8(value).ok());
-			let Some((pdu_id, sent_to)) = parsed else {
+			else {
 				// Keep the row: it can't be sent, but it must not be discarded either.
 				error!(row = ?key, "Unreadable pending row for a partial-state PDU; keeping it");
-				unreadable.insert(key.clone());
+				unreadable = unreadable.saturating_add(1);
 				continue;
 			};
-			let sent_to: HashSet<OwnedServerName> = sent_to
-				.split(',')
-				.filter_map(|server| OwnedServerName::try_from(server).ok())
-				.collect();
+			let sent_to: HashSet<OwnedServerName> = match std::str::from_utf8(value) {
+				| Ok(sent_to) => sent_to
+					.split(',')
+					.filter_map(|server| OwnedServerName::try_from(server).ok())
+					.collect(),
+				| Err(_) => {
+					warn!(
+						row = ?key,
+						"Unreadable sent-to list for a pending partial-state PDU; \
+						 sending it to every server instead"
+					);
+					HashSet::new()
+				},
+			};
 			pending.push((conduwuit::matrix::RawPduId(pdu_id), sent_to));
 		}
 		if pending.is_empty() {
-			return if unreadable.is_empty() {
-				Ok(())
-			} else {
-				Err!("{} unreadable pending partial-state PDU row(s)", unreadable.len())
-			};
+			return Ok(unreadable);
 		}
 
 		let servers: Vec<OwnedServerName> = self
@@ -133,19 +155,68 @@ impl Service {
 				first_error.get_or_insert(e);
 			}
 		}
-		for (key, _) in rows.iter().filter(|(key, _)| !unreadable.contains(key)) {
-			let failed_row = key
+		for (key, _) in &rows {
+			// Unreadable rows are kept (counted above); failed sends are retried.
+			let Some(pdu_id) = key
 				.get(prefix.len()..)
 				.and_then(|id| <[u8; 16]>::try_from(id).ok())
-				.is_some_and(|id| failed.contains(&id));
-			if !failed_row {
+			else {
+				continue;
+			};
+			if !failed.contains(&pdu_id) {
 				self.db.state_partial_pending.remove(key);
 			}
 		}
-		if !unreadable.is_empty() {
-			return Err!("{} unreadable pending partial-state PDU row(s)", unreadable.len());
+		first_error.map_or(Ok(unreadable), Err)
+	}
+
+	/// Events accepted while `room_id`'s state was partial that no resync has
+	/// cleared yet, as (row key, event id). Rows that cannot be parsed are
+	/// dropped with an error: this server wrote them with a valid event id, so
+	/// an unreadable one is corruption, and keeping it would hold the room
+	/// partial forever.
+	async fn pending_event_marks(
+		&self,
+		room_id: &RoomId,
+	) -> Result<Vec<(Vec<u8>, OwnedEventId)>> {
+		let mut prefix = room_id.as_bytes().to_vec();
+		prefix.push(database::SEP);
+		let rows: Vec<(Vec<u8>, Vec<u8>)> = self
+			.db
+			.state_partial_pending_events
+			.raw_stream_prefix(&prefix)
+			.map_ok(|(key, _): (&[u8], &[u8])| (key.to_vec(), Vec::new()))
+			.try_collect()
+			.await?;
+		let mut marks = Vec::with_capacity(rows.len());
+		for (key, _) in rows {
+			let Some(event_id) = key
+				.get(prefix.len()..)
+				.and_then(|bytes| std::str::from_utf8(bytes).ok())
+				.and_then(|id| OwnedEventId::parse(id).ok())
+			else {
+				error!(row = ?key, "Unreadable pending-event mark for a partial-state room; discarding it");
+				self.db.state_partial_pending_events.remove(&key);
+				continue;
+			};
+			marks.push((key, event_id));
 		}
-		first_error.map_or(Ok(()), Err)
+		Ok(marks)
+	}
+
+	/// Drop every marker keeping `room_id` partial: the room itself, the anchor
+	/// event, and the pending-event marks. Callers hold the room's state lock,
+	/// so no append can record a mark in between.
+	async fn clear_partial_markers(&self, room_id: &RoomId) {
+		self.db.state_partial_rooms.remove(room_id.as_bytes());
+		self.db.state_partial_events.remove(room_id.as_bytes());
+		match self.pending_event_marks(room_id).await {
+			| Ok(marks) =>
+				for (key, _) in marks {
+					self.db.state_partial_pending_events.remove(&key);
+				},
+			| Err(e) => warn!("Failed to drop pending-event marks for {room_id}: {e}"),
+		}
 	}
 
 	/// Remote servers we send device-list updates to for this room.
@@ -259,10 +330,10 @@ impl Service {
 		let mut unusable_since: Option<Instant> = None;
 		let mut servers_before: Option<HashSet<OwnedServerName>> = None;
 		// Members found by every resync so far; a repeat resync only reports new ones.
-		let mut found: Vec<OwnedUserId> = Vec::new();
-		let mut discovered: Option<()> = None;
-		// The forward extremities when the resynced state was installed.
-		let mut resynced_at: Vec<OwnedEventId> = Vec::new();
+		let mut found: HashSet<OwnedUserId> = HashSet::new();
+		// The installed state; kept so drift is corrected by a local rebuild
+		// rather than another fetch from the network.
+		let mut resynced: Option<Resynced> = None;
 		let mut device_updates_replayed = false;
 		loop {
 			let Ok(Some(server_name)) = self.partial_server(room_id).await else {
@@ -276,25 +347,19 @@ impl Service {
 				servers_before = Some(self.device_list_servers(room_id).await);
 			}
 			let servers_before = servers_before.clone().unwrap_or_default();
-			if discovered.is_none() {
+			if resynced.is_none() {
 				match self.clone().resync_room(room_id, &server_name).await {
-					| Ok((users, installed_extremities)) => {
+					| Ok((users, installed)) => {
 						info!("Successfully resynced partial state for room {}", room_id);
 						found.extend(users);
-						discovered = Some(());
-						resynced_at = installed_extremities;
+						resynced = Some(installed);
 						delay = Duration::from_secs(1);
 					},
 					| Err(e) => {
 						warn!("Failed to resync partial state for room {}: {}", room_id, e);
 						if self.should_give_up(&e, &mut unusable_since) {
 							warn!(%room_id, "No server gave usable state in time; abandoning the join");
-							if let Err(e) = self.abandon_join(room_id).await {
-								warn!(%room_id, "Failed to finish abandoning partial-state join: {e}");
-								async_io::Timer::after(delay).await;
-								delay = delay.saturating_mul(2).min(Duration::from_secs(60));
-								continue;
-							}
+							self.abandon_join(room_id).await;
 							return;
 						}
 						async_io::Timer::after(delay).await;
@@ -317,28 +382,83 @@ impl Service {
 				device_updates_replayed = true;
 			}
 
-			// An append checks the marker and records its pending row while holding
-			// the room's state lock. Holding it here means each PDU either recorded
-			// its row before this drain or sees no marker and uses the full server list.
+			// An append that sees the room partial does its bookkeeping while
+			// holding the room's state lock: a local send records its pending row,
+			// every append records its pending-event mark, and the forward
+			// extremities move. Holding the lock here means each PDU either did all
+			// of that before this drain or sees no marker at all; both checks below
+			// rely on that, so a path that replaced current state without touching
+			// either would have to be found and given a state-generation counter.
 			let state_lock = self.services.state.mutex.lock(room_id).await;
-			// Events appended since the state was installed were accepted under
-			// partial state and are outside the reauthorised window: resync again.
-			if self.sorted_extremities(room_id).await != resynced_at {
-				debug!(%room_id, "room changed since the resync; resyncing again");
+			// Events accepted since the installed state was built are outside its
+			// re-authorised window: rebuild before the markers can be dropped.
+			let drifted = {
+				let installed = resynced.as_ref().expect("resynced above");
+				if self.sorted_extremities(room_id).await != installed.extremities {
+					true
+				} else {
+					match self.pending_event_marks(room_id).await {
+						| Ok(marks) => !marks.is_empty(),
+						| Err(e) => {
+							warn!("Failed to read pending-event marks for room {room_id}: {e}");
+							true
+						},
+					}
+				}
+			};
+			if drifted {
 				drop(state_lock);
-				device_updates_replayed = false;
-				discovered = None;
-				continue;
-			}
-			if let Err(e) = self.send_pending(room_id).await {
-				warn!("Failed to replay pending PDUs for room {room_id}: {e}");
-				drop(state_lock);
+				debug!(%room_id, "room changed since the state was installed; rebuilding it");
+				// Rebuild locally against the anchor already fetched; a refetch only
+				// helps when the rebuild itself cannot be done.
+				let (anchor, anchor_state) = {
+					let installed = resynced.as_ref().expect("resynced above");
+					(installed.anchor.clone(), installed.anchor_state.clone())
+				};
+				match self
+					.reauth_and_install(room_id, &anchor, &anchor_state)
+					.await
+				{
+					| Ok((users, extremities)) => {
+						if let Some(installed) = resynced.as_mut() {
+							installed.extremities = extremities;
+						}
+						// Newly discovered members need their servers replayed to.
+						if !users.is_empty() {
+							found.extend(users);
+							device_updates_replayed = false;
+						}
+					},
+					| Err(e) => {
+						warn!(
+							"Could not rebuild partial state for room {room_id}: {e}; fetching \
+							 it again"
+						);
+						resynced = None;
+						device_updates_replayed = false;
+					},
+				}
+				// Back off: a room that keeps appending must not spin the worker.
 				async_io::Timer::after(delay).await;
 				delay = delay.saturating_mul(2).min(Duration::from_secs(60));
 				continue;
 			}
-			self.db.state_partial_rooms.remove(room_id.as_bytes());
-			self.db.state_partial_events.remove(room_id.as_bytes());
+			match self.send_pending(room_id).await {
+				| Ok(0) => {},
+				| Ok(unreadable) => warn!(
+					%room_id,
+					unreadable,
+					"Unreadable pending rows kept; their PDUs were not replayed"
+				),
+				| Err(e) => {
+					warn!("Failed to replay pending PDUs for room {room_id}: {e}");
+					drop(state_lock);
+					async_io::Timer::after(delay).await;
+					delay = delay.saturating_mul(2).min(Duration::from_secs(60));
+					continue;
+				},
+			}
+			self.clear_partial_markers(room_id).await;
 			drop(state_lock);
 
 			self.notify_resolved(room_id);
@@ -393,8 +513,10 @@ impl Service {
 	}
 
 	/// Give up on a partial-state join: the local users leave, and the room's
-	/// partial-state tracking is dropped.
-	async fn abandon_join(&self, room_id: &RoomId) -> Result {
+	/// partial-state tracking is dropped. Infallible so the give-up path can
+	/// never wedge on a drain failure; whatever is left unsent is moot once the
+	/// local users have left.
+	async fn abandon_join(&self, room_id: &RoomId) {
 		let local_users: Vec<OwnedUserId> = self
 			.services
 			.state_cache
@@ -411,19 +533,19 @@ impl Service {
 			}
 		}
 
-		// Leaves above may themselves have been recorded as pending. Keep the
-		// partial marker until every pending PDU is queued; the lock prevents a
-		// new append from recording another row between this drain and removal.
+		// Leaves above may themselves have been recorded as pending. Best-effort
+		// drain; the lock prevents a new append from recording another row or mark
+		// between this drain and the marker removal.
 		let state_lock = self.services.state.mutex.lock(room_id).await;
-		self.send_pending(room_id).await?;
-		self.db.state_partial_rooms.remove(room_id.as_bytes());
-		self.db.state_partial_events.remove(room_id.as_bytes());
+		if let Err(e) = self.send_pending(room_id).await {
+			warn!(%room_id, "Failed to send remaining pending PDUs while abandoning: {e}");
+		}
+		self.clear_partial_markers(room_id).await;
 		drop(state_lock);
 		self.services.users.untrack_remote_users_in_room(room_id);
 		self.services.state_cache.update_joined_count(room_id).await;
 		// Release anything waiting on this room's state.
 		self.resolved.notify_waiters();
-		Ok(())
 	}
 
 	/// Append a leave event for `user_id`, as for a normal leave.
@@ -460,13 +582,15 @@ impl Service {
 	}
 
 	/// Fetch and validate full room state, re-authorise events accepted while
-	/// state was partial, and install the corrected state. Return newly discovered
-	/// remote members for device-list updates after the room is resolved.
+	/// state was partial, and install the corrected state. Return newly
+	/// discovered remote members for device-list updates after the room is
+	/// resolved, together with what was installed so a later drift can be
+	/// rebuilt without fetching again.
 	async fn resync_room(
 		self: Arc<Self>,
 		room_id: &RoomId,
 		server_name: &ServerName,
-	) -> Result<(Vec<OwnedUserId>, Vec<OwnedEventId>)> {
+	) -> Result<(Vec<OwnedUserId>, Resynced)> {
 		debug!("Resyncing room {} starting with server {}", room_id, server_name);
 
 		// Need room version to validate payloads (i.e., event_handler computes hashes)
@@ -536,22 +660,44 @@ impl Service {
 		// Events received while the state was partial were accepted without the
 		// omitted members; re-authorise them against the full state, which also
 		// gives each one a full snapshot (Synapse un-partial-states each event).
-		let anchor_state: HashMap<ShortStateKey, OwnedEventId> =
-			new_state_ids.iter().map(|(k, v)| (*k, v.clone())).collect();
+		let anchor_state: StateMap = new_state_ids.iter().map(|(k, v)| (*k, v.clone())).collect();
+		let (users, extremities) = self
+			.reauth_and_install(&room_id, &anchor, &anchor_state)
+			.await?;
+		Ok((users, Resynced { anchor, anchor_state, extremities }))
+	}
+
+	/// Re-authorise the events accepted since `anchor` against its full state
+	/// and install the corrected state, retrying while the room changes
+	/// underneath, then fix device-list tracking. Returns the remote members
+	/// this pass newly discovered and the forward extremities the state was
+	/// installed against.
+	async fn reauth_and_install(
+		&self,
+		room_id: &RoomId,
+		anchor: &EventId,
+		anchor_state: &StateMap,
+	) -> Result<(Vec<OwnedUserId>, Vec<OwnedEventId>)> {
 		// Events appended while the window is re-authorised (a local leave, say)
-		// would be overwritten by the older state, so retry until the room's
-		// forward extremities are unchanged when the state is installed.
+		// would be overwritten by the older state, so retry until neither the
+		// forward extremities nor the pending-event marks moved under it.
 		let mut reauthed = None;
 		let mut gave_up = false;
 		for attempt in 1..=REAUTH_ATTEMPTS {
-			let Some((current, left, extremities)) = self
-				.reauth_window(&room_id, &anchor, anchor_state.clone())
+			let Some(Reauthed {
+				current,
+				left,
+				extremities,
+				window,
+				anchor_depth,
+			}) = self
+				.reauth_window(room_id, anchor, anchor_state.clone())
 				.await
 			else {
 				break;
 			};
 			if self
-				.install_current_state(&room_id, current, &extremities)
+				.install_current_state(room_id, current, anchor_depth, &window, &extremities)
 				.await?
 			{
 				reauthed = Some((left, extremities));
@@ -568,16 +714,16 @@ impl Service {
 		};
 		// Only now that the corrected state is installed: these users missed
 		// updates while out of the room, so refetch their keys.
-		self.flush_users_who_left_in_window(&room_id, left).await;
+		self.flush_users_who_left_in_window(room_id, left).await;
 		let known: HashSet<OwnedUserId> = self
 			.services
 			.state_cache
-			.room_members(&room_id)
+			.room_members(room_id)
 			.collect()
 			.await;
 		self.services
 			.state_cache
-			.reconcile_membership(&room_id)
+			.reconcile_membership(room_id)
 			.await;
 
 		// Members discovered by the resync joined silently; tell the device list
@@ -585,7 +731,7 @@ impl Service {
 		let discovered: Vec<OwnedUserId> = self
 			.services
 			.state_cache
-			.room_members(&room_id)
+			.room_members(room_id)
 			.collect()
 			.await;
 		// Returned so the caller marks them only after the room is delivered:
@@ -870,23 +1016,54 @@ impl Service {
 	}
 
 	/// Replace the room's current state with the re-authorised one, fixing
-	/// device-list tracking for members whose membership changed.
+	/// device-list tracking for members whose membership changed. Returns
+	/// `false` without installing when the room moved on after `window` was
+	/// walked: either its forward extremities changed, or an event the walk did
+	/// not cover was accepted in the meantime.
+	#[allow(clippy::too_many_arguments)]
 	async fn install_current_state(
 		&self,
 		room_id: &RoomId,
 		current: HashMap<ShortStateKey, OwnedEventId>,
+		anchor_depth: Option<u64>,
+		window: &HashSet<OwnedEventId>,
 		expected_extremities: &[OwnedEventId],
 	) -> Result<bool> {
 		let _state_lock = self.services.state.mutex.lock(room_id).await;
-		let mut now: Vec<OwnedEventId> = self
-			.services
-			.state
-			.get_forward_extremities(room_id)
-			.collect()
-			.await;
-		now.sort();
-		if now != expected_extremities {
+		if self.sorted_extremities(room_id).await != expected_extremities {
 			return Ok(false);
+		}
+		// The marks still held are events accepted since the walk began plus the
+		// ones it skipped at or below the anchor. Both kinds may only be cleared
+		// when this install covers them: the skipped ones by the anchor's state,
+		// the walked ones by `window`. Marks are classified before any is
+		// removed, so a refusal leaves everything for the next pass to re-check.
+		let marks = self.pending_event_marks(room_id).await?;
+		let mut covered_keys = Vec::with_capacity(marks.len());
+		for (key, event_id) in &marks {
+			if window.contains(event_id) {
+				covered_keys.push(key);
+				continue;
+			}
+			match self.services.timeline.get_pdu(event_id).await {
+				| Ok(pdu) if anchor_depth.is_some_and(|depth| pdu.depth() <= depth) => {
+					// Already part of the anchor's state.
+					covered_keys.push(key);
+				},
+				| Ok(_) => {
+					debug!(%room_id, %event_id, "event accepted during re-authorisation; not installing");
+					return Ok(false);
+				},
+				| Err(_) => {
+					// The walk could not have re-authorised it either; a mark for a PDU
+					// we no longer hold must not keep the room partial forever.
+					warn!(%room_id, %event_id, "marked partial-state event is missing from the timeline; discarding the mark");
+					covered_keys.push(key);
+				},
+			}
+		}
+		for key in covered_keys {
+			self.db.state_partial_pending_events.remove(key);
 		}
 		let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 		let old = self

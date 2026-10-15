@@ -94,6 +94,7 @@ const MAP_NAMES: &[&str] = &[
 	"state_hamt_root_lattices",
 	"state_partial_events",
 	"state_partial_pending",
+	"state_partial_pending_events",
 	"state_partial_rooms",
 	"statehash_shortstatehash",
 	"statekey_shortstatekey",

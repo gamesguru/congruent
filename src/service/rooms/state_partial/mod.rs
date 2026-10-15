@@ -44,6 +44,11 @@ pub struct Data {
 	/// Keyed by room ID, separator, then the raw PDU ID; the value is the
 	/// comma-separated servers already sent to.
 	pub state_partial_pending: Arc<Map>,
+	/// Events accepted while a room's state was partial that no resync has
+	/// re-authorised yet; the room's markers may not be dropped while any
+	/// remain. Keyed by room ID, separator, then the event ID; the value
+	/// repeats the event ID and is never parsed.
+	pub state_partial_pending_events: Arc<Map>,
 }
 
 struct Services {
@@ -77,6 +82,7 @@ impl crate::Service for Service {
 				state_partial_rooms: args.db["state_partial_rooms"].clone(),
 				state_partial_events: args.db["state_partial_events"].clone(),
 				state_partial_pending: args.db["state_partial_pending"].clone(),
+				state_partial_pending_events: args.db["state_partial_pending_events"].clone(),
 			},
 			services: Services {
 				server: args.server.clone(),
@@ -179,6 +185,19 @@ impl Service {
 		self.db
 			.state_partial_pending
 			.insert(&key, sent_to.as_bytes());
+	}
+
+	/// Mark an event accepted while the room's state was partial, so the resync
+	/// cannot drop the room's markers while it has not been re-authorised.
+	/// Like the extremity update it accompanies, this runs under the room's
+	/// state lock: the resync reads the marks back under that same lock.
+	pub fn mark_pending_event(&self, room_id: &RoomId, event_id: &EventId) {
+		let mut key = room_id.as_bytes().to_vec();
+		key.push(database::SEP);
+		key.extend_from_slice(event_id.as_bytes());
+		self.db
+			.state_partial_pending_events
+			.insert(&key, event_id.as_bytes());
 	}
 
 	/// Record that a room's partial state is now resolved and wake waiters.
