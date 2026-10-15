@@ -359,11 +359,10 @@ impl Service {
 						warn!("Failed to resync partial state for room {}: {}", room_id, e);
 						if self.should_give_up(&e, &mut unusable_since) {
 							warn!(%room_id, "No server gave usable state in time; abandoning the join");
-							self.abandon_join(room_id).await;
+							self.abandon_until_done(room_id, delay).await;
 							return;
 						}
-						async_io::Timer::after(delay).await;
-						delay = delay.saturating_mul(2).min(Duration::from_secs(60));
+						back_off(&mut delay).await;
 						continue;
 					},
 				}
@@ -375,8 +374,7 @@ impl Service {
 			if !device_updates_replayed {
 				if let Err(e) = self.replay_device_updates(room_id, &servers_before).await {
 					warn!("Failed to replay device list updates for room {room_id}: {e}");
-					async_io::Timer::after(delay).await;
-					delay = delay.saturating_mul(2).min(Duration::from_secs(60));
+					back_off(&mut delay).await;
 					continue;
 				}
 				device_updates_replayed = true;
@@ -392,43 +390,17 @@ impl Service {
 			let state_lock = self.services.state.mutex.lock(room_id).await;
 			// Events accepted since the installed state was built are outside its
 			// re-authorised window: rebuild before the markers can be dropped.
-			let drifted = {
-				let installed = resynced.as_ref().expect("resynced above");
-				if self.sorted_extremities(room_id).await != installed.extremities {
-					true
-				} else {
-					match self.pending_event_marks(room_id).await {
-						| Ok(marks) => !marks.is_empty(),
-						| Err(e) => {
-							warn!("Failed to read pending-event marks for room {room_id}: {e}");
-							true
-						},
-					}
-				}
+			let Some(installed) = resynced.as_mut() else {
+				continue;
 			};
-			if drifted {
+			if self.has_drifted(room_id, installed).await {
 				drop(state_lock);
 				debug!(%room_id, "room changed since the state was installed; rebuilding it");
-				// Rebuild locally against the anchor already fetched; a refetch only
-				// helps when the rebuild itself cannot be done.
-				let (anchor, anchor_state) = {
-					let installed = resynced.as_ref().expect("resynced above");
-					(installed.anchor.clone(), installed.anchor_state.clone())
-				};
-				match self
-					.reauth_and_install(room_id, &anchor, &anchor_state)
-					.await
-				{
-					| Ok((users, extremities)) => {
-						if let Some(installed) = resynced.as_mut() {
-							installed.extremities = extremities;
-						}
-						// Newly discovered members need their servers replayed to.
-						if !users.is_empty() {
-							found.extend(users);
-							device_updates_replayed = false;
-						}
-					},
+				// Rebuild locally against the anchor already fetched. A successful
+				// rebuild is checked again at once: backing off lets a busy room append
+				// before every check and never reach the marker-clear path.
+				match self.rebuild_drifted(room_id, installed, &mut found).await {
+					| Ok(new_members) => device_updates_replayed &= !new_members,
 					| Err(e) => {
 						warn!(
 							"Could not rebuild partial state for room {room_id}: {e}; fetching \
@@ -436,11 +408,9 @@ impl Service {
 						);
 						resynced = None;
 						device_updates_replayed = false;
+						back_off(&mut delay).await;
 					},
 				}
-				// Back off: a room that keeps appending must not spin the worker.
-				async_io::Timer::after(delay).await;
-				delay = delay.saturating_mul(2).min(Duration::from_secs(60));
 				continue;
 			}
 			match self.send_pending(room_id).await {
@@ -453,8 +423,7 @@ impl Service {
 				| Err(e) => {
 					warn!("Failed to replay pending PDUs for room {room_id}: {e}");
 					drop(state_lock);
-					async_io::Timer::after(delay).await;
-					delay = delay.saturating_mul(2).min(Duration::from_secs(60));
+					back_off(&mut delay).await;
 					continue;
 				},
 			}
@@ -491,6 +460,46 @@ impl Service {
 		extremities
 	}
 
+	/// Whether events were accepted since `installed` was built, so it no longer
+	/// covers the room: the forward extremities moved or a pending mark remains.
+	async fn has_drifted(&self, room_id: &RoomId, installed: &Resynced) -> bool {
+		if self.sorted_extremities(room_id).await != installed.extremities {
+			return true;
+		}
+		match self.pending_event_marks(room_id).await {
+			| Ok(marks) => !marks.is_empty(),
+			| Err(e) => {
+				warn!("Failed to read pending-event marks for room {room_id}: {e}");
+				true
+			},
+		}
+	}
+
+	/// Re-authorise against the anchor already fetched and install the result.
+	/// Members found are added to `found`; returns whether there were new ones.
+	async fn rebuild_drifted(
+		&self,
+		room_id: &RoomId,
+		installed: &mut Resynced,
+		found: &mut HashSet<OwnedUserId>,
+	) -> Result<bool> {
+		let (users, extremities) = self
+			.reauth_and_install(room_id, &installed.anchor, &installed.anchor_state)
+			.await?;
+		installed.extremities = extremities;
+		let new_members = !users.is_empty();
+		found.extend(users);
+		Ok(new_members)
+	}
+
+	/// Retry `abandon_join` until it completes.
+	async fn abandon_until_done(&self, room_id: &RoomId, mut delay: Duration) {
+		while let Err(e) = self.abandon_join(room_id).await {
+			warn!(%room_id, "Failed to finish abandoning partial-state join: {e}");
+			back_off(&mut delay).await;
+		}
+	}
+
 	/// Whether the failures to obtain usable state have lasted the configured
 	/// budget. `unusable_since` tracks when they began; any other error resets it.
 	fn should_give_up(
@@ -513,10 +522,9 @@ impl Service {
 	}
 
 	/// Give up on a partial-state join: the local users leave, and the room's
-	/// partial-state tracking is dropped. Infallible so the give-up path can
-	/// never wedge on a drain failure; whatever is left unsent is moot once the
-	/// local users have left.
-	async fn abandon_join(&self, room_id: &RoomId) {
+	/// partial-state tracking is dropped after its leave events have been queued.
+	/// A drain failure keeps the markers so the worker can retry it.
+	async fn abandon_join(&self, room_id: &RoomId) -> Result {
 		let local_users: Vec<OwnedUserId> = self
 			.services
 			.state_cache
@@ -537,15 +545,14 @@ impl Service {
 		// drain; the lock prevents a new append from recording another row or mark
 		// between this drain and the marker removal.
 		let state_lock = self.services.state.mutex.lock(room_id).await;
-		if let Err(e) = self.send_pending(room_id).await {
-			warn!(%room_id, "Failed to send remaining pending PDUs while abandoning: {e}");
-		}
+		self.send_pending(room_id).await?;
 		self.clear_partial_markers(room_id).await;
 		drop(state_lock);
 		self.services.users.untrack_remote_users_in_room(room_id);
 		self.services.state_cache.update_joined_count(room_id).await;
 		// Release anything waiting on this room's state.
 		self.resolved.notify_waiters();
+		Ok(())
 	}
 
 	/// Append a leave event for `user_id`, as for a normal leave.
@@ -1062,9 +1069,6 @@ impl Service {
 				},
 			}
 		}
-		for key in covered_keys {
-			self.db.state_partial_pending_events.remove(key);
-		}
 		let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 		let old = self
 			.services
@@ -1082,6 +1086,9 @@ impl Service {
 			.state
 			.set_room_state_hamt_with_nodes(room_id, &new_root, &pending_nodes)?;
 		self.reconcile_tracking(room_id, &old, &current).await;
+		for key in covered_keys {
+			self.db.state_partial_pending_events.remove(key);
+		}
 		Ok(true)
 	}
 
@@ -1124,6 +1131,12 @@ impl Service {
 			}
 		}
 	}
+}
+
+/// Sleep for `delay`, then double it up to a minute.
+async fn back_off(delay: &mut Duration) {
+	async_io::Timer::after(*delay).await;
+	*delay = delay.saturating_mul(2).min(Duration::from_secs(60));
 }
 
 /// Whether the error came from a server that replied (with an error status or
@@ -1217,3 +1230,6 @@ mod tests {
 		assert_eq!(current_state.get(&ssk2), Some(&eid2));
 	}
 }
+
+#[cfg(test)]
+mod marks_tests;
