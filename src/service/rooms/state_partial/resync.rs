@@ -207,16 +207,16 @@ impl Service {
 	/// Drop every marker keeping `room_id` partial: the room itself, the anchor
 	/// event, and the pending-event marks. Callers hold the room's state lock,
 	/// so no append can record a mark in between.
-	async fn clear_partial_markers(&self, room_id: &RoomId) {
+	async fn clear_partial_markers(&self, room_id: &RoomId) -> Result {
+		// Scan before removing any markers. If the scan fails, callers retain
+		// the room marker so startup and the worker can retry this cleanup.
+		let marks = self.pending_event_marks(room_id).await?;
+		for (key, _) in marks {
+			self.db.state_partial_pending_events.remove(&key);
+		}
 		self.db.state_partial_rooms.remove(room_id.as_bytes());
 		self.db.state_partial_events.remove(room_id.as_bytes());
-		match self.pending_event_marks(room_id).await {
-			| Ok(marks) =>
-				for (key, _) in marks {
-					self.db.state_partial_pending_events.remove(&key);
-				},
-			| Err(e) => warn!("Failed to drop pending-event marks for {room_id}: {e}"),
-		}
+		Ok(())
 	}
 
 	/// Remote servers we send device-list updates to for this room.
@@ -432,7 +432,12 @@ impl Service {
 					continue;
 				},
 			}
-			self.clear_partial_markers(room_id).await;
+			if let Err(e) = self.clear_partial_markers(room_id).await {
+				warn!(%room_id, "Failed to clear partial-state markers: {e}");
+				drop(state_lock);
+				back_off(&mut delay).await;
+				continue;
+			}
 			drop(state_lock);
 
 			self.notify_resolved(room_id);
@@ -557,7 +562,7 @@ impl Service {
 		if unreadable != 0 {
 			return Err!("{unreadable} unreadable pending partial-state PDU row(s)");
 		}
-		self.clear_partial_markers(room_id).await;
+		self.clear_partial_markers(room_id).await?;
 		drop(state_lock);
 		self.services.users.untrack_remote_users_in_room(room_id);
 		self.services.state_cache.update_joined_count(room_id).await;

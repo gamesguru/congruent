@@ -169,7 +169,7 @@ async fn clearing_markers_drops_the_room_anchor_and_marks_for_that_room_only() {
 	partial.mark_pending_event(room_a, e2);
 	partial.mark_pending_event(room_b, e1);
 
-	partial.clear_partial_markers(room_a).await;
+	partial.clear_partial_markers(room_a).await.unwrap();
 
 	assert!(
 		partial
