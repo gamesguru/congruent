@@ -605,6 +605,16 @@ impl Service {
 	pub async fn count(&self) -> usize { self.db.userid_password.count().await }
 
 	/// Find out which user an access token belongs to.
+	///
+	/// TODO: Add an in-memory cache of token -> (user, device, expires_at) to
+	/// skip the `token_userdeviceid` and `token_expiresat` reads that every
+	/// authenticated request makes. This is a credentials cache, so a stale
+	/// entry would keep a revoked token working. Every mutation path must
+	/// invalidate it: `store_access_token`, `remove_access_token`,
+	/// `remove_device`, `set_token`, refresh, logout, password change, account
+	/// deactivation and admin actions. Any path missed is a security bug, and
+	/// it is only correct with a single server process on the database.
+	/// Measure before adding.
 	pub async fn find_from_token(&self, token: &str) -> Result<(OwnedUserId, OwnedDeviceId)> {
 		assert!(!token.is_empty(), "Empty access token");
 		self.db.token_userdeviceid.get(token).await.deserialized()
@@ -1306,6 +1316,51 @@ impl Service {
 			.await;
 
 		Ok((access_token, new_refresh, ttl))
+	}
+
+	/// Retires the device's previous refresh token once the client proves it
+	/// received the last refresh response by using the newest access token.
+	/// Until then the previous token stays valid for lost-response recovery.
+	pub async fn retire_previous_refresh_token(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		token: &str,
+	) -> Result {
+		let key: (&UserId, &DeviceId) = (user_id, device_id);
+		if self
+			.db
+			.userdeviceid_prevrefreshtoken
+			.qry(&key)
+			.await
+			.is_err()
+		{
+			return Ok(());
+		}
+
+		let lock_key = Self::device_lock_key(user_id, device_id);
+		let _credentials_guard = self.device_credentials_lock.lock(&lock_key).await;
+
+		// Only an access token issued by a refresh can prove receipt, and only
+		// the newest one: an older, still live token proves nothing.
+		let used_expiry = self.token_expires_at(token).await?;
+		let mut others = Vec::new();
+		for other in self.active_tokens(user_id, device_id).await {
+			others.push(self.token_expires_at(&other).await?);
+		}
+		if !token_expiry::proves_receipt(used_expiry, others) {
+			return Ok(());
+		}
+
+		let current = self
+			.device_refresh_token(&self.db.userdeviceid_refreshtoken, key)
+			.await;
+		let previous = self
+			.device_refresh_token(&self.db.userdeviceid_prevrefreshtoken, key)
+			.await;
+		self.commit_refresh_tokens(key, current.as_deref(), None, previous.iter());
+
+		Ok(())
 	}
 
 	/// Revokes one access token and its expiry, preserving the device's other tokens.

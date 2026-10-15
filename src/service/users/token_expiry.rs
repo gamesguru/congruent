@@ -30,6 +30,21 @@ pub(super) fn superseded_tokens(tokens: Vec<(String, Option<u64>)>) -> Vec<Strin
 	expiring
 }
 
+/// Whether using the token with expiry `used` shows the client received the
+/// last refresh response: it must be an expiring token, and no other token of
+/// the device may outlive it, since an older live token proves nothing.
+pub(super) fn proves_receipt(
+	used: Option<u64>,
+	others: impl IntoIterator<Item = Option<u64>>,
+) -> bool {
+	used.is_some_and(|used| {
+		others
+			.into_iter()
+			.flatten()
+			.all(|expires_at| expires_at <= used)
+	})
+}
+
 /// A device's token list with one token revoked.
 pub(super) fn without_token(mut tokens: Vec<String>, token: &str) -> Vec<String> {
 	tokens.retain(|t| t != token);
@@ -39,7 +54,8 @@ pub(super) fn without_token(mut tokens: Vec<String>, token: &str) -> Vec<String>
 #[cfg(test)]
 mod tests {
 	use super::{
-		expires_at, has_expired, superseded_on_refresh, superseded_tokens, without_token,
+		expires_at, has_expired, proves_receipt, superseded_on_refresh, superseded_tokens,
+		without_token,
 	};
 
 	/// Verifies that expiry is the issue time plus the requested lifetime.
@@ -124,5 +140,25 @@ mod tests {
 	fn revoking_an_unknown_token_changes_nothing() {
 		let tokens = vec!["a".to_owned()];
 		assert_eq!(without_token(tokens, "z"), ["a"]);
+	}
+
+	/// Verifies that the newest expiring token proves the client got the response.
+	#[test]
+	fn the_newest_expiring_token_proves_receipt() {
+		assert!(proves_receipt(Some(5), [Some(1), None, Some(5)]));
+		assert!(proves_receipt(Some(5), []));
+	}
+
+	/// Verifies that an older live token proves nothing.
+	#[test]
+	fn an_older_token_does_not_prove_receipt() {
+		assert!(!proves_receipt(Some(1), [Some(5)]));
+	}
+
+	/// Verifies that a token without an expiry never proves receipt.
+	#[test]
+	fn a_non_expiring_token_does_not_prove_receipt() {
+		assert!(!proves_receipt(None, []));
+		assert!(!proves_receipt(None, [Some(1)]));
 	}
 }

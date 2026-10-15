@@ -468,7 +468,19 @@ async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {
 		.users
 		.find_from_token(token)
 		.and_then(async |user| {
-			Ok(classify_user_token(user, services.users.access_token_expired(token).await))
+			let expired = services.users.access_token_expired(token).await;
+			if !expired {
+				// Best effort: failing to retire the old refresh token must not
+				// fail an otherwise valid request.
+				if let Err(e) = services
+					.users
+					.retire_previous_refresh_token(&user.0, &user.1, token)
+					.await
+				{
+					warn!(user_id = %user.0, device_id = %user.1, "Failed to retire previous refresh token: {e}");
+				}
+			}
+			Ok(classify_user_token(user, expired))
 		});
 
 	let appservice_token = services
