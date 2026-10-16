@@ -201,9 +201,10 @@ impl Service {
 mod tests {
 	use super::*;
 
-	// 43 characters of unpadded base64 decode to 32 bytes.
+	// 43 characters of unpadded base64 decode to 32 bytes, and the last one must
+	// carry zero trailing bits for the decoder to accept it, so it ends in `A`.
 	const ID_A: &str = "$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-	const ID_B: &str = "$BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+	const ID_B: &str = "$BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA";
 
 	#[test]
 	fn event_id_kind_tracks_room_version() {
