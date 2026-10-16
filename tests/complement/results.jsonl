@@ -525,6 +525,16 @@
 {"Action":"fail","Test":"TestMSC4521ActiveRoomReconciliation/Strata"}
 {"Action":"skip","Test":"TestMSC4521BulkReconciliation"}
 {"Action":"fail","Test":"TestMSC4521FabricatedIDs"}
+{"Action":"fail","Test":"TestMSC4521HomeserverPorcelain"}
+{"Action":"fail","Test":"TestMSC4521HomeserverPorcelain/HomeserverOnly"}
+{"Action":"fail","Test":"TestMSC4521HomeserverPorcelain/IdenticalSets"}
+{"Action":"fail","Test":"TestMSC4521HomeserverPorcelain/MalformedInputs"}
+{"Action":"pass","Test":"TestMSC4521HomeserverPorcelain/MalformedInputs/MalformedFrameAnchor"}
+{"Action":"pass","Test":"TestMSC4521HomeserverPorcelain/MalformedInputs/UndecodableSketch"}
+{"Action":"pass","Test":"TestMSC4521HomeserverPorcelain/MalformedInputs/UnknownDigestType"}
+{"Action":"pass","Test":"TestMSC4521HomeserverPorcelain/MalformedInputs/UnknownFrame"}
+{"Action":"pass","Test":"TestMSC4521HomeserverPorcelain/MalformedInputs/ZeroCapacity"}
+{"Action":"fail","Test":"TestMSC4521HomeserverPorcelain/SymmetricDifference"}
 {"Action":"fail","Test":"TestMSC4521NonAdvertisingPeerFallsBack"}
 {"Action":"fail","Test":"TestMSC4521NonMembersAndACLBlocked"}
 {"Action":"fail","Test":"TestMSC4521PartitionHealUsesReconciliation"}
