@@ -541,7 +541,7 @@
 {"Action":"fail","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/MixedBucketBatch"}
 {"Action":"fail","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/ValidateBucketRequests"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/ValidateBucketRequests/Homeserver/DepthTooLarge"}
-{"Action":"fail","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/ValidateBucketRequests/Homeserver/OverCapacity"}
+{"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/ValidateBucketRequests/Homeserver/OverCapacity"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/ValidateBucketRequests/Homeserver/Overlapping"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/ValidateBucketRequests/Homeserver/PrefixOutOfRange"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/ValidateBucketRequests/Homeserver/ReversedOrder"}
