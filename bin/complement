@@ -126,6 +126,10 @@ fi
 # Mark homeserver containers spawned by this wrapper run so cleanup never
 # guesses based on timing or broad complement_ container names.
 COMPLEMENT_WRAPPER_TOKEN="${COMPLEMENT_WRAPPER_TOKEN:-"complement-$$-$(date +%s%N)"}"
+# Share one federation-port allocator namespace across every `go test` process
+# and invocation started by this wrapper run.
+COMPLEMENT_PORT_ALLOCATOR_ID="${COMPLEMENT_PORT_ALLOCATOR_ID:-$COMPLEMENT_WRAPPER_TOKEN}"
+export COMPLEMENT_PORT_ALLOCATOR_ID
 COMPLEMENT_WRAPPER_ENV_PREFIX="${COMPLEMENT_SHARE_ENV_PREFIX:-COMPLEMENT_WRAPPER_}"
 COMPLEMENT_WRAPPER_ENV_NAME="${COMPLEMENT_WRAPPER_ENV_PREFIX}COMPLEMENT_WRAPPER_TOKEN"
 printf -v "$COMPLEMENT_WRAPPER_ENV_NAME" '%s' "$COMPLEMENT_WRAPPER_TOKEN"
