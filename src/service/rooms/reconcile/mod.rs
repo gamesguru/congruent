@@ -11,13 +11,17 @@ mod queue;
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use conduwuit::{Result, debug, info};
+use conduwuit::{Result, debug, info, warn};
 use futures::{FutureExt, StreamExt, pin_mut};
-use slipstream::{OwnedRoomId, OwnedServerName, RoomId, ServerName};
+use rezzy_recon::{ClientAction, ReconciliationClient, RemoteDigest, MAX_LOCAL_SKETCH_DECODE_CAPACITY};
+use slipstream::{
+	OwnedRoomId, OwnedServerName, RoomId, ServerName,
+	api::federation::reconciliation::get_room_digest_strata,
+};
 use tokio::sync::Notify;
 
 pub use self::queue::{Enqueued, Reason, Refusal};
-use self::queue::{Key, Queue};
+use self::queue::{Key, Queue, Verdict};
 use crate::service::Dep;
 
 /// How many exchanges may run at once.
@@ -38,6 +42,8 @@ struct Services {
 	globals: Dep<crate::globals::Service>,
 	state_cache: Dep<crate::rooms::state_cache::Service>,
 	event_handler: Dep<crate::rooms::event_handler::Service>,
+	sending: Dep<crate::sending::Service>,
+	timeline: Dep<crate::rooms::timeline::Service>,
 }
 
 #[async_trait]
@@ -51,6 +57,8 @@ impl crate::Service for Service {
 					.depend::<crate::rooms::state_cache::Service>("rooms::state_cache"),
 				event_handler: args
 					.depend::<crate::rooms::event_handler::Service>("rooms::event_handler"),
+				sending: args.depend::<crate::sending::Service>("sending"),
+				timeline: args.depend::<crate::rooms::timeline::Service>("rooms::timeline"),
 			},
 			queue: parking_lot::Mutex::new(Queue::new(MAX_TRACKED)),
 			wake: Notify::new(),
@@ -227,9 +235,84 @@ impl Service {
 		}
 	}
 
-	/// One exchange with one peer. Not implemented yet: the queue, limits and
-	/// triggers are exercised first.
-	async fn exchange(&self, _key: &Key) -> std::result::Result<(), &'static str> {
-		Err("exchange not implemented")
+	/// One exchange with one peer: compares the peer's digest with a fresh
+	/// local snapshot. Sketch rounds and event fetches are not implemented
+	/// yet, so a difference is reported and left alone.
+	async fn exchange(&self, key: &Key) -> Outcome {
+		let (room_id, peer) = (key.room_id(), key.peer());
+
+		let local = match self.services.timeline.reconciliation_state(room_id).await {
+			| Ok(local) => local,
+			| Err(e) => return Outcome::Failed(format!("local snapshot: {e}")),
+		};
+
+		let request = get_room_digest_strata::unstable::Request::new(room_id.to_owned());
+		let response = match self.services.sending.send_federation_request(peer, request).await {
+			| Ok(response) => response,
+			// The endpoints are optional: a peer that lacks them is fine.
+			| Err(e) if e.is_not_found() || e.status_code() == http::StatusCode::BAD_REQUEST =>
+				return Outcome::Unsupported,
+			| Err(e) => return Outcome::Failed(format!("peer digest: {e}")),
+		};
+		if response.digest_type != "algebraic_v1" {
+			return Outcome::Unsupported;
+		}
+
+		// "Known" extremity means present in our timeline.
+		let mut unknown_extremity = false;
+		for id in &response.extremity_event_ids {
+			if !self.services.timeline.non_outlier_pdu_exists(id).await {
+				unknown_extremity = true;
+				break;
+			}
+		}
+
+		let remote = match RemoteDigest::from_wire(
+			&response.digest,
+			response.known_event_count,
+			&response.strata,
+			&local.frame_event_ids,
+			&response.frame_event_ids,
+			&response.extremity_event_ids,
+			|_| !unknown_extremity,
+		) {
+			| Ok(remote) => remote,
+			| Err(e) => return Outcome::Failed(format!("malformed digest: {e:?}")),
+		};
+
+		let action = ReconciliationClient::new(MAX_LOCAL_SKETCH_DECODE_CAPACITY)
+			.map(|client| client.select_action(&local.resident, remote, 0));
+		match action {
+			| Ok(ClientAction::Synchronized) => Outcome::Synchronized,
+			| Ok(action) => {
+				debug!(target: "reconcile", %room_id, %peer, ?action, "sets differ");
+				Outcome::Differs(action_name(&action))
+			},
+			| Err(e) => {
+				warn!(target: "reconcile", "reconciliation client: {e:?}");
+				Outcome::Failed(format!("client: {e:?}"))
+			},
+		}
+	}
+}
+
+/// How an exchange ended.
+#[derive(Debug)]
+enum Outcome {
+	/// Digest and count agree.
+	Synchronized,
+	/// The sets differ; the named action is what the client would do next.
+	Differs(&'static str),
+	/// The peer does not serve the endpoints.
+	Unsupported,
+	Failed(String),
+}
+
+fn action_name(action: &ClientAction) -> &'static str {
+	match action {
+		| ClientAction::Synchronized => "synchronized",
+		| ClientAction::ExtremityDiff => "extremity_diff",
+		| ClientAction::BucketSketches { .. } => "bucket_sketches",
+		| ClientAction::ResolveRoots { .. } => "resolve_roots",
 	}
 }

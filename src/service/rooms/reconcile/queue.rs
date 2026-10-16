@@ -80,6 +80,18 @@ pub struct Queue {
 
 const BACKOFF_BASE: Duration = Duration::from_secs(5);
 const BACKOFF_MAX: Duration = Duration::from_secs(15 * 60);
+/// A peer that does not implement the endpoints is not asked again for this
+/// long, much longer than a transient failure.
+const UNSUPPORTED_BACKOFF: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// How an exchange ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+	Done,
+	Failed,
+	/// The peer does not serve the reconciliation endpoints.
+	Unsupported,
+}
 
 /// Exponential backoff after `failures` consecutive failures.
 fn backoff(failures: u32) -> Duration {
@@ -170,17 +182,24 @@ impl Queue {
 
 	/// Records the end of an exchange. Returns whether the pair was queued
 	/// again because a trigger arrived while it ran.
-	pub fn finish(&mut self, key: &Key, ok: bool, now: Instant) -> bool {
+	pub fn finish(&mut self, key: &Key, verdict: Verdict, now: Instant) -> bool {
 		let Some(entry) = self.entries.get_mut(key) else {
 			return false;
 		};
 		entry.in_flight = false;
-		if ok {
-			entry.failures = 0;
-			entry.not_before = None;
-		} else {
-			entry.failures = entry.failures.saturating_add(1);
-			entry.not_before = Some(now + backoff(entry.failures));
+		match verdict {
+			| Verdict::Done => {
+				entry.failures = 0;
+				entry.not_before = None;
+			},
+			| Verdict::Failed => {
+				entry.failures = entry.failures.saturating_add(1);
+				entry.not_before = Some(now + backoff(entry.failures));
+			},
+			| Verdict::Unsupported => {
+				entry.failures = entry.failures.saturating_add(1);
+				entry.not_before = Some(now + UNSUPPORTED_BACKOFF);
+			},
 		}
 
 		if entry.dirty {
@@ -226,9 +245,9 @@ mod tests {
 		assert_eq!(queue.next_ready(now, 4, 2), Some(k.clone()));
 		assert_eq!(queue.enqueue(k.clone(), Reason::IncomingGap, now), Enqueued::Coalesced);
 		assert_eq!(queue.enqueue(k.clone(), Reason::IncomingGap, now), Enqueued::Coalesced);
-		assert!(queue.finish(&k, true, now));
+		assert!(queue.finish(&k, Verdict::Done, now));
 		assert_eq!(queue.next_ready(now, 4, 2), Some(k.clone()));
-		assert!(!queue.finish(&k, true, now));
+		assert!(!queue.finish(&k, Verdict::Done, now));
 		assert_eq!(queue.next_ready(now, 4, 2), None);
 	}
 
@@ -239,7 +258,7 @@ mod tests {
 		let k = key("!a:example.org", "peer.example");
 		queue.enqueue(k.clone(), Reason::Periodic, now);
 		queue.next_ready(now, 4, 2);
-		queue.finish(&k, false, now);
+		queue.finish(&k, Verdict::Failed, now);
 
 		assert_eq!(
 			queue.enqueue(k.clone(), Reason::Periodic, now),
@@ -247,6 +266,21 @@ mod tests {
 		);
 		assert_eq!(queue.enqueue(k.clone(), Reason::Explicit, now), Enqueued::Queued);
 		assert_eq!(queue.next_ready(now, 4, 2), Some(k));
+	}
+
+	#[test]
+	fn an_unsupported_peer_is_not_asked_again_soon() {
+		let now = Instant::now();
+		let mut queue = Queue::new(8);
+		let k = key("!a:example.org", "peer.example");
+		queue.enqueue(k.clone(), Reason::Periodic, now);
+		queue.next_ready(now, 4, 2);
+		queue.finish(&k, Verdict::Unsupported, now);
+		let later = now + BACKOFF_MAX + Duration::from_secs(1);
+		assert_eq!(
+			queue.enqueue(k, Reason::Periodic, later),
+			Enqueued::Refused(Refusal::BackingOff)
+		);
 	}
 
 	#[test]

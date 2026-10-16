@@ -15,7 +15,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use conduwuit::{Err, Result, err, utils::hash::sha256};
 use conduwuit_service::rooms::timeline::RoomReconciliationState;
 use rezzy_recon::{
-	AlgebraicError, BucketRequest, MAX_BUCKETS_PER_ROUND, RoomAccumulator, STRATUM_CAPACITY,
+	AlgebraicError, BucketRequest, MAX_BUCKETS_PER_ROUND, RoomAccumulator, encode_strata,
 	SyndromeSketch, build_bucket_sketches, triage::validate_bucket_requests,
 };
 use slipstream::{
@@ -30,14 +30,6 @@ use crate::{Ruma, router::extract::State};
 const DIGEST_TYPE: &str = "algebraic_v1";
 
 // --- encoding -------------------------------------------------------------
-
-fn encode_stratum(stratum: &[u64; STRATUM_CAPACITY]) -> String {
-	let mut bytes = Vec::with_capacity(STRATUM_CAPACITY * 8);
-	for coordinate in stratum {
-		bytes.extend_from_slice(&coordinate.to_le_bytes());
-	}
-	URL_SAFE_NO_PAD.encode(bytes)
-}
 
 fn encode_short_identifier(h64: u64) -> String { URL_SAFE_NO_PAD.encode(h64.to_be_bytes()) }
 
@@ -138,7 +130,7 @@ pub(crate) async fn get_room_reconciliation_strata_route(
 		frame_event_ids: fields.frame_event_ids,
 		depth_range: fields.depth_range,
 		origin_server_ts_range: fields.origin_server_ts_range,
-		strata: state.resident.strata().iter().map(encode_stratum).collect(),
+		strata: encode_strata(state.resident.strata()),
 	})
 }
 
