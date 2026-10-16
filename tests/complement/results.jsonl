@@ -535,8 +535,8 @@
 {"Action":"fail","Test":"TestMSC4521/SetReconciliation"}
 {"Action":"fail","Test":"TestMSC4521/SetReconciliation/Plumbing"}
 {"Action":"fail","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets"}
-{"Action":"fail","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/AdaptiveBuckets"}
-{"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/BucketEscalation"}
+{"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/AdaptiveBuckets"}
+{"Action":"fail","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/BucketEscalation"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/BucketSplit"}
 {"Action":"fail","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/MixedBucketBatch"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/ValidateBucketRequests"}
@@ -556,7 +556,7 @@
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Other/MalformedInputs/Homeserver/ZeroCapacity"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Residual"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Residual/ResidualVerification"}
-{"Action":"fail","Test":"TestMSC4521/SetReconciliation/Plumbing/Vectors"}
+{"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Vectors"}
 {"Action":"fail","Test":"TestMSC4521/SetReconciliation/Porcelain"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Porcelain/EstimateDelta"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Porcelain/IdenticalSets"}
