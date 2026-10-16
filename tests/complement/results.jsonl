@@ -563,6 +563,7 @@
 {"Action":"fail","Test":"TestMSC4521/SetReconciliation/Porcelain/OneSidedChanges"}
 {"Action":"fail","Test":"TestMSC4521/SetReconciliation/Porcelain/SymmetricDifference"}
 {"Action":"fail","Test":"TestMSC4521/ValidChainingIsAccepted"}
+{"Action":"pass","Test":"TestMSC4521/WireBisect"}
 {"Action":"fail","Test":"TestMSC4521ActiveRoomReconciliation"}
 {"Action":"pass","Test":"TestMSC4521ActiveRoomReconciliation/Digest"}
 {"Action":"fail","Test":"TestMSC4521ActiveRoomReconciliation/SketchDiff"}
