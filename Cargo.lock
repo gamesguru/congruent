@@ -623,7 +623,7 @@ dependencies = [
  "percent-encoding",
  "rand",
  "rezzy",
- "rezzy-recon",
+ "rezzy-recon 0.6.0-rc.1 (git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=dev)",
  "rustls",
  "serde",
  "serde_urlencoded",
@@ -828,7 +828,7 @@ dependencies = [
  "rand",
  "regex",
  "rezzy",
- "rezzy-recon",
+ "rezzy-recon 0.6.0-rc.1 (git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=dev)",
  "roaring",
  "rustls",
  "sd-notify",
@@ -2124,7 +2124,7 @@ dependencies = [
 [[package]]
 name = "mtx-slipstream"
 version = "0.1.0"
-source = "git+https://gitlab.com/Wombat-Foundation/mtx-slipstream.git?branch=dev#286c80b007776b25af200beb76a78d23fc820ba6"
+source = "git+https://gitlab.com/Wombat-Foundation/mtx-slipstream.git?branch=dev#71fab3bc74441f28194b40eb94925d75d3584e9f"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -2146,7 +2146,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "parking_lot",
- "rezzy-recon",
+ "rezzy-recon 0.6.0-rc.1 (git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master)",
  "sha2",
  "zstd",
  "zstd-sys",
@@ -2497,23 +2497,32 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 [[package]]
 name = "rezzy"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master#eff47137753ea20249d45d1b8c48a56da7c773a3"
+source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=dev#285736c8970c4719a8b1bf5ed9129f87490ed6e8"
 dependencies = [
  "base64 0.23.1",
  "blake3",
  "ed25519-zebra",
  "hashbrown 0.17.1",
  "rezzy-json",
- "rezzy-recon",
+ "rezzy-recon 0.6.0-rc.1 (git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=dev)",
  "sha2",
 ]
 
 [[package]]
 name = "rezzy-json"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master#eff47137753ea20249d45d1b8c48a56da7c773a3"
+source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=dev#285736c8970c4719a8b1bf5ed9129f87490ed6e8"
 dependencies = [
  "ryu",
+]
+
+[[package]]
+name = "rezzy-recon"
+version = "0.6.0-rc.1"
+source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=dev#285736c8970c4719a8b1bf5ed9129f87490ed6e8"
+dependencies = [
+ "base64 0.23.1",
+ "sha2",
 ]
 
 [[package]]
