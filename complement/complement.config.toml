@@ -79,4 +79,5 @@ dual_protocol = true
 [global.experimental_features]
 msc3266_enabled = true
 msc4222_enabled = true
+msc4521_enabled = true
 presence_idle_debounce_ms = 0

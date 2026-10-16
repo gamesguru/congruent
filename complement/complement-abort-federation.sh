@@ -16,7 +16,12 @@ server_name=${2:?server name}
 
 # Headless attach: no TTY or stdin, sends the command to the running server's
 # console socket and exits once the command has replied; `timeout` only guards
-# against a missing reply stalling the test.
-timeout 30 docker exec "$container_id" /usr/local/bin/conduwuit \
-	--config /etc/continuwuity/config.toml \
-	--attach --execute "federation sending-queue ${server_name} --abort"
+# against a missing reply stalling the test. The entrypoint exports the server
+# name and database path inside its own shell, which `docker exec` does not
+# inherit, so derive them from SERVER_NAME exactly as the entrypoint does.
+timeout 30 docker exec "$container_id" sh -c '
+	export CONTINUWUITY_SERVER_NAME="$SERVER_NAME"
+	export CONDUWUIT_DATABASE_PATH="${CONDUWUIT_DATABASE_PATH:-/var/lib/continuwuity/$SERVER_NAME}"
+	exec /usr/local/bin/conduwuit --config /etc/continuwuity/config.toml \
+		--attach --execute "$1"
+' sh "federation sending-queue ${server_name} --abort"
