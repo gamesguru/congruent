@@ -532,7 +532,7 @@
 {"Action":"fail","Test":"TestMSC4521/PartlyFakeClaimIsSampled"}
 {"Action":"fail","Test":"TestMSC4521/PausedHomeserverCatchesUp"}
 {"Action":"fail","Test":"TestMSC4521/RejectedEventNotRefetched"}
-{"Action":"fail","Test":"TestMSC4521/SetReconciliation"}
+{"Action":"pass","Test":"TestMSC4521/SetReconciliation"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets/AdaptiveBuckets"}
