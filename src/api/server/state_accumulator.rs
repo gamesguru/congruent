@@ -36,7 +36,8 @@ pub(crate) async fn get_state_accumulator_route(
 	let event_id = OwnedEventId::parse(query.event_id.as_str())
 		.map_err(|_| err!(Request(InvalidParam("Invalid event ID."))))?;
 
-	verify_federation_request(&services, &x_matrix, &signature_uri).await?;
+	verify_federation_request(&services, &x_matrix, &http::Method::GET, &signature_uri, None)
+		.await?;
 
 	AccessCheck {
 		services: &services,
@@ -102,10 +103,15 @@ pub(crate) async fn get_state_accumulator_route(
 	Ok(crate::json_util::json_response(response.finish()))
 }
 
-async fn verify_federation_request(
+/// Verifies the `X-Matrix` signature on a federation request. `content` is the
+/// canonical request body for requests that have one (it is part of the signed
+/// object), `None` for bodiless requests.
+pub(super) async fn verify_federation_request(
 	services: &crate::State,
 	x_matrix: &XMatrix,
+	method: &http::Method,
 	signature_uri: &str,
+	content: Option<&slipstream::CanonicalJsonObject>,
 ) -> Result<()> {
 	type Member = (String, slipstream::CanonicalJsonValue);
 	type Object = slipstream::CanonicalJsonObject;
@@ -135,14 +141,17 @@ async fn verify_federation_request(
 		[(x_matrix.key.as_str().into(), Value::String(x_matrix.sig.clone()))];
 	let signatures: [Member; 1] =
 		[(x_matrix.origin.as_str().into(), Value::Object(signature.into()))];
-	let authorization: Object = [
+	let mut authorization: Object = [
 		("destination".into(), Value::String(destination.into())),
-		("method".into(), Value::String(http::Method::GET.as_str().into())),
+		("method".into(), Value::String(method.as_str().into())),
 		("origin".into(), Value::String(x_matrix.origin.as_str().into())),
 		("signatures".into(), Value::Object(signatures.into())),
 		("uri".into(), Value::String(signature_uri.to_owned())),
 	]
 	.into();
+	if let Some(content) = content {
+		authorization.insert("content".into(), Value::Object(content.clone()));
+	}
 
 	let key = services
 		.server_keys

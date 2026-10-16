@@ -2210,6 +2210,13 @@
 #
 #msc4500_resolution_inputs = false
 
+# MSC4521: algebraic digest set reconciliation (`room_digest` and
+# `room_diff` federation endpoints). Each request is served from a
+# per-room snapshot that is rebuilt by scanning the room's timeline, so
+# it is off by default.
+#
+#msc4521_enabled = false
+
 #[global.email]
 
 # HTTP endpoint which accepts the email webhook payload.

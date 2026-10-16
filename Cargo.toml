@@ -310,6 +310,10 @@ features = ["reconcile"]
 git = "https://gitlab.com/Wombat-Foundation/rezzy.git"
 branch = "master"
 
+[workspace.dependencies.rezzy-recon]
+git = "https://gitlab.com/Wombat-Foundation/rezzy.git"
+branch = "master"
+
 [workspace.dependencies.sha2]
 version = "0.11.0"
 default-features = false

@@ -401,6 +401,22 @@ pub fn build(
 			);
 		}
 
+		if config.experimental_features.msc4521_enabled {
+			router = router
+				.route(
+					"/_matrix/federation/unstable/tk.nutra.msc0501/room_digest/{room_id}",
+					get(server::get_room_reconciliation_digest_route),
+				)
+				.route(
+					"/_matrix/federation/unstable/tk.nutra.msc0501/room_digest/{room_id}/strata",
+					get(server::get_room_reconciliation_strata_route),
+				)
+				.route(
+					"/_matrix/federation/unstable/tk.nutra.msc0501/room_diff/{room_id}",
+					post(server::post_room_reconciliation_diff_route),
+				);
+		}
+
 		router = router
 			.route("/_conduwuit/local_user_count", get(client::conduwuit_local_user_count))
 			.route("/_continuwuity/local_user_count", get(client::conduwuit_local_user_count));

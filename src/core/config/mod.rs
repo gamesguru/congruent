@@ -2750,6 +2750,13 @@ pub struct ExperimentalConfig {
 	/// default.
 	#[serde(default)]
 	pub msc4500_resolution_inputs: bool,
+
+	/// MSC4521: algebraic digest set reconciliation (`room_digest` and
+	/// `room_diff` federation endpoints). Each request is served from a
+	/// per-room snapshot that is rebuilt by scanning the room's timeline, so
+	/// it is off by default.
+	#[serde(default)]
+	pub msc4521_enabled: bool,
 }
 
 impl Default for ExperimentalConfig {
@@ -2760,6 +2767,7 @@ impl Default for ExperimentalConfig {
 			msc3030_enabled: true,
 			msc4500_enabled: true,
 			msc4500_resolution_inputs: false,
+			msc4521_enabled: false,
 		}
 	}
 }

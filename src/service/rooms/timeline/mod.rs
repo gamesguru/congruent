@@ -13,6 +13,7 @@ mod notifications;
 mod promotion_claims;
 mod reachability;
 mod rebuild_state;
+mod reconciliation;
 mod redact;
 pub mod reindex;
 mod reorder;
@@ -23,6 +24,7 @@ use std::{fmt::Write, ops::Bound, sync::Arc};
 pub use append::AppendPduContext;
 use async_trait::async_trait;
 pub use conduwuit_core::matrix::pdu::{PduId, RawPduId, ShortRoomId, TopoToken};
+pub use reconciliation::RoomReconciliationState;
 /// Proof that the caller already holds `Service::mutex_insert` for a room.
 /// Threaded through the state-transition path so the outlier demotion step
 /// can skip re-acquiring the same non-reentrant per-room lock when called
@@ -154,6 +156,11 @@ pub struct Service {
 	/// are pure waste. See
 	/// `docs/development-gg/fable/boundary-flake-advisory.md` §3.
 	pub mutex_backfill: RoomMutexMap,
+	/// Singleflights the MSC4521 reconciliation snapshot scan per room.
+	pub mutex_reconciliation: RoomMutexMap,
+	/// MSC4521 per-room reconciliation snapshots. Short-lived by design; see
+	/// the `reconciliation` module docs.
+	pub reconciliation_cache: moka::sync::Cache<OwnedRoomId, Arc<RoomReconciliationState>>,
 	/// Tier 2 of the backfill scan perf work (see
 	/// `docs/development-gg/room-issues.csv`): remembers the exact
 	/// `(state_hash, from, limit)` of the most recent gap-free
@@ -269,6 +276,11 @@ impl crate::Service for Service {
 			mutex_insert: RoomMutexMap::new(),
 			mutex_fetch: MutexMap::new(),
 			mutex_backfill: RoomMutexMap::new(),
+			mutex_reconciliation: RoomMutexMap::new(),
+			reconciliation_cache: moka::sync::Cache::builder()
+				.max_capacity(256)
+				.time_to_live(std::time::Duration::from_secs(10))
+				.build(),
 			pending_promotions: PromotionClaims::new(),
 		}))
 	}
@@ -282,7 +294,7 @@ impl crate::Service for Service {
 		Ok(())
 	}
 
-	async fn clear_cache(&self) {}
+	async fn clear_cache(&self) { self.reconciliation_cache.invalidate_all(); }
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }

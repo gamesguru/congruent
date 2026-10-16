@@ -623,6 +623,7 @@ dependencies = [
  "percent-encoding",
  "rand",
  "rezzy",
+ "rezzy-recon",
  "rustls",
  "serde",
  "serde_urlencoded",
@@ -827,6 +828,7 @@ dependencies = [
  "rand",
  "regex",
  "rezzy",
+ "rezzy-recon",
  "roaring",
  "rustls",
  "sd-notify",
@@ -2134,7 +2136,7 @@ dependencies = [
 [[package]]
 name = "mtxdb"
 version = "0.1.0-beta.2"
-source = "git+https://gitlab.com/Wombat-Foundation/mtxdb.git?branch=dev#4fc8b3df171ecdca1e5f1db045a328f42e670dc0"
+source = "git+https://gitlab.com/Wombat-Foundation/mtxdb.git?branch=dev#32ec9ffc482c2138167ecf85b662aadde48849aa"
 dependencies = [
  "arc-swap",
  "blake3",
