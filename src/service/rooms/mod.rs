@@ -10,6 +10,7 @@ pub mod monitor;
 pub mod outlier;
 pub mod pdu_metadata;
 pub mod read_receipt;
+pub mod reconcile;
 pub mod search;
 pub mod short;
 pub mod spaces;
@@ -49,4 +50,5 @@ pub struct Service {
 	pub typing: Arc<typing::Service>,
 	pub user: Arc<user::Service>,
 	pub monitor: Arc<monitor::Service>,
+	pub reconcile: Arc<reconcile::Service>,
 }

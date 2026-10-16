@@ -80,4 +80,5 @@ dual_protocol = true
 msc3266_enabled = true
 msc4222_enabled = true
 msc4521_enabled = true
+msc4521_reconcile_interval_secs = 1
 presence_idle_debounce_ms = 0

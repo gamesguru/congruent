@@ -226,3 +226,16 @@ pub(super) async fn sending_queue(
 
 	self.write_str(&out).await
 }
+
+#[admin_command]
+pub(super) async fn reconcile(&self, room_id: OwnedRoomId, server: OwnedServerName) -> Result {
+	self.bail_restricted()?;
+
+	let outcome = self
+		.services
+		.rooms
+		.reconcile
+		.enqueue(&room_id, &server, service::rooms::reconcile::Reason::Explicit)
+		.await;
+	self.write_str(&format!("{outcome:?}")).await
+}

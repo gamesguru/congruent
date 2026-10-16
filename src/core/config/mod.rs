@@ -2757,6 +2757,15 @@ pub struct ExperimentalConfig {
 	/// it is off by default.
 	#[serde(default)]
 	pub msc4521_enabled: bool,
+
+	/// MSC4521: how often, in seconds, to queue a reconciliation of every
+	/// room with each of its remote servers. 0 disables the periodic sweep;
+	/// explicit and event-driven triggers still apply. Only used when
+	/// `msc4521_enabled` is set.
+	///
+	/// default: 0
+	#[serde(default)]
+	pub msc4521_reconcile_interval_secs: u64,
 }
 
 impl Default for ExperimentalConfig {
@@ -2768,6 +2777,7 @@ impl Default for ExperimentalConfig {
 			msc4500_enabled: true,
 			msc4500_resolution_inputs: false,
 			msc4521_enabled: false,
+			msc4521_reconcile_interval_secs: 0,
 		}
 	}
 }

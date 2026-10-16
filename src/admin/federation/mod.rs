@@ -40,6 +40,12 @@ pub enum FederationCommand {
 		user_id: OwnedUserId,
 	},
 
+	/// Queue an MSC4521 reconciliation of a room with a remote server
+	Reconcile {
+		room_id: OwnedRoomId,
+		server: OwnedServerName,
+	},
+
 	/// Show the outbound sending queue with per-destination event counts.
 	/// Optionally filter to a single server. Use --clear to drop queued events.
 	SendingQueue {
