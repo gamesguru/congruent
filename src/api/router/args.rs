@@ -210,8 +210,8 @@ where
 	T: IncomingRequest,
 {
 	let body = take_body(request, json_body);
-	let preview = String::from_utf8_lossy(body.get(..body.len().min(300)).unwrap_or_default())
-		.into_owned();
+	let preview =
+		String::from_utf8_lossy(body.get(..body.len().min(300)).unwrap_or_default()).into_owned();
 	let body_len = body.len();
 	let http_request = into_http_request(request, body);
 	let path = request.parts.uri.path();
