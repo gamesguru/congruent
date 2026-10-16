@@ -1,55 +1,33 @@
 use conduwuit::{Err, Event, Result, err, info};
 use conduwuit_core::utils::hash::lthash::serialize_lthash;
-use conduwuit_service::{
-	rooms::state_accessor::PRIMARY_ALGORITHM,
-	server_keys::{PubKeyMap, PubKeys},
-};
+use conduwuit_service::rooms::state_accessor::PRIMARY_ALGORITHM;
 use futures::TryStreamExt;
-use serde::Deserialize;
-use slipstream::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
+use slipstream::{OwnedEventId, api::federation::reconciliation::get_state_accumulator};
 
 use super::AccessCheck;
-use crate::router::{
-	ApiError,
-	extract::{State, TypedHeader, headers::Authorization},
-};
+use crate::{Ruma, router::extract::State};
 
-#[derive(Deserialize)]
-pub(crate) struct StateAccumulatorQuery {
-	pub event_id: String,
-}
-
+/// # `GET /_matrix/federation/unstable/tk.nutra.msc4500/state_accumulator/{roomId}`
+///
+/// Returns the LtHash lattice over the state at `event_id`.
 pub(crate) async fn get_state_accumulator_route(
 	State(services): State<crate::State>,
-	TypedHeader(Authorization(x_matrix)): TypedHeader<Authorization<XMatrix>>,
-	crate::router::extract::Path(room_id_str): crate::router::extract::Path<String>,
-	crate::router::extract::Query(query): crate::router::extract::Query<StateAccumulatorQuery>,
-	uri: http::Uri,
-) -> std::result::Result<impl crate::router::response::IntoResponse, ApiError> {
-	let signature_uri = uri
-		.path_and_query()
-		.map_or("/", http::uri::PathAndQuery::as_str)
-		.to_owned();
-
-	let room_id = OwnedRoomId::parse(room_id_str)
-		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
-	let event_id = OwnedEventId::parse(query.event_id.as_str())
-		.map_err(|_| err!(Request(InvalidParam("Invalid event ID."))))?;
-
-	verify_federation_request(&services, &x_matrix, &http::Method::GET, &signature_uri, None)
-		.await?;
+	body: Ruma<get_state_accumulator::unstable::Request>,
+) -> Result<get_state_accumulator::unstable::Response> {
+	let room_id = &body.room_id;
+	let event_id = &body.event_id;
 
 	AccessCheck {
 		services: &services,
-		origin: &x_matrix.origin,
-		room_id: &room_id,
+		origin: body.origin(),
+		room_id,
 		event_id: None,
 	}
 	.check()
 	.await?;
 
 	info!(
-		origin = x_matrix.origin.as_str(),
+		origin = body.origin().as_str(),
 		room_id = %room_id,
 		event_id = %event_id,
 		"Serving MSC4500 state accumulator request"
@@ -59,19 +37,18 @@ pub(crate) async fn get_state_accumulator_route(
 	let pdu = services
 		.rooms
 		.timeline
-		.get_pdu(&event_id)
+		.get_pdu(event_id)
 		.await
 		.map_err(|_| err!(Request(NotFound("Event not found."))))?;
 
-	if pdu.room_id_or_hash().as_ref() != Some(&room_id) {
-		return Err!(Request(NotFound("Event does not belong to the requested room.")))
-			.map_err(Into::into);
+	if pdu.room_id_or_hash().as_ref() != Some(room_id) {
+		return Err!(Request(NotFound("Event does not belong to the requested room.")));
 	}
 
 	let shorteventid = services
 		.rooms
 		.short
-		.get_or_create_shorteventid(&event_id)
+		.get_or_create_shorteventid(event_id)
 		.await;
 
 	let root_handle = services
@@ -84,91 +61,22 @@ pub(crate) async fn get_state_accumulator_route(
 	// Build the LtHash lattice over the event's post-event state. Any entry
 	// that cannot be resolved fails the request rather than yielding a
 	// digest over partial state.
-	let entries = state_tuples(&services, &room_id, &root_handle).await?;
+	let entries = state_tuples(&services, room_id, &root_handle).await?;
 
 	let mut lattice = rezzy::incremental::LtHash::default();
 	let n_state_events = u64::try_from(entries.len()).unwrap_or_default();
 	for (ty, sk, id) in &entries {
 		lattice.insert(ty, sk, id.as_str());
 	}
-	let (lattice_b64, digest) = serialize_lthash(&lattice);
+	let (lattice, digest) = serialize_lthash(&lattice);
 
-	let mut response = slipstream::ObjectBuilder::new();
-	response.field("event_id", &event_id);
-	response.field("algorithm", &PRIMARY_ALGORITHM);
-	response.field("lattice", &lattice_b64);
-	response.field("n_state_events", &n_state_events);
-	response.field("digest", &digest);
-
-	Ok(crate::json_util::json_response(response.finish()))
-}
-
-/// Verifies the `X-Matrix` signature on a federation request. `content` is the
-/// canonical request body for requests that have one (it is part of the signed
-/// object), `None` for bodiless requests.
-pub(super) async fn verify_federation_request(
-	services: &crate::State,
-	x_matrix: &XMatrix,
-	method: &http::Method,
-	signature_uri: &str,
-	content: Option<&slipstream::CanonicalJsonObject>,
-) -> Result<()> {
-	type Member = (String, slipstream::CanonicalJsonValue);
-	type Object = slipstream::CanonicalJsonObject;
-	type Value = slipstream::CanonicalJsonValue;
-
-	let destination = services.globals.server_name();
-	if let Some(dest) = x_matrix.destination.as_deref() {
-		if dest != destination {
-			return Err!(Request(Forbidden(warn!(
-				"Invalid destination. Expected: {}, Got: {}",
-				destination, dest
-			))));
-		}
-	}
-
-	if services
-		.moderation
-		.is_remote_server_forbidden(&x_matrix.origin)
-	{
-		return Err!(Request(Forbidden(warn!(
-			"Federation requests from {} denied.",
-			x_matrix.origin
-		))));
-	}
-
-	let signature: [Member; 1] =
-		[(x_matrix.key.as_str().into(), Value::String(x_matrix.sig.clone()))];
-	let signatures: [Member; 1] =
-		[(x_matrix.origin.as_str().into(), Value::Object(signature.into()))];
-	let mut authorization: Object = [
-		("destination".into(), Value::String(destination.into())),
-		("method".into(), Value::String(method.as_str().into())),
-		("origin".into(), Value::String(x_matrix.origin.as_str().into())),
-		("signatures".into(), Value::Object(signatures.into())),
-		("uri".into(), Value::String(signature_uri.to_owned())),
-	]
-	.into();
-	if let Some(content) = content {
-		authorization.insert("content".into(), Value::Object(content.clone()));
-	}
-
-	let key = services
-		.server_keys
-		.get_active_verify_key(&x_matrix.origin, &x_matrix.key)
-		.await
-		.map_err(|e| err!(Request(Forbidden(warn!("Failed to fetch signing keys: {e}")))))?;
-
-	let keys: PubKeys = [(x_matrix.key.clone(), key.key)].into();
-	let keys: PubKeyMap = [(x_matrix.origin.clone(), keys)].into();
-	slipstream::signatures::verify_json(&keys, authorization).map_err(|e| {
-		err!(Request(Forbidden(warn!(
-			"Failed to verify X-Matrix signatures from {}: {e}",
-			x_matrix.origin
-		))))
-	})?;
-
-	Ok(())
+	Ok(get_state_accumulator::unstable::Response {
+		event_id: event_id.clone(),
+		algorithm: PRIMARY_ALGORITHM.to_owned(),
+		lattice,
+		n_state_events,
+		digest,
+	})
 }
 
 /// Resolves every `(type, state_key, event_id)` tuple beneath a HAMT root

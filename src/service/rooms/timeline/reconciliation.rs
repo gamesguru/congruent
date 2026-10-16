@@ -103,8 +103,8 @@ impl Builder {
 			.or_default()
 			.push((pdu.event_id.clone(), hash));
 
-		let depth = u64::from(pdu.depth);
-		let ts = u64::from(pdu.origin_server_ts);
+		let depth = pdu.depth;
+		let ts = pdu.origin_server_ts;
 		let [d_min, d_max] = self.depth_range.get_or_insert([depth, depth]);
 		*d_min = (*d_min).min(depth);
 		*d_max = (*d_max).max(depth);
@@ -213,6 +213,6 @@ mod tests {
 
 	#[test]
 	fn element_hash_rejects_non_reference_hash_ids() {
-		assert!(element_hash("$not-a-reference-hash:example.com", &RoomVersionId::V11).is_err());
+		element_hash("$not-a-reference-hash:example.com", &RoomVersionId::V11).unwrap_err();
 	}
 }
