@@ -172,7 +172,7 @@ impl Service {
 				_ = signal.fuse() => {},
 				_ = tick.fuse() => self.sweep().await,
 				_ = woken.fuse() => {},
-				_ = retry.fuse() => {},
+				_ = FutureExt::fuse(retry) => {},
 			}
 
 			if !self.services.server.running() {
