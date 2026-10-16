@@ -3,8 +3,8 @@
 //! Every trigger (an explicit request, the periodic sweep, and later an
 //! incoming-PDU gap or a reconnect) enters one `(room, peer)` queue. The queue
 //! coalesces duplicates, keeps a dirty bit for triggers that arrive during an
-//! exchange, and backs off failing peers. The exchange itself is a stub for
-//! now: see `docs/development-gg/msc4521-outbound-reconciliation-plan.md`.
+//! exchange, and backs off failing peers. The exchange is in `exchange.rs`; see
+//! `docs/development-gg/msc4521-outbound-reconciliation-plan.md`.
 
 mod exchange;
 mod queue;
@@ -14,13 +14,7 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use conduwuit::{Result, debug, info};
 use futures::{FutureExt, StreamExt, pin_mut};
-use rezzy_recon::{
-	ClientAction, MAX_LOCAL_SKETCH_DECODE_CAPACITY, ReconciliationClient, RemoteDigest,
-};
-use slipstream::{
-	OwnedRoomId, OwnedServerName, RoomId, ServerName,
-	api::federation::reconciliation::get_room_digest_strata,
-};
+use slipstream::{OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, ServerName};
 use tokio::sync::Notify;
 
 pub use self::queue::{Enqueued, Reason, Refusal};

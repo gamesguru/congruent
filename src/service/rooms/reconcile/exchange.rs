@@ -200,7 +200,7 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		peer: &ServerName,
-		local: &crate::rooms::timeline::reconciliation::RoomReconciliationState,
+		local: &crate::rooms::timeline::RoomReconciliationState,
 		frame_id: &str,
 		requests: &[BucketRequest],
 	) -> Result<Round, Outcome> {

@@ -529,9 +529,9 @@
 {"Action":"pass","Test":"TestMSC4521/NonAdvertisingPeerFallsBack"}
 {"Action":"fail","Test":"TestMSC4521/NonMembersAndACLBlocked"}
 {"Action":"fail","Test":"TestMSC4521/PartitionHealUsesReconciliation"}
-{"Action":"fail","Test":"TestMSC4521/PartlyFakeClaimIsSampled"}
+{"Action":"pass","Test":"TestMSC4521/PartlyFakeClaimIsSampled"}
 {"Action":"fail","Test":"TestMSC4521/PausedHomeserverCatchesUp"}
-{"Action":"fail","Test":"TestMSC4521/RejectedEventNotRefetched"}
+{"Action":"pass","Test":"TestMSC4521/RejectedEventNotRefetched"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Plumbing/Buckets"}
@@ -562,7 +562,7 @@
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Porcelain/IdenticalSets"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Porcelain/OneSidedChanges"}
 {"Action":"pass","Test":"TestMSC4521/SetReconciliation/Porcelain/SymmetricDifference"}
-{"Action":"fail","Test":"TestMSC4521/ValidChainingIsAccepted"}
+{"Action":"pass","Test":"TestMSC4521/ValidChainingIsAccepted"}
 {"Action":"pass","Test":"TestMSC4521/WireBisect"}
 {"Action":"fail","Test":"TestMSC4521ActiveRoomReconciliation"}
 {"Action":"pass","Test":"TestMSC4521ActiveRoomReconciliation/Digest"}
