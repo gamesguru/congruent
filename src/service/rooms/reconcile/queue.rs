@@ -44,22 +44,22 @@ pub enum Enqueued {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Key {
+pub(super) struct Key {
 	room_id: OwnedRoomId,
 	peer: OwnedServerName,
 }
 
 impl Key {
-	pub fn new(room_id: &RoomId, peer: &ServerName) -> Self {
+	pub(super) fn new(room_id: &RoomId, peer: &ServerName) -> Self {
 		Self {
 			room_id: room_id.to_owned(),
 			peer: peer.to_owned(),
 		}
 	}
 
-	pub fn room_id(&self) -> &RoomId { &self.room_id }
+	pub(super) fn room_id(&self) -> &RoomId { &self.room_id }
 
-	pub fn peer(&self) -> &ServerName { &self.peer }
+	pub(super) fn peer(&self) -> &ServerName { &self.peer }
 }
 
 #[derive(Default)]
@@ -72,7 +72,7 @@ struct Entry {
 	not_before: Option<Instant>,
 }
 
-pub struct Queue {
+pub(super) struct Queue {
 	entries: HashMap<Key, Entry>,
 	ready: VecDeque<Key>,
 	max_tracked: usize,
@@ -86,7 +86,7 @@ const UNSUPPORTED_BACKOFF: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// How an exchange ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Verdict {
+pub(super) enum Verdict {
 	Done,
 	Failed,
 	/// The peer does not serve the reconciliation endpoints.
@@ -105,7 +105,7 @@ fn backoff(failures: u32) -> Duration {
 }
 
 impl Queue {
-	pub fn new(max_tracked: usize) -> Self {
+	pub(super) fn new(max_tracked: usize) -> Self {
 		Self {
 			entries: HashMap::new(),
 			ready: VecDeque::new(),
@@ -113,7 +113,7 @@ impl Queue {
 		}
 	}
 
-	pub fn enqueue(&mut self, key: Key, reason: Reason, now: Instant) -> Enqueued {
+	pub(super) fn enqueue(&mut self, key: Key, reason: Reason, now: Instant) -> Enqueued {
 		if let Some(entry) = self.entries.get_mut(&key) {
 			if entry.in_flight {
 				entry.dirty = true;
@@ -144,7 +144,7 @@ impl Queue {
 
 	/// Takes the next queued pair that fits the concurrency limits and marks
 	/// it in flight.
-	pub fn next_ready(
+	pub(super) fn next_ready(
 		&mut self,
 		now: Instant,
 		max_concurrent: usize,
@@ -182,7 +182,7 @@ impl Queue {
 
 	/// Records the end of an exchange. Returns whether the pair was queued
 	/// again because a trigger arrived while it ran.
-	pub fn finish(&mut self, key: &Key, verdict: Verdict, now: Instant) -> bool {
+	pub(super) fn finish(&mut self, key: &Key, verdict: Verdict, now: Instant) -> bool {
 		let Some(entry) = self.entries.get_mut(key) else {
 			return false;
 		};
