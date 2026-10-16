@@ -217,17 +217,22 @@ impl Service {
 			let runtime = self.services.server.runtime().clone();
 			drop(runtime.spawn(async move {
 				let started = std::time::Instant::now();
-				let result = this.exchange(&key).await;
+				let outcome = this.exchange(&key).await;
 				info!(
 					target: "reconcile",
 					room_id = %key.room_id(), peer = %key.peer(),
-					elapsed_ms = started.elapsed().as_millis(), ?result,
+					elapsed_ms = started.elapsed().as_millis(), ?outcome,
 					"reconciliation exchange finished"
 				);
+				let verdict = match outcome {
+					| Outcome::Failed(_) => Verdict::Failed,
+					| Outcome::Unsupported => Verdict::Unsupported,
+					| Outcome::Synchronized | Outcome::Differs(_) => Verdict::Done,
+				};
 				let requeue =
 					this.queue
 						.lock()
-						.finish(&key, result.is_ok(), std::time::Instant::now());
+						.finish(&key, verdict, std::time::Instant::now());
 				if requeue {
 					this.wake.notify_one();
 				}
