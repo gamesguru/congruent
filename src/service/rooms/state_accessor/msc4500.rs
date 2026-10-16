@@ -1,8 +1,7 @@
 //! MSC4500 digest derivation.
 //!
-//! This is the data-model layer shared by the outbound `/send` builder, the
-//! inbound validator and the `state_accumulator` endpoint. It computes *what*
-//! each digest commits to; the wire shapes live with their callers.
+//! This is the data-model layer shared by the outbound `/send` builder and the
+//! inbound validator. It computes *what* each digest commits to; the wire shapes live with their callers.
 //!
 //! None of these functions guess. A DAG point that cannot be resolved exactly
 //! yields `None`, which senders surface as an explicit `limited` assertion.

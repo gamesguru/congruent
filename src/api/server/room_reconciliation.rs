@@ -41,7 +41,9 @@ fn encode_stratum(stratum: &[u64; STRATUM_CAPACITY]) -> String {
 
 fn encode_short_identifier(h64: u64) -> String { URL_SAFE_NO_PAD.encode(h64.to_be_bytes()) }
 
-fn encode_digest(digest: u128) -> String { RoomAccumulator::from_parts(digest, 0).encode_digest() }
+fn encode_digest(digest: u128) -> String {
+	RoomAccumulator::from_parts(digest, 0).encode_digest()
+}
 
 /// The frame ID is the SHA-256 of the canonical JSON array of the sorted,
 /// deduplicated frame event IDs.
@@ -163,7 +165,9 @@ struct RoomDiffRequest {
 	requests: Vec<SketchRequest>,
 }
 
-fn validate_room_diff_request(body: &post_room_diff::unstable::Request) -> Result<RoomDiffRequest> {
+fn validate_room_diff_request(
+	body: &post_room_diff::unstable::Request,
+) -> Result<RoomDiffRequest> {
 	if body.mode != "sketch" {
 		return Err!(Request(InvalidParam("Only `sketch` mode is supported.")));
 	}
@@ -171,10 +175,7 @@ fn validate_room_diff_request(body: &post_room_diff::unstable::Request) -> Resul
 		return Err!(Request(InvalidParam("Unsupported `digest_type`.")));
 	}
 
-	let scope = body
-		.scope
-		.clone()
-		.unwrap_or_else(|| "event_set".to_owned());
+	let scope = body.scope.clone().unwrap_or_else(|| "event_set".to_owned());
 	match scope.as_str() {
 		| "event_set" => {},
 		| "resolved_state" =>
@@ -283,7 +284,11 @@ fn diff_buckets(state: &RoomReconciliationState, body: &RoomDiffRequest) -> Resu
 			.map_err(|_| err!(Request(InvalidParam("Invalid sketch length."))))?;
 		// A zero residual is an empty difference: skip Berlekamp-Massey,
 		// root finding and the re-encode check.
-		if residual.coordinates().iter().all(|&coordinate| coordinate == 0) {
+		if residual
+			.coordinates()
+			.iter()
+			.all(|&coordinate| coordinate == 0)
+		{
 			continue;
 		}
 		let roots = match residual.decode_elements(request.bucket.capacity) {
@@ -435,6 +440,6 @@ mod tests {
 
 	#[test]
 	fn digest_encoding_is_22_chars() {
-		assert_eq!(encode_digest(0x0123_4567_89ab_cdef).len(), 22);
+		assert_eq!(encode_digest(0x0123_4567_89AB_CDEF).len(), 22);
 	}
 }
