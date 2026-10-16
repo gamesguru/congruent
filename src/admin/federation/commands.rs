@@ -160,8 +160,19 @@ pub(super) async fn sending_queue(
 	server: Option<OwnedServerName>,
 	clear: bool,
 	all: bool,
+	abort: bool,
 ) -> Result {
 	self.bail_restricted()?;
+
+	if abort {
+		let Some(server) = server else {
+			return Err!(Request(InvalidParam("--abort requires a server.")));
+		};
+		self.services.sending.abort_destination(&server).await;
+		return self
+			.write_str(&format!("Aborted sending to {server}"))
+			.await;
+	}
 
 	if clear {
 		if let Some(ref server) = server {

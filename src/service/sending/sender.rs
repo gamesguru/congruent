@@ -254,6 +254,16 @@ impl Service {
 		futures: &mut SendingFutures<'a>,
 		statuses: &mut CurTransactionStatus,
 	) {
+		let dest = match &response {
+			| Ok(dest) => dest,
+			| Err(err) => &err.0,
+		};
+		if self.is_aborted(dest) {
+			statuses.remove(dest);
+			self.db.delete_all_active_requests_for(dest).await;
+			return;
+		}
+
 		match response {
 			| Ok(dest) => self.handle_response_ok(&dest, futures, statuses).await,
 			| Err(err) => self.handle_response_err(err.0, statuses, &err.1),
@@ -437,6 +447,11 @@ impl Service {
 		futures: &mut SendingFutures<'a>,
 		statuses: &mut CurTransactionStatus,
 	) {
+		if self.is_aborted(&msg.dest) {
+			statuses.remove(&msg.dest);
+			return;
+		}
+
 		let _cork = self.db.db.cork();
 		let is_flush = matches!(msg.event, SendingEvent::Flush);
 		let iv = if !is_flush {

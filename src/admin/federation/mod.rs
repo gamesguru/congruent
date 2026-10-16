@@ -52,5 +52,10 @@ pub enum FederationCommand {
 		/// Required with --clear when no server is specified
 		#[arg(long)]
 		all: bool,
+
+		/// Stop sending to the specified server: clear its queue and drop its
+		/// retry state, scheduled flushes and any in-flight result
+		#[arg(long)]
+		abort: bool,
 	},
 }

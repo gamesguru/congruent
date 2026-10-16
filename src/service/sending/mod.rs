@@ -42,6 +42,10 @@ pub struct Service {
 	channels: Vec<(loole::Sender<Msg>, loole::Receiver<Msg>)>,
 	pub(super) semaphore: Arc<Semaphore>,
 	pub(super) dead_servers: std::sync::RwLock<std::collections::HashSet<OwnedServerName>>,
+	/// Destinations whose sending was abandoned on request (`abort_destination`).
+	/// Workers drop everything addressed to them, including retries, scheduled
+	/// flushes and the result of a transaction that was already in flight.
+	pub(super) aborted: std::sync::RwLock<std::collections::HashSet<OwnedServerName>>,
 	/// Monotonic counter for outgoing federation transaction IDs, seeded from
 	/// the current unix-ms timestamp at startup and incremented per
 	/// transaction sent (same scheme Synapse's `TransactionManager` uses).
@@ -97,6 +101,7 @@ impl crate::Service for Service {
 			db: Data::new(&args),
 			stats: stats::FederationStats::default(),
 			dead_servers: std::sync::RwLock::new(std::collections::HashSet::new()),
+			aborted: std::sync::RwLock::new(std::collections::HashSet::new()),
 			next_txn_id: std::sync::atomic::AtomicU64::new(
 				slipstream::MilliSecondsSinceUnixEpoch::now().get(),
 			),
@@ -615,6 +620,20 @@ impl Service {
 		let dest = Destination::Federation(server.to_owned());
 		self.db.delete_all_requests_for(&dest).await;
 		self.db.delete_all_active_requests_for(&dest).await;
+	}
+
+	/// Stop sending to a federation server: clear its stored requests and make
+	/// the workers drop its retry state, pending flushes and in-flight result.
+	pub async fn abort_destination(&self, server: &ServerName) {
+		self.aborted.write().unwrap().insert(server.to_owned());
+		self.clear_destination_queue(server).await;
+	}
+
+	pub(super) fn is_aborted(&self, dest: &Destination) -> bool {
+		match dest {
+			| Destination::Federation(server) => self.aborted.read().unwrap().contains(server),
+			| _ => false,
+		}
 	}
 
 	/// Clear all queued and active requests for ALL federation destinations.
