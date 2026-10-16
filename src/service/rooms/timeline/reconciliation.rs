@@ -12,7 +12,10 @@ use std::{
 	sync::Arc,
 };
 
-use conduwuit_core::{Result, debug_warn, err, matrix::pdu::PduEvent};
+use conduwuit_core::{
+	Result, debug_warn, err,
+	matrix::pdu::{PduCount, PduEvent},
+};
 use futures::StreamExt;
 use rezzy_recon::{
 	AlgebraicError, ElementHash, EventIdFormat, ResidentKernel, RoomEventIdKind, SortedPopulation,
@@ -35,6 +38,9 @@ pub struct RoomReconciliationState {
 	pub frame_event_ids: Vec<OwnedEventId>,
 	pub depth_range: [u64; 2],
 	pub origin_server_ts_range: [u64; 2],
+	/// The room's last timeline position when the scan started. A cached
+	/// snapshot is only served while this is still the room's position.
+	pub timeline_count: Option<PduCount>,
 }
 
 impl RoomReconciliationState {
@@ -113,7 +119,11 @@ impl Builder {
 		*t_max = (*t_max).max(ts);
 	}
 
-	fn finish(self, frame_event_ids: Vec<OwnedEventId>) -> RoomReconciliationState {
+	fn finish(
+		self,
+		frame_event_ids: Vec<OwnedEventId>,
+		timeline_count: Option<PduCount>,
+	) -> RoomReconciliationState {
 		RoomReconciliationState {
 			resident: self.resident,
 			population: SortedPopulation::new(self.elements),
@@ -121,13 +131,14 @@ impl Builder {
 			frame_event_ids,
 			depth_range: self.depth_range.unwrap_or([0, 0]),
 			origin_server_ts_range: self.ts_range.unwrap_or([0, 0]),
+			timeline_count,
 		}
 	}
 }
 
 impl Service {
 	/// Returns the room's reconciliation snapshot, rebuilding it when the
-	/// cached one has expired.
+	/// cached one has expired or the room has moved on since it was built.
 	///
 	/// # Errors
 	/// Fails with `M_UNSUPPORTED_ROOM_VERSION` for room versions 1 and 2,
@@ -136,13 +147,21 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 	) -> Result<Arc<RoomReconciliationState>> {
-		if let Some(state) = self.reconciliation_cache.get(room_id) {
+		let current = self.last_timeline_count(room_id).await.ok();
+		if let Some(state) = self.reconciliation_cache.get(room_id)
+			&& state.timeline_count == current
+		{
 			return Ok(state);
 		}
 
 		// Singleflight the (expensive) scan per room.
 		let _guard = self.mutex_reconciliation.lock(room_id).await;
-		if let Some(state) = self.reconciliation_cache.get(room_id) {
+		// Read the position before scanning: an event appended during the scan
+		// then leaves the snapshot looking stale, so the next request rebuilds.
+		let timeline_count = self.last_timeline_count(room_id).await.ok();
+		if let Some(state) = self.reconciliation_cache.get(room_id)
+			&& state.timeline_count == timeline_count
+		{
 			return Ok(state);
 		}
 
@@ -171,7 +190,7 @@ impl Service {
 			}
 		}
 
-		let state = Arc::new(builder.finish(frame_event_ids));
+		let state = Arc::new(builder.finish(frame_event_ids, timeline_count));
 		self.reconciliation_cache
 			.insert(room_id.to_owned(), Arc::clone(&state));
 		Ok(state)
