@@ -13,7 +13,9 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use conduwuit::{Result, debug, info, warn};
 use futures::{FutureExt, StreamExt, pin_mut};
-use rezzy_recon::{ClientAction, ReconciliationClient, RemoteDigest, MAX_LOCAL_SKETCH_DECODE_CAPACITY};
+use rezzy_recon::{
+	ClientAction, MAX_LOCAL_SKETCH_DECODE_CAPACITY, ReconciliationClient, RemoteDigest,
+};
 use slipstream::{
 	OwnedRoomId, OwnedServerName, RoomId, ServerName,
 	api::federation::reconciliation::get_room_digest_strata,
@@ -229,10 +231,10 @@ impl Service {
 					| Outcome::Unsupported => Verdict::Unsupported,
 					| Outcome::Synchronized | Outcome::Differs(_) => Verdict::Done,
 				};
-				let requeue =
-					this.queue
-						.lock()
-						.finish(&key, verdict, std::time::Instant::now());
+				let requeue = this
+					.queue
+					.lock()
+					.finish(&key, verdict, std::time::Instant::now());
 				if requeue {
 					this.wake.notify_one();
 				}
@@ -252,7 +254,12 @@ impl Service {
 		};
 
 		let request = get_room_digest_strata::unstable::Request::new(room_id.to_owned());
-		let response = match self.services.sending.send_federation_request(peer, request).await {
+		let response = match self
+			.services
+			.sending
+			.send_federation_request(peer, request)
+			.await
+		{
 			| Ok(response) => response,
 			// The endpoints are optional: a peer that lacks them is fine.
 			| Err(e) if e.is_not_found() || e.status_code() == http::StatusCode::BAD_REQUEST =>

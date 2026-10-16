@@ -2217,6 +2217,13 @@
 #
 #msc4521_enabled = false
 
+# MSC4521: how often, in seconds, to queue a reconciliation of every
+# room with each of its remote servers. 0 disables the periodic sweep;
+# explicit and event-driven triggers still apply. Only used when
+# `msc4521_enabled` is set.
+#
+#msc4521_reconcile_interval_secs = 0
+
 #[global.email]
 
 # HTTP endpoint which accepts the email webhook payload.

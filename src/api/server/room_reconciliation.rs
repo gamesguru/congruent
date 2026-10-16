@@ -15,8 +15,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use conduwuit::{Err, Result, err, utils::hash::sha256};
 use conduwuit_service::rooms::timeline::RoomReconciliationState;
 use rezzy_recon::{
-	AlgebraicError, BucketRequest, MAX_BUCKETS_PER_ROUND, RoomAccumulator, encode_strata,
-	SyndromeSketch, build_bucket_sketches, triage::validate_bucket_requests,
+	AlgebraicError, BucketRequest, MAX_BUCKETS_PER_ROUND, RoomAccumulator, SyndromeSketch,
+	build_bucket_sketches, encode_strata, triage::validate_bucket_requests,
 };
 use slipstream::{
 	OwnedEventId, RoomId, ServerName,
