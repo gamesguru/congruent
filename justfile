@@ -94,7 +94,7 @@ complement args=".":
     HOST_LIBS=$(ldd target/latest/conduwuit | awk '/=> \/usr\/lib\// {print $3}' | grep -vE 'libc\.so|libm\.so|libgcc_s\.so|libstdc\+\+\.so|libdl\.so|libpthread\.so|librt\.so' | awk '{print $1":"$1":ro"}' | paste -sd ';' - || true)
     MOUNTS="{{ PREFIX }}/lib:{{ PREFIX }}/lib:ro"
     if [ -n "$HOST_LIBS" ]; then MOUNTS="$MOUNTS;$HOST_LIBS"; fi
-    env COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS=1 RESULTS_DIR="{{ env_var_or_default("COMPLEMENT_RESULTS_DIR", "tests/complement") }}" COMPLEMENT_BASE_IMAGE="$COMPLEMENT_IMAGE" COMPLEMENT_HOST_MOUNTS="$MOUNTS" COMPLEMENT_RUN="{{ args }}" ./bin/complement ./complement-src
+    env COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS="${COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS:-1}" RESULTS_DIR="{{ env_var_or_default("COMPLEMENT_RESULTS_DIR", "tests/complement") }}" COMPLEMENT_BASE_IMAGE="$COMPLEMENT_IMAGE" COMPLEMENT_HOST_MOUNTS="$MOUNTS" COMPLEMENT_RUN="{{ args }}" ./bin/complement ./complement-src
 
 # Run Complement-Crypto (E2EE) tests (requires complement-crypto-src).
 # Reuses the complement homeserver image; builds the tester image on first use.
