@@ -38,6 +38,8 @@ pub struct Service {
 	/// Events a peer offered that we fetched and could not use, so they are not
 	/// fetched again every round.
 	remembered: parking_lot::Mutex<std::collections::HashMap<OwnedEventId, std::time::Instant>>,
+	/// Pairs an activity trigger queued within the debounce window.
+	recent: moka::sync::Cache<Key, ()>,
 }
 
 struct Services {
@@ -68,6 +70,15 @@ impl crate::Service for Service {
 			queue: parking_lot::Mutex::new(Queue::new(MAX_TRACKED)),
 			wake: Notify::new(),
 			remembered: parking_lot::Mutex::default(),
+			recent: moka::sync::Cache::builder()
+				.max_capacity(MAX_TRACKED as u64 * 4)
+				.time_to_live(Duration::from_secs(
+					args.server
+						.config
+						.experimental_features
+						.msc4521_reconcile_activity_interval_secs,
+				))
+				.build(),
 		}))
 	}
 
@@ -95,6 +106,21 @@ impl Service {
 	pub async fn enqueue(&self, room_id: &RoomId, peer: &ServerName, reason: Reason) -> Enqueued {
 		if !self.enabled() {
 			return Self::record(room_id, peer, reason, Enqueued::Refused(Refusal::Disabled));
+		}
+		let key = Key::new(room_id, peer);
+		if reason == Reason::Activity {
+			let window = self
+				.services
+				.server
+				.config
+				.experimental_features
+				.msc4521_reconcile_activity_interval_secs;
+			if window == 0 {
+				return Self::record(room_id, peer, reason, Enqueued::Refused(Refusal::Disabled));
+			}
+			if self.recent.contains_key(&key) {
+				return Self::record(room_id, peer, reason, Enqueued::Refused(Refusal::Recent));
+			}
 		}
 		let ours = self.services.globals.server_name();
 		if peer == ours {
@@ -131,11 +157,14 @@ impl Service {
 			return Self::record(room_id, peer, reason, Enqueued::Refused(Refusal::Denied));
 		}
 
-		let outcome =
-			self.queue
-				.lock()
-				.enqueue(Key::new(room_id, peer), reason, std::time::Instant::now());
+		let outcome = self
+			.queue
+			.lock()
+			.enqueue(key.clone(), reason, std::time::Instant::now());
 		if outcome == Enqueued::Queued {
+			if reason == Reason::Activity {
+				self.recent.insert(key, ());
+			}
 			self.wake.notify_one();
 		}
 		Self::record(room_id, peer, reason, outcome)

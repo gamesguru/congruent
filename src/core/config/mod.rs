@@ -2766,7 +2766,19 @@ pub struct ExperimentalConfig {
 	/// default: 0
 	#[serde(default)]
 	pub msc4521_reconcile_interval_secs: u64,
+
+	/// MSC4521: the least time, in seconds, between activity-triggered
+	/// reconciliations of one room with one remote server. Activity means a
+	/// transaction from that server carrying a PDU or an EDU for the room. 0
+	/// disables activity-triggered reconciliation. Only used when
+	/// `msc4521_enabled` is set.
+	///
+	/// default: 60
+	#[serde(default = "default_msc4521_reconcile_activity_interval_secs")]
+	pub msc4521_reconcile_activity_interval_secs: u64,
 }
+
+fn default_msc4521_reconcile_activity_interval_secs() -> u64 { 60 }
 
 impl Default for ExperimentalConfig {
 	fn default() -> Self {
@@ -2778,6 +2790,8 @@ impl Default for ExperimentalConfig {
 			msc4500_resolution_inputs: false,
 			msc4521_enabled: false,
 			msc4521_reconcile_interval_secs: 0,
+			msc4521_reconcile_activity_interval_secs:
+				default_msc4521_reconcile_activity_interval_secs(),
 		}
 	}
 }

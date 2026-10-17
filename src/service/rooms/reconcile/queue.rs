@@ -15,6 +15,8 @@ pub enum Reason {
 	Explicit,
 	/// The periodic sweep.
 	Periodic,
+	/// A transaction from the peer carried a PDU or an EDU for the room.
+	Activity,
 	/// An incoming PDU referred to predecessors we lacked.
 	IncomingGap,
 	/// Federation with the peer resumed after an outage.
@@ -31,6 +33,8 @@ pub enum Refusal {
 	Denied,
 	QueueFull,
 	BackingOff,
+	/// An activity trigger within the debounce window of the last one.
+	Recent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,7 +137,7 @@ impl Queue {
 			return Enqueued::Queued;
 		}
 
-		if self.entries.len() >= self.max_tracked && !self.evict_idle() {
+		if self.entries.len() >= self.max_tracked && !self.evict_idle(now) {
 			return Enqueued::Refused(Refusal::QueueFull);
 		}
 		self.entries
@@ -142,14 +146,15 @@ impl Queue {
 		Enqueued::Queued
 	}
 
-	/// Drops the idle failing pair whose backoff ends soonest, to make room for
-	/// a new one. Returns whether anything was dropped. Pairs that are queued
-	/// or running are never dropped.
-	fn evict_idle(&mut self) -> bool {
+	/// Drops an idle failing pair whose backoff has already been served, to
+	/// make room for a new one. Returns whether anything was dropped. Pairs
+	/// that are queued, running or still backing off are never dropped, so
+	/// eviction cannot cut a dead peer's backoff short.
+	fn evict_idle(&mut self, now: Instant) -> bool {
 		let victim = self
 			.entries
 			.iter()
-			.filter(|(_, e)| !e.queued && !e.in_flight)
+			.filter(|(_, e)| !e.queued && !e.in_flight && e.not_before.is_none_or(|t| t <= now))
 			.min_by_key(|(_, e)| e.not_before)
 			.map(|(k, _)| k.clone());
 		victim.is_some_and(|key| self.entries.remove(&key).is_some())
@@ -331,7 +336,7 @@ mod tests {
 	}
 
 	#[test]
-	fn a_full_queue_evicts_an_idle_failing_pair() {
+	fn a_full_queue_evicts_only_a_pair_that_served_its_backoff() {
 		let now = Instant::now();
 		let mut q = Queue::new(2);
 		let a = key("!a:example.org", "peer.example");
@@ -343,8 +348,16 @@ mod tests {
 		q.finish(&a, Verdict::Failed, now);
 		assert_eq!(q.enqueue(b, Reason::Periodic, now), Enqueued::Queued);
 
-		// `a` is idle and failing, `b` is queued: only `a` may go.
-		assert_eq!(q.enqueue(c, Reason::Periodic, now), Enqueued::Queued);
+		// `a` is still backing off, `b` is queued: nothing may go.
+		assert_eq!(
+			q.enqueue(c.clone(), Reason::Periodic, now),
+			Enqueued::Refused(Refusal::QueueFull)
+		);
+		assert!(q.entries.contains_key(&a));
+
+		// Once `a` has served its backoff it may be evicted.
+		let later = now + BACKOFF_MAX;
+		assert_eq!(q.enqueue(c, Reason::Periodic, later), Enqueued::Queued);
 		assert!(!q.entries.contains_key(&a));
 	}
 

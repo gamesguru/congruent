@@ -25,8 +25,9 @@ use conduwuit_service::{
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use http::StatusCode;
 use itertools::Itertools;
-use service::transactions::{
-	FederationTxnState, TransactionError, TxnKey, WrappedTransactionResponse,
+use service::{
+	rooms::reconcile::Reason as ReconcileReason,
+	transactions::{FederationTxnState, TransactionError, TxnKey, WrappedTransactionResponse},
 };
 use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedServerName,
@@ -210,6 +211,18 @@ async fn process_inbound_transaction(
 				.map(ToOwned::to_owned)
 		})
 		.collect();
+	// Every room this transaction touches, for activity-triggered
+	// reconciliation once it has been processed.
+	let mut active_rooms: std::collections::BTreeSet<OwnedRoomId> = body
+		.pdus
+		.iter()
+		.filter_map(|pdu| codec::from_str::<Value>(pdu.get()).ok())
+		.filter_map(|pdu| {
+			pdu.get("room_id")
+				.and_then(|r| r.as_str())
+				.and_then(|r| OwnedRoomId::parse(r).ok())
+		})
+		.collect();
 	let pdus = body
 		.body
 		.pdus
@@ -233,9 +246,17 @@ async fn process_inbound_transaction(
 			})
 		})
 		.filter_map(Result::ok)
-		.collect::<Vec<_>>()
-		.into_iter()
-		.stream();
+		.collect::<Vec<_>>();
+	for edu in &edus {
+		match edu {
+			| Edu::Typing(typing) => {
+				active_rooms.insert(typing.room_id.clone());
+			},
+			| Edu::Receipt(receipt) => active_rooms.extend(receipt.receipts.keys().cloned()),
+			| _ => {},
+		}
+	}
+	let edus = edus.into_iter().stream();
 
 	info!(
 		pdus = pdu_count,
@@ -272,6 +293,14 @@ async fn process_inbound_transaction(
 			return;
 		},
 	};
+
+	for room_id in &active_rooms {
+		services
+			.rooms
+			.reconcile
+			.enqueue(room_id, &origin, ReconcileReason::Activity)
+			.await;
+	}
 
 	for (id, result) in &results {
 		if let Err(e) = result {
