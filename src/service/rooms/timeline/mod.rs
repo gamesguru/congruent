@@ -143,6 +143,14 @@ use crate::{
 	sending, server_keys, users,
 };
 
+/// How long a frame ID we advertised stays acceptable in `room_diff`. This is
+/// a tuning choice, not part of MSC4521: it only has to outlast one exchange.
+/// Expiry makes a late `room_diff` fail and the initiator retry; it never makes
+/// a sketch wrong.
+const ADVERTISED_FRAME_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Upper bound on remembered `(room, frame)` pairs.
+const ADVERTISED_FRAMES_MAX: u64 = 4096;
+
 pub struct Service {
 	services: Services,
 	db: Data,
@@ -286,8 +294,8 @@ impl crate::Service for Service {
 				.time_to_live(std::time::Duration::from_secs(10))
 				.build(),
 			advertised_frames: moka::sync::Cache::builder()
-				.max_capacity(4096)
-				.time_to_live(std::time::Duration::from_secs(60))
+				.max_capacity(ADVERTISED_FRAMES_MAX)
+				.time_to_live(ADVERTISED_FRAME_TTL)
 				.build(),
 			pending_promotions: PromotionClaims::new(),
 		}))
