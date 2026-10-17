@@ -22,14 +22,22 @@ pub async fn acl_check(&self, server_name: &ServerName, room_id: &RoomId) -> Res
 			let pdus = self.services.timeline.all_pdus(room_id);
 			futures::pin_mut!(pdus);
 			let mut in_timeline = Vec::new();
+			let mut scanned = 0_usize;
 			while let Some((_, pdu)) = pdus.next().await {
+				scanned = scanned.saturating_add(1);
 				if pdu.kind == TimelineEventType::RoomServerAcl {
 					in_timeline.push(pdu.event_id.to_string());
 				}
 			}
+			let state_entries = self
+				.services
+				.state_accessor
+				.room_state_full(room_id)
+				.count()
+				.await;
 			info!(
 				target: "acl_debug",
-				%room_id, %server_name, ?in_timeline,
+				%room_id, %server_name, scanned, state_entries, ?in_timeline,
 				"acl_check: No ACL content found in state, allowing."
 			);
 			return Ok(());
