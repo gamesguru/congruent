@@ -25,9 +25,8 @@ use conduwuit_service::{
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use http::StatusCode;
 use itertools::Itertools;
-use service::{
-	rooms::reconcile::Reason as ReconcileReason,
-	transactions::{FederationTxnState, TransactionError, TxnKey, WrappedTransactionResponse},
+use service::transactions::{
+	FederationTxnState, TransactionError, TxnKey, WrappedTransactionResponse,
 };
 use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedServerName,
@@ -295,11 +294,14 @@ async fn process_inbound_transaction(
 	};
 
 	for room_id in &active_rooms {
-		services
+		if services
 			.rooms
-			.reconcile
-			.enqueue(room_id, &origin, ReconcileReason::Activity)
-			.await;
+			.state_cache
+			.server_in_room(&origin, room_id)
+			.await
+		{
+			services.rooms.reconcile.activity(room_id).await;
+		}
 	}
 
 	for (id, result) in &results {

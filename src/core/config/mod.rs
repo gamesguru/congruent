@@ -2758,20 +2758,19 @@ pub struct ExperimentalConfig {
 	#[serde(default)]
 	pub msc4521_enabled: bool,
 
-	/// MSC4521: how often, in seconds, to queue a reconciliation of every
-	/// room with each of its remote servers. 0 disables the periodic sweep;
-	/// explicit and event-driven triggers still apply. Only used when
-	/// `msc4521_enabled` is set.
+	/// MSC4521: interval between bounded periodic sweep ticks, in seconds.
+	/// Each tick visits at most eight rooms and uses the sparse room overlay;
+	/// a full pass can take many ticks. 0 disables the sweep. Explicit and
+	/// activity triggers still apply when enabled.
 	///
 	/// default: 0
 	#[serde(default)]
 	pub msc4521_reconcile_interval_secs: u64,
 
-	/// MSC4521: the least time, in seconds, between activity-triggered
-	/// reconciliations of one room with one remote server. Activity means a
-	/// transaction from that server carrying a PDU or an EDU for the room. 0
-	/// disables activity-triggered reconciliation. Only used when
-	/// `msc4521_enabled` is set.
+	/// MSC4521: least time, in seconds, between activity-triggered
+	/// reconciliations of a room with an overlay peer. Activity is a local
+	/// write or an inbound transaction carrying a PDU or room-scoped EDU.
+	/// 0 disables activity triggers. Only used when `msc4521_enabled` is set.
 	///
 	/// default: 60
 	#[serde(default = "default_msc4521_reconcile_activity_interval_secs")]
