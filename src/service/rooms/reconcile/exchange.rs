@@ -133,23 +133,18 @@ impl Service {
 			return Outcome::Unsupported;
 		}
 
-		// "Known" extremity means present in our timeline.
-		let mut unknown_extremity = false;
-		for id in &response.extremity_event_ids {
-			if !self.services.timeline.non_outlier_pdu_exists(id).await {
-				unknown_extremity = true;
-				break;
-			}
-		}
-
+		// The responder sketches its whole event set, so the exchange runs against
+		// its frame whether or not we know its extremities: a lagging server
+		// by definition does not. Declaring the frames equal and the extremities
+		// known keeps the client from stopping at `ExtremityDiff`.
 		let remote = match RemoteDigest::from_wire(
 			&response.digest,
 			response.known_event_count,
 			&response.strata,
-			&local.frame_event_ids,
+			&response.frame_event_ids,
 			&response.frame_event_ids,
 			&response.extremity_event_ids,
-			|_| !unknown_extremity,
+			|_| true,
 		) {
 			| Ok(remote) => remote,
 			| Err(e) => return Outcome::Failed(format!("malformed digest: {e:?}")),
@@ -175,7 +170,7 @@ impl Service {
 				},
 				| ClientAction::BucketSketches { requests, accumulated_roots } => {
 					let round = match self
-						.sketch_round(room_id, peer, &local, &response.frame_id, &requests)
+						.sketch_round(room_id, peer, &local, &response, &requests)
 						.await
 					{
 						| Ok(round) => round,
@@ -201,7 +196,7 @@ impl Service {
 		room_id: &RoomId,
 		peer: &ServerName,
 		local: &crate::rooms::timeline::RoomReconciliationState,
-		frame_id: &str,
+		remote: &get_room_digest_strata::unstable::Response,
 		requests: &[BucketRequest],
 	) -> Result<Round, Outcome> {
 		let sketches = build_bucket_sketches(local.population.h64s(), requests)
@@ -222,9 +217,9 @@ impl Service {
 			room_id: room_id.to_owned(),
 			mode: "sketch".to_owned(),
 			digest_type: "algebraic_v1".to_owned(),
-			frame_id: frame_id.to_owned(),
+			frame_id: remote.frame_id.clone(),
 			frame_negotiation: false,
-			frame_event_ids: local.frame_event_ids.clone(),
+			frame_event_ids: remote.frame_event_ids.clone(),
 			local_digest: local.resident.accumulator().encode_digest(),
 			local_known_event_count: local.resident.accumulator().known_event_count(),
 			requests: buckets,

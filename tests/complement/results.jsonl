@@ -519,7 +519,7 @@
 {"Action":"pass","Test":"TestMSC4500State/StateHashes/PrimaryMismatch"}
 {"Action":"pass","Test":"TestMSC4500State/StateHashes/RedactionOnlyMismatch"}
 {"Action":"pass","Test":"TestMSC4500State/StateHashes/UnknownAlgorithmDeferred"}
-{"Action":"fail","Test":"TestMSC4521"}
+{"Action":"pass","Test":"TestMSC4521"}
 {"Action":"pass","Test":"TestMSC4521/ActiveRoomReconciliation"}
 {"Action":"pass","Test":"TestMSC4521/ActiveRoomReconciliation/Digest"}
 {"Action":"pass","Test":"TestMSC4521/ActiveRoomReconciliation/SketchDiff"}
@@ -528,9 +528,9 @@
 {"Action":"pass","Test":"TestMSC4521/FabricatedIDs"}
 {"Action":"pass","Test":"TestMSC4521/NonAdvertisingPeerFallsBack"}
 {"Action":"pass","Test":"TestMSC4521/NonMembersAndACLBlocked"}
-{"Action":"fail","Test":"TestMSC4521/PartitionHealUsesReconciliation"}
+{"Action":"pass","Test":"TestMSC4521/PartitionHealUsesReconciliation"}
 {"Action":"pass","Test":"TestMSC4521/PartlyFakeClaimIsSampled"}
-{"Action":"fail","Test":"TestMSC4521/PausedHomeserverCatchesUp"}
+{"Action":"pass","Test":"TestMSC4521/PausedHomeserverCatchesUp"}
 {"Action":"pass","Test":"TestMSC4521/Primitives"}
 {"Action":"pass","Test":"TestMSC4521/Primitives/Plumbing"}
 {"Action":"pass","Test":"TestMSC4521/Primitives/Plumbing/Buckets"}
