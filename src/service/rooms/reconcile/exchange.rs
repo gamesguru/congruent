@@ -107,6 +107,9 @@ fn short_id(event_id: &EventId) -> Option<u64> {
 		.map(|hash| hash.h64)
 }
 
+/// Events expected to arrive on the peer while the exchange runs.
+const HEADROOM: usize = 8;
+
 impl Service {
 	pub(super) async fn exchange(&self, key: &Key) -> Outcome {
 		let (room_id, peer) = (key.room_id(), key.peer());
@@ -154,7 +157,7 @@ impl Service {
 			| Ok(client) => client,
 			| Err(e) => return Outcome::Failed(format!("client: {e:?}")),
 		};
-		let mut action = client.select_action(&local.resident, remote, 0);
+		let mut action = client.select_action(&local.resident, remote, HEADROOM);
 		let mut offered: BTreeSet<OwnedEventId> = BTreeSet::new();
 
 		for _ in 0..MAX_RECONCILIATION_ROUNDS {

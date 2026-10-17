@@ -161,6 +161,10 @@ pub struct Service {
 	/// MSC4521 per-room reconciliation snapshots. Short-lived by design; see
 	/// the `reconciliation` module docs.
 	pub reconciliation_cache: moka::sync::Cache<OwnedRoomId, Arc<RoomReconciliationState>>,
+	/// Frame IDs advertised to peers in the last minute. A `room_diff` may name
+	/// one of these after the frame has since moved: the responder sketches its
+	/// current set, which is the old set plus whatever arrived meanwhile.
+	pub advertised_frames: moka::sync::Cache<(OwnedRoomId, String), ()>,
 	/// Tier 2 of the backfill scan perf work (see
 	/// `docs/development-gg/room-issues.csv`): remembers the exact
 	/// `(state_hash, from, limit)` of the most recent gap-free
@@ -280,6 +284,10 @@ impl crate::Service for Service {
 			reconciliation_cache: moka::sync::Cache::builder()
 				.max_capacity(256)
 				.time_to_live(std::time::Duration::from_secs(10))
+				.build(),
+			advertised_frames: moka::sync::Cache::builder()
+				.max_capacity(4096)
+				.time_to_live(std::time::Duration::from_secs(60))
 				.build(),
 			pending_promotions: PromotionClaims::new(),
 		}))

@@ -98,6 +98,11 @@ pub(crate) async fn get_room_reconciliation_digest_route(
 ) -> Result<get_room_digest::unstable::Response> {
 	let state = room_snapshot(&services, body.origin(), &body.room_id).await?;
 	let fields = digest_fields(&state);
+	services
+		.rooms
+		.timeline
+		.advertised_frames
+		.insert((body.room_id.clone(), fields.frame_id.clone()), ());
 
 	Ok(get_room_digest::unstable::Response {
 		digest: fields.digest,
@@ -120,6 +125,11 @@ pub(crate) async fn get_room_reconciliation_strata_route(
 ) -> Result<get_room_digest_strata::unstable::Response> {
 	let state = room_snapshot(&services, body.origin(), &body.room_id).await?;
 	let fields = digest_fields(&state);
+	services
+		.rooms
+		.timeline
+		.advertised_frames
+		.insert((body.room_id.clone(), fields.frame_id.clone()), ());
 
 	Ok(get_room_digest_strata::unstable::Response {
 		digest: fields.digest,
@@ -368,15 +378,30 @@ pub(crate) async fn post_room_reconciliation_diff_route(
 	body: Ruma<post_room_diff::unstable::Request>,
 ) -> Result<post_room_diff::unstable::Response> {
 	let state = room_snapshot(&services, body.origin(), &body.room_id).await?;
+	let room_id = body.room_id.clone();
 	let body = validate_room_diff_request(&body)?;
 
-	if body.frame_id != frame_id_for(&state.frame_event_ids) {
+	// A frame we advertised recently is accepted even if it has since moved on:
+	// the sketch covers our current set, so anything newer is one more
+	// difference, and the response names the current frame.
+	let current = body.frame_id == frame_id_for(&state.frame_event_ids);
+	if !current
+		&& !services
+			.rooms
+			.timeline
+			.advertised_frames
+			.contains_key(&(room_id, body.frame_id.clone()))
+	{
 		return Err!(Request(InvalidParam(
 			"Requested `frame_id` does not match the responder's current frame."
 		)));
 	}
 
-	let common = common_frame(&state, &body);
+	let common = if current {
+		common_frame(&state, &body)
+	} else {
+		state.frame_event_ids.clone()
+	};
 	let frame_status = match (body.frame_negotiation, common.is_empty()) {
 		| (false, _) => "not_requested",
 		| (true, false) => "common",
