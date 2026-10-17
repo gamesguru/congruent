@@ -14,6 +14,7 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use conduwuit::{Result, debug, info};
 use futures::{FutureExt, StreamExt, pin_mut};
+use rand::seq::SliceRandom;
 use slipstream::{OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, ServerName};
 use tokio::sync::Notify;
 
@@ -30,6 +31,19 @@ const MAX_CONCURRENT: usize = 4;
 const MAX_PER_PEER: usize = 2;
 /// How many `(room, peer)` pairs may be tracked at once.
 const MAX_TRACKED: usize = 4096;
+/// How many `(room, peer)` pairs the activity debounce remembers.
+const MAX_RECENT: u64 = 16384;
+/// The most peers of a room a local write or a sweep reconciles with.
+const MAX_FANOUT: usize = 8;
+
+/// How many of a room's `n` remote servers to reconcile with: about log2(n),
+/// at least one. Asking every member would be all-to-all; a few random peers
+/// per trigger, re-drawn each time, spread a difference through the room in a
+/// logarithmic number of rounds and route around an unavailable link.
+fn fanout(n: usize) -> usize {
+	let bits = usize::try_from(usize::BITS.saturating_sub(n.leading_zeros())).unwrap_or(1);
+	bits.clamp(1, MAX_FANOUT)
+}
 
 pub struct Service {
 	services: Services,
@@ -71,7 +85,7 @@ impl crate::Service for Service {
 			wake: Notify::new(),
 			remembered: parking_lot::Mutex::default(),
 			recent: moka::sync::Cache::builder()
-				.max_capacity(MAX_TRACKED as u64 * 4)
+				.max_capacity(MAX_RECENT)
 				.time_to_live(Duration::from_secs(
 					args.server
 						.config
@@ -188,6 +202,7 @@ impl Service {
 			.experimental_features
 			.msc4521_reconcile_interval_secs;
 		let mut shutdown = self.services.server.signal.subscribe();
+		let mut activity = self.services.timeline.activity.subscribe();
 		let mut sweep =
 			(interval != 0).then(|| async_io::Timer::interval(Duration::from_secs(interval)));
 
@@ -220,7 +235,30 @@ impl Service {
 		}
 	}
 
-	/// Enqueues every remote server of every room we are in.
+	/// About log2(n) random remote servers of the room.
+	async fn pick_peers(&self, room_id: &RoomId) -> Vec<OwnedServerName> {
+		let ours = self.services.globals.server_name();
+		let mut peers: Vec<OwnedServerName> = self
+			.services
+			.state_cache
+			.room_servers(room_id)
+			.filter(|peer| std::future::ready(peer.as_str() != ours.as_str()))
+			.collect()
+			.await;
+		peers.shuffle(&mut rand::rng());
+		peers.truncate(fanout(peers.len()));
+		peers
+	}
+
+	/// A local write landed in `room_id`: reconcile with a few of its peers.
+	async fn local_activity(&self, room_id: &RoomId) {
+		for peer in self.pick_peers(room_id).await {
+			self.enqueue(room_id, &peer, Reason::Activity).await;
+		}
+	}
+
+	/// Enqueues a few random remote servers of every room we are in. Stops
+	/// early once the queue is full: the next pass continues.
 	async fn sweep(&self) {
 		if !self.enabled() || !self.services.server.config.allow_federation {
 			return;
@@ -229,14 +267,11 @@ impl Service {
 		let rooms: Vec<OwnedRoomId> =
 			self.services.state_cache.server_rooms(ours).collect().await;
 		for room_id in rooms {
-			let peers: Vec<OwnedServerName> = self
-				.services
-				.state_cache
-				.room_servers(&room_id)
-				.collect()
-				.await;
-			for peer in peers {
-				self.enqueue(&room_id, &peer, Reason::Periodic).await;
+			for peer in self.pick_peers(&room_id).await {
+				let outcome = self.enqueue(&room_id, &peer, Reason::Periodic).await;
+				if outcome == Enqueued::Refused(Refusal::QueueFull) {
+					return;
+				}
 			}
 		}
 	}

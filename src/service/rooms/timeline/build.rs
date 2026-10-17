@@ -231,6 +231,9 @@ pub async fn build_and_append_pdu(
 		info!("Sending to federation");
 	}
 
+	// Tell reconciliation a local write happened. No receiver is not an error.
+	let _ = self.activity.send(room_id.clone());
+
 	// Our member list is incomplete until the resync finishes; send this event to
 	// the remaining servers then.
 	if self

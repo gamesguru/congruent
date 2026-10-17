@@ -173,6 +173,9 @@ pub struct Service {
 	/// one of these after the frame has since moved: the responder sketches its
 	/// current set, which is the old set plus whatever arrived meanwhile.
 	pub advertised_frames: moka::sync::Cache<(OwnedRoomId, String), ()>,
+	/// Rooms in which a local PDU was just appended. Reconciliation listens;
+	/// the timeline does not depend on it.
+	pub activity: tokio::sync::broadcast::Sender<OwnedRoomId>,
 	/// Tier 2 of the backfill scan perf work (see
 	/// `docs/development-gg/room-issues.csv`): remembers the exact
 	/// `(state_hash, from, limit)` of the most recent gap-free
@@ -293,6 +296,7 @@ impl crate::Service for Service {
 				.max_capacity(256)
 				.time_to_live(std::time::Duration::from_secs(10))
 				.build(),
+			activity: tokio::sync::broadcast::channel(256).0,
 			advertised_frames: moka::sync::Cache::builder()
 				.max_capacity(ADVERTISED_FRAMES_MAX)
 				.time_to_live(ADVERTISED_FRAME_TTL)
