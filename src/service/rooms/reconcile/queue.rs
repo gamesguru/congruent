@@ -9,11 +9,12 @@ use std::{
 use slipstream::{OwnedRoomId, OwnedServerName, RoomId, ServerName};
 
 /// What caused a reconciliation to be requested.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Reason {
 	/// An administrator or a test asked for it.
 	Explicit,
 	/// The periodic sweep.
+	#[default]
 	Periodic,
 	/// A transaction from the peer carried a PDU or an EDU for the room.
 	Activity,
@@ -70,6 +71,7 @@ impl Key {
 struct Entry {
 	queued: bool,
 	in_flight: bool,
+	reason: Reason,
 	/// A trigger arrived during the running exchange.
 	dirty: bool,
 	failures: u32,
@@ -109,6 +111,14 @@ fn backoff(failures: u32) -> Duration {
 }
 
 impl Queue {
+	/// Whether an automatic trigger should avoid this pair for now. The
+	/// existing queue retains the cooldown for unsupported and failed peers.
+	pub(super) fn cooling_down(&self, key: &Key, now: Instant) -> bool {
+		self.entries
+			.get(key)
+			.is_some_and(|entry| entry.not_before.is_some_and(|until| until > now))
+	}
+
 	pub(super) fn new(max_tracked: usize) -> Self {
 		Self {
 			entries: HashMap::new(),
@@ -121,9 +131,15 @@ impl Queue {
 		if let Some(entry) = self.entries.get_mut(&key) {
 			if entry.in_flight {
 				entry.dirty = true;
+				if reason != Reason::Periodic {
+					entry.reason = reason;
+				}
 				return Enqueued::Coalesced;
 			}
 			if entry.queued {
+				if reason != Reason::Periodic {
+					entry.reason = reason;
+				}
 				return Enqueued::Coalesced;
 			}
 			// An explicit request overrides backoff; nothing else does.
@@ -133,6 +149,7 @@ impl Queue {
 				return Enqueued::Refused(Refusal::BackingOff);
 			}
 			entry.queued = true;
+			entry.reason = reason;
 			self.ready.push_back(key);
 			return Enqueued::Queued;
 		}
@@ -141,7 +158,7 @@ impl Queue {
 			return Enqueued::Refused(Refusal::QueueFull);
 		}
 		self.entries
-			.insert(key.clone(), Entry { queued: true, ..Entry::default() });
+			.insert(key.clone(), Entry { queued: true, reason, ..Entry::default() });
 		self.ready.push_back(key);
 		Enqueued::Queued
 	}
@@ -167,33 +184,46 @@ impl Queue {
 		now: Instant,
 		max_concurrent: usize,
 		max_per_peer: usize,
-	) -> Option<Key> {
+		periodic_allowed: bool,
+	) -> Option<(Key, Reason)> {
 		let running = self.entries.values().filter(|e| e.in_flight).count();
 		if running >= max_concurrent {
 			return None;
 		}
 
-		for index in 0..self.ready.len() {
-			let key = &self.ready[index];
-			let peer_running = self
-				.entries
-				.iter()
-				.filter(|(k, e)| e.in_flight && k.peer == key.peer)
-				.count();
-			let waiting = self
-				.entries
-				.get(key)
-				.is_some_and(|e| e.not_before.is_some_and(|t| t > now));
-			if peer_running >= max_per_peer || waiting {
-				continue;
-			}
+		for priority in [true, false] {
+			for index in 0..self.ready.len() {
+				let key = &self.ready[index];
+				if self
+					.entries
+					.get(key)
+					.is_none_or(|e| (e.reason != Reason::Periodic) != priority)
+					|| (!priority && !periodic_allowed)
+				{
+					continue;
+				}
+				let peer_running = self
+					.entries
+					.iter()
+					.filter(|(k, e)| e.in_flight && k.peer == key.peer)
+					.count();
+				let waiting = self
+					.entries
+					.get(key)
+					.is_some_and(|e| e.not_before.is_some_and(|t| t > now));
+				if peer_running >= max_per_peer || waiting {
+					continue;
+				}
 
-			let key = self.ready.remove(index)?;
-			let entry = self.entries.get_mut(&key)?;
-			entry.queued = false;
-			entry.in_flight = true;
-			entry.dirty = false;
-			return Some(key);
+				let key = self.ready.remove(index)?;
+				let entry = self.entries.get_mut(&key)?;
+				let reason = entry.reason;
+				entry.queued = false;
+				entry.in_flight = true;
+				entry.dirty = false;
+				entry.reason = Reason::Periodic;
+				return Some((key, reason));
+			}
 		}
 		None
 	}
@@ -250,8 +280,8 @@ mod tests {
 		let k = key("!a:example.org", "peer.example");
 		assert_eq!(queue.enqueue(k.clone(), Reason::Periodic, now), Enqueued::Queued);
 		assert_eq!(queue.enqueue(k.clone(), Reason::Periodic, now), Enqueued::Coalesced);
-		assert_eq!(queue.next_ready(now, 4, 2), Some(k));
-		assert_eq!(queue.next_ready(now, 4, 2), None);
+		assert_eq!(queue.next_ready(now, 4, 2, true), Some((k, Reason::Periodic)));
+		assert_eq!(queue.next_ready(now, 4, 2, true), None);
 	}
 
 	#[test]
@@ -260,13 +290,13 @@ mod tests {
 		let mut queue = Queue::new(8);
 		let k = key("!a:example.org", "peer.example");
 		queue.enqueue(k.clone(), Reason::Periodic, now);
-		assert_eq!(queue.next_ready(now, 4, 2), Some(k.clone()));
+		assert_eq!(queue.next_ready(now, 4, 2, true), Some((k.clone(), Reason::Periodic)));
 		assert_eq!(queue.enqueue(k.clone(), Reason::IncomingGap, now), Enqueued::Coalesced);
 		assert_eq!(queue.enqueue(k.clone(), Reason::IncomingGap, now), Enqueued::Coalesced);
 		assert!(queue.finish(&k, Verdict::Done, now));
-		assert_eq!(queue.next_ready(now, 4, 2), Some(k.clone()));
+		assert_eq!(queue.next_ready(now, 4, 2, true), Some((k.clone(), Reason::IncomingGap)));
 		assert!(!queue.finish(&k, Verdict::Done, now));
-		assert_eq!(queue.next_ready(now, 4, 2), None);
+		assert_eq!(queue.next_ready(now, 4, 2, true), None);
 	}
 
 	#[test]
@@ -275,7 +305,7 @@ mod tests {
 		let mut queue = Queue::new(8);
 		let k = key("!a:example.org", "peer.example");
 		queue.enqueue(k.clone(), Reason::Periodic, now);
-		queue.next_ready(now, 4, 2);
+		queue.next_ready(now, 4, 2, true);
 		queue.finish(&k, Verdict::Failed, now);
 
 		assert_eq!(
@@ -283,7 +313,7 @@ mod tests {
 			Enqueued::Refused(Refusal::BackingOff)
 		);
 		assert_eq!(queue.enqueue(k.clone(), Reason::Explicit, now), Enqueued::Queued);
-		assert_eq!(queue.next_ready(now, 4, 2), Some(k));
+		assert_eq!(queue.next_ready(now, 4, 2, true), Some((k, Reason::Explicit)));
 	}
 
 	#[test]
@@ -292,7 +322,7 @@ mod tests {
 		let mut queue = Queue::new(8);
 		let k = key("!a:example.org", "peer.example");
 		queue.enqueue(k.clone(), Reason::Periodic, now);
-		queue.next_ready(now, 4, 2);
+		queue.next_ready(now, 4, 2, true);
 		queue.finish(&k, Verdict::Unsupported, now);
 		let later = now + BACKOFF_MAX + Duration::from_secs(1);
 		assert_eq!(
@@ -315,10 +345,23 @@ mod tests {
 		for room in ["!a:example.org", "!b:example.org", "!c:example.org"] {
 			queue.enqueue(key(room, "peer.example"), Reason::Periodic, now);
 		}
-		assert!(queue.next_ready(now, 4, 2).is_some());
-		assert!(queue.next_ready(now, 4, 2).is_some());
+		assert!(queue.next_ready(now, 4, 2, true).is_some());
+		assert!(queue.next_ready(now, 4, 2, true).is_some());
 		// Two are running against the same peer.
-		assert_eq!(queue.next_ready(now, 4, 2), None);
+		assert_eq!(queue.next_ready(now, 4, 2, true), None);
+	}
+
+	#[test]
+	fn exhausted_periodic_budget_still_allows_activity() {
+		let now = Instant::now();
+		let mut queue = Queue::new(8);
+		let periodic = key("!periodic:example.org", "peer.example");
+		let activity = key("!activity:example.org", "peer.example");
+		queue.enqueue(periodic, Reason::Periodic, now);
+		queue.enqueue(activity.clone(), Reason::Activity, now);
+
+		assert_eq!(queue.next_ready(now, 4, 2, false), Some((activity, Reason::Activity)));
+		assert_eq!(queue.next_ready(now, 4, 2, false), None);
 	}
 
 	#[test]
@@ -344,7 +387,7 @@ mod tests {
 		let c = key("!c:example.org", "peer.example");
 
 		assert_eq!(q.enqueue(a.clone(), Reason::Periodic, now), Enqueued::Queued);
-		assert_eq!(q.next_ready(now, 4, 4), Some(a.clone()));
+		assert_eq!(q.next_ready(now, 4, 4, true), Some((a.clone(), Reason::Periodic)));
 		q.finish(&a, Verdict::Failed, now);
 		assert_eq!(q.enqueue(b, Reason::Periodic, now), Enqueued::Queued);
 

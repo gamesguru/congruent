@@ -9,11 +9,17 @@
 mod exchange;
 mod queue;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+	collections::{HashSet, hash_map::DefaultHasher},
+	hash::{Hash, Hasher},
+	sync::{Arc, atomic::Ordering},
+	time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use conduwuit::{Result, debug, info};
 use futures::{FutureExt, StreamExt, pin_mut};
+use rand::seq::SliceRandom;
 use slipstream::{OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, ServerName};
 use tokio::sync::Notify;
 
@@ -32,51 +38,50 @@ const MAX_PER_PEER: usize = 2;
 const MAX_TRACKED: usize = 4096;
 /// How many `(room, peer)` pairs the activity debounce remembers.
 const MAX_RECENT: u64 = 16384;
-/// Maximum outbound degree for one server in one room.
-const MAX_FANOUT: usize = 8;
-/// Maximum rooms and pairs examined on one periodic tick.
+/// Stable peers provide continuity; rotating peers explore alternatives.
+const STABLE_PEERS: usize = 2;
+const ROTATING_PEERS: usize = 2;
+/// Maximum rooms examined on one periodic tick.
 const SWEEP_ROOMS_PER_TICK: usize = 8;
-const SWEEP_PAIRS_PER_TICK: usize = SWEEP_ROOMS_PER_TICK * MAX_FANOUT;
+const MAX_EXCHANGES_PER_SECOND: u32 = 4;
 
-/// Choose a stable, connected, bounded-degree overlay from the sorted room
-/// servers. XOR edges give a hypercube for small rooms. Above 256 members,
-/// seven XOR edges plus a ring successor keep the graph connected without
-/// increasing a server's outbound degree.
-fn overlay_indices(count: usize, ours: usize) -> Vec<usize> {
-	if count <= 1 || ours >= count {
-		return Vec::new();
+struct SweepCursor {
+	rooms: Vec<OwnedRoomId>,
+	next: usize,
+}
+
+struct RateBudget {
+	window_start: Instant,
+	started: u32,
+}
+
+impl RateBudget {
+	fn available(&mut self, now: Instant) -> bool {
+		if now.duration_since(self.window_start) >= Duration::from_secs(1) {
+			self.window_start = now;
+			self.started = 0;
+		}
+		self.started < MAX_EXCHANGES_PER_SECOND
 	}
-	let bits = usize::BITS.saturating_sub(count.saturating_sub(1).leading_zeros());
-	let xor_bits = usize::try_from(bits)
-		.unwrap_or(MAX_FANOUT)
-		.min(if count > 256 {
-			MAX_FANOUT.saturating_sub(1)
+
+	fn wait(&self, now: Instant) -> Duration {
+		if self.started < MAX_EXCHANGES_PER_SECOND {
+			Duration::from_secs(1)
 		} else {
-			MAX_FANOUT
-		});
-	let mut peers = Vec::with_capacity(MAX_FANOUT);
-	for bit in 0..xor_bits {
-		let Some(mask) = 1_usize.checked_shl(u32::try_from(bit).unwrap_or(u32::MAX)) else {
-			break;
-		};
-		let peer = ours ^ mask;
-		if peer < count {
-			peers.push(peer);
+			Duration::from_secs(1)
+				.saturating_sub(now.saturating_duration_since(self.window_start))
 		}
 	}
-	if count > 256 {
-		peers.push(ours.saturating_add(1) % count);
-	}
-	peers
 }
 
 pub struct Service {
 	services: Services,
 	queue: parking_lot::Mutex<Queue>,
+	rate: parking_lot::Mutex<RateBudget>,
 	wake: Notify,
 	/// Events a peer offered that we fetched and could not use, so they are not
 	/// fetched again every round.
-	remembered: parking_lot::Mutex<std::collections::HashMap<OwnedEventId, std::time::Instant>>,
+	remembered: parking_lot::Mutex<std::collections::HashMap<OwnedEventId, Instant>>,
 	/// Pairs an activity trigger queued within the debounce window.
 	recent: moka::sync::Cache<Key, ()>,
 	/// Avoid rescanning a large room's member index for every PDU in a burst.
@@ -109,6 +114,10 @@ impl crate::Service for Service {
 				state: args.depend::<crate::rooms::state::Service>("rooms::state"),
 			},
 			queue: parking_lot::Mutex::new(Queue::new(MAX_TRACKED)),
+			rate: parking_lot::Mutex::new(RateBudget {
+				window_start: Instant::now(),
+				started: 0,
+			}),
 			wake: Notify::new(),
 			remembered: parking_lot::Mutex::default(),
 			recent: moka::sync::Cache::builder()
@@ -210,7 +219,7 @@ impl Service {
 		let outcome = self
 			.queue
 			.lock()
-			.enqueue(key.clone(), reason, std::time::Instant::now());
+			.enqueue(key.clone(), reason, Instant::now());
 		if outcome == Enqueued::Queued {
 			if reason == Reason::Activity {
 				self.recent.insert(key, ());
@@ -239,8 +248,7 @@ impl Service {
 			.msc4521_reconcile_interval_secs;
 		let mut shutdown = self.services.server.signal.subscribe();
 		let mut activity = self.services.timeline.activity.subscribe();
-		let ours = self.services.globals.server_name();
-		let mut rooms = Box::pin(self.services.state_cache.server_rooms(ours));
+		let mut cursor = SweepCursor { rooms: Vec::new(), next: 0 };
 		let mut sweep =
 			(interval != 0).then(|| async_io::Timer::interval(Duration::from_secs(interval)));
 
@@ -259,7 +267,7 @@ impl Service {
 				}
 			};
 			// Backed-off entries become ready by the clock alone.
-			let retry = smol::Timer::after(Duration::from_secs(1));
+			let retry = smol::Timer::after(self.rate.lock().wait(Instant::now()));
 			pin_mut!(woken, signal, local, tick, retry);
 			futures::select_biased! {
 				_ = signal.fuse() => {},
@@ -268,11 +276,7 @@ impl Service {
 						self.activity(&room_id).await;
 					}
 				},
-				() = tick.fuse() => {
-					if self.sweep(&mut rooms).await {
-						rooms = Box::pin(self.services.state_cache.server_rooms(ours));
-					}
-				},
+				() = tick.fuse() => self.sweep(&mut cursor).await,
 				() = woken.fuse() => {},
 				_ = FutureExt::fuse(retry) => {},
 			}
@@ -283,7 +287,9 @@ impl Service {
 		}
 	}
 
-	/// Stable sparse overlay peers for this room's current server membership.
+	/// Two stable scored peers and two rotating peers, excluding pairs in
+	/// cooldown. The stable hash uses our name so different servers spread
+	/// their choices across the room.
 	async fn pick_peers(&self, room_id: &RoomId) -> Vec<OwnedServerName> {
 		let ours = self.services.globals.server_name();
 		let mut peers: Vec<OwnedServerName> = self
@@ -292,19 +298,55 @@ impl Service {
 			.room_servers(room_id)
 			.collect()
 			.await;
-		peers.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
-		peers.dedup();
-		let Some(index) = peers.iter().position(|peer| peer.as_str() == ours.as_str()) else {
-			return Vec::new();
+		let now = Instant::now();
+		let queue = self.queue.lock();
+		let mut seen = HashSet::new();
+		peers.retain(|peer| {
+			peer.as_str() != ours.as_str()
+				&& seen.insert(peer.clone())
+				&& !queue.cooling_down(&Key::new(room_id, peer), now)
+		});
+		drop(queue);
+		let rendezvous = |peer: &OwnedServerName| {
+			let mut hash = DefaultHasher::new();
+			room_id.hash(&mut hash);
+			ours.hash(&mut hash);
+			peer.hash(&mut hash);
+			hash.finish()
 		};
-		overlay_indices(peers.len(), index)
-			.into_iter()
-			.map(|index| peers[index].clone())
-			.collect()
+		// Health only reorders a small, server-specific rendezvous shortlist;
+		// a globally popular server cannot become every room's stable peer.
+		let shortlist_len = peers.len().min(8);
+		if shortlist_len < peers.len() {
+			peers.select_nth_unstable_by_key(shortlist_len, &rendezvous);
+		} else {
+			peers.sort_unstable_by_key(&rendezvous);
+		}
+		let mut shortlist: Vec<_> = peers.drain(..shortlist_len).collect();
+		shortlist.sort_unstable_by_key(|peer| {
+			self.services
+				.event_handler
+				.peer_scorer
+				.get(peer)
+				.map_or(0_i64, |stats| {
+					let successes = i64::from(stats.successes.load(Ordering::Relaxed));
+					let errors = i64::from(stats.errors.load(Ordering::Relaxed));
+					errors
+						.saturating_mul(1000)
+						.saturating_sub(successes.saturating_mul(100))
+				})
+		});
+		let stable_count = STABLE_PEERS.min(shortlist.len());
+		let mut rotating = shortlist.split_off(stable_count);
+		rotating.extend(peers);
+		rotating.shuffle(&mut rand::rng());
+		rotating.truncate(ROTATING_PEERS);
+		shortlist.extend(rotating);
+		shortlist
 	}
 
 	/// A local write or inbound transaction touched `room_id`. Use the same
-	/// bounded overlay as the periodic sweep, regardless of who sent the event.
+	/// bounded peer selection as the periodic sweep.
 	pub async fn activity(&self, room_id: &RoomId) {
 		if !self.enabled()
 			|| !self.services.server.config.allow_federation
@@ -328,51 +370,78 @@ impl Service {
 		}
 	}
 
+	/// The sender of an inbound transaction gets a direct chance first. This
+	/// matters when its previous events were missed while the link was down.
+	pub async fn activity_from(&self, room_id: &RoomId, peer: &ServerName) {
+		self.enqueue(room_id, peer, Reason::Activity).await;
+		self.activity(room_id).await;
+	}
+
 	/// Walks the room index in bounded slices. One tick never scans every room
 	/// or floods the queue, regardless of the size of the deployment.
-	async fn sweep(
-		&self,
-		rooms: &mut (impl futures::Stream<Item = OwnedRoomId> + Unpin),
-	) -> bool {
+	async fn sweep(&self, cursor: &mut SweepCursor) {
 		if !self.enabled() || !self.services.server.config.allow_federation {
-			return false;
+			return;
 		}
-		let mut pairs = 0_usize;
+		if cursor.next >= cursor.rooms.len() {
+			cursor.rooms = self
+				.services
+				.state_cache
+				.server_rooms(self.services.globals.server_name())
+				.collect()
+				.await;
+			cursor.next = 0;
+		}
 		for _ in 0..SWEEP_ROOMS_PER_TICK {
-			let Some(room_id) = rooms.next().await else {
-				return true;
+			let Some(room_id) = cursor.rooms.get(cursor.next) else {
+				return;
 			};
-			for peer in self.pick_peers(&room_id).await {
-				if pairs >= SWEEP_PAIRS_PER_TICK {
-					return false;
-				}
-				let outcome = self.enqueue(&room_id, &peer, Reason::Periodic).await;
+			for peer in self.pick_peers(room_id).await {
+				let outcome = self.enqueue(room_id, &peer, Reason::Periodic).await;
 				if outcome == Enqueued::Refused(Refusal::QueueFull) {
-					return false;
+					return;
 				}
-				pairs = pairs.saturating_add(1);
 			}
+			cursor.next = cursor.next.saturating_add(1);
 		}
-		false
 	}
 
 	/// Starts as many queued exchanges as the concurrency limits allow.
 	fn start_ready(self: &Arc<Self>) {
 		loop {
-			let Some(key) = self.queue.lock().next_ready(
-				std::time::Instant::now(),
-				MAX_CONCURRENT,
-				MAX_PER_PEER,
-			) else {
+			let now = Instant::now();
+			let mut rate = self.rate.lock();
+			let periodic_allowed = rate.available(now);
+			let Some((key, reason)) =
+				self.queue
+					.lock()
+					.next_ready(now, MAX_CONCURRENT, MAX_PER_PEER, periodic_allowed)
+			else {
 				return;
 			};
+			if reason == Reason::Periodic {
+				rate.started = rate.started.saturating_add(1);
+			}
+			drop(rate);
 
 			let this = Arc::clone(self);
 			let runtime = self.services.server.runtime().clone();
 			drop(runtime.spawn(async move {
-				let started = std::time::Instant::now();
+				let started = Instant::now();
 				let outcome = this.exchange(&key).await;
-				let elapsed_ms = started.elapsed().as_millis();
+				let elapsed = started.elapsed();
+				let elapsed_ms = elapsed.as_millis();
+				match &outcome {
+					| Outcome::Synchronized | Outcome::Reconciled { .. } => this
+						.services
+						.event_handler
+						.update_peer_stats(key.peer(), true, elapsed),
+					| Outcome::Unsupported | Outcome::Failed(_) => this
+						.services
+						.event_handler
+						.update_peer_stats(key.peer(), false, elapsed),
+					| Outcome::Differs(_) | Outcome::Abandoned(_) => {},
+				}
 				let outcome_text = outcome.describe();
 				// Only exchanges that moved events or gave up are worth an INFO line;
 				// the sweep revisits every pair constantly.
@@ -398,10 +467,7 @@ impl Service {
 					| Outcome::Differs(_)
 					| Outcome::Reconciled { .. } => Verdict::Done,
 				};
-				let requeue = this
-					.queue
-					.lock()
-					.finish(&key, verdict, std::time::Instant::now());
+				let requeue = this.queue.lock().finish(&key, verdict, Instant::now());
 				if requeue {
 					this.wake.notify_one();
 				}

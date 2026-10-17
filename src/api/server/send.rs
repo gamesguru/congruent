@@ -300,7 +300,11 @@ async fn process_inbound_transaction(
 			.server_in_room(&origin, room_id)
 			.await
 		{
-			services.rooms.reconcile.activity(room_id).await;
+			services
+				.rooms
+				.reconcile
+				.activity_from(room_id, &origin)
+				.await;
 		}
 	}
 

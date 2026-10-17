@@ -203,20 +203,29 @@ fn validate_room_diff_request(
 		return Err!(Request(InvalidParam("Too many bucket requests.")));
 	}
 
-	let requests = body
+	// Validate the bucket metadata before decoding sketches. Apart from making
+	// malformed requests cheaper to reject, this ensures an invalid capacity,
+	// depth or antichain is reported as a bad `requests` field rather than as a
+	// secondary sketch-decoding error.
+	let buckets = body
 		.requests
+		.iter()
+		.map(|bucket| {
+			let depth = u8::try_from(bucket.depth).map_err(|_| bad_param("requests"))?;
+			let capacity = usize::try_from(bucket.capacity).map_err(|_| bad_param("requests"))?;
+			Ok(BucketRequest::new(depth, bucket.prefix, capacity))
+		})
+		.collect::<Result<Vec<_>>>()?;
+	validate_bucket_requests(&buckets).map_err(|_| bad_param("requests"))?;
+
+	let requests = buckets
 		.iter()
 		.zip(&body.local_sketches)
 		.map(|(bucket, sketch)| {
-			let depth = u8::try_from(bucket.depth).map_err(|_| bad_param("depth"))?;
-			let capacity = usize::try_from(bucket.capacity).map_err(|_| bad_param("capacity"))?;
-			let local_sketch = SyndromeSketch::decode(capacity, sketch)
+			let local_sketch = SyndromeSketch::decode(bucket.capacity, sketch)
 				.map_err(|_| bad_param("local_sketches"))?;
 
-			Ok(SketchRequest {
-				bucket: BucketRequest::new(depth, bucket.prefix, capacity),
-				local_sketch,
-			})
+			Ok(SketchRequest { bucket: *bucket, local_sketch })
 		})
 		.collect::<Result<Vec<_>>>()?;
 
@@ -248,8 +257,6 @@ enum Sketched {
 /// residual into event IDs.
 fn diff_buckets(state: &RoomReconciliationState, body: &RoomDiffRequest) -> Result<Sketched> {
 	let buckets: Vec<BucketRequest> = body.requests.iter().map(|r| r.bucket).collect();
-	// Malformed buckets are rejected even when there is nothing to decode.
-	validate_bucket_requests(&buckets).map_err(|_| bad_param("requests"))?;
 
 	let residual_digest = state.resident.accumulator().digest() ^ body.local_digest;
 
