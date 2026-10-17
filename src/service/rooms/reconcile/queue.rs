@@ -133,13 +133,26 @@ impl Queue {
 			return Enqueued::Queued;
 		}
 
-		if self.entries.len() >= self.max_tracked {
+		if self.entries.len() >= self.max_tracked && !self.evict_idle() {
 			return Enqueued::Refused(Refusal::QueueFull);
 		}
 		self.entries
 			.insert(key.clone(), Entry { queued: true, ..Entry::default() });
 		self.ready.push_back(key);
 		Enqueued::Queued
+	}
+
+	/// Drops the idle failing pair whose backoff ends soonest, to make room for
+	/// a new one. Returns whether anything was dropped. Pairs that are queued
+	/// or running are never dropped.
+	fn evict_idle(&mut self) -> bool {
+		let victim = self
+			.entries
+			.iter()
+			.filter(|(_, e)| !e.queued && !e.in_flight)
+			.min_by_key(|(_, e)| e.not_before)
+			.map(|(k, _)| k.clone());
+		victim.is_some_and(|key| self.entries.remove(&key).is_some())
 	}
 
 	/// Takes the next queued pair that fits the concurrency limits and marks
@@ -315,5 +328,33 @@ mod tests {
 			queue.enqueue(key("!b:example.org", "p.example"), Reason::Periodic, now),
 			Enqueued::Refused(Refusal::QueueFull)
 		);
+	}
+
+	#[test]
+	fn a_full_queue_evicts_an_idle_failing_pair() {
+		let now = Instant::now();
+		let mut q = Queue::new(2);
+		let a = key("!a:example.org", "peer.example");
+		let b = key("!b:example.org", "peer.example");
+		let c = key("!c:example.org", "peer.example");
+
+		assert_eq!(q.enqueue(a.clone(), Reason::Periodic, now), Enqueued::Queued);
+		assert_eq!(q.next_ready(now, 4, 4), Some(a.clone()));
+		q.finish(&a, Verdict::Failed, now);
+		assert_eq!(q.enqueue(b, Reason::Periodic, now), Enqueued::Queued);
+
+		// `a` is idle and failing, `b` is queued: only `a` may go.
+		assert_eq!(q.enqueue(c, Reason::Periodic, now), Enqueued::Queued);
+		assert!(!q.entries.contains_key(&a));
+	}
+
+	#[test]
+	fn a_full_queue_of_busy_pairs_still_refuses() {
+		let now = Instant::now();
+		let mut q = Queue::new(1);
+		let a = key("!a:example.org", "peer.example");
+		let b = key("!b:example.org", "peer.example");
+		assert_eq!(q.enqueue(a, Reason::Periodic, now), Enqueued::Queued);
+		assert_eq!(q.enqueue(b, Reason::Periodic, now), Enqueued::Refused(Refusal::QueueFull));
 	}
 }

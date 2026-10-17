@@ -228,12 +228,25 @@ impl Service {
 			drop(runtime.spawn(async move {
 				let started = std::time::Instant::now();
 				let outcome = this.exchange(&key).await;
-				info!(
-					target: "reconcile",
-					room_id = %key.room_id(), peer = %key.peer(),
-					elapsed_ms = started.elapsed().as_millis(), outcome = %outcome.describe(),
-					"reconciliation exchange finished"
-				);
+				let elapsed_ms = started.elapsed().as_millis();
+				let outcome_text = outcome.describe();
+				// Only exchanges that moved events or gave up are worth an INFO line;
+				// the sweep revisits every pair constantly.
+				if matches!(outcome, Outcome::Reconciled { .. } | Outcome::Abandoned(_)) {
+					info!(
+						target: "reconcile",
+						room_id = %key.room_id(), peer = %key.peer(),
+						elapsed_ms, outcome = %outcome_text,
+						"reconciliation exchange finished"
+					);
+				} else {
+					debug!(
+						target: "reconcile",
+						room_id = %key.room_id(), peer = %key.peer(),
+						elapsed_ms, outcome = %outcome_text,
+						"reconciliation exchange finished"
+					);
+				}
 				let verdict = match outcome {
 					| Outcome::Failed(_) | Outcome::Abandoned(_) => Verdict::Failed,
 					| Outcome::Unsupported => Verdict::Unsupported,
