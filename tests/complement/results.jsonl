@@ -527,7 +527,7 @@
 {"Action":"skip","Test":"TestMSC4521/BulkReconciliation"}
 {"Action":"pass","Test":"TestMSC4521/FabricatedIDs"}
 {"Action":"pass","Test":"TestMSC4521/NonAdvertisingPeerFallsBack"}
-{"Action":"fail","Test":"TestMSC4521/NonMembersAndACLBlocked"}
+{"Action":"pass","Test":"TestMSC4521/NonMembersAndACLBlocked"}
 {"Action":"fail","Test":"TestMSC4521/PartitionHealUsesReconciliation"}
 {"Action":"pass","Test":"TestMSC4521/PartlyFakeClaimIsSampled"}
 {"Action":"fail","Test":"TestMSC4521/PausedHomeserverCatchesUp"}

@@ -44,7 +44,7 @@ const FETCH_CONCURRENCY: usize = 4;
 /// abandoned. Honest peers fail rarely: an event they offered is one they hold.
 const MAX_FAILED_PERCENT: usize = 25;
 /// How long an event that could not be fetched or used is not asked for again.
-const REMEMBER_FOR: Duration = Duration::from_secs(60 * 60);
+const REMEMBER_FOR: Duration = Duration::from_hours(1);
 /// How many such events are remembered at once.
 const REMEMBER_MAX: usize = 20_000;
 
@@ -207,6 +207,17 @@ impl Service {
 		let sketches = build_bucket_sketches(local.population.h64s(), requests)
 			.map_err(|e| Outcome::Failed(format!("local sketches: {e:?}")))?;
 
+		let buckets = requests
+			.iter()
+			.map(|r| {
+				Ok(SketchBucket {
+					depth: u64::from(r.depth),
+					prefix: r.prefix,
+					capacity: u64::try_from(r.capacity)
+						.map_err(|e| Outcome::Failed(format!("bucket capacity: {e}")))?,
+				})
+			})
+			.collect::<Result<Vec<_>, Outcome>>()?;
 		let request = post_room_diff::unstable::Request {
 			room_id: room_id.to_owned(),
 			mode: "sketch".to_owned(),
@@ -216,14 +227,7 @@ impl Service {
 			frame_event_ids: local.frame_event_ids.clone(),
 			local_digest: local.resident.accumulator().encode_digest(),
 			local_known_event_count: local.resident.accumulator().known_event_count(),
-			requests: requests
-				.iter()
-				.map(|r| SketchBucket {
-					depth: u64::from(r.depth),
-					prefix: r.prefix,
-					capacity: r.capacity as u64,
-				})
-				.collect(),
+			requests: buckets,
 			local_sketches: sketches
 				.iter()
 				.map(rezzy_recon::SyndromeSketch::encode)
@@ -250,7 +254,7 @@ impl Service {
 				let mut roots: Vec<u64> = response
 					.missing_event_ids
 					.iter()
-					.filter_map(|id| short_id(id))
+					.filter_map(short_id)
 					.collect();
 				for short in response.requester_only_short_ids.iter().flatten() {
 					let Ok(raw) = URL_SAFE_NO_PAD.decode(short) else {
@@ -325,16 +329,16 @@ impl Service {
 				.collect()
 				.await;
 			for (id, result) in results {
-				attempted += 1;
+				attempted = attempted.saturating_add(1);
 				match result {
 					| Some(event) => fetched.push(event),
 					| None => {
-						failed += 1;
+						failed = failed.saturating_add(1);
 						self.remember(id);
 					},
 				}
 			}
-			if failed * 100 > attempted * MAX_FAILED_PERCENT {
+			if failed.saturating_mul(100) > attempted.saturating_mul(MAX_FAILED_PERCENT) {
 				return Outcome::Abandoned(format!(
 					"{failed} of {attempted} offered events could not be fetched"
 				));
@@ -364,9 +368,9 @@ impl Service {
 				.non_outlier_pdu_exists(&event_id)
 				.await
 			{
-				applied += 1;
+				applied = applied.saturating_add(1);
 			} else {
-				unusable += 1;
+				unusable = unusable.saturating_add(1);
 				self.remember(event_id);
 			}
 		}

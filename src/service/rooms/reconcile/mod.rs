@@ -94,11 +94,11 @@ impl Service {
 	/// is not ACL-denied.
 	pub async fn enqueue(&self, room_id: &RoomId, peer: &ServerName, reason: Reason) -> Enqueued {
 		if !self.enabled() {
-			return self.record(room_id, peer, reason, Enqueued::Refused(Refusal::Disabled));
+			return Self::record(room_id, peer, reason, Enqueued::Refused(Refusal::Disabled));
 		}
 		let ours = self.services.globals.server_name();
 		if peer == ours {
-			return self.record(room_id, peer, reason, Enqueued::Refused(Refusal::OurServer));
+			return Self::record(room_id, peer, reason, Enqueued::Refused(Refusal::OurServer));
 		}
 		if !self
 			.services
@@ -106,7 +106,7 @@ impl Service {
 			.server_in_room(ours, room_id)
 			.await
 		{
-			return self.record(room_id, peer, reason, Enqueued::Refused(Refusal::NotInRoom));
+			return Self::record(room_id, peer, reason, Enqueued::Refused(Refusal::NotInRoom));
 		}
 		if !self
 			.services
@@ -114,7 +114,12 @@ impl Service {
 			.server_in_room(peer, room_id)
 			.await
 		{
-			return self.record(room_id, peer, reason, Enqueued::Refused(Refusal::PeerNotInRoom));
+			return Self::record(
+				room_id,
+				peer,
+				reason,
+				Enqueued::Refused(Refusal::PeerNotInRoom),
+			);
 		}
 		if self
 			.services
@@ -123,7 +128,7 @@ impl Service {
 			.await
 			.is_err()
 		{
-			return self.record(room_id, peer, reason, Enqueued::Refused(Refusal::Denied));
+			return Self::record(room_id, peer, reason, Enqueued::Refused(Refusal::Denied));
 		}
 
 		let outcome =
@@ -133,11 +138,10 @@ impl Service {
 		if outcome == Enqueued::Queued {
 			self.wake.notify_one();
 		}
-		self.record(room_id, peer, reason, outcome)
+		Self::record(room_id, peer, reason, outcome)
 	}
 
 	fn record(
-		&self,
 		room_id: &RoomId,
 		peer: &ServerName,
 		reason: Reason,
@@ -176,8 +180,8 @@ impl Service {
 			pin_mut!(woken, signal, tick, retry);
 			futures::select_biased! {
 				_ = signal.fuse() => {},
-				_ = tick.fuse() => self.sweep().await,
-				_ = woken.fuse() => {},
+				() = tick.fuse() => self.sweep().await,
+				() = woken.fuse() => {},
 				_ = FutureExt::fuse(retry) => {},
 			}
 

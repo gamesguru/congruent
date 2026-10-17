@@ -79,10 +79,10 @@ pub(super) struct Queue {
 }
 
 const BACKOFF_BASE: Duration = Duration::from_secs(5);
-const BACKOFF_MAX: Duration = Duration::from_secs(15 * 60);
+const BACKOFF_MAX: Duration = Duration::from_mins(15);
 /// A peer that does not implement the endpoints is not asked again for this
 /// long, much longer than a transient failure.
-const UNSUPPORTED_BACKOFF: Duration = Duration::from_secs(6 * 60 * 60);
+const UNSUPPORTED_BACKOFF: Duration = Duration::from_hours(6);
 
 /// How an exchange ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,11 +194,11 @@ impl Queue {
 			},
 			| Verdict::Failed => {
 				entry.failures = entry.failures.saturating_add(1);
-				entry.not_before = Some(now + backoff(entry.failures));
+				entry.not_before = now.checked_add(backoff(entry.failures));
 			},
 			| Verdict::Unsupported => {
 				entry.failures = entry.failures.saturating_add(1);
-				entry.not_before = Some(now + UNSUPPORTED_BACKOFF);
+				entry.not_before = now.checked_add(UNSUPPORTED_BACKOFF);
 			},
 		}
 
