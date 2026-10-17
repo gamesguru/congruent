@@ -137,6 +137,15 @@ impl Queue {
 		}
 	}
 
+	/// The peer just called us, so it is reachable and implements the
+	/// endpoints: drop any failure or unsupported backoff toward it.
+	pub(super) fn peer_reachable(&mut self, key: &Key) {
+		if let Some(entry) = self.entries.get_mut(key) {
+			entry.failures = 0;
+			entry.not_before = None;
+		}
+	}
+
 	pub(super) fn new(max_tracked: usize) -> Self {
 		Self {
 			entries: HashMap::new(),
@@ -385,6 +394,22 @@ mod tests {
 			queue.enqueue(k, Reason::Periodic, later),
 			Enqueued::Refused(Refusal::BackingOff)
 		);
+	}
+
+	#[test]
+	fn inbound_request_clears_failure_backoff() {
+		let now = Instant::now();
+		let mut queue = Queue::new(8);
+		let k = key("!a:example.org", "peer.example");
+		queue.enqueue(k.clone(), Reason::Periodic, now);
+		queue.next_ready(now, 4, 2, true);
+		queue.finish(&k, Verdict::Failed, now);
+		assert_eq!(
+			queue.enqueue(k.clone(), Reason::Periodic, now),
+			Enqueued::Refused(Refusal::BackingOff)
+		);
+		queue.peer_reachable(&k);
+		assert_eq!(queue.enqueue(k, Reason::Periodic, now), Enqueued::Queued);
 	}
 
 	#[test]

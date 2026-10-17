@@ -85,6 +85,7 @@ async fn room_snapshot(
 	}
 	.check()
 	.await?;
+	services.rooms.reconcile.peer_reachable(room_id, origin);
 
 	services.rooms.timeline.reconciliation_state(room_id).await
 }

@@ -349,6 +349,13 @@ impl Service {
 		shortlist
 	}
 
+	/// A peer made a reconciliation request to us. That proves the link works,
+	/// so failure backoff toward it is stale; the next trigger or sweep may
+	/// reach it without waiting out the timer.
+	pub fn peer_reachable(&self, room_id: &RoomId, peer: &ServerName) {
+		self.queue.lock().peer_reachable(&Key::new(room_id, peer));
+	}
+
 	/// A local write or inbound transaction touched `room_id`. Use the same
 	/// bounded peer selection as the periodic sweep.
 	pub async fn activity(&self, room_id: &RoomId) {
