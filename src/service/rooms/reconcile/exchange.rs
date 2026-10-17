@@ -24,6 +24,7 @@ use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, RoomId,
 	ServerName,
 	api::federation::{
+		discovery::get_server_version,
 		event::get_event,
 		reconciliation::{
 			get_room_digest_strata,
@@ -34,6 +35,9 @@ use slipstream::{
 
 use super::{Key, Service};
 
+/// The feature a peer lists in its federation `/version` when it serves the
+/// digest profile this exchange speaks.
+const DIGEST_FEATURE: &str = "tk.nutra.msc4521.digest.algebraic_v1";
 /// Events fetched from one peer in one exchange.
 const MAX_FETCHES: usize = 100;
 /// Events fetched first, before the rest are trusted enough to fetch.
@@ -119,6 +123,10 @@ impl Service {
 			| Err(e) => return Outcome::Failed(format!("local snapshot: {e}")),
 		};
 
+		if let Err(outcome) = self.peer_advertises(peer).await {
+			return outcome;
+		}
+
 		let request = get_room_digest_strata::unstable::Request::new(room_id.to_owned());
 		let response = match self
 			.services
@@ -128,8 +136,11 @@ impl Service {
 		{
 			| Ok(response) => response,
 			// The endpoints are optional: a peer that lacks them is fine.
-			| Err(e) if e.is_not_found() || e.status_code() == http::StatusCode::BAD_REQUEST =>
-				return Outcome::Unsupported,
+			| Err(e) if e.is_not_found() || e.status_code() == http::StatusCode::BAD_REQUEST => {
+				// The advertisement was stale or wrong: read it again next time.
+				self.advertised.invalidate(&peer.to_owned());
+				return Outcome::Unsupported;
+			},
 			| Err(e) => return Outcome::Failed(format!("peer digest: {e}")),
 		};
 		if response.digest_type != "algebraic_v1" {
@@ -191,6 +202,40 @@ impl Service {
 			}
 		}
 		Outcome::Abandoned(format!("no agreement after {MAX_RECONCILIATION_ROUNDS} rounds"))
+	}
+
+	/// Whether `peer` advertises the digest profile in its federation
+	/// `/version`. A peer that does not is never sent the reconciliation
+	/// endpoints, which it would only answer with an error. A yes is cached for
+	/// `ADVERTISED_FOR`; a no is not, because the queue already backs an
+	/// unsupported peer off.
+	async fn peer_advertises(&self, peer: &ServerName) -> Result<(), Outcome> {
+		let owned = peer.to_owned();
+		if self.advertised.contains_key(&owned) {
+			return Ok(());
+		}
+		let response = match self
+			.services
+			.sending
+			.send_federation_request(peer, get_server_version::v1::Request {})
+			.await
+		{
+			| Ok(response) => response,
+			// No `/version` at all: nothing to read the profile from.
+			| Err(e) if e.is_not_found() => return Err(Outcome::Unsupported),
+			| Err(e) => return Err(Outcome::Failed(format!("peer version: {e}"))),
+		};
+		let advertised = response
+			.unstable_features
+			.as_ref()
+			.and_then(|features| features.get(DIGEST_FEATURE))
+			.copied()
+			.unwrap_or(false);
+		if !advertised {
+			return Err(Outcome::Unsupported);
+		}
+		self.advertised.insert(owned, ());
+		Ok(())
 	}
 
 	/// Sends one `room_diff` for `requests` and returns what the peer decoded.

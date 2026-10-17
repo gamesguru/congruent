@@ -38,10 +38,15 @@ const MAX_PER_PEER: usize = 2;
 const MAX_TRACKED: usize = 4096;
 /// How many `(room, peer)` pairs the activity debounce remembers.
 const MAX_RECENT: u64 = 16384;
+/// How many peers' advertisements are cached at once.
+const MAX_ADVERTISED: u64 = 4096;
 const MAX_PENDING_ACTIVITY: usize = 16384;
 /// Stable peers provide continuity; rotating peers explore alternatives.
 const STABLE_PEERS: usize = 2;
 const ROTATING_PEERS: usize = 2;
+/// How long a peer's advertisement of the digest profile is trusted before its
+/// `/version` is read again.
+const ADVERTISED_FOR: Duration = Duration::from_hours(1);
 /// Maximum rooms examined on one periodic tick.
 const SWEEP_ROOMS_PER_TICK: usize = 8;
 const MAX_EXCHANGES_PER_SECOND: u32 = 4;
@@ -83,6 +88,9 @@ pub struct Service {
 	/// Events a peer offered that we fetched and could not use, so they are not
 	/// fetched again every round.
 	remembered: parking_lot::Mutex<std::collections::HashMap<OwnedEventId, Instant>>,
+	/// Peers whose `/version` advertised the digest profile. A peer that does
+	/// not is not cached here: the queue backs it off as unsupported.
+	advertised: moka::sync::Cache<OwnedServerName, ()>,
 	/// Pairs an activity trigger queued within the debounce window.
 	recent: moka::sync::Cache<Key, ()>,
 	/// Avoid rescanning a large room's member index for every PDU in a burst.
@@ -139,6 +147,10 @@ impl crate::Service for Service {
 			}),
 			wake: Notify::new(),
 			remembered: parking_lot::Mutex::default(),
+			advertised: moka::sync::Cache::builder()
+				.max_capacity(MAX_ADVERTISED)
+				.time_to_live(ADVERTISED_FOR)
+				.build(),
 			recent: moka::sync::Cache::builder()
 				.max_capacity(MAX_RECENT)
 				.time_to_live(Duration::from_secs(
