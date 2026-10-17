@@ -38,6 +38,7 @@ const MAX_PER_PEER: usize = 2;
 const MAX_TRACKED: usize = 4096;
 /// How many `(room, peer)` pairs the activity debounce remembers.
 const MAX_RECENT: u64 = 16384;
+const MAX_PENDING_ACTIVITY: usize = 16384;
 /// Stable peers provide continuity; rotating peers explore alternatives.
 const STABLE_PEERS: usize = 2;
 const ROTATING_PEERS: usize = 2;
@@ -86,6 +87,8 @@ pub struct Service {
 	recent: moka::sync::Cache<Key, ()>,
 	/// Avoid rescanning a large room's member index for every PDU in a burst.
 	recent_rooms: moka::sync::Cache<OwnedRoomId, ()>,
+	/// Trailing-edge room activity suppressed by the debounce window.
+	pending_activity: parking_lot::Mutex<HashSet<OwnedRoomId>>,
 }
 
 struct Services {
@@ -138,6 +141,7 @@ impl crate::Service for Service {
 						.msc4521_reconcile_activity_interval_secs,
 				))
 				.build(),
+			pending_activity: parking_lot::Mutex::default(),
 		}))
 	}
 
@@ -278,7 +282,7 @@ impl Service {
 				},
 				() = tick.fuse() => self.sweep(&mut cursor).await,
 				() = woken.fuse() => {},
-				_ = FutureExt::fuse(retry) => {},
+				_ = FutureExt::fuse(retry) => self.flush_pending_activity().await,
 			}
 
 			if !self.services.server.running() {
@@ -362,11 +366,48 @@ impl Service {
 		}
 		let room_key = room_id.to_owned();
 		if self.recent_rooms.contains_key(&room_key) {
+			let mut pending = self.pending_activity.lock();
+			if pending.len() < MAX_PENDING_ACTIVITY {
+				pending.insert(room_key);
+			}
 			return;
 		}
-		self.recent_rooms.insert(room_key, ());
-		for peer in self.pick_peers(room_id).await {
-			self.enqueue(room_id, &peer, Reason::Activity).await;
+		self.pending_activity.lock().remove(&room_key);
+		self.recent_rooms.insert(room_key.clone(), ());
+		let peers = self.pick_peers(room_id).await;
+		let mut queued = false;
+		for peer in &peers {
+			let outcome = self.enqueue(room_id, peer, Reason::Activity).await;
+			queued |= matches!(outcome, Enqueued::Queued | Enqueued::Coalesced);
+		}
+		if !queued {
+			self.recent_rooms.invalidate(&room_key);
+			debug!(
+				target: "reconcile",
+				%room_id,
+				selected_peers = peers.len(),
+				"room activity did not queue a reconciliation"
+			);
+		}
+	}
+
+	/// Replays a bounded batch of activity that arrived during the room debounce.
+	async fn flush_pending_activity(&self) {
+		const PENDING_BATCH: usize = 64;
+		let rooms: Vec<OwnedRoomId> = {
+			let pending = self.pending_activity.lock();
+			pending.iter().take(PENDING_BATCH).cloned().collect()
+		};
+		for room_id in rooms {
+			self.pending_activity.lock().remove(&room_id);
+			if self.recent_rooms.contains_key(&room_id) {
+				let mut pending = self.pending_activity.lock();
+				if pending.len() < MAX_PENDING_ACTIVITY {
+					pending.insert(room_id);
+				}
+				continue;
+			}
+			self.activity(&room_id).await;
 		}
 	}
 
