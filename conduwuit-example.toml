@@ -2233,9 +2233,16 @@
 
 # MSC4521: base delay, in seconds, before retrying a room and peer pair
 # whose reconciliation request failed. It doubles with each consecutive
-# failure up to 15 minutes. Values below 1 are treated as 1.
+# failure (exponential backoff) up to
+# `msc4521_reconcile_failure_backoff_max_secs`. Values below 1 are
+# treated as 1.
 #
-#msc4521_reconcile_failure_backoff_secs = 5
+#msc4521_reconcile_failure_backoff_base_secs = 5
+
+# MSC4521: longest delay, in seconds, between retries of a failing room
+# and peer pair. Never applied below the base delay.
+#
+#msc4521_reconcile_failure_backoff_max_secs = 900
 
 #[global.email]
 

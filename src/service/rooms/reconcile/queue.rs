@@ -85,6 +85,7 @@ pub(super) struct Queue {
 	ready: VecDeque<Key>,
 	max_tracked: usize,
 	failure_backoff: Duration,
+	failure_backoff_max: Duration,
 }
 
 const BACKOFF_BASE: Duration = Duration::from_secs(5);
@@ -107,14 +108,13 @@ pub(super) enum Verdict {
 }
 
 /// Exponential backoff after `failures` consecutive failures.
-fn backoff(base: Duration, failures: u32) -> Duration {
-	base
-		.saturating_mul(
-			1_u32
-				.checked_shl(failures.saturating_sub(1))
-				.unwrap_or(u32::MAX),
-		)
-		.min(BACKOFF_MAX)
+fn backoff(base: Duration, max: Duration, failures: u32) -> Duration {
+	base.saturating_mul(
+		1_u32
+			.checked_shl(failures.saturating_sub(1))
+			.unwrap_or(u32::MAX),
+	)
+	.min(max.max(base))
 }
 
 impl Queue {
@@ -153,11 +153,13 @@ impl Queue {
 			ready: VecDeque::new(),
 			max_tracked,
 			failure_backoff: BACKOFF_BASE,
+			failure_backoff_max: BACKOFF_MAX,
 		}
 	}
 
-	pub(super) fn with_failure_backoff(mut self, base: Duration) -> Self {
+	pub(super) fn with_failure_backoff(mut self, base: Duration, max: Duration) -> Self {
 		self.failure_backoff = base;
+		self.failure_backoff_max = max;
 		self
 	}
 
@@ -310,7 +312,11 @@ impl Queue {
 			},
 			| Verdict::Failed => {
 				entry.failures = entry.failures.saturating_add(1);
-				entry.not_before = now.checked_add(backoff(self.failure_backoff, entry.failures));
+				entry.not_before = now.checked_add(backoff(
+					self.failure_backoff,
+					self.failure_backoff_max,
+					entry.failures,
+				));
 				entry.identical_digests = 0;
 				entry.synchronized_until = None;
 			},
@@ -421,10 +427,14 @@ mod tests {
 
 	#[test]
 	fn backoff_grows_and_is_capped() {
-		assert_eq!(backoff(BACKOFF_BASE, 1), BACKOFF_BASE);
-		assert_eq!(backoff(BACKOFF_BASE, 2), BACKOFF_BASE * 2);
-		assert_eq!(backoff(BACKOFF_BASE, 40), BACKOFF_MAX);
-		assert_eq!(backoff(Duration::from_secs(1), 3), Duration::from_secs(4));
+		assert_eq!(backoff(BACKOFF_BASE, BACKOFF_MAX, 1), BACKOFF_BASE);
+		assert_eq!(backoff(BACKOFF_BASE, BACKOFF_MAX, 2), BACKOFF_BASE * 2);
+		assert_eq!(backoff(BACKOFF_BASE, BACKOFF_MAX, 40), BACKOFF_MAX);
+		let one = Duration::from_secs(1);
+		assert_eq!(backoff(one, BACKOFF_MAX, 3), Duration::from_secs(4));
+		// The cap is configurable and never below the base.
+		assert_eq!(backoff(one, Duration::from_secs(3), 5), Duration::from_secs(3));
+		assert_eq!(backoff(BACKOFF_BASE, one, 5), BACKOFF_BASE);
 	}
 
 	#[test]

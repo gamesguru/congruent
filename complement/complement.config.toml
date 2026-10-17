@@ -82,5 +82,5 @@ msc4222_enabled = true
 msc4521_enabled = true
 msc4521_reconcile_interval_secs = 1
 msc4521_reconcile_activity_interval_secs = 1
-msc4521_reconcile_failure_backoff_secs = 1
+msc4521_reconcile_failure_backoff_base_secs = 1
 presence_idle_debounce_ms = 0
