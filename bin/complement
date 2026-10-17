@@ -361,7 +361,8 @@ finish() {
 	if [ -f "$LOG_FILE" ] && command -v jq >/dev/null 2>&1; then
 		echo "SLOWEST:"
 		jq -rs '[.[] | select((.Action == "pass" or .Action == "fail") and .Test != null and .Elapsed != null)]
-			| sort_by(-.Elapsed) | .[:8][] | "  \(.Elapsed | . * 10 | round / 10)s  \(.Test)"' "$LOG_FILE" 2>/dev/null || true
+			| sort_by(-.Elapsed) | .[:8][] | "\(.Elapsed * 10 | round | tostring | if length < 2 then "0" + . else . end | .[:-1] + "." + .[-1:])s \(.Test)"' "$LOG_FILE" 2>/dev/null \
+			| awk '{ printf "  %5s  %s\n", $1, substr($0, index($0, $2)) }' || true
 		jq -rs '[.[] | select((.Action == "pass" or .Action == "fail") and .Test == null and .Elapsed != null)]
 			| .[] | "PACKAGE: \(.Package | split("/") | last)  \(.Elapsed)s in go test (of \('"$test_duration_seconds"')s wall)"' "$LOG_FILE" 2>/dev/null || true
 	fi
