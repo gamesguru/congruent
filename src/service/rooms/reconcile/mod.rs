@@ -373,6 +373,7 @@ impl Service {
 			return;
 		}
 		self.pending_activity.lock().remove(&room_key);
+		self.queue.lock().reset_synchronized_for_room(room_id);
 		self.recent_rooms.insert(room_key.clone(), ());
 		let peers = self.pick_peers(room_id).await;
 		let mut queued = false;
@@ -504,9 +505,8 @@ impl Service {
 				let verdict = match outcome {
 					| Outcome::Failed(_) | Outcome::Abandoned(_) => Verdict::Failed,
 					| Outcome::Unsupported => Verdict::Unsupported,
-					| Outcome::Synchronized
-					| Outcome::Differs(_)
-					| Outcome::Reconciled { .. } => Verdict::Done,
+					| Outcome::Synchronized => Verdict::Synchronized,
+					| Outcome::Differs(_) | Outcome::Reconciled { .. } => Verdict::Done,
 				};
 				let requeue = this.queue.lock().finish(&key, verdict, Instant::now());
 				if requeue {

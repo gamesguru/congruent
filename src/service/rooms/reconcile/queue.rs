@@ -76,6 +76,8 @@ struct Entry {
 	dirty: bool,
 	failures: u32,
 	not_before: Option<Instant>,
+	identical_digests: u32,
+	synchronized_until: Option<Instant>,
 }
 
 pub(super) struct Queue {
@@ -89,11 +91,15 @@ const BACKOFF_MAX: Duration = Duration::from_mins(15);
 /// A peer that does not implement the endpoints is not asked again for this
 /// long, much longer than a transient failure.
 const UNSUPPORTED_BACKOFF: Duration = Duration::from_hours(6);
+const IDENTICAL_DIGESTS_BEFORE_BACKOFF: u32 = 3;
+const IDENTICAL_DIGEST_BACKOFF_BASE: Duration = Duration::from_mins(1);
+const IDENTICAL_DIGEST_BACKOFF_MAX: Duration = Duration::from_hours(24);
 
 /// How an exchange ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Verdict {
 	Done,
+	Synchronized,
 	Failed,
 	/// The peer does not serve the reconciliation endpoints.
 	Unsupported,
@@ -114,9 +120,21 @@ impl Queue {
 	/// Whether an automatic trigger should avoid this pair for now. The
 	/// existing queue retains the cooldown for unsupported and failed peers.
 	pub(super) fn cooling_down(&self, key: &Key, now: Instant) -> bool {
-		self.entries
-			.get(key)
-			.is_some_and(|entry| entry.not_before.is_some_and(|until| until > now))
+		self.entries.get(key).is_some_and(|entry| {
+			entry.not_before.is_some_and(|until| until > now)
+				|| entry.synchronized_until.is_some_and(|until| until > now)
+		})
+	}
+
+	/// New room activity invalidates synchronized backoff for every peer in the
+	/// room. Transport and unsupported-peer backoff remain intact.
+	pub(super) fn reset_synchronized_for_room(&mut self, room_id: &RoomId) {
+		for (key, entry) in &mut self.entries {
+			if key.room_id() == room_id {
+				entry.identical_digests = 0;
+				entry.synchronized_until = None;
+			}
+		}
 	}
 
 	pub(super) fn new(max_tracked: usize) -> Self {
@@ -129,6 +147,12 @@ impl Queue {
 
 	pub(super) fn enqueue(&mut self, key: Key, reason: Reason, now: Instant) -> Enqueued {
 		if let Some(entry) = self.entries.get_mut(&key) {
+			// New activity invalidates equal-digest observations, but does not
+			// erase transport or unsupported-peer backoff.
+			if reason != Reason::Periodic {
+				entry.identical_digests = 0;
+				entry.synchronized_until = None;
+			}
 			if entry.in_flight {
 				entry.dirty = true;
 				if reason != Reason::Periodic {
@@ -145,7 +169,9 @@ impl Queue {
 			// An explicit request overrides backoff; nothing else does.
 			if reason == Reason::Explicit {
 				entry.not_before = None;
-			} else if entry.not_before.is_some_and(|t| t > now) {
+			} else if entry.not_before.is_some_and(|t| t > now)
+				|| entry.synchronized_until.is_some_and(|t| t > now)
+			{
 				return Enqueued::Refused(Refusal::BackingOff);
 			}
 			entry.queued = true;
@@ -171,7 +197,11 @@ impl Queue {
 		let victim = self
 			.entries
 			.iter()
-			.filter(|(_, e)| !e.queued && !e.in_flight && e.not_before.is_none_or(|t| t <= now))
+			.filter(|(_, e)| {
+				!e.queued
+					&& !e.in_flight && e.not_before.is_none_or(|t| t <= now)
+					&& e.synchronized_until.is_none_or(|t| t <= now)
+			})
 			.min_by_key(|(_, e)| e.not_before)
 			.map(|(k, _)| k.clone());
 		victim.is_some_and(|key| self.entries.remove(&key).is_some())
@@ -207,10 +237,10 @@ impl Queue {
 					.iter()
 					.filter(|(k, e)| e.in_flight && k.peer == key.peer)
 					.count();
-				let waiting = self
-					.entries
-					.get(key)
-					.is_some_and(|e| e.not_before.is_some_and(|t| t > now));
+				let waiting = self.entries.get(key).is_some_and(|e| {
+					e.not_before.is_some_and(|t| t > now)
+						|| e.synchronized_until.is_some_and(|t| t > now)
+				});
 				if peer_running >= max_per_peer || waiting {
 					continue;
 				}
@@ -235,18 +265,44 @@ impl Queue {
 			return false;
 		};
 		entry.in_flight = false;
+		let dirty = entry.dirty;
 		match verdict {
 			| Verdict::Done => {
 				entry.failures = 0;
 				entry.not_before = None;
+				entry.identical_digests = 0;
+				entry.synchronized_until = None;
+			},
+			| Verdict::Synchronized => {
+				entry.failures = 0;
+				entry.not_before = None;
+				if dirty {
+					entry.identical_digests = 0;
+					entry.synchronized_until = None;
+				} else {
+					entry.identical_digests = entry.identical_digests.saturating_add(1);
+					if entry.identical_digests >= IDENTICAL_DIGESTS_BEFORE_BACKOFF {
+						let shift = entry
+							.identical_digests
+							.saturating_sub(IDENTICAL_DIGESTS_BEFORE_BACKOFF);
+						let delay = IDENTICAL_DIGEST_BACKOFF_BASE
+							.saturating_mul(1_u32.checked_shl(shift).unwrap_or(u32::MAX))
+							.min(IDENTICAL_DIGEST_BACKOFF_MAX);
+						entry.synchronized_until = now.checked_add(delay);
+					}
+				}
 			},
 			| Verdict::Failed => {
 				entry.failures = entry.failures.saturating_add(1);
 				entry.not_before = now.checked_add(backoff(entry.failures));
+				entry.identical_digests = 0;
+				entry.synchronized_until = None;
 			},
 			| Verdict::Unsupported => {
 				entry.failures = entry.failures.saturating_add(1);
 				entry.not_before = now.checked_add(UNSUPPORTED_BACKOFF);
+				entry.identical_digests = 0;
+				entry.synchronized_until = None;
 			},
 		}
 
@@ -258,7 +314,7 @@ impl Queue {
 		}
 		// Idle and healthy: stop tracking so a dead peer cannot accumulate
 		// entries. Failing pairs stay until their backoff has been served.
-		if entry.failures == 0 {
+		if entry.failures == 0 && entry.identical_digests == 0 {
 			self.entries.remove(key);
 		}
 		false
