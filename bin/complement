@@ -356,6 +356,15 @@ finish() {
 	echo ""
 	echo "RESULTS: ${_pass:-0} pass / ${_fail:-0} fail / ${_skip:-0} skip"
 	echo "TIME: $(printf '%d:%02d' $((test_duration_seconds / 60)) $((test_duration_seconds % 60))) min"
+
+	# Where the wall time went, from the go test events already in the log.
+	if [ -f "$LOG_FILE" ] && command -v jq >/dev/null 2>&1; then
+		echo "SLOWEST:"
+		jq -rs '[.[] | select((.Action == "pass" or .Action == "fail") and .Test != null and .Elapsed != null)]
+			| sort_by(-.Elapsed) | .[:8][] | "  \(.Elapsed | . * 10 | round / 10)s  \(.Test)"' "$LOG_FILE" 2>/dev/null || true
+		jq -rs '[.[] | select((.Action == "pass" or .Action == "fail") and .Test == null and .Elapsed != null)]
+			| .[] | "PACKAGE: \(.Package | split("/") | last)  \(.Elapsed)s in go test (of \('"$test_duration_seconds"')s wall)"' "$LOG_FILE" 2>/dev/null || true
+	fi
 	echo ""
 	echo "complement logs saved at $LOG_FILE"
 	echo "complement results staged at $RESULTS_FILE"
