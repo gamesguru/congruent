@@ -2775,9 +2775,19 @@ pub struct ExperimentalConfig {
 	/// default: 60
 	#[serde(default = "default_msc4521_reconcile_activity_interval_secs")]
 	pub msc4521_reconcile_activity_interval_secs: u64,
+
+	/// MSC4521: base delay, in seconds, before retrying a room and peer pair
+	/// whose reconciliation request failed. It doubles with each consecutive
+	/// failure up to 15 minutes. Values below 1 are treated as 1.
+	///
+	/// default: 5
+	#[serde(default = "default_msc4521_reconcile_failure_backoff_secs")]
+	pub msc4521_reconcile_failure_backoff_secs: u64,
 }
 
 fn default_msc4521_reconcile_activity_interval_secs() -> u64 { 60 }
+
+fn default_msc4521_reconcile_failure_backoff_secs() -> u64 { 5 }
 
 impl Default for ExperimentalConfig {
 	fn default() -> Self {
@@ -2791,6 +2801,8 @@ impl Default for ExperimentalConfig {
 			msc4521_reconcile_interval_secs: 0,
 			msc4521_reconcile_activity_interval_secs:
 				default_msc4521_reconcile_activity_interval_secs(),
+			msc4521_reconcile_failure_backoff_secs:
+				default_msc4521_reconcile_failure_backoff_secs(),
 		}
 	}
 }

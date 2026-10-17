@@ -116,7 +116,15 @@ impl crate::Service for Service {
 				timeline: args.depend::<crate::rooms::timeline::Service>("rooms::timeline"),
 				state: args.depend::<crate::rooms::state::Service>("rooms::state"),
 			},
-			queue: parking_lot::Mutex::new(Queue::new(MAX_TRACKED)),
+			queue: parking_lot::Mutex::new(Queue::new(MAX_TRACKED).with_failure_backoff(
+				Duration::from_secs(
+					args.server
+						.config
+						.experimental_features
+						.msc4521_reconcile_failure_backoff_secs
+						.max(1),
+				),
+			)),
 			rate: parking_lot::Mutex::new(RateBudget {
 				window_start: Instant::now(),
 				started: 0,

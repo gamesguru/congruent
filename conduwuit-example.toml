@@ -2231,6 +2231,12 @@
 #
 #msc4521_reconcile_activity_interval_secs = 60
 
+# MSC4521: base delay, in seconds, before retrying a room and peer pair
+# whose reconciliation request failed. It doubles with each consecutive
+# failure up to 15 minutes. Values below 1 are treated as 1.
+#
+#msc4521_reconcile_failure_backoff_secs = 5
+
 #[global.email]
 
 # HTTP endpoint which accepts the email webhook payload.

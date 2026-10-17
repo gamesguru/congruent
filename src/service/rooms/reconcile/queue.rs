@@ -84,6 +84,7 @@ pub(super) struct Queue {
 	entries: HashMap<Key, Entry>,
 	ready: VecDeque<Key>,
 	max_tracked: usize,
+	failure_backoff: Duration,
 }
 
 const BACKOFF_BASE: Duration = Duration::from_secs(5);
@@ -106,8 +107,8 @@ pub(super) enum Verdict {
 }
 
 /// Exponential backoff after `failures` consecutive failures.
-fn backoff(failures: u32) -> Duration {
-	BACKOFF_BASE
+fn backoff(base: Duration, failures: u32) -> Duration {
+	base
 		.saturating_mul(
 			1_u32
 				.checked_shl(failures.saturating_sub(1))
@@ -151,7 +152,13 @@ impl Queue {
 			entries: HashMap::new(),
 			ready: VecDeque::new(),
 			max_tracked,
+			failure_backoff: BACKOFF_BASE,
 		}
+	}
+
+	pub(super) fn with_failure_backoff(mut self, base: Duration) -> Self {
+		self.failure_backoff = base;
+		self
 	}
 
 	pub(super) fn enqueue(&mut self, key: Key, reason: Reason, now: Instant) -> Enqueued {
@@ -303,7 +310,7 @@ impl Queue {
 			},
 			| Verdict::Failed => {
 				entry.failures = entry.failures.saturating_add(1);
-				entry.not_before = now.checked_add(backoff(entry.failures));
+				entry.not_before = now.checked_add(backoff(self.failure_backoff, entry.failures));
 				entry.identical_digests = 0;
 				entry.synchronized_until = None;
 			},
@@ -414,9 +421,10 @@ mod tests {
 
 	#[test]
 	fn backoff_grows_and_is_capped() {
-		assert_eq!(backoff(1), BACKOFF_BASE);
-		assert_eq!(backoff(2), BACKOFF_BASE * 2);
-		assert_eq!(backoff(40), BACKOFF_MAX);
+		assert_eq!(backoff(BACKOFF_BASE, 1), BACKOFF_BASE);
+		assert_eq!(backoff(BACKOFF_BASE, 2), BACKOFF_BASE * 2);
+		assert_eq!(backoff(BACKOFF_BASE, 40), BACKOFF_MAX);
+		assert_eq!(backoff(Duration::from_secs(1), 3), Duration::from_secs(4));
 	}
 
 	#[test]
