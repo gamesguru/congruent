@@ -138,16 +138,14 @@ where
 	match choice[1] {
 		| 0x00 => {},
 		| 0x02 => authenticate(&mut stream, proxy).await?,
-		| 0xFF => {
+		| 0xFF =>
 			return Err(err!(HttpClient(
 				"proxy rejected all offered SOCKS5 authentication methods"
-			)));
-		},
-		| method => {
+			))),
+		| method =>
 			return Err(err!(HttpClient(
 				"proxy selected unsupported SOCKS5 authentication method {method:#04x}"
-			)));
-		},
+			))),
 	}
 
 	let address = if scheme.resolves_target() {
@@ -184,11 +182,10 @@ where
 			let mut host = vec![0_u8; usize::from(bound[1])];
 			socks_io(stream.read_exact(&mut host).await)?;
 		},
-		| address_type => {
+		| address_type =>
 			return Err(err!(HttpClient(
 				"proxy returned unknown SOCKS5 address type {address_type:#04x}"
-			)));
-		},
+			))),
 	}
 	socks_io(stream.read_exact(&mut bound).await)?;
 

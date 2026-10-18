@@ -239,11 +239,10 @@ impl crate::Service for Service {
 						old_task.abort();
 					}
 				},
-				| Ok((user_id, None)) => {
+				| Ok((user_id, None)) =>
 					if let Some(mut task) = presence_timers.remove(&user_id) {
 						task.abort();
-					}
-				},
+					},
 			}
 
 			// Periodic tally

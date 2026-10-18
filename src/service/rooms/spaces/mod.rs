@@ -582,7 +582,7 @@ where
 		.stream()
 		.any(async |room| match identifier {
 			| Identifier::UserId(user) => self.services.state_cache.is_joined(user, room).await,
-			| Identifier::ServerName(server) => {
+			| Identifier::ServerName(server) =>
 				self.services.state_cache.server_in_room(server, room).await
 					// A partial-state room lacks its member list; the server we
 					// joined through is certainly in it.
@@ -591,8 +591,7 @@ where
 						.state_partial
 						.is_partial_from_server(room, server)
 						.await
-						.unwrap_or(false)
-			},
+						.unwrap_or(false),
 		})
 		.await;
 

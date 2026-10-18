@@ -275,15 +275,14 @@ impl HttpClient {
 						timeout(self.connect_timeout, self.connect(url, &target, tls)).await;
 					match connected {
 						| Ok(result) => result?,
-						| Err(TimeoutError) => {
+						| Err(TimeoutError) =>
 							return Err(Error::HttpClientConnect(
 								format!(
 									"connection to {authority} timed out after {:?}",
 									self.connect_timeout
 								)
 								.into(),
-							));
-						},
+							)),
 					}
 				},
 			};
@@ -341,23 +340,21 @@ impl HttpClient {
 
 					return Ok(response);
 				},
-				| Ok(Err((stale, error))) => {
+				| Ok(Err((stale, error))) =>
 					if reused && stale {
 						// Retry once on a fresh connection.
 						continue;
 					} else {
 						return Err(error);
-					}
-				},
-				| Err(TimeoutError) => {
+					},
+				| Err(TimeoutError) =>
 					return Err(Error::HttpClientTimeout(
 						format!(
 							"response from {authority} exceeded read timeout of {:?}",
 							self.read_timeout
 						)
 						.into(),
-					));
-				},
+					)),
 			}
 		}
 	}

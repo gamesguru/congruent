@@ -110,11 +110,10 @@ impl Service {
 		// `/complement/appservice/`
 		if Path::new("/complement/appservice").is_dir() {
 			match async_fs::read_dir("/complement/appservice").await {
-				| Err(e) => {
+				| Err(e) =>
 					return Err!(Database(
 						"Failed to read appservice directory /complement/appservice: {e:?}"
-					));
-				},
+					)),
 				| Ok(mut entries) =>
 					while let Some(Ok(entry)) = entries.next().await {
 						let path = entry.path();
@@ -130,18 +129,16 @@ impl Service {
 								})
 							};
 							match content {
-								| Err(e) => {
+								| Err(e) =>
 									return Err!(Database(
 										"Failed to load appservice file {path:?}: {e:?}"
-									));
-								},
+									)),
 								| Ok(content) => match registration_from_json(&content) {
-									| Err(e) => {
+									| Err(e) =>
 										return Err!(Database(
 											"Failed to parse appservice registration from \
 											 {path:?}: {e:?}"
-										));
-									},
+										)),
 									| Ok(registration) => {
 										self.db
 											.id_appserviceregistrations
