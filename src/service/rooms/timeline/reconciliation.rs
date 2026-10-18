@@ -141,8 +141,8 @@ const MAX_SCAN_ATTEMPTS: u8 = 3;
 
 impl Service {
 	/// Returns the room's reconciliation snapshot, rebuilding it when the
-	/// cached one has expired. Events that arrive meanwhile (including
-	/// backfilled ones) appear once the cache time-to-live has passed.
+	/// cached one has expired. Backfilled events invalidate the cache directly;
+	/// live appends appear after the cache time-to-live has passed.
 	///
 	/// # Errors
 	/// Fails with `M_UNSUPPORTED_ROOM_VERSION` for room versions 1 and 2,

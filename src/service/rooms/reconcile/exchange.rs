@@ -48,6 +48,17 @@ const REMEMBER_FOR: Duration = Duration::from_hours(1);
 /// How many such events are remembered at once.
 const REMEMBER_MAX: usize = 20_000;
 
+enum FetchEvent {
+	Fetched((u64, OwnedRoomId, OwnedEventId, CanonicalJsonObject)),
+	/// A request failed or returned an unusable event; suppress this peer's
+	/// repeated offer, but allow another comparison after backoff.
+	Failed,
+	/// Transient transport failure; retry the same ID after queue backoff.
+	Retryable,
+	/// Admission changed while fetching; do not treat it as a peer failure.
+	AdmissionLapsed,
+}
+
 #[derive(Debug)]
 pub(super) enum Outcome {
 	/// Digest and count agree.
@@ -59,6 +70,7 @@ pub(super) enum Outcome {
 		offered: usize,
 		applied: usize,
 		unusable: usize,
+		failed: usize,
 		/// More was offered than one exchange may fetch.
 		truncated: bool,
 	},
@@ -76,8 +88,11 @@ impl Outcome {
 		match self {
 			| Self::Synchronized => "synchronized".to_owned(),
 			| Self::Differs(action) => format!("differs ({action}, not run)"),
-			| Self::Reconciled { offered, applied, unusable, .. } => {
-				format!("reconciled: {offered} offered, {applied} applied, {unusable} unusable")
+			| Self::Reconciled { offered, applied, unusable, failed, .. } => {
+				format!(
+					"reconciled: {offered} offered, {applied} applied, {unusable} unusable, \
+					 {failed} fetches failed"
+				)
 			},
 			| Self::Abandoned(why) => format!("abandoned: {why}"),
 			| Self::Dropped(why) => format!("dropped: {why}"),
@@ -402,6 +417,7 @@ impl Service {
 				offered: total,
 				applied: 0,
 				unusable: 0,
+				failed: 0,
 				truncated: false,
 			};
 		}
@@ -427,10 +443,16 @@ impl Service {
 			for (id, result) in results {
 				attempted = attempted.saturating_add(1);
 				match result {
-					| Some(event) => fetched.push(event),
-					| None => {
+					| FetchEvent::Fetched(event) => fetched.push(event),
+					| FetchEvent::Failed => {
 						failed = failed.saturating_add(1);
 						self.remember(peer, id);
+					},
+					| FetchEvent::Retryable => failed = failed.saturating_add(1),
+					| FetchEvent::AdmissionLapsed => {
+						return Outcome::Dropped(
+							"admission changed during event fetch".to_owned(),
+						);
 					},
 				}
 			}
@@ -485,6 +507,7 @@ impl Service {
 			offered: total,
 			applied,
 			unusable,
+			failed,
 			truncated,
 		}
 	}
@@ -496,9 +519,9 @@ impl Service {
 		room_id: &RoomId,
 		peer: &ServerName,
 		event_id: &EventId,
-	) -> Option<(u64, OwnedRoomId, OwnedEventId, CanonicalJsonObject)> {
+	) -> FetchEvent {
 		if self.admission_lapsed(room_id, peer).await.is_some() {
-			return None;
+			return FetchEvent::AdmissionLapsed;
 		}
 		let request = get_event::v1::Request {
 			event_id: event_id.to_owned(),
@@ -509,23 +532,26 @@ impl Service {
 			.sending
 			.send_federation_request(peer, request)
 			.await
-			.ok()?;
-		let raw = response.pdus.first()?;
-		let (parsed_room, parsed_id, value) = self
-			.services
-			.event_handler
-			.parse_incoming_pdu(raw)
-			.await
-			.map_err(|e| warn!(target: "reconcile", %event_id, "offered event unparsable: {e}"))
-			.ok()?;
+			.map_err(|_| FetchEvent::Retryable);
+		let Ok(response) = response else {
+			return FetchEvent::Retryable;
+		};
+		let Some(raw) = response.pdus.first() else {
+			return FetchEvent::Failed;
+		};
+		let parsed = self.services.event_handler.parse_incoming_pdu(raw).await;
+		let Ok((parsed_room, parsed_id, value)) = parsed else {
+			warn!(target: "reconcile", %event_id, "offered event unparsable");
+			return FetchEvent::Failed;
+		};
 		if parsed_room != room_id || parsed_id != event_id {
-			return None;
+			return FetchEvent::Failed;
 		}
 		let depth = value
 			.get("depth")
 			.and_then(CanonicalJsonValue::as_u64)
 			.unwrap_or(u64::MAX);
-		Some((depth, parsed_room, parsed_id, value))
+		FetchEvent::Fetched((depth, parsed_room, parsed_id, value))
 	}
 
 	/// Memory is per peer: one peer failing to serve an event says nothing

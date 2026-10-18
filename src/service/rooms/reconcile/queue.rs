@@ -20,6 +20,8 @@ pub enum Reason {
 	Activity,
 	/// An incoming PDU referred to predecessors we lacked.
 	IncomingGap,
+	/// Continue a bounded exchange without the activity debounce.
+	Continuation,
 	/// Federation with the peer resumed after an outage.
 	Reconnect,
 }
@@ -103,6 +105,8 @@ const IDENTICAL_DIGEST_BACKOFF_MAX: Duration = Duration::from_hours(24);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Verdict {
 	Done,
+	/// A healthy bounded batch completed; immediately compare the next batch.
+	Continuation,
 	Synchronized,
 	Failed,
 	/// The peer does not serve the reconciliation endpoints.
@@ -224,7 +228,8 @@ impl Queue {
 			.iter()
 			.filter(|(_, e)| {
 				!e.queued
-					&& !e.in_flight && e.not_before.is_none_or(|t| t <= now)
+					&& !e.in_flight && !e.retry_pending
+					&& e.not_before.is_none_or(|t| t <= now)
 					&& e.synchronized_until.is_none_or(|t| t <= now)
 			})
 			.min_by_key(|(_, e)| e.not_before)
@@ -318,7 +323,7 @@ impl Queue {
 		entry.in_flight = false;
 		let dirty = entry.dirty;
 		match verdict {
-			| Verdict::Done => {
+			| Verdict::Done | Verdict::Continuation => {
 				entry.failures = 0;
 				entry.not_before = None;
 				entry.identical_digests = 0;
@@ -361,6 +366,13 @@ impl Queue {
 				entry.identical_digests = 0;
 				entry.synchronized_until = None;
 			},
+		}
+		if verdict == Verdict::Continuation {
+			entry.dirty = false;
+			entry.queued = true;
+			entry.reason = Reason::Continuation;
+			self.ready.push_back(key.clone());
+			return true;
 		}
 
 		if entry.dirty {
@@ -449,6 +461,34 @@ mod tests {
 		assert!(queue.requeue_due_retries(later));
 		assert_eq!(queue.next_ready(later, 4, 2, true), Some((k, Reason::Periodic)));
 		assert!(!queue.requeue_due_retries(later));
+	}
+
+	#[test]
+	fn retry_pending_pair_cannot_be_evicted_before_requeue() {
+		let now = Instant::now();
+		let mut queue = Queue::new(1);
+		let failed = key("!a:example.org", "peer.example");
+		queue.enqueue(failed.clone(), Reason::Periodic, now);
+		queue.next_ready(now, 4, 2, true);
+		queue.finish(&failed, Verdict::Failed, now);
+
+		let another = key("!b:example.org", "peer.example");
+		assert_eq!(
+			queue.enqueue(another, Reason::Periodic, now + BACKOFF_MAX),
+			Enqueued::Refused(Refusal::QueueFull)
+		);
+	}
+
+	#[test]
+	fn continuation_keeps_pair_queued_without_a_new_capacity_slot() {
+		let now = Instant::now();
+		let mut queue = Queue::new(1);
+		let k = key("!a:example.org", "peer.example");
+		queue.enqueue(k.clone(), Reason::Periodic, now);
+		queue.next_ready(now, 4, 2, true);
+
+		assert!(queue.finish(&k, Verdict::Continuation, now));
+		assert_eq!(queue.next_ready(now, 4, 2, true), Some((k, Reason::Continuation)));
 	}
 
 	#[test]
@@ -551,7 +591,7 @@ mod tests {
 	}
 
 	#[test]
-	fn a_full_queue_evicts_only_a_pair_that_served_its_backoff() {
+	fn a_full_queue_keeps_a_due_retry_until_it_runs() {
 		let now = Instant::now();
 		let mut q = Queue::new(2);
 		let a = key("!a:example.org", "peer.example");
@@ -570,10 +610,15 @@ mod tests {
 		);
 		assert!(q.entries.contains_key(&a));
 
-		// Once `a` has served its backoff it may be evicted.
+		// A due retry remains tracked until the worker requeues it.
 		let later = now + BACKOFF_MAX;
-		assert_eq!(q.enqueue(c, Reason::Periodic, later), Enqueued::Queued);
-		assert!(!q.entries.contains_key(&a));
+		assert_eq!(
+			q.enqueue(c.clone(), Reason::Periodic, later),
+			Enqueued::Refused(Refusal::QueueFull)
+		);
+		assert!(q.entries.contains_key(&a));
+		assert!(q.requeue_due_retries(later));
+		assert_eq!(q.enqueue(c, Reason::Periodic, later), Enqueued::Refused(Refusal::QueueFull));
 	}
 
 	#[test]

@@ -610,24 +610,16 @@ impl Service {
 						"reconciliation exchange finished"
 					);
 				}
-				let outcome_truncated =
-					matches!(outcome, Outcome::Reconciled { truncated: true, .. });
 				let verdict = match outcome {
 					| Outcome::Failed(_) | Outcome::Abandoned(_) => Verdict::Failed,
 					| Outcome::Unsupported => Verdict::Unsupported,
 					| Outcome::Synchronized => Verdict::Synchronized,
+					| Outcome::Reconciled { failed, .. } if failed > 0 => Verdict::Failed,
+					| Outcome::Reconciled { truncated: true, .. } => Verdict::Continuation,
 					| Outcome::Differs(_) | Outcome::Reconciled { .. } => Verdict::Done,
 					| Outcome::Dropped(_) => Verdict::Dropped,
 				};
-				let mut requeue = this.queue.lock().finish(&key, verdict, Instant::now());
-				// More was offered than one exchange fetches: compare again.
-				if outcome_truncated {
-					requeue |=
-						this.queue
-							.lock()
-							.enqueue(key.clone(), Reason::Activity, Instant::now())
-							== Enqueued::Queued;
-				}
+				let requeue = this.queue.lock().finish(&key, verdict, Instant::now());
 				if requeue {
 					this.wake.notify_one();
 				}
