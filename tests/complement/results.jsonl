@@ -676,7 +676,7 @@
 {"Action":"pass","Test":"TestOutboundFederationProfile"}
 {"Action":"pass","Test":"TestOutboundFederationProfile/Outbound_federation_can_query_profile_data"}
 {"Action":"pass","Test":"TestOutboundFederationSend"}
-{"Action":"fail","Test":"TestPartialStateJoin"}
+{"Action":"pass","Test":"TestPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanFastJoinDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanLazyLoadingSyncDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveDeviceListUpdateDuringPartialStateJoin"}
@@ -709,14 +709,14 @@
 {"Action":"pass","Test":"TestPartialStateJoin/Lazy-loading_gappy_sync_includes_remote_memberships_during_partial_state_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/Lazy-loading_incremental_sync_includes_remote_memberships_during_partial_state_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/Lazy-loading_initial_sync_includes_remote_memberships_during_partial_state_join"}
-{"Action":"fail","Test":"TestPartialStateJoin/Leave_during_resync"}
+{"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/can_be_triggered_by_remote_ban"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/can_be_triggered_by_remote_kick"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/does_not_wait_for_resync"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/is_seen_after_the_resync"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/succeeds,_then_another_user_can_join_without_resync_completing"}
 {"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/succeeds,_then_rejoin_succeeds_without_resync_completing"}
-{"Action":"fail","Test":"TestPartialStateJoin/Leave_during_resync/works_after_a_second_partial_join"}
+{"Action":"pass","Test":"TestPartialStateJoin/Leave_during_resync/works_after_a_second_partial_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/MembersRequestBlocksDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/Outgoing_device_list_updates"}
 {"Action":"pass","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_no_longer_reach_departed_servers_after_partial_state_join_completes"}
