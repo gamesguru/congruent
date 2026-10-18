@@ -439,7 +439,7 @@ where
 	// The cached reconciliation snapshot predates this event. Drop it so the
 	// next digest request reflects the write, rather than serving a stale set
 	// until the cache TTL passes; a scan that raced the write re-checks the
-	// timeline position and repeats.
+	// timeline position before and after it publishes its snapshot.
 	self.reconciliation_cache.invalidate(room_id);
 
 	// See if the event matches any known pushers via power level

@@ -479,6 +479,10 @@ impl Service {
 			.mutex_federation
 			.lock(room_id)
 			.await;
+		// The lock wait may have outlasted our or the peer's membership.
+		if let Some(outcome) = self.admission_lapsed(room_id, peer).await {
+			return outcome;
+		}
 
 		let (mut applied, mut unusable) = (0_usize, 0_usize);
 		for (_, parsed_room, event_id, value) in fetched {

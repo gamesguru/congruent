@@ -198,6 +198,12 @@ impl Service {
 		};
 		self.reconciliation_cache
 			.insert(room_id.to_owned(), Arc::clone(&state));
+		// An append that finished after the scan's last check but before this
+		// insert invalidated an empty slot. Re-check now that the snapshot is
+		// published, so it is not served stale for the whole TTL.
+		if self.last_timeline_count(room_id).await.ok() != state.timeline_count {
+			self.reconciliation_cache.invalidate(room_id);
+		}
 		Ok(state)
 	}
 

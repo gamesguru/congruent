@@ -338,8 +338,9 @@ impl Service {
 
 	pub fn send_reliable_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
 		let dest = Destination::Federation(server.to_owned());
-		// A reliable EDU must not be silently dropped: if an abort or resume is
-		// in progress, tell the caller to retry.
+		// While an abort or resume is in progress, tell the caller to retry rather
+		// than lose the EDU. A destination that is already aborted discards its
+		// queue by design, reliable rows included.
 		let Ok(_abort_guard) = self.abort_gate.try_read() else {
 			return Err(err!(Request(Unknown("Sending is being reconfigured; retry shortly."))));
 		};

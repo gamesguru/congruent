@@ -164,7 +164,8 @@ async fn compute_outbound_state_hashes(
 }
 
 type SendingError = Box<(Destination, Error)>;
-type SendingResult = Result<Destination, SendingError>;
+type SendingResponse = Result<Destination, SendingError>;
+type SendingResult = (Option<u64>, SendingResponse);
 type SendingFuture<'a> = BoxFuture<'a, SendingResult>;
 type SendingFutures<'a> = FuturesUnordered<SendingFuture<'a>>;
 type CurTransactionStatus = HashMap<Destination, TransactionStatus>;
@@ -254,10 +255,18 @@ impl Service {
 		futures: &mut SendingFutures<'a>,
 		statuses: &mut CurTransactionStatus,
 	) {
+		let (epoch, response) = response;
 		let dest = match &response {
 			| Ok(dest) => dest,
 			| Err(err) => &err.0,
 		};
+		if let (Some(epoch), Destination::Federation(server)) = (epoch, dest)
+			&& self.abort_epoch(server) != epoch
+		{
+			// A result from before abort/resume must not alter the newer
+			// transaction's status or active queue rows.
+			return;
+		}
 		if self.is_aborted(dest) {
 			statuses.remove(dest);
 			self.db.delete_all_active_requests_for(dest).await;
@@ -375,6 +384,9 @@ impl Service {
 			self.dead_servers.write().unwrap().remove(server);
 		}
 		let _cork = self.db.db.cork();
+		// Reliable EDUs keep their source row while active so ordinary retry
+		// cleanup cannot lose them. Remove those source rows only after success.
+		self.db.delete_reliable_requests_for_active(dest).await;
 		self.db.delete_all_active_requests_for(dest).await;
 
 		let mut has_pdu = false;
@@ -524,7 +536,17 @@ impl Service {
 			futures::select_biased! {
 				_ = timer => return,
 				response = response.fuse() => match response {
-					Some(Ok(dest)) => self.db.delete_all_active_requests_for(&dest).await,
+					Some((epoch, Ok(dest))) => {
+						let current = match (&dest, epoch) {
+							| (Destination::Federation(server), Some(epoch)) => self.abort_epoch(server) == epoch,
+							| (Destination::Federation(_), None) => false,
+							| (_, _) => true,
+						};
+						if current {
+							self.db.delete_reliable_requests_for_active(&dest).await;
+							self.db.delete_all_active_requests_for(&dest).await;
+						}
+					},
 					Some(_) => continue,
 					None => return,
 				},
@@ -1151,7 +1173,7 @@ impl Service {
 						// already on the wire is handled when its result arrives.
 						let _abort_guard = self.abort_gate.clone().read_owned().await;
 						if self.is_aborted(&dest) || self.abort_epoch(&server) != epoch {
-							return Ok(dest);
+							return (Some(epoch), Ok(dest));
 						}
 					}
 					let started = Instant::now();
@@ -1167,13 +1189,18 @@ impl Service {
 						ok = result.is_ok(),
 						"federation transaction finished"
 					);
-					result
+					(Some(epoch), result)
 				}
 				.boxed()
 			},
-			| Destination::Appservice(id) => self.send_events_dest_appservice(id, events).boxed(),
-			| Destination::Push(user_id, pushkey) =>
-				self.send_events_dest_push(user_id, pushkey, events).boxed(),
+			| Destination::Appservice(id) => self
+				.send_events_dest_appservice(id, events)
+				.map(|result| (None, result))
+				.boxed(),
+			| Destination::Push(user_id, pushkey) => self
+				.send_events_dest_push(user_id, pushkey, events)
+				.map(|result| (None, result))
+				.boxed(),
 		}
 	}
 
@@ -1181,7 +1208,7 @@ impl Service {
 		&self,
 		id: String,
 		events: Vec<SendingEvent>,
-	) -> SendingResult {
+	) -> SendingResponse {
 		let Some(appservice) = self.services.appservice.get_registration(&id).await else {
 			return Err(Box::new((
 				Destination::Appservice(id.clone()),
@@ -1252,7 +1279,7 @@ impl Service {
 		user_id: OwnedUserId,
 		pushkey: String,
 		events: Vec<SendingEvent>,
-	) -> SendingResult {
+	) -> SendingResponse {
 		let Ok(pusher) = self.services.pusher.get_pusher(&user_id, &pushkey).await else {
 			return Err(Box::new((
 				Destination::Push(user_id.clone(), pushkey.clone()),
@@ -1332,7 +1359,7 @@ impl Service {
 		events: Vec<SendingEvent>,
 		edu_count: Option<u64>,
 		epoch: u64,
-	) -> SendingResult {
+	) -> SendingResponse {
 		let mut source_pdus: Vec<(OwnedEventId, CanonicalJsonObject)> = Vec::new();
 		for event in &events {
 			let SendingEvent::Pdu(pdu_id) = event else {

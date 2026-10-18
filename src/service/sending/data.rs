@@ -5,7 +5,7 @@ use conduwuit::{
 	utils::{ReadyExt, stream::TryIgnore},
 };
 use database::{Database, Deserialized, Map};
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use slipstream::{OwnedServerName, ServerName, UserId};
 
 use super::{Destination, SendingEvent};
@@ -59,6 +59,13 @@ impl Data {
 			.await;
 	}
 
+	pub(super) async fn delete_reliable_requests_for_active(&self, destination: &Destination) {
+		let mut active = self.active_requests_for(destination);
+		while let Some((key, _)) = active.next().await {
+			self.federation_outbound_to_device.remove(&key);
+		}
+	}
+
 	pub(super) async fn delete_all_requests_for(&self, destination: &Destination) {
 		let prefix = destination.get_prefix();
 		self.servercurrentevent_data
@@ -97,7 +104,6 @@ impl Data {
 
 				self.servercurrentevent_data.insert(key, val);
 				self.servernameevent_data.remove(key);
-				self.federation_outbound_to_device.remove(key);
 			});
 	}
 
