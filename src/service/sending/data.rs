@@ -57,10 +57,16 @@ impl Data {
 	where
 		I: Iterator<Item = &'a [u8]>,
 	{
-		for key in keys {
-			self.servercurrentevent_data.remove(key);
-			self.servernameevent_data.remove(key);
-			self.federation_outbound_to_device.remove(key);
+		let mut batch = database::Batch::new();
+		for key in keys.filter(|key| !key.is_empty()) {
+			self.servercurrentevent_data.batch_delete(&mut batch, key);
+			self.servernameevent_data.batch_delete(&mut batch, key);
+			self.federation_outbound_to_device
+				.batch_delete(&mut batch, key);
+		}
+
+		if !batch.is_empty() {
+			self.servercurrentevent_data.apply_batch(batch);
 		}
 	}
 
