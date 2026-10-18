@@ -128,8 +128,9 @@ pub(super) async fn auth(
 	};
 
 	match (authentication, token) {
-		| (AuthScheme::AccessToken, Token::Appservice(info)) =>
-			Ok(auth_appservice(services, request, info).await?),
+		| (AuthScheme::AccessToken, Token::Appservice(info)) => {
+			Ok(auth_appservice(services, request, info).await?)
+		},
 		| (
 			AuthScheme::None | AuthScheme::AccessTokenOptional | AuthScheme::AppserviceToken,
 			Token::Appservice(info),
@@ -181,8 +182,9 @@ pub(super) async fn auth(
 				appservice_info: None,
 			})
 		},
-		| (AuthScheme::ServerSignatures, Token::None) =>
-			Ok(auth_server(services, request, json_body).await?),
+		| (AuthScheme::ServerSignatures, Token::None) => {
+			Ok(auth_server(services, request, json_body).await?)
+		},
 		| (
 			AuthScheme::None | AuthScheme::AppserviceToken | AuthScheme::AccessTokenOptional,
 			Token::None,
@@ -192,11 +194,12 @@ pub(super) async fn auth(
 			origin: None,
 			appservice_info: None,
 		}),
-		| (AuthScheme::ServerSignatures, Token::Appservice(_) | Token::User(_)) =>
+		| (AuthScheme::ServerSignatures, Token::Appservice(_) | Token::User(_)) => {
 			Err(Error::BadRequest(
 				ErrorKind::Unauthorized,
 				"Only server signatures should be used on this endpoint.",
-			)),
+			))
+		},
 		| (AuthScheme::AppserviceToken, Token::User(_)) => {
 			conduwuit::error!(
 				"AUTH_CORRUPTION_DETECTED: metadata.authentication is AppserviceToken but token \

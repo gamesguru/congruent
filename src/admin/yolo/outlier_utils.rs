@@ -75,9 +75,10 @@ mod tests {
 			is_rejected: false,
 			is_soft_failed: false,
 		};
-		assert_eq!(classify_outlier(&status, false, false), OutlierAction::Show {
-			should_clear: false
-		});
+		assert_eq!(
+			classify_outlier(&status, false, false),
+			OutlierAction::Show { should_clear: false }
+		);
 	}
 
 	#[test]
@@ -97,9 +98,10 @@ mod tests {
 			is_rejected: true,
 			is_soft_failed: false,
 		};
-		assert_eq!(classify_outlier(&status, true, false), OutlierAction::Show {
-			should_clear: false
-		});
+		assert_eq!(
+			classify_outlier(&status, true, false),
+			OutlierAction::Show { should_clear: false }
+		);
 	}
 
 	#[test]
@@ -109,9 +111,10 @@ mod tests {
 			is_rejected: true,
 			is_soft_failed: false,
 		};
-		assert_eq!(classify_outlier(&status, true, true), OutlierAction::Show {
-			should_clear: true
-		});
+		assert_eq!(
+			classify_outlier(&status, true, true),
+			OutlierAction::Show { should_clear: true }
+		);
 	}
 
 	#[test]
@@ -121,9 +124,10 @@ mod tests {
 			is_rejected: false,
 			is_soft_failed: true,
 		};
-		assert_eq!(classify_outlier(&status, true, false), OutlierAction::Show {
-			should_clear: false
-		});
+		assert_eq!(
+			classify_outlier(&status, true, false),
+			OutlierAction::Show { should_clear: false }
+		);
 	}
 
 	#[test]
@@ -133,9 +137,10 @@ mod tests {
 			is_rejected: false,
 			is_soft_failed: true,
 		};
-		assert_eq!(classify_outlier(&status, true, true), OutlierAction::Show {
-			should_clear: true
-		});
+		assert_eq!(
+			classify_outlier(&status, true, true),
+			OutlierAction::Show { should_clear: true }
+		);
 	}
 
 	#[test]
@@ -145,9 +150,10 @@ mod tests {
 			is_rejected: true,
 			is_soft_failed: true,
 		};
-		assert_eq!(classify_outlier(&status, true, true), OutlierAction::Show {
-			should_clear: true
-		});
+		assert_eq!(
+			classify_outlier(&status, true, true),
+			OutlierAction::Show { should_clear: true }
+		);
 	}
 
 	#[test]
@@ -157,9 +163,10 @@ mod tests {
 			is_rejected: true,
 			is_soft_failed: false,
 		};
-		assert_eq!(classify_outlier(&status, true, false), OutlierAction::Show {
-			should_clear: false
-		});
+		assert_eq!(
+			classify_outlier(&status, true, false),
+			OutlierAction::Show { should_clear: false }
+		);
 	}
 
 	#[test]
@@ -170,9 +177,10 @@ mod tests {
 			is_rejected: false,
 			is_soft_failed: false,
 		};
-		assert_eq!(classify_outlier(&status, false, true), OutlierAction::Show {
-			should_clear: false
-		});
+		assert_eq!(
+			classify_outlier(&status, false, true),
+			OutlierAction::Show { should_clear: false }
+		);
 	}
 
 	// -- render_flags tests --

@@ -90,7 +90,9 @@ where
 	}
 
 	#[inline]
-	pub(crate) fn sender_user_opt(&self) -> Option<&UserId> { self.sender_user.as_ref() }
+	pub(crate) fn sender_user_opt(&self) -> Option<&UserId> {
+		self.sender_user.as_ref()
+	}
 
 	#[inline]
 	pub(crate) fn sender_device(&self) -> &DeviceId {
@@ -100,7 +102,9 @@ where
 	}
 
 	#[inline]
-	pub(crate) fn sender_device_opt(&self) -> Option<&DeviceId> { self.sender_device.as_ref() }
+	pub(crate) fn sender_device_opt(&self) -> Option<&DeviceId> {
+		self.sender_device.as_ref()
+	}
 
 	#[inline]
 	pub(crate) fn origin(&self) -> &ServerName {
@@ -110,7 +114,9 @@ where
 	}
 
 	#[inline]
-	pub(crate) fn origin_opt(&self) -> Option<&ServerName> { self.origin.as_ref() }
+	pub(crate) fn origin_opt(&self) -> Option<&ServerName> {
+		self.origin.as_ref()
+	}
 }
 
 impl<T> Deref for Args<T>
@@ -119,7 +125,9 @@ where
 {
 	type Target = T;
 
-	fn deref(&self) -> &Self::Target { &self.body }
+	fn deref(&self) -> &Self::Target {
+		&self.body
+	}
 }
 
 impl<T> FromRequest<State, Incoming> for Args<T>

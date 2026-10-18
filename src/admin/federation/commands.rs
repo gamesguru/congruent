@@ -155,6 +155,7 @@ pub(super) async fn remote_user_in_rooms(&self, user_id: OwnedUserId) -> Result 
 }
 
 #[admin_command]
+#[allow(clippy::fn_params_excessive_bools)]
 pub(super) async fn sending_queue(
 	&self,
 	server: Option<OwnedServerName>,
@@ -211,9 +212,10 @@ pub(super) async fn sending_queue(
 
 	if destinations.is_empty() {
 		return match server {
-			| Some(server) =>
+			| Some(server) => {
 				self.write_str(&format!("Sending queue is empty for {server}."))
-					.await,
+					.await
+			},
 			| None => self.write_str("Sending queue is empty.").await,
 		};
 	}

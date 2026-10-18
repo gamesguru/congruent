@@ -116,13 +116,14 @@ async fn can_see(
 	event_id: &slipstream::EventId,
 ) -> bool {
 	match requester {
-		| Requester::Client(user_id) =>
+		| Requester::Client(user_id) => {
 			services
 				.rooms
 				.state_accessor
 				.user_can_see_event(user_id, room_id, event_id)
-				.await,
-		| Requester::Federation(server_name) =>
+				.await
+		},
+		| Requester::Federation(server_name) => {
 			services
 				.rooms
 				.state_accessor
@@ -131,7 +132,8 @@ async fn can_see(
 					room_id.to_owned(),
 					event_id.to_owned(),
 				)
-				.await,
+				.await
+		},
 	}
 }
 
@@ -484,12 +486,13 @@ pub(crate) async fn resolve(
 	if can_fetch {
 		let needs_fetch = match &anchor {
 			| None => true,
-			| Some(pdu) =>
+			| Some(pdu) => {
 				services
 					.rooms
 					.pdu_metadata
 					.msc2836_needs_explore(pdu.event_id())
-					.await,
+					.await
+			},
 		};
 		if needs_fetch {
 			let room_id = anchor

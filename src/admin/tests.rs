@@ -1,13 +1,19 @@
 #![cfg(test)]
 
 #[test]
-fn get_help_short() { get_help_inner("-h"); }
+fn get_help_short() {
+	get_help_inner("-h");
+}
 
 #[test]
-fn get_help_long() { get_help_inner("--help"); }
+fn get_help_long() {
+	get_help_inner("--help");
+}
 
 #[test]
-fn get_help_subcommand() { get_help_inner("help"); }
+fn get_help_subcommand() {
+	get_help_inner("help");
+}
 
 fn get_help_inner(input: &str) {
 	use clap::Parser;
@@ -36,7 +42,9 @@ fn parse_yolo(args: &[&str]) -> Result<crate::admin::AdminCommand, clap::Error> 
 }
 
 #[test]
-fn yolo_list_outliers_basic() { parse_yolo(&["yolo", "list-outliers"]).unwrap(); }
+fn yolo_list_outliers_basic() {
+	parse_yolo(&["yolo", "list-outliers"]).unwrap();
+}
 
 #[test]
 fn yolo_list_outliers_with_room() {
@@ -82,7 +90,9 @@ fn yolo_view_extremities_requires_room_or_all() {
 }
 
 #[test]
-fn yolo_view_extremities_all() { parse_yolo(&["yolo", "view-extremities", "--all"]).unwrap(); }
+fn yolo_view_extremities_all() {
+	parse_yolo(&["yolo", "view-extremities", "--all"]).unwrap();
+}
 
 #[test]
 fn yolo_view_extremities_with_room() {
@@ -363,11 +373,14 @@ async fn setup_test_services(prefix: &str) -> (TempDbGuard, std::sync::Arc<servi
 	.expect("failed to parse test config");
 
 	let config = conduwuit::config::Config::new(&config_raw).expect("failed to parse config");
-	let server =
-		std::sync::Arc::new(conduwuit::Server::new(config, None::<&()>, conduwuit::log::Log {
+	let server = std::sync::Arc::new(conduwuit::Server::new(
+		config,
+		None::<&()>,
+		conduwuit::log::Log {
 			reload: conduwuit::log::LogLevelReloadHandles,
 			capture: std::sync::Arc::new(conduwuit::log::capture::State),
-		}));
+		},
+	));
 
 	let services = service::Services::build(server).expect("failed to build services");
 	let services = services.start().await.expect("failed to start services");
@@ -419,12 +432,15 @@ async fn test_yolo_audit_membership_drift() {
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomCreateEventContent {
-				federate: true,
-				predecessor: None,
-				room_version: RoomVersionId::V11,
-				..RoomCreateEventContent::new_v11()
-			}),
+			PduBuilder::state(
+				String::new(),
+				&RoomCreateEventContent {
+					federate: true,
+					predecessor: None,
+					room_version: RoomVersionId::V11,
+					..RoomCreateEventContent::new_v11()
+				},
+			),
 			server_user,
 			Some(&room_id),
 			&state_lock,
@@ -663,12 +679,15 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomCreateEventContent {
-				federate: true,
-				predecessor: None,
-				room_version: RoomVersionId::V11,
-				..RoomCreateEventContent::new_v11()
-			}),
+			PduBuilder::state(
+				String::new(),
+				&RoomCreateEventContent {
+					federate: true,
+					predecessor: None,
+					room_version: RoomVersionId::V11,
+					..RoomCreateEventContent::new_v11()
+				},
+			),
 			server_user,
 			Some(&room_id),
 			&state_lock,
@@ -820,12 +839,15 @@ async fn test_yolo_reorder_timeline() {
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomCreateEventContent {
-				federate: true,
-				predecessor: None,
-				room_version: RoomVersionId::V11,
-				..RoomCreateEventContent::new_v11()
-			}),
+			PduBuilder::state(
+				String::new(),
+				&RoomCreateEventContent {
+					federate: true,
+					predecessor: None,
+					room_version: RoomVersionId::V11,
+					..RoomCreateEventContent::new_v11()
+				},
+			),
 			server_user,
 			Some(&room_id),
 			&state_lock,
@@ -1051,12 +1073,15 @@ async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomCreateEventContent {
-				federate: true,
-				predecessor: None,
-				room_version: RoomVersionId::V11,
-				..RoomCreateEventContent::new_v11()
-			}),
+			PduBuilder::state(
+				String::new(),
+				&RoomCreateEventContent {
+					federate: true,
+					predecessor: None,
+					room_version: RoomVersionId::V11,
+					..RoomCreateEventContent::new_v11()
+				},
+			),
 			server_user,
 			Some(&room_id),
 			&state_lock,
@@ -1188,12 +1213,15 @@ async fn create_test_room_with_message(
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomCreateEventContent {
-				federate: true,
-				predecessor: None,
-				room_version: RoomVersionId::V11,
-				..RoomCreateEventContent::new_v11()
-			}),
+			PduBuilder::state(
+				String::new(),
+				&RoomCreateEventContent {
+					federate: true,
+					predecessor: None,
+					room_version: RoomVersionId::V11,
+					..RoomCreateEventContent::new_v11()
+				},
+			),
 			server_user,
 			Some(&room_id),
 			&state_lock,
@@ -2327,10 +2355,13 @@ async fn test_yolo_heal_receipts() {
 	// 1. Manually insert duplicate receipts into the database
 	let mut content1 = ReceiptEventContent(std::collections::BTreeMap::new());
 	let mut users1 = std::collections::BTreeMap::new();
-	users1.insert(user_id.clone(), Receipt {
-		ts: Some(slipstream::UInt::from(1000_u32)),
-		thread: slipstream::events::receipt::ReceiptThread::default(),
-	});
+	users1.insert(
+		user_id.clone(),
+		Receipt {
+			ts: Some(slipstream::UInt::from(1000_u32)),
+			thread: slipstream::events::receipt::ReceiptThread::default(),
+		},
+	);
 	let mut types1 = std::collections::BTreeMap::new();
 	types1.insert(ReceiptType::Read, users1);
 	content1.0.insert(slipstream::event_id!("$event1"), types1);
@@ -2342,10 +2373,13 @@ async fn test_yolo_heal_receipts() {
 
 	let mut content2 = ReceiptEventContent(std::collections::BTreeMap::new());
 	let mut users2 = std::collections::BTreeMap::new();
-	users2.insert(user_id.clone(), Receipt {
-		ts: Some(slipstream::UInt::from(2000_u32)),
-		thread: slipstream::events::receipt::ReceiptThread::default(),
-	});
+	users2.insert(
+		user_id.clone(),
+		Receipt {
+			ts: Some(slipstream::UInt::from(2000_u32)),
+			thread: slipstream::events::receipt::ReceiptThread::default(),
+		},
+	);
 	let mut types2 = std::collections::BTreeMap::new();
 	types2.insert(ReceiptType::Read, users2);
 	content2.0.insert(slipstream::event_id!("$event2"), types2);
@@ -2711,12 +2745,15 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomCreateEventContent {
-				federate: true,
-				predecessor: None,
-				room_version: RoomVersionId::V11,
-				..RoomCreateEventContent::new_v11()
-			}),
+			PduBuilder::state(
+				String::new(),
+				&RoomCreateEventContent {
+					federate: true,
+					predecessor: None,
+					room_version: RoomVersionId::V11,
+					..RoomCreateEventContent::new_v11()
+				},
+			),
 			server_user,
 			Some(&room_id),
 			&state_lock,

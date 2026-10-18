@@ -62,8 +62,9 @@ fn cached_send_txn_response(
 	legacy_is_delay_id: bool,
 ) -> std::result::Result<Response, ApiError> {
 	match parse_cached_send_txn_response(data, legacy_is_delay_id)? {
-		| CachedSendTxnResponse::EventId(event_id) =>
-			Ok(RumaResponse(send_message_event::v3::Response { event_id }).into_response()),
+		| CachedSendTxnResponse::EventId(event_id) => {
+			Ok(RumaResponse(send_message_event::v3::Response { event_id }).into_response())
+		},
 		| CachedSendTxnResponse::DelayId(delay_id) => Ok(delay_id_response(&delay_id)),
 	}
 }

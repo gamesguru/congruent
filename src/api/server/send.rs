@@ -203,7 +203,8 @@ async fn process_inbound_transaction(
 	// Every room this transaction touches, for activity-triggered
 	// reconciliation once it has been processed.
 	let mut pdu_ids: Vec<String> = Vec::new();
-	let mut active_rooms: std::collections::BTreeSet<OwnedRoomId> = Default::default();
+	let mut active_rooms: std::collections::BTreeSet<OwnedRoomId> =
+		std::collections::BTreeSet::default();
 	for pdu in body
 		.pdus
 		.iter()
@@ -499,12 +500,13 @@ async fn inject_state_hash_mismatches(
 		let received_inputs = entry.resolution_inputs().map(ToOwned::to_owned);
 		let local_inputs = if check_inputs {
 			match services.rooms.timeline.get_pdu(&event_id).await {
-				| Ok(pdu) =>
+				| Ok(pdu) => {
 					services
 						.rooms
 						.state_accessor
 						.msc4500_resolution_inputs_digest(&pdu, &mut inputs_cache)
-						.await,
+						.await
+				},
 				| Err(_) => None,
 			}
 		} else {
@@ -1094,10 +1096,14 @@ async fn handle_edu_receipt_room_user(
 				services
 					.rooms
 					.read_receipt
-					.readreceipt_update(&user_id, &room_id, &ReceiptEvent {
-						content: ReceiptEventContent(content.into()),
-						room_id: room_id.clone(),
-					})
+					.readreceipt_update(
+						&user_id,
+						&room_id,
+						&ReceiptEvent {
+							content: ReceiptEventContent(content.into()),
+							room_id: room_id.clone(),
+						},
+					)
 					.await;
 			}
 		})
@@ -1313,8 +1319,9 @@ async fn handle_edu_device_list_update(
 				.await
 				.ok();
 			let keys_changed = match existing_keys {
-				| Some(existing_keys) =>
-					remote_device_keys_differ(&existing_keys, &incoming_keys),
+				| Some(existing_keys) => {
+					remote_device_keys_differ(&existing_keys, &incoming_keys)
+				},
 				| None => true,
 			};
 
@@ -1391,12 +1398,13 @@ fn inject_device_display_name(
 				}
 			}
 		},
-		| None =>
+		| None => {
 			if let Some(Value::Object(unsigned_object)) = object.get_mut("unsigned") {
 				if unsigned_object.remove("device_display_name").is_some() {
 					modified = true;
 				}
-			},
+			}
+		},
 	}
 
 	if modified {
@@ -1411,8 +1419,9 @@ fn remote_device_keys_differ(
 	incoming_keys: &Raw<DeviceKeys>,
 ) -> bool {
 	match (existing_keys.deserialize(), incoming_keys.deserialize()) {
-		| (Ok(existing_keys), Ok(incoming_keys)) =>
-			codec::to_value(&existing_keys) != codec::to_value(&incoming_keys),
+		| (Ok(existing_keys), Ok(incoming_keys)) => {
+			codec::to_value(&existing_keys) != codec::to_value(&incoming_keys)
+		},
 		| _ => existing_keys.get() != incoming_keys.get(),
 	}
 }

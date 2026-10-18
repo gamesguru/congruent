@@ -83,10 +83,15 @@ pub(crate) async fn upgrade_room_route(
 		.rooms
 		.timeline
 		.create_hash_and_sign_event(
-			PduBuilder::state(StateKey::new(), &RoomTombstoneEventContent {
-				body: "This room has been replaced".to_owned(),
-				replacement_room: slipstream::OwnedRoomId::new_v1(services.globals.server_name()),
-			}),
+			PduBuilder::state(
+				StateKey::new(),
+				&RoomTombstoneEventContent {
+					body: "This room has been replaced".to_owned(),
+					replacement_room: slipstream::OwnedRoomId::new_v1(
+						services.globals.server_name(),
+					),
+				},
+			),
 			sender_user,
 			Some(&body.room_id),
 			&old_room_state_lock,
@@ -129,10 +134,13 @@ pub(crate) async fn upgrade_room_route(
 			.rooms
 			.timeline
 			.build_and_append_pdu(
-				PduBuilder::state(StateKey::new(), &RoomTombstoneEventContent {
-					body: "This room has been replaced".to_owned(),
-					replacement_room: replacement_room.unwrap().to_owned(),
-				}),
+				PduBuilder::state(
+					StateKey::new(),
+					&RoomTombstoneEventContent {
+						body: "This room has been replaced".to_owned(),
+						replacement_room: replacement_room.unwrap().to_owned(),
+					},
+				),
 				sender_user,
 				Some(&body.room_id),
 				&state_lock,
@@ -387,11 +395,14 @@ pub(crate) async fn upgrade_room_route(
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(StateKey::new(), &RoomPowerLevelsEventContent {
-				events_default: new_level,
-				invite: new_level,
-				..power_levels_event_content
-			}),
+			PduBuilder::state(
+				StateKey::new(),
+				&RoomPowerLevelsEventContent {
+					events_default: new_level,
+					invite: new_level,
+					..power_levels_event_content
+				},
+			),
 			sender_user,
 			Some(&body.room_id),
 			&state_lock,
@@ -410,10 +421,13 @@ pub(crate) async fn upgrade_room_route(
 			.rooms
 			.timeline
 			.build_and_append_pdu(
-				PduBuilder::state(StateKey::new(), &RoomTombstoneEventContent {
-					body: "This room has been replaced".to_owned(),
-					replacement_room: replacement_room.unwrap().to_owned(),
-				}),
+				PduBuilder::state(
+					StateKey::new(),
+					&RoomTombstoneEventContent {
+						body: "This room has been replaced".to_owned(),
+						replacement_room: replacement_room.unwrap().to_owned(),
+					},
+				),
 				sender_user,
 				Some(&body.room_id),
 				&old_room_state_lock,

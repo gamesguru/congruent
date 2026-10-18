@@ -93,7 +93,9 @@ struct RequiredStateSelection {
 }
 
 impl RequiredStateSelection {
-	fn is_empty(&self) -> bool { self.selectors.iter().all(|s| s.include.is_empty()) }
+	fn is_empty(&self) -> bool {
+		self.selectors.iter().all(|s| s.include.is_empty())
+	}
 
 	fn push<I, E>(&mut self, include: I, exclude: E)
 	where
@@ -119,11 +121,17 @@ enum SyncEndpoint {
 }
 
 impl SyncEndpoint {
-	fn stores_connection_without_id(self) -> bool { matches!(self, Self::StableV5) }
+	fn stores_connection_without_id(self) -> bool {
+		matches!(self, Self::StableV5)
+	}
 
-	fn validates_exact_pos(self) -> bool { matches!(self, Self::StableV5) }
+	fn validates_exact_pos(self) -> bool {
+		matches!(self, Self::StableV5)
+	}
 
-	fn enforces_stable_limits(self) -> bool { matches!(self, Self::StableV5) }
+	fn enforces_stable_limits(self) -> bool {
+		matches!(self, Self::StableV5)
+	}
 }
 
 #[derive(Clone, Copy)]
@@ -264,31 +272,37 @@ impl From<CompatRequest> for sync_events::v5::Request {
 				.lists
 				.into_iter()
 				.map(|(list_id, list)| {
-					(list_id, sync_events::v5::request::List {
-						ranges: list.ranges,
-						room_details: sync_events::v5::request::RoomDetails {
-							required_state: list.room_details.required_state.include,
-							timeline_limit: list.room_details.timeline_limit,
+					(
+						list_id,
+						sync_events::v5::request::List {
+							ranges: list.ranges,
+							room_details: sync_events::v5::request::RoomDetails {
+								required_state: list.room_details.required_state.include,
+								timeline_limit: list.room_details.timeline_limit,
+							},
+							include_heroes: list.include_heroes,
+							filters: list.filters.map(|filters| {
+								sync_events::v5::request::ListFilters {
+									is_invite: filters.is_invite,
+									not_room_types: filters.not_room_types,
+								}
+							}),
 						},
-						include_heroes: list.include_heroes,
-						filters: list.filters.map(|filters| {
-							sync_events::v5::request::ListFilters {
-								is_invite: filters.is_invite,
-								not_room_types: filters.not_room_types,
-							}
-						}),
-					})
+					)
 				})
 				.collect(),
 			room_subscriptions: value
 				.room_subscriptions
 				.into_iter()
 				.map(|(room_id, room)| {
-					(room_id, sync_events::v5::request::RoomSubscription {
-						required_state: room.required_state.include,
-						timeline_limit: room.timeline_limit,
-						include_heroes: room.include_heroes,
-					})
+					(
+						room_id,
+						sync_events::v5::request::RoomSubscription {
+							required_state: room.required_state.include,
+							timeline_limit: room.timeline_limit,
+							include_heroes: room.include_heroes,
+						},
+					)
 				})
 				.collect(),
 			extensions: value.extensions,
@@ -451,11 +465,17 @@ impl EndpointRequest for CompatSyncRequest {
 	const METADATA: slipstream::api::Metadata =
 		<sync_events::v5::Request as EndpointRequest>::METADATA;
 
-	fn path_args(&self) -> Vec<String> { self.request.path_args() }
+	fn path_args(&self) -> Vec<String> {
+		self.request.path_args()
+	}
 
-	fn query(&self) -> Vec<(String, String)> { self.request.query() }
+	fn query(&self) -> Vec<(String, String)> {
+		self.request.query()
+	}
 
-	fn body(&self) -> Option<Value> { self.request.body() }
+	fn body(&self) -> Option<Value> {
+		self.request.body()
+	}
 
 	fn from_parts(
 		path: &[String],
@@ -1193,11 +1213,12 @@ where
 			}
 		}
 
-		response
-			.lists
-			.insert(list_id.clone(), sync_events::v5::response::List {
+		response.lists.insert(
+			list_id.clone(),
+			sync_events::v5::response::List {
 				count: ruma_from_usize(active_rooms.len()),
-			});
+			},
+		);
 
 		if persist_cache && (endpoint.stores_connection_without_id() || body.conn_id.is_some()) {
 			let snake_key = into_snake_key(sender_user, sender_device, body.conn_id.clone());
@@ -1517,52 +1538,56 @@ where
 			.await
 			.saturating_add(thread_total_highlights);
 
-		rooms.insert(room_id.clone(), sync_events::v5::response::Room {
-			name: if include_stable_room_fields {
-				services.rooms.state_accessor.get_name(room_id).await.ok()
-			} else {
-				None
-			},
-			avatar: match heroes_avatar {
-				| Some(heroes_avatar) => slipstream::JsOption::Some(heroes_avatar),
-				| _ => match services.rooms.state_accessor.get_avatar(room_id).await {
-					| slipstream::JsOption::Some(avatar) =>
-						slipstream::JsOption::from_option(avatar.url),
-					| slipstream::JsOption::Null => slipstream::JsOption::Null,
-					| slipstream::JsOption::Undefined => slipstream::JsOption::Undefined,
+		rooms.insert(
+			room_id.clone(),
+			sync_events::v5::response::Room {
+				name: if include_stable_room_fields {
+					services.rooms.state_accessor.get_name(room_id).await.ok()
+				} else {
+					None
 				},
+				avatar: match heroes_avatar {
+					| Some(heroes_avatar) => slipstream::JsOption::Some(heroes_avatar),
+					| _ => match services.rooms.state_accessor.get_avatar(room_id).await {
+						| slipstream::JsOption::Some(avatar) => {
+							slipstream::JsOption::from_option(avatar.url)
+						},
+						| slipstream::JsOption::Null => slipstream::JsOption::Null,
+						| slipstream::JsOption::Undefined => slipstream::JsOption::Undefined,
+					},
+				},
+				initial: (roomsince == &0).then_some(true),
+				is_dm: None,
+				invite_state,
+				unread_notifications: UnreadNotificationsCount {
+					highlight_count: Some(highlight_count),
+					notification_count: Some(notification_count),
+				},
+				timeline: room_events,
+				required_state,
+				prev_batch,
+				limited,
+				joined_count: Some(
+					services
+						.rooms
+						.state_cache
+						.room_joined_count(room_id)
+						.await
+						.unwrap_or(0),
+				),
+				invited_count: Some(
+					services
+						.rooms
+						.state_cache
+						.room_invited_count(room_id)
+						.await
+						.unwrap_or(0),
+				),
+				num_live,
+				bump_stamp: timestamp,
+				heroes: Some(heroes),
 			},
-			initial: (roomsince == &0).then_some(true),
-			is_dm: None,
-			invite_state,
-			unread_notifications: UnreadNotificationsCount {
-				highlight_count: Some(highlight_count),
-				notification_count: Some(notification_count),
-			},
-			timeline: room_events,
-			required_state,
-			prev_batch,
-			limited,
-			joined_count: Some(
-				services
-					.rooms
-					.state_cache
-					.room_joined_count(room_id)
-					.await
-					.unwrap_or(0),
-			),
-			invited_count: Some(
-				services
-					.rooms
-					.state_cache
-					.room_invited_count(room_id)
-					.await
-					.unwrap_or(0),
-			),
-			num_live,
-			bump_stamp: timestamp,
-			heroes: Some(heroes),
-		});
+		);
 	}
 	Ok(rooms)
 }
@@ -2556,10 +2581,13 @@ mod tests {
 		)
 		.expect("event-type keyed required_state should deserialize");
 
-		assert_eq!(fixture.required_state.include, vec![
-			(StateEventType::RoomMember, "$LAZY".to_owned()),
-			(StateEventType::RoomName, String::new()),
-		]);
+		assert_eq!(
+			fixture.required_state.include,
+			vec![
+				(StateEventType::RoomMember, "$LAZY".to_owned()),
+				(StateEventType::RoomName, String::new()),
+			]
+		);
 		assert_eq!(fixture.required_state.exclude, None);
 	}
 
@@ -2570,10 +2598,13 @@ mod tests {
 		)
 		.expect("stable include/lazy_members required_state should deserialize");
 
-		assert_eq!(fixture.required_state.include, vec![
-			(StateEventType::RoomName, String::new()),
-			(StateEventType::RoomMember, "$LAZY".to_owned()),
-		]);
+		assert_eq!(
+			fixture.required_state.include,
+			vec![
+				(StateEventType::RoomName, String::new()),
+				(StateEventType::RoomMember, "$LAZY".to_owned()),
+			]
+		);
 		assert_eq!(fixture.required_state.exclude, None);
 	}
 

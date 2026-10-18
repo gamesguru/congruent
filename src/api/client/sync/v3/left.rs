@@ -72,10 +72,11 @@ pub(super) async fn load_left_room(
 		.await;
 
 	match last_sync_end_count {
-		| None =>
+		| None => {
 			if is_forgotten || !filter.room.include_leave {
 				return Ok(None);
-			},
+			}
+		},
 		| Some(last_sync_end_count) => {
 			if last_sync_end_count >= left_count && !filter.room.include_leave {
 				return Ok(None);
@@ -452,7 +453,7 @@ async fn build_left_state_and_timeline(
 			)
 			.await?
 		},
-		| _ =>
+		| _ => {
 			build_state_initial(
 				services,
 				room_id,
@@ -461,7 +462,8 @@ async fn build_left_state_and_timeline(
 				lazily_loaded_members.as_ref(),
 				None,
 			)
-			.await?,
+			.await?
+		},
 	};
 
 	info!(

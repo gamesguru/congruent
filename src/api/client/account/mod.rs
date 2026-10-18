@@ -414,17 +414,20 @@ pub async fn full_user_deactivate(
 
 		// Leave the room
 		pdu_queue.push((
-			PduBuilder::state(user_id.to_string(), &RoomMemberEventContent {
-				avatar_url: None,
-				blurhash: None,
-				membership: MembershipState::Leave,
-				displayname: None,
-				join_authorized_via_users_server: None,
-				reason: None,
-				is_direct: None,
-				third_party_invite: None,
-				redact_events: None,
-			}),
+			PduBuilder::state(
+				user_id.to_string(),
+				&RoomMemberEventContent {
+					avatar_url: None,
+					blurhash: None,
+					membership: MembershipState::Leave,
+					displayname: None,
+					join_authorized_via_users_server: None,
+					reason: None,
+					is_direct: None,
+					third_party_invite: None,
+					redact_events: None,
+				},
+			),
 			room_id,
 		));
 

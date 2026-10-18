@@ -67,10 +67,13 @@ pub(super) async fn compare_room_state(
 	let response = match self
 		.services
 		.sending
-		.send_federation_request(server, get_room_state_ids::v1::Request {
-			room_id: room_id.clone(),
-			event_id: at_event_id.clone(),
-		})
+		.send_federation_request(
+			server,
+			get_room_state_ids::v1::Request {
+				room_id: room_id.clone(),
+				event_id: at_event_id.clone(),
+			},
+		)
 		.await
 	{
 		| Ok(r) => r,
@@ -594,10 +597,13 @@ pub(super) async fn compare_room_state(
 			let response = match self
 				.services
 				.sending
-				.send_federation_request(cmp_server, get_room_state_ids::v1::Request {
-					room_id: room_id.clone(),
-					event_id: at_event_id.clone(),
-				})
+				.send_federation_request(
+					cmp_server,
+					get_room_state_ids::v1::Request {
+						room_id: room_id.clone(),
+						event_id: at_event_id.clone(),
+					},
+				)
 				.await
 			{
 				| Ok(r) => r,
@@ -1194,7 +1200,9 @@ pub(super) async fn audit_membership(
 				| Some((st_membership, st_event))
 					if st_event != tl_event
 						&& (st_membership == "leave" || st_membership == "ban") =>
-					true,
+				{
+					true
+				},
 				// User in timeline but absent from state
 				| None if tl_membership == "join" || tl_membership == "invite" => true,
 				| _ => false,
@@ -1659,10 +1667,13 @@ pub(super) async fn audit_membership(
 		match self
 			.services
 			.sending
-			.send_federation_request(server, get_room_state::v1::Request {
-				room_id: room_id.clone(),
-				event_id: latest_event_id.clone(),
-			})
+			.send_federation_request(
+				server,
+				get_room_state::v1::Request {
+					room_id: room_id.clone(),
+					event_id: latest_event_id.clone(),
+				},
+			)
 			.await
 		{
 			| Ok(response) => {

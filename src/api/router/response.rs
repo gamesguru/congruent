@@ -11,7 +11,9 @@ pub(crate) trait IntoResponse {
 }
 
 impl IntoResponse for Response {
-	fn into_response(self) -> Response { self }
+	fn into_response(self) -> Response {
+		self
+	}
 }
 
 impl IntoResponse for StatusCode {
@@ -26,15 +28,21 @@ impl IntoResponse for StatusCode {
 pub(crate) struct ApiError(pub(crate) Error);
 
 impl From<Error> for ApiError {
-	fn from(error: Error) -> Self { Self(error) }
+	fn from(error: Error) -> Self {
+		Self(error)
+	}
 }
 
 impl From<slipstream::codec::DeError> for ApiError {
-	fn from(error: slipstream::codec::DeError) -> Self { Self(error.into()) }
+	fn from(error: slipstream::codec::DeError) -> Self {
+		Self(error.into())
+	}
 }
 
 impl From<slipstream::api::error::IntoHttpError> for ApiError {
-	fn from(error: slipstream::api::error::IntoHttpError) -> Self { Self(error.into()) }
+	fn from(error: slipstream::api::error::IntoHttpError) -> Self {
+		Self(error.into())
+	}
 }
 
 impl IntoResponse for ApiError {
@@ -93,7 +101,9 @@ where
 	T: OutgoingResponse;
 
 impl From<Error> for RumaResponse<UiaaResponse> {
-	fn from(t: Error) -> Self { Self(t.into()) }
+	fn from(t: Error) -> Self {
+		Self(t.into())
+	}
 }
 
 impl<T> IntoResponse for RumaResponse<T>

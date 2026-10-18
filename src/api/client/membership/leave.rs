@@ -165,13 +165,16 @@ pub async fn leave_room(
 			match user_member_event_content {
 				| Ok(content) => {
 					let event_id = Box::pin(services.rooms.timeline.build_and_append_pdu(
-						PduBuilder::state(user_id.to_string(), &RoomMemberEventContent {
-							membership: MembershipState::Leave,
-							reason,
-							join_authorized_via_users_server: None,
-							is_direct: None,
-							..content
-						}),
+						PduBuilder::state(
+							user_id.to_string(),
+							&RoomMemberEventContent {
+								membership: MembershipState::Leave,
+								reason,
+								join_authorized_via_users_server: None,
+								is_direct: None,
+								..content
+							},
+						),
 						user_id,
 						Some(room_id),
 						&state_lock,

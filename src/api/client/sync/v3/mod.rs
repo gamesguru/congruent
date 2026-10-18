@@ -205,7 +205,9 @@ impl DeviceListUpdates {
 		self.left.extend(other.left);
 	}
 
-	fn is_empty(&self) -> bool { self.changed.is_empty() && self.left.is_empty() }
+	fn is_empty(&self) -> bool {
+		self.changed.is_empty() && self.left.is_empty()
+	}
 }
 
 impl From<DeviceListUpdates> for DeviceLists {
@@ -572,7 +574,7 @@ pub(crate) async fn build_sync_events(
 		// use inline filters directly
 		| Some(Filter::FilterDefinition(filter)) => (**filter).clone(),
 		// look up filter IDs from the database
-		| Some(Filter::FilterId(filter_id)) =>
+		| Some(Filter::FilterId(filter_id)) => {
 			if filter_id.starts_with('{') {
 				slipstream::codec::from_str(filter_id).unwrap_or_else(|e| {
 					conduwuit::warn!("Failed to parse inline filter JSON: {}", e);
@@ -584,7 +586,8 @@ pub(crate) async fn build_sync_events(
 					.get_filter(syncing_user, filter_id)
 					.await
 					.unwrap_or_default()
-			},
+			}
+		},
 	});
 
 	let context = SyncContext {
@@ -735,8 +738,9 @@ pub(crate) async fn build_sync_events(
 			// only sync this invite if it was sent after the last /sync call
 			let include_invite = match (last_sync_end_count, invite_count) {
 				| (None, _) | (_, None) => true,
-				| (Some(last_sync_end_count), Some(invite_count)) =>
-					last_sync_end_count < invite_count,
+				| (Some(last_sync_end_count), Some(invite_count)) => {
+					last_sync_end_count < invite_count
+				},
 			};
 
 			if include_invite {
@@ -803,8 +807,9 @@ pub(crate) async fn build_sync_events(
 			// only sync this knock if it was sent after the last /sync call
 			let include_knock = match (last_sync_end_count, knock_count) {
 				| (None, _) | (_, None) => true,
-				| (Some(last_sync_end_count), Some(knock_count)) =>
-					last_sync_end_count < knock_count,
+				| (Some(last_sync_end_count), Some(knock_count)) => {
+					last_sync_end_count < knock_count
+				},
 			};
 
 			if include_knock {

@@ -24,7 +24,9 @@ pub(crate) mod headers {
 		#[derive(Debug)]
 		pub(crate) struct Bearer(pub(crate) String);
 		impl Bearer {
-			pub(crate) fn token(&self) -> &str { &self.0 }
+			pub(crate) fn token(&self) -> &str {
+				&self.0
+			}
 		}
 	}
 }

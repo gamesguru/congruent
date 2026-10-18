@@ -289,12 +289,15 @@ async fn create_notice_room(
 	let timeline = &services.rooms.timeline;
 	timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomCreateEventContent {
-				federate: false,
-				predecessor: None,
-				room_version: RoomVersionId::V11,
-				..RoomCreateEventContent::new_v11()
-			}),
+			PduBuilder::state(
+				String::new(),
+				&RoomCreateEventContent {
+					federate: false,
+					predecessor: None,
+					room_version: RoomVersionId::V11,
+					..RoomCreateEventContent::new_v11()
+				},
+			),
 			notice_user,
 			Some(&room_id),
 			&state_lock,
@@ -315,10 +318,10 @@ async fn create_notice_room(
 		.await?;
 	timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomPowerLevelsEventContent {
-				users: power_users,
-				..Default::default()
-			}),
+			PduBuilder::state(
+				String::new(),
+				&RoomPowerLevelsEventContent { users: power_users, ..Default::default() },
+			),
 			notice_user,
 			Some(&room_id),
 			&state_lock,
