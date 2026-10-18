@@ -127,13 +127,11 @@ impl RejectionCode {
 			| Self::DuplicateAuthEventKey => "duplicate_auth_event_key",
 			| Self::MissingCreateEvent => "missing_create_event",
 			| Self::AuthCheckFailed => "auth_check_failed",
-			| Self::StructurallyInvalidInGetMissingEvents => {
-				"structurally_invalid_in_get_missing_events"
-			},
+			| Self::StructurallyInvalidInGetMissingEvents =>
+				"structurally_invalid_in_get_missing_events",
 			| Self::PrevEventUnknownStateIdsFailed => "prev_event_unknown_state_ids_failed",
-			| Self::StateResolutionFailedWithPrevsPresent => {
-				"state_resolution_failed_with_prevs_present"
-			},
+			| Self::StateResolutionFailedWithPrevsPresent =>
+				"state_resolution_failed_with_prevs_present",
 			| Self::Unknown => "unknown",
 		}
 	}
@@ -309,9 +307,7 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str {
-		crate::service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
 
 impl Service {

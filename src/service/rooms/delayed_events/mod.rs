@@ -55,9 +55,7 @@ impl DelayedEventStatus {
 }
 
 impl CodecSerialize for DelayedEventStatus {
-	fn to_json(&self) -> slipstream::json::Value {
-		self.as_str().to_json()
-	}
+	fn to_json(&self) -> slipstream::json::Value { self.as_str().to_json() }
 }
 
 /// Opaque event content, stored transparently as its JSON value.
@@ -65,9 +63,7 @@ impl CodecSerialize for DelayedEventStatus {
 pub struct AnyTimelineEventContent(pub slipstream::json::Value);
 
 impl CodecSerialize for AnyTimelineEventContent {
-	fn to_json(&self) -> slipstream::json::Value {
-		self.0.clone()
-	}
+	fn to_json(&self) -> slipstream::json::Value { self.0.clone() }
 }
 
 impl CodecDeserialize for AnyTimelineEventContent {
@@ -232,13 +228,9 @@ impl crate::Service for Service {
 		Box::pin(submission_queue::worker(&self)).await
 	}
 
-	fn interrupt(&self) {
-		self.interrupt_requested.store(true, Ordering::Relaxed);
-	}
+	fn interrupt(&self) { self.interrupt_requested.store(true, Ordering::Relaxed); }
 
-	fn name(&self) -> &str {
-		crate::service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 
 	async fn memory_usage(&self, out: &mut (dyn Write + Send)) -> Result {
 		let mut mem_usage = self.mem_usage.load(Ordering::Relaxed);
@@ -487,7 +479,7 @@ impl Service {
 				unsigned.insert("delay_id".to_owned(), delay_id.clone().into());
 
 				let result = match &event.state_key {
-					| Some(state_key) => {
+					| Some(state_key) =>
 						Box::pin(self.services.timeline.send_state_event_for_key_helper(
 							&event.user_id,
 							&event.room_id,
@@ -498,9 +490,8 @@ impl Service {
 							Some(timestamp),
 							Some(unsigned),
 						))
-						.await
-					},
-					| None => {
+						.await,
+					| None =>
 						Box::pin(self.services.timeline.send_message_event_helper(
 							&event.user_id,
 							&event.room_id,
@@ -511,8 +502,7 @@ impl Service {
 							Some(timestamp),
 							Some(unsigned),
 						))
-						.await
-					},
+						.await,
 				};
 
 				match result {
@@ -635,9 +625,8 @@ impl Service {
 					.put(&delay_id, Json(event));
 				Ok(())
 			},
-			| UpdateAction::Send | UpdateAction::Cancel => {
-				Box::pin(self.finalize_delayed_event(&delay_id, event, action, true)).await
-			},
+			| UpdateAction::Send | UpdateAction::Cancel =>
+				Box::pin(self.finalize_delayed_event(&delay_id, event, action, true)).await,
 		}
 	}
 

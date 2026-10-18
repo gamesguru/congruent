@@ -68,31 +68,22 @@ fn get_summary_children() {
 	summary.room_type = Some(slipstream::room::RoomType::Space);
 
 	let all = get_parent_children_via(&summary, false);
-	assert_eq!(
-		all,
-		vec![
-			(
-				slipstream::OwnedRoomId::parse("!foo:example.org").unwrap(),
-				vec![slipstream::OwnedServerName::parse("example.org").unwrap()]
-			),
-			(
-				slipstream::OwnedRoomId::parse("!bar:example.org").unwrap(),
-				vec![slipstream::OwnedServerName::parse("example.org").unwrap()]
-			),
-			(
-				slipstream::OwnedRoomId::parse("!baz:example.org").unwrap(),
-				vec![slipstream::OwnedServerName::parse("example.org").unwrap()]
-			)
-		]
-	);
+	assert_eq!(all, vec![
+		(slipstream::OwnedRoomId::parse("!foo:example.org").unwrap(), vec![
+			slipstream::OwnedServerName::parse("example.org").unwrap()
+		]),
+		(slipstream::OwnedRoomId::parse("!bar:example.org").unwrap(), vec![
+			slipstream::OwnedServerName::parse("example.org").unwrap()
+		]),
+		(slipstream::OwnedRoomId::parse("!baz:example.org").unwrap(), vec![
+			slipstream::OwnedServerName::parse("example.org").unwrap()
+		])
+	]);
 	let suggested = get_parent_children_via(&summary, true);
-	assert_eq!(
-		suggested,
-		vec![(
-			slipstream::OwnedRoomId::parse("!bar:example.org").unwrap(),
-			vec![slipstream::OwnedServerName::parse("example.org").unwrap()]
-		)]
-	);
+	assert_eq!(suggested, vec![(
+		slipstream::OwnedRoomId::parse("!bar:example.org").unwrap(),
+		vec![slipstream::OwnedServerName::parse("example.org").unwrap()]
+	)]);
 }
 
 #[test]
@@ -137,10 +128,9 @@ fn summary_chunk_filters_children_state_for_suggested_only() {
 		.map(|child| child.deserialize().unwrap().state_key)
 		.collect();
 
-	assert_eq!(
-		children,
-		vec![slipstream::OwnedRoomId::parse("!suggested:example.org").unwrap()]
-	);
+	assert_eq!(children, vec![
+		slipstream::OwnedRoomId::parse("!suggested:example.org").unwrap()
+	]);
 }
 
 #[test]
@@ -213,15 +203,12 @@ fn get_summary_children_sorted_by_order() {
 	let room_ids: Vec<_> = result.iter().map(|(id, _)| id.as_str()).collect();
 	// order="a" first, then order="b", then no-order children sorted by the
 	// spec tie-breakers.
-	assert_eq!(
-		room_ids,
-		vec![
-			"!alpha:example.org",
-			"!beta:example.org",
-			"!zoo:example.org",
-			"!aaa:example.org",
-		]
-	);
+	assert_eq!(room_ids, vec![
+		"!alpha:example.org",
+		"!beta:example.org",
+		"!zoo:example.org",
+		"!aaa:example.org",
+	]);
 }
 
 #[test]
@@ -296,22 +283,17 @@ fn get_summary_children_tie_breaks_by_timestamp_then_room_id() {
 	let result = get_parent_children_via(&summary, false);
 	let room_ids: Vec<_> = result.iter().map(|(id, _)| id.as_str()).collect();
 
-	assert_eq!(
-		room_ids,
-		vec![
-			"!alpha:example.org",
-			"!zulu:example.org",
-			"!earlier:example.org",
-			"!later:example.org",
-		]
-	);
+	assert_eq!(room_ids, vec![
+		"!alpha:example.org",
+		"!zulu:example.org",
+		"!earlier:example.org",
+		"!later:example.org",
+	]);
 }
 
 #[test]
 fn invalid_pagination_tokens() {
-	fn token_is_err(token: &str) {
-		PaginationToken::from_str(token).unwrap_err();
-	}
+	fn token_is_err(token: &str) { PaginationToken::from_str(token).unwrap_err(); }
 
 	token_is_err("231_2_noabool");
 	token_is_err("");

@@ -38,9 +38,8 @@ pub(crate) async fn send_event_to_device_route(
 			if !services.globals.user_is_local(target_user_id) {
 				let mut map = BTreeMap::new();
 				let target_device_id = match target_device_id_maybe {
-					| DeviceIdOrAllDevices::DeviceId(device_id) => {
-						DeviceIdOrAllDevices::DeviceId(device_id.clone())
-					},
+					| DeviceIdOrAllDevices::DeviceId(device_id) =>
+						DeviceIdOrAllDevices::DeviceId(device_id.clone()),
 					| DeviceIdOrAllDevices::AllDevices => DeviceIdOrAllDevices::AllDevices,
 				};
 				map.insert(target_device_id, event.clone().cast());

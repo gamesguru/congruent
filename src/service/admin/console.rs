@@ -62,9 +62,7 @@ impl Console {
 		self.worker_join.lock().take();
 	}
 
-	pub fn interrupt(self: &Arc<Self>) {
-		self.worker_join.lock().take();
-	}
+	pub fn interrupt(self: &Arc<Self>) { self.worker_join.lock().take(); }
 
 	fn worker(self: Arc<Self>, _runtime: &RuntimeHandle) {
 		debug!("admin console session starting");

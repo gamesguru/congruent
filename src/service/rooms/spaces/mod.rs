@@ -66,9 +66,8 @@ pub enum SummaryAccessibility {
 impl SummaryAccessibility {
 	fn for_suggested_only(self, suggested_only: bool) -> Self {
 		match self {
-			| Self::Accessible(summary) => {
-				Self::Accessible(filter_summary_children_state(summary, suggested_only))
-			},
+			| Self::Accessible(summary) =>
+				Self::Accessible(filter_summary_children_state(summary, suggested_only)),
 			| Self::Inaccessible => Self::Inaccessible,
 		}
 	}
@@ -122,9 +121,7 @@ impl crate::Service for Service {
 		self.negative_cache_ts.lock().await.clear();
 	}
 
-	fn name(&self) -> &str {
-		crate::service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
 
 /// Gets the summary of a space using solely local information

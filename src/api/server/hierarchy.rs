@@ -73,13 +73,11 @@ pub(crate) async fn get_hierarchy_route(
 							// Room not known locally or inaccessible — report as
 							// inaccessible so the querying server can try the child's
 							// resident server.
-							| None | Some(SummaryAccessibility::Inaccessible) => {
-								Some((None, Some(child)))
-							},
+							| None | Some(SummaryAccessibility::Inaccessible) =>
+								Some((None, Some(child))),
 
-							| Some(SummaryAccessibility::Accessible(summary)) => {
-								Some((Some(summary), None))
-							},
+							| Some(SummaryAccessibility::Accessible(summary)) =>
+								Some((Some(summary), None)),
 						}
 					})
 					.unzip()

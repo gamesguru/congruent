@@ -100,9 +100,7 @@ pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHa
 /// has already committed the byte-identical pointer, so the second write is pure
 /// amplification outside the batch the timeline write is committed with.
 #[must_use]
-pub(crate) fn is_state_event(pdu: &PduEvent) -> bool {
-	pdu.state_key().is_some()
-}
+pub(crate) fn is_state_event(pdu: &PduEvent) -> bool { pdu.state_key().is_some() }
 
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all};
 use slipstream::{
@@ -188,9 +186,7 @@ impl crate::Service for Service {
 		Ok(())
 	}
 
-	fn name(&self) -> &str {
-		crate::service::make_name(module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(module_path!()) }
 }
 
 impl Service {
@@ -237,9 +233,8 @@ impl Service {
 			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
 		let store = &self.services.state_hamt.store;
 		let old_node = match from_root {
-			| Some(root) => {
-				store.get_node(room_id.as_bytes(), &structural_key, &root.structural_hash)?
-			},
+			| Some(root) =>
+				store.get_node(room_id.as_bytes(), &structural_key, &root.structural_hash)?,
 			| None => Arc::new(rezzy::hamt::HamtNode {
 				datamap: 0,
 				nodemap: 0,
@@ -564,10 +559,9 @@ impl Service {
 				.await?
 		} else {
 			match self.get_room_state_hamt(room_id).await {
-				| Ok(root_handle) => {
+				| Ok(root_handle) =>
 					self.load_state_map_from_root_handle(room_id, &root_handle, new_shortstatekey)
-						.await?
-				},
+						.await?,
 				| Err(e) if e.is_not_found() => HashMap::new(),
 				| Err(e) => return Err(e),
 			}

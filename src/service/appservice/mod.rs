@@ -98,9 +98,7 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str {
-		crate::service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
 
 impl Service {
@@ -117,7 +115,7 @@ impl Service {
 						"Failed to read appservice directory /complement/appservice: {e:?}"
 					));
 				},
-				| Ok(mut entries) => {
+				| Ok(mut entries) =>
 					while let Some(Ok(entry)) = entries.next().await {
 						let path = entry.path();
 						let is_yaml = path
@@ -156,8 +154,7 @@ impl Service {
 								},
 							}
 						}
-					}
-				},
+					},
 			}
 		}
 

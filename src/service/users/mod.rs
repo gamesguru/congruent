@@ -251,8 +251,9 @@ impl crate::Service for Service {
 				userid_devicelistversion: args.db["userid_devicelistversion"].clone(),
 				userid_displayname: args.db["userid_displayname"].clone(),
 				userid_lastonetimekeyupdate: args.db["userid_lastonetimekeyupdate"].clone(),
-				userid_lastremotedeviceliststreamid:
-					args.db["userid_lastremotedeviceliststreamid"].clone(),
+				userid_lastremotedeviceliststreamid: args.db
+					["userid_lastremotedeviceliststreamid"]
+					.clone(),
 				userid_masterkeyid: args.db["userid_masterkeyid"].clone(),
 				userid_origin: args.db["userid_origin"].clone(),
 				userid_password: args.db["userid_password"].clone(),
@@ -269,9 +270,7 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str {
-		crate::service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
 
 impl Service {
@@ -518,9 +517,7 @@ impl Service {
 		self.db.userid_lock.raw_put(user_id, Json(suspension));
 	}
 
-	pub async fn unlock_account(&self, user_id: &UserId) {
-		self.db.userid_lock.remove(user_id);
-	}
+	pub async fn unlock_account(&self, user_id: &UserId) { self.db.userid_lock.remove(user_id); }
 
 	/// Check if a user has an account on this homeserver.
 	#[inline]
@@ -548,13 +545,12 @@ impl Service {
 			.deserialized::<UserSuspension>()
 		{
 			| Ok(s) => Ok(s.suspended),
-			| Err(e) => {
+			| Err(e) =>
 				if e.is_not_found() {
 					Ok(false)
 				} else {
 					Err(e)
-				}
-			},
+				},
 		}
 	}
 
@@ -567,13 +563,12 @@ impl Service {
 			.deserialized::<UserSuspension>()
 		{
 			| Ok(s) => Ok(s.suspended),
-			| Err(e) => {
+			| Err(e) =>
 				if e.is_not_found() {
 					Ok(false)
 				} else {
 					Err(e)
-				}
-			},
+				},
 		}
 	}
 
@@ -581,9 +576,7 @@ impl Service {
 		self.db.userid_logindisabled.insert(user_id, "");
 	}
 
-	pub fn enable_login(&self, user_id: &UserId) {
-		self.db.userid_logindisabled.remove(user_id);
-	}
+	pub fn enable_login(&self, user_id: &UserId) { self.db.userid_logindisabled.remove(user_id); }
 
 	pub async fn is_login_disabled(&self, user_id: &UserId) -> bool {
 		self.db
@@ -605,9 +598,7 @@ impl Service {
 
 	/// Returns the number of users registered on this server.
 	#[inline]
-	pub async fn count(&self) -> usize {
-		self.db.userid_password.count().await
-	}
+	pub async fn count(&self) -> usize { self.db.userid_password.count().await }
 
 	/// Find out which user an access token belongs to.
 	pub async fn find_from_token(&self, token: &str) -> Result<(OwnedUserId, OwnedDeviceId)> {
@@ -618,9 +609,7 @@ impl Service {
 	/// Returns an iterator over all users on this homeserver (offered for
 	/// compatibility)
 	#[allow(clippy::iter_without_into_iter, clippy::iter_not_returning_iterator)]
-	pub fn iter(&self) -> impl Stream<Item = OwnedUserId> + Send + '_ {
-		self.stream()
-	}
+	pub fn iter(&self) -> impl Stream<Item = OwnedUserId> + Send + '_ { self.stream() }
 
 	/// Returns an iterator over all users on this homeserver.
 	pub fn stream(&self) -> impl Stream<Item = OwnedUserId> + Send {
@@ -894,14 +883,10 @@ impl Service {
 		// Remove MSC3890 local notification settings for this device
 		self.services
 			.account_data
-			.delete_all(
-				None,
-				user_id,
-				&[
-					&format!("org.matrix.msc3890.local_notification_settings.{device_id}"),
-					&format!("m.local_notification_settings.{device_id}"),
-				],
-			)
+			.delete_all(None, user_id, &[
+				&format!("org.matrix.msc3890.local_notification_settings.{device_id}"),
+				&format!("m.local_notification_settings.{device_id}"),
+			])
 			.await
 			.ok();
 
@@ -1060,9 +1045,8 @@ impl Service {
 	/// lookup counts as expired.
 	pub async fn access_token_expired(&self, token: &str) -> bool {
 		match self.token_expires_at(token).await {
-			| Ok(expires_at) => {
-				token_expiry::has_expired(expires_at, utils::millis_since_unix_epoch())
-			},
+			| Ok(expires_at) =>
+				token_expiry::has_expired(expires_at, utils::millis_since_unix_epoch()),
 			| Err(_) => true,
 		}
 	}

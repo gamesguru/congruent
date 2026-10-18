@@ -123,27 +123,19 @@ impl ServerPool {
 
 	/// Number of servers in the pool.
 	#[must_use]
-	pub fn len(&self) -> usize {
-		self.servers.len()
-	}
+	pub fn len(&self) -> usize { self.servers.len() }
 
 	/// Is the pool empty?
 	#[must_use]
-	pub fn is_empty(&self) -> bool {
-		self.servers.is_empty()
-	}
+	pub fn is_empty(&self) -> bool { self.servers.is_empty() }
 
 	/// The ordered list of server names.
 	#[must_use]
-	pub fn server_names(&self) -> &[OwnedServerName] {
-		&self.servers
-	}
+	pub fn server_names(&self) -> &[OwnedServerName] { &self.servers }
 
 	/// Whether more than one server is available.
 	#[must_use]
-	pub fn is_multi(&self) -> bool {
-		self.servers.len() > 1
-	}
+	pub fn is_multi(&self) -> bool { self.servers.len() > 1 }
 
 	// ── Selection ────────────────────────────────────────────────────────
 
@@ -312,15 +304,11 @@ impl ServerPool {
 
 	/// Are ALL servers currently unavailable?
 	#[must_use]
-	pub fn all_exhausted(&self) -> bool {
-		self.hard.values().all(|s| !s.is_available())
-	}
+	pub fn all_exhausted(&self) -> bool { self.hard.values().all(|s| !s.is_available()) }
 
 	/// Returns `true` if the error string looks like a 429 rate limit.
 	#[must_use]
-	pub fn is_rate_limit(err: &str) -> bool {
-		err.contains("429")
-	}
+	pub fn is_rate_limit(err: &str) -> bool { err.contains("429") }
 
 	/// Per-server summary for end-of-operation logging.
 	#[must_use]
@@ -375,9 +363,7 @@ mod tests {
 
 	use super::ServerPool;
 
-	fn s(name: &str) -> OwnedServerName {
-		name.try_into().unwrap()
-	}
+	fn s(name: &str) -> OwnedServerName { name.try_into().unwrap() }
 
 	fn pool3() -> ServerPool {
 		ServerPool::from_servers(vec![s("alpha.com"), s("beta.com"), s("gamma.com")])

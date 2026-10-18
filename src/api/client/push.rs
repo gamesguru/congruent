@@ -514,9 +514,8 @@ pub(crate) async fn delete_pushrule_route(
 				ErrorKind::InvalidParam,
 				"Cannot delete a server-default pushrule.",
 			),
-			| RemovePushRuleError::NotFound => {
-				Error::BadRequest(ErrorKind::NotFound, "Push rule not found.")
-			},
+			| RemovePushRuleError::NotFound =>
+				Error::BadRequest(ErrorKind::NotFound, "Push rule not found."),
 		};
 
 		return Err(err);

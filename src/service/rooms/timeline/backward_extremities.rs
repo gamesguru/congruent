@@ -82,9 +82,7 @@ mod tests {
 	/// `OwnedEventId` has several ambiguous `AsRef` impls (`[u8]`, `str`,
 	/// `EventId`); pinning the return type here resolves the coercion once
 	/// instead of needing turbofish at every call site below.
-	fn eid(id: &OwnedEventId) -> &EventId {
-		id
-	}
+	fn eid(id: &OwnedEventId) -> &EventId { id }
 
 	#[test]
 	fn depth_key_sorts_by_depth_within_a_room() {

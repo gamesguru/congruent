@@ -31,9 +31,7 @@ trait HandlerResult {
 }
 
 impl HandlerResult for crate::router::response::Response {
-	fn into_response(self) -> crate::router::response::Response {
-		self
-	}
+	fn into_response(self) -> crate::router::response::Response { self }
 }
 
 impl HandlerResult for ApiError {

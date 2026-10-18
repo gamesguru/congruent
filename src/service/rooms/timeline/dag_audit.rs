@@ -142,16 +142,14 @@ impl Service {
 			for (index, _) in short_ids.iter().enumerate() {
 				match prevs.get(index) {
 					| Some(Ok(parents)) => targets.extend(parents.iter().copied()),
-					| Some(Err(_)) => {
-						audit.prev_missing_rows = audit.prev_missing_rows.saturating_add(1)
-					},
+					| Some(Err(_)) =>
+						audit.prev_missing_rows = audit.prev_missing_rows.saturating_add(1),
 					| None => {},
 				}
 				match auths.get(index) {
 					| Some(Ok(auth)) => targets.extend(auth.iter().copied()),
-					| Some(Err(_)) => {
-						audit.auth_missing_rows = audit.auth_missing_rows.saturating_add(1)
-					},
+					| Some(Err(_)) =>
+						audit.auth_missing_rows = audit.auth_missing_rows.saturating_add(1),
 					| None => {},
 				}
 			}

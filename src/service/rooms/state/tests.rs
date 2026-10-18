@@ -28,9 +28,7 @@ struct TempDbGuard {
 }
 
 impl Drop for TempDbGuard {
-	fn drop(&mut self) {
-		let _ = std::fs::remove_dir_all(&self.path);
-	}
+	fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.path); }
 }
 
 async fn setup_test_services() -> (TempDbGuard, Arc<Server>, Arc<Services>) {
@@ -57,14 +55,10 @@ async fn setup_test_services() -> (TempDbGuard, Arc<Server>, Arc<Services>) {
 
 	let config = Config::new(&config_raw).expect("failed to parse config");
 	let runtime_handle = ();
-	let server = Arc::new(Server::new(
-		config,
-		Some(&runtime_handle),
-		Log {
-			reload: LogLevelReloadHandles,
-			capture: Arc::new(capture::State),
-		},
-	));
+	let server = Arc::new(Server::new(config, Some(&runtime_handle), Log {
+		reload: LogLevelReloadHandles,
+		capture: Arc::new(capture::State),
+	}));
 
 	let services = Services::build(server.clone()).expect("failed to build services");
 	(guard, server, services)
@@ -675,14 +669,11 @@ async fn test_bulk_state_update_insert_remove_and_mixed() {
 	let added_value = event_value("$another-member:test.conduwuit.local").await;
 	let replaced_key = state_key("@user7:test.conduwuit.local").await;
 	let replaced_value = event_value("$replaced-member:test.conduwuit.local").await;
-	let (_root, state) = apply(
-		root,
-		vec![
-			(other_removed, None),
-			(added_key, Some(added_value)),
-			(replaced_key, Some(replaced_value)),
-		],
-	)
+	let (_root, state) = apply(root, vec![
+		(other_removed, None),
+		(added_key, Some(added_value)),
+		(replaced_key, Some(replaced_value)),
+	])
 	.await;
 	assert_eq!(state.len(), 101, "one removal and one insertion keep the size");
 	assert!(!state.contains_key(&other_removed));
@@ -843,11 +834,10 @@ async fn test_orphan_scan_reports_only_unreachable_nodes() {
 	}
 	let structural_key =
 		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
-	let (_, orphan) = rezzy::hamt::build_hamt_root_handle(
-		&structural_key,
-		&orphan_lattice,
-		[(1_u64 << 40, 7_u64)],
-	)
+	let (_, orphan) = rezzy::hamt::build_hamt_root_handle(&structural_key, &orphan_lattice, [(
+		1_u64 << 40,
+		7_u64,
+	)])
 	.expect("build orphan tree");
 	let orphan_hash = orphan.structural_hash;
 	services
@@ -1502,9 +1492,7 @@ impl std::io::Write for FailingExportWriter {
 		Ok(count)
 	}
 
-	fn flush(&mut self) -> std::io::Result<()> {
-		Ok(())
-	}
+	fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
 }
 
 #[conduwuit_macros::async_test]

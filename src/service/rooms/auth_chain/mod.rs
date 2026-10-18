@@ -42,9 +42,7 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str {
-		crate::service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
 
 #[implement(Service)]
@@ -280,7 +278,7 @@ async fn get_auth_chain_inner(
 
 		for (idx, (res, _short_id)) in batch_results.into_iter().zip(short_ids).enumerate() {
 			match res {
-				| Ok(auth_shorts) => {
+				| Ok(auth_shorts) =>
 					for auth_short in auth_shorts {
 						if found.insert(auth_short) {
 							if let Ok(cached) = self
@@ -292,8 +290,7 @@ async fn get_auth_chain_inner(
 								next_short_ids.push(auth_short);
 							}
 						}
-					}
-				},
+					},
 				| Err(_) => {
 					missing_events.push(event_ids[idx].clone());
 				},
@@ -475,11 +472,7 @@ pub fn get_cache_usage(&self) -> (usize, usize) {
 }
 
 #[implement(Service)]
-pub fn clear_cache(&self) {
-	self.db.auth_chain_cache.lock().clear();
-}
+pub fn clear_cache(&self) { self.db.auth_chain_cache.lock().clear(); }
 
 #[implement(Service)]
-pub async fn clear_db_cache(&self) {
-	self.db.clear_db_cache().await;
-}
+pub async fn clear_db_cache(&self) { self.db.clear_db_cache().await; }

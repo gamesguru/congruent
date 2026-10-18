@@ -39,17 +39,13 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str {
-		crate::service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
 
 impl Service {
 	/// Generate a random string suitable to be used as a password reset token.
 	#[must_use]
-	pub fn generate_token_string() -> String {
-		utils::random_string(RESET_TOKEN_LENGTH)
-	}
+	pub fn generate_token_string() -> String { utils::random_string(RESET_TOKEN_LENGTH) }
 
 	/// Issue a password reset token for `user`, who must be a local user with
 	/// the `password` origin.

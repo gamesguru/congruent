@@ -45,9 +45,7 @@ pub struct RoomReconciliationState {
 
 impl RoomReconciliationState {
 	#[must_use]
-	pub fn known_event_count(&self) -> u64 {
-		self.resident.accumulator().known_event_count()
-	}
+	pub fn known_event_count(&self) -> u64 { self.resident.accumulator().known_event_count() }
 }
 
 /// Maps a room version onto what MSC4521 needs to know about its event IDs.

@@ -42,12 +42,9 @@ where
 			.entry(server.into())
 			.or_default()
 			.extend(key_ids.map(|key_id| {
-				(
-					key_id.into(),
-					QueryCriteria {
-						minimum_valid_until_ts: Some(self.minimum_valid_ts()),
-					},
-				)
+				(key_id.into(), QueryCriteria {
+					minimum_valid_until_ts: Some(self.minimum_valid_ts()),
+				})
 			}));
 
 		batch

@@ -432,15 +432,14 @@ pub(super) async fn get_remote_dag(
 
 	let room_version = match self.services.rooms.state.get_room_version(&room_id).await {
 		| Ok(v) => v,
-		| Err(_e) => {
+		| Err(_e) =>
 			if let Some(v) = room_version {
 				v
 			} else {
 				return Err!(Request(InvalidParam(
 					"Local room version missing. You must specify --room-version explicitly."
 				)));
-			}
-		},
+			},
 	};
 
 	// Build server pool: primary + auto-discovered EMA-ranked room servers
@@ -655,13 +654,10 @@ pub(super) async fn get_remote_dag(
 					if let Ok(res) = self
 						.services
 						.sending
-						.send_federation_request(
-							fallback_server,
-							get_event::v1::Request {
-								event_id: event_id.clone(),
-								include_unredacted_content: None,
-							},
-						)
+						.send_federation_request(fallback_server, get_event::v1::Request {
+							event_id: event_id.clone(),
+							include_unredacted_content: None,
+						})
 						.await
 					{
 						if Some(fallback_server) != server.as_ref() {
@@ -1419,23 +1415,21 @@ pub(super) async fn audit_auth_chain(
 			.get_room_state_hamt(&room_id)
 			.await
 		{
-			| Ok(room_root) => {
+			| Ok(room_root) =>
 				self.services
 					.rooms
 					.state_accessor
 					.state_full_ids_hamt(&room_id, &room_root)
 					.map_ok(|(_, id)| id)
 					.try_collect()
-					.await?
-			},
-			| Err(_) => {
+					.await?,
+			| Err(_) =>
 				self.services
 					.rooms
 					.state
 					.get_forward_extremities(&room_id)
 					.collect()
-					.await
-			},
+					.await,
 		}
 	};
 
@@ -1684,16 +1678,13 @@ pub(super) async fn fetch_missing_events(
 			let res = self
 				.services
 				.sending
-				.send_federation_request(
-					server,
-					get_missing_events::v1::Request {
-						room_id: room_id.clone(),
-						earliest_events: vec![], // Walk as far back as limit allows
-						latest_events: current_targets.clone(),
-						limit: 100_u32.into(),
-						min_depth: 0_u32.into(),
-					},
-				)
+				.send_federation_request(server, get_missing_events::v1::Request {
+					room_id: room_id.clone(),
+					earliest_events: vec![], // Walk as far back as limit allows
+					latest_events: current_targets.clone(),
+					limit: 100_u32.into(),
+					min_depth: 0_u32.into(),
+				})
 				.await;
 
 			self.services

@@ -201,9 +201,8 @@ where
 	// Map room version early
 	let version = match room_version.as_str() {
 		| "1" => rezzy::StateResVersion::V1,
-		| "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" => {
-			rezzy::StateResVersion::V2
-		},
+		| "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" =>
+			rezzy::StateResVersion::V2,
 		| "12" => rezzy::StateResVersion::V2_1,
 		| _ => rezzy::StateResVersion::V2_1_1,
 	};

@@ -320,7 +320,7 @@ where
 				);
 
 				match PduEvent::from_id_val(&eid, parse_val, Some(room_id)) {
-					| Ok(pdu) => {
+					| Ok(pdu) =>
 						if check_room_id(room_id, &pdu).is_ok() {
 							let prev_events = pdu.prev_events().map(ToOwned::to_owned).collect();
 							let depth = pdu.depth();
@@ -328,8 +328,7 @@ where
 							Some((eid, val, prev_events, depth, origin_server_ts))
 						} else {
 							None
-						}
-					},
+						},
 					| Err(_) => None,
 				}
 			}

@@ -44,9 +44,7 @@ impl Scheme {
 
 	/// Whether the proxy resolves the target hostname itself, so the target
 	/// must not be resolved locally.
-	pub(super) const fn resolves_target(self) -> bool {
-		matches!(self, Self::Socks5h)
-	}
+	pub(super) const fn resolves_target(self) -> bool { matches!(self, Self::Socks5h) }
 }
 
 pub(super) fn port(url: &Url, scheme: Scheme) -> Result<u16> {
@@ -339,9 +337,7 @@ mod tests {
 			}
 		}
 
-		fn written(&self) -> &[u8] {
-			&self.written
-		}
+		fn written(&self) -> &[u8] { &self.written }
 	}
 
 	impl AsyncRead for Scripted {

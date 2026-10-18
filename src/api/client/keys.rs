@@ -897,13 +897,12 @@ pub(crate) async fn claim_keys_helper(
 
 	for (server, response) in futures {
 		match response {
-			| Ok(keys) => {
+			| Ok(keys) =>
 				for (user_id, keys) in keys.one_time_keys {
 					if !keys.is_empty() {
 						one_time_keys.insert(user_id, keys);
 					}
-				}
-			},
+				},
 			| Err(e) => {
 				failures.insert(server.to_string(), single_field("error", &e.to_string()));
 			},

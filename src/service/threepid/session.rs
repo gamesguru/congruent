@@ -61,9 +61,7 @@ impl ValidationToken {
 }
 
 impl PartialEq<str> for ValidationToken {
-	fn eq(&self, other: &str) -> bool {
-		self.token == other
-	}
+	fn eq(&self, other: &str) -> bool { self.token == other }
 }
 
 impl ValidationSessions {

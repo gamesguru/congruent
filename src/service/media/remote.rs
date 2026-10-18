@@ -97,7 +97,7 @@ fn should_fallback_to_unauthenticated(
 			| ErrorKind::Unauthorized,
 			..,
 		)) => true,
-		| Err(error) if allow_broad_fallback => {
+		| Err(error) if allow_broad_fallback =>
 			error.status_code().is_server_error()
 				|| matches!(
 					error.status_code(),
@@ -108,8 +108,7 @@ fn should_fallback_to_unauthenticated(
 					| Error::Federation(_, _)
 					| Error::FederationTimeout(_)
 					| Error::FederationConnection(_)
-			)
-		},
+			),
 		| _ => false,
 	}
 }
@@ -136,9 +135,8 @@ async fn fetch_thumbnail_authenticated(
 		self.federation_request(mxc, server, request).await?;
 
 	match response.content {
-		| FileOrLocation::File(content) => {
-			self.handle_thumbnail_file(mxc, user, dim, content).await
-		},
+		| FileOrLocation::File(content) =>
+			self.handle_thumbnail_file(mxc, user, dim, content).await,
 		| FileOrLocation::Location(location) => self.handle_location(mxc, user, &location).await,
 	}
 }
@@ -190,16 +188,11 @@ async fn fetch_thumbnail_unauthenticated(
 	let response: client_get_thumbnail::Response =
 		self.federation_request(mxc, server, request).await?;
 
-	self.handle_thumbnail_file(
-		mxc,
-		user,
-		dim,
-		Content {
-			file: response.file,
-			content_type: response.content_type,
-			content_disposition: response.content_disposition,
-		},
-	)
+	self.handle_thumbnail_file(mxc, user, dim, Content {
+		file: response.file,
+		content_type: response.content_type,
+		content_disposition: response.content_disposition,
+	})
 	.await
 }
 
@@ -223,15 +216,11 @@ async fn fetch_content_unauthenticated(
 	let response: client_get_content::Response =
 		self.federation_request(mxc, server, request).await?;
 
-	self.handle_content_file(
-		mxc,
-		user,
-		Content {
-			file: response.file,
-			content_type: response.content_type,
-			content_disposition: response.content_disposition,
-		},
-	)
+	self.handle_content_file(mxc, user, Content {
+		file: response.file,
+		content_type: response.content_type,
+		content_disposition: response.content_disposition,
+	})
 	.await
 }
 

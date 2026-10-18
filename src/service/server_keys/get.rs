@@ -28,9 +28,7 @@ fn validity_policy_for_version(version: &RoomVersionId) -> ValidUntilPolicy {
 	}
 }
 
-fn missing_key_record_is_allowed(error: &conduwuit::Error) -> bool {
-	error.is_not_found()
-}
+fn missing_key_record_is_allowed(error: &conduwuit::Error) -> bool { error.is_not_found() }
 
 #[implement(super::Service)]
 pub async fn get_event_keys(

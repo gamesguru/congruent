@@ -397,13 +397,12 @@ async fn user_can_publish_room(
 	}
 	match power_levels_content.map(RoomPowerLevels::from) {
 		| Ok(pl) => Ok(pl.user_can_send_state(user_id, StateEventType::RoomCanonicalAlias)),
-		| Err(e) => {
+		| Err(e) =>
 			if e.is_not_found() {
 				Ok(create_event.sender() == user_id)
 			} else {
 				Err!(Database("Invalid event content for m.room.power_levels: {e}"))
-			}
-		},
+			},
 	}
 }
 

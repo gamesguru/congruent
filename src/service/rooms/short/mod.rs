@@ -110,17 +110,13 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str {
-		crate::service::make_name(module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(module_path!()) }
 }
 fn short_error(what: &str, error: impl std::fmt::Display) -> conduwuit::Error {
 	err!(Database("mtxdb short id {what} failed: {error}"))
 }
 
-fn not_found(what: &str) -> conduwuit::Error {
-	err!(Request(NotFound("{what} not found")))
-}
+fn not_found(what: &str) -> conduwuit::Error { err!(Request(NotFound("{what} not found"))) }
 
 impl Service {
 	fn cache_event(&self, event_id: &EventId, short: ShortEventId) {
@@ -542,9 +538,7 @@ mod tests {
 	}
 
 	impl Drop for TempDbGuard {
-		fn drop(&mut self) {
-			let _ = std::fs::remove_dir_all(&self.path);
-		}
+		fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.path); }
 	}
 
 	async fn setup_test_service()
@@ -568,14 +562,10 @@ mod tests {
 
 		let config = Config::new(&config_raw).expect("failed to parse config");
 		let runtime_handle = ();
-		let server = Arc::new(Server::new(
-			config,
-			Some(&runtime_handle),
-			Log {
-				reload: LogLevelReloadHandles,
-				capture: Arc::new(capture::State),
-			},
-		));
+		let server = Arc::new(Server::new(config, Some(&runtime_handle), Log {
+			reload: LogLevelReloadHandles,
+			capture: Arc::new(capture::State),
+		}));
 
 		let db = Database::open(&server).expect("failed to open database");
 		let mtxdb_path = server.config.database_path.join("mtxdb-test");

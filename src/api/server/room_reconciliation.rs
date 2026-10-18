@@ -31,9 +31,7 @@ const DIGEST_TYPE: &str = "algebraic_v1";
 
 // --- encoding -------------------------------------------------------------
 
-fn encode_short_identifier(h64: u64) -> String {
-	URL_SAFE_NO_PAD.encode(h64.to_be_bytes())
-}
+fn encode_short_identifier(h64: u64) -> String { URL_SAFE_NO_PAD.encode(h64.to_be_bytes()) }
 
 fn encode_digest(digest: u128) -> String {
 	RoomAccumulator::from_parts(digest, 0).encode_digest()
@@ -279,9 +277,8 @@ fn diff_buckets(state: &RoomReconciliationState, body: &RoomDiffRequest) -> Resu
 
 	let responder_sketches =
 		build_bucket_sketches(state.population.h64s(), &buckets).map_err(|e| match e {
-			| AlgebraicError::InvalidSketchCapacity | AlgebraicError::InvalidBucketIndex => {
-				bad_param("requests")
-			},
+			| AlgebraicError::InvalidSketchCapacity | AlgebraicError::InvalidBucketIndex =>
+				bad_param("requests"),
 			| _ => err!(Request(InvalidParam("Invalid bucket requests."))),
 		})?;
 
@@ -438,12 +435,10 @@ pub(crate) async fn post_room_reconciliation_diff_route(
 	let sketched = diff_buckets(&state, &body)?;
 	let negotiated = body.frame_negotiation.then_some(common);
 	Ok(match sketched {
-		| Sketched::Decoded(outcome) => {
-			room_diff_response(&state, body, frame_status, negotiated, "decoded", Some(outcome))
-		},
-		| Sketched::CapacityExceeded => {
-			room_diff_response(&state, body, frame_status, negotiated, "capacity_exceeded", None)
-		},
+		| Sketched::Decoded(outcome) =>
+			room_diff_response(&state, body, frame_status, negotiated, "decoded", Some(outcome)),
+		| Sketched::CapacityExceeded =>
+			room_diff_response(&state, body, frame_status, negotiated, "capacity_exceeded", None),
 	})
 }
 
@@ -453,9 +448,7 @@ mod tests {
 
 	use super::{encode_digest, frame_id_for};
 
-	fn eid(s: &str) -> OwnedEventId {
-		format!("${s}:example.com").try_into().unwrap()
-	}
+	fn eid(s: &str) -> OwnedEventId { format!("${s}:example.com").try_into().unwrap() }
 
 	#[test]
 	fn frame_id_is_order_insensitive() {

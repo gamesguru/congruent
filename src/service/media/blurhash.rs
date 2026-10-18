@@ -147,16 +147,12 @@ pub enum BlurhashingError {
 
 #[cfg(feature = "blurhashing")]
 impl From<image::ImageError> for BlurhashingError {
-	fn from(value: image::ImageError) -> Self {
-		Self::ImageError(Box::new(value))
-	}
+	fn from(value: image::ImageError) -> Self { Self::ImageError(Box::new(value)) }
 }
 
 #[cfg(feature = "blurhashing")]
 impl From<blurhash::Error> for BlurhashingError {
-	fn from(value: blurhash::Error) -> Self {
-		Self::HashingLibError(Box::new(value))
-	}
+	fn from(value: blurhash::Error) -> Self { Self::HashingLibError(Box::new(value)) }
 }
 
 #[cfg(feature = "blurhashing")]
@@ -165,13 +161,11 @@ impl std::fmt::Display for BlurhashingError {
 		write!(f, "Blurhash Error:")?;
 		match &self {
 			| Self::ImageTooLarge => write!(f, "Image was too large to blurhash")?,
-			| Self::HashingLibError(e) => {
-				write!(f, "There was an error with the blurhashing library => {e}")?
-			},
+			| Self::HashingLibError(e) =>
+				write!(f, "There was an error with the blurhashing library => {e}")?,
 			#[cfg(feature = "blurhashing")]
-			| Self::ImageError(e) => {
-				write!(f, "There was an error with the image loading library => {e}")?
-			},
+			| Self::ImageError(e) =>
+				write!(f, "There was an error with the image loading library => {e}")?,
 		}
 
 		Ok(())

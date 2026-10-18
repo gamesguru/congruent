@@ -321,13 +321,9 @@ impl crate::Service for Service {
 		Ok(())
 	}
 
-	async fn clear_cache(&self) {
-		self.reconciliation_cache.invalidate_all();
-	}
+	async fn clear_cache(&self) { self.reconciliation_cache.invalidate_all(); }
 
-	fn name(&self) -> &str {
-		crate::service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
 
 impl Service {
@@ -364,13 +360,9 @@ impl Service {
 		}
 	}
 
-	pub fn db_batch(&self) -> database::Batch<'_> {
-		self.db.db_batch()
-	}
+	pub fn db_batch(&self) -> database::Batch<'_> { self.db.db_batch() }
 
-	pub fn db_apply_batch(&self, batch: database::Batch<'_>) {
-		self.db.db_apply_batch(batch);
-	}
+	pub fn db_apply_batch(&self, batch: database::Batch<'_>) { self.db.db_apply_batch(batch); }
 
 	pub async fn first_pdu_in_room(&self, room_id: &RoomId) -> Result<impl Event> {
 		self.first_item_in_room(room_id).await.map(at!(1))
@@ -475,9 +467,7 @@ impl Service {
 	}
 
 	#[inline]
-	pub fn apply_batch(&self, batch: database::Batch<'_>) {
-		self.db.apply_batch(batch);
-	}
+	pub fn apply_batch(&self, batch: database::Batch<'_>) { self.db.apply_batch(batch); }
 
 	#[inline]
 	pub async fn drop_duplicate_pdu(&self, pdu_id: &RawPduId) {
@@ -850,9 +840,7 @@ impl Service {
 			.topo_pdus_rev(room_id, until.unwrap_or_else(TopoToken::max))
 	}
 
-	pub async fn fix_pdu_event_ids(&self) -> Result<usize> {
-		self.db.fix_pdu_event_ids().await
-	}
+	pub async fn fix_pdu_event_ids(&self) -> Result<usize> { self.db.fix_pdu_event_ids().await }
 
 	/// Forward iteration over PDUs bounded by `from`.
 	///

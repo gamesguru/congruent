@@ -196,17 +196,14 @@ pub async fn revoke_admin(&self, user_id: &UserId) -> Result {
 	};
 
 	Box::pin(self.services.timeline.build_and_append_pdu(
-		PduBuilder::state(
-			user_id.to_string(),
-			&RoomMemberEventContent {
-				membership: Leave,
-				reason: Some("Admin Revoked".into()),
-				is_direct: None,
-				join_authorized_via_users_server: None,
-				third_party_invite: None,
-				..event
-			},
-		),
+		PduBuilder::state(user_id.to_string(), &RoomMemberEventContent {
+			membership: Leave,
+			reason: Some("Admin Revoked".into()),
+			is_direct: None,
+			join_authorized_via_users_server: None,
+			third_party_invite: None,
+			..event
+		}),
 		self.services.globals.server_user.as_ref(),
 		Some(&room_id),
 		&state_lock,

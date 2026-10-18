@@ -106,9 +106,8 @@ pub(super) async fn ldap_login(
 	password: &str,
 ) -> Result<OwnedUserId> {
 	let (user_dn, is_ldap_admin) = match services.config.ldap.bind_dn.as_ref() {
-		| Some(bind_dn) if bind_dn.contains("{username}") => {
-			(bind_dn.replace("{username}", lowercased_user_id.localpart()), None)
-		},
+		| Some(bind_dn) if bind_dn.contains("{username}") =>
+			(bind_dn.replace("{username}", lowercased_user_id.localpart()), None),
 		| _ => {
 			debug!("Searching user in LDAP");
 
@@ -251,9 +250,8 @@ pub(crate) async fn login_route(
 	// TODO: Other login methods
 	let user_id = match &body.login_info {
 		#[allow(deprecated)]
-		| login::v3::LoginInfo::Password(login::v3::Password { identifier, password, user }) => {
-			handle_login(&services, identifier.as_ref(), password, user.as_ref()).await?
-		},
+		| login::v3::LoginInfo::Password(login::v3::Password { identifier, password, user }) =>
+			handle_login(&services, identifier.as_ref(), password, user.as_ref()).await?,
 		| login::v3::LoginInfo::Token(login::v3::Token { token }) => {
 			debug!("Got token login type");
 			if !services.server.config.login_via_existing_session {

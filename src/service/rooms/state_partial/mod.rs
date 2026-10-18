@@ -107,9 +107,7 @@ impl crate::Service for Service {
 		Ok(())
 	}
 
-	fn name(&self) -> &str {
-		crate::service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
 
 impl Service {
@@ -148,9 +146,7 @@ impl Service {
 	}
 
 	/// Start resyncing straight away, like Synapse's _start_partial_state_room_sync.
-	pub fn signal_resync(&self, room_id: &RoomId) {
-		_ = self.resync_tx.send(room_id.to_owned());
-	}
+	pub fn signal_resync(&self, room_id: &RoomId) { _ = self.resync_tx.send(room_id.to_owned()); }
 
 	/// Wait until the room no longer has partial state (Synapse's
 	/// `await_full_state`).

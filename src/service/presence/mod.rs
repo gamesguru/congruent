@@ -71,9 +71,7 @@ impl crate::Service for Service {
 		}))
 	}
 
-	async fn clear_cache(&self) {
-		self.db.clear_cache();
-	}
+	async fn clear_cache(&self) { self.db.clear_cache(); }
 
 	async fn worker(self: Arc<Self>) -> Result<()> {
 		let receiver = self.timer_channel.1.clone();
@@ -285,9 +283,7 @@ impl crate::Service for Service {
 		}
 	}
 
-	fn name(&self) -> &str {
-		crate::service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
 
 impl Service {
@@ -507,12 +503,10 @@ impl Service {
 		}
 
 		let new_state = match (&presence_state, last_active_ago) {
-			| (PresenceState::Online, Some(ago)) if ago >= self.idle_timeout => {
-				Some(PresenceState::Unavailable)
-			},
-			| (PresenceState::Unavailable, Some(ago)) if ago >= self.offline_timeout => {
-				Some(PresenceState::Offline)
-			},
+			| (PresenceState::Online, Some(ago)) if ago >= self.idle_timeout =>
+				Some(PresenceState::Unavailable),
+			| (PresenceState::Unavailable, Some(ago)) if ago >= self.offline_timeout =>
+				Some(PresenceState::Offline),
 			| _ => None,
 		};
 

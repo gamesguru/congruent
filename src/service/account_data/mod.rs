@@ -57,15 +57,11 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str {
-		crate::service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
 
 impl Service {
-	fn push_rules_lock_key(user_id: &UserId) -> Vec<u8> {
-		user_id.as_str().as_bytes().to_vec()
-	}
+	fn push_rules_lock_key(user_id: &UserId) -> Vec<u8> { user_id.as_str().as_bytes().to_vec() }
 
 	pub async fn push_rules_lock(
 		&self,

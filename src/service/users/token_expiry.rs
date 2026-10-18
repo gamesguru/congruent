@@ -5,9 +5,7 @@
 //! opt into refresh tokens, and never expires.
 
 /// Absolute expiry of a token issued at `now` with a lifetime of `ttl` ms.
-pub(super) fn expires_at(now: u64, ttl: u64) -> u64 {
-	now.saturating_add(ttl)
-}
+pub(super) fn expires_at(now: u64, ttl: u64) -> u64 { now.saturating_add(ttl) }
 
 /// Whether a token with this recorded expiry has lapsed at `now`.
 pub(super) fn has_expired(expires_at: Option<u64>, now: u64) -> bool {
@@ -16,9 +14,7 @@ pub(super) fn has_expired(expires_at: Option<u64>, now: u64) -> bool {
 
 /// Whether a refresh replaces this token. Only expiring tokens are superseded;
 /// non-expiring ones were issued to clients without refresh support.
-pub(super) fn superseded_on_refresh(expires_at: Option<u64>) -> bool {
-	expires_at.is_some()
-}
+pub(super) fn superseded_on_refresh(expires_at: Option<u64>) -> bool { expires_at.is_some() }
 
 /// The tokens of a device (paired with their recorded expiry) which a refresh
 /// replaces, in their original order. `tokens` is in issue order, and the most

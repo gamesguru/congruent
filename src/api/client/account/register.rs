@@ -58,9 +58,7 @@ fn note_challenge(key: String) {
 	}
 }
 
-fn forget_challenge(key: &str) {
-	CHALLENGED.lock().expect("locked").remove(key);
-}
+fn forget_challenge(key: &str) { CHALLENGED.lock().expect("locked").remove(key); }
 
 /// Whether this attempt was issued a challenge that is still outstanding.
 fn challenge_outstanding(key: &str) -> bool {
@@ -195,9 +193,7 @@ pub(crate) async fn register_route(
 			| (Some(username), Some(auth))
 				if auth.session().is_none()
 					&& challenge_outstanding(&challenge_key(client, username)) =>
-			{
-				&None
-			},
+				&None,
 			| _ => &body.auth,
 		};
 
@@ -232,13 +228,12 @@ pub(crate) async fn register_route(
 		// namespace
 
 		match body.appservice_info {
-			| Some(ref info) => {
+			| Some(ref info) =>
 				if !info.is_user_match(&user_id) && !emergency_mode_enabled {
 					return Err!(Request(Exclusive(
 						"Username is not in an appservice namespace."
 					)));
-				}
-			},
+				},
 			| _ => {
 				return Err!(Request(MissingToken("Missing appservice token.")));
 			},

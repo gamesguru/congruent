@@ -730,13 +730,10 @@ async fn get_remote_pdu_limited(
 		let value = self
 			.services
 			.sending
-			.send_federation_request(
-				backfill_server,
-				federation::event::get_event::v1::Request {
-					event_id: event_id.to_owned(),
-					include_unredacted_content: Some(false),
-				},
-			)
+			.send_federation_request(backfill_server, federation::event::get_event::v1::Request {
+				event_id: event_id.to_owned(),
+				include_unredacted_content: Some(false),
+			})
 			.await
 			.and_then(|response| {
 				let raw_pdu = response.pdus.first().ok_or_else(|| {
@@ -1032,9 +1029,7 @@ impl<'a> PendingPromotionGuard<'a> {
 		}
 	}
 
-	fn disarm(&mut self) {
-		self.armed = false;
-	}
+	fn disarm(&mut self) { self.armed = false; }
 }
 
 impl Drop for PendingPromotionGuard<'_> {

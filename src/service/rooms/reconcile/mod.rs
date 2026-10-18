@@ -184,17 +184,11 @@ impl crate::Service for Service {
 		}))
 	}
 
-	async fn worker(self: Arc<Self>) -> Result<()> {
-		self.run().await
-	}
+	async fn worker(self: Arc<Self>) -> Result<()> { self.run().await }
 
-	fn interrupt(&self) {
-		self.wake.notify_waiters();
-	}
+	fn interrupt(&self) { self.wake.notify_waiters(); }
 
-	fn name(&self) -> &str {
-		crate::service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
 
 impl Service {

@@ -76,9 +76,7 @@ impl Data {
 		Ok((raw.0, event))
 	}
 
-	pub(super) fn clear_cache(&self) {
-		self.presence_cache.invalidate_all();
-	}
+	pub(super) fn clear_cache(&self) { self.presence_cache.invalidate_all(); }
 
 	pub(super) async fn set_presence(
 		&self,

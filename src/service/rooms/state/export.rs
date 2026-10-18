@@ -47,9 +47,7 @@ fn record(tag: &str) -> Object {
 	object
 }
 
-fn text(value: impl Into<String>) -> Value {
-	Value::String(value.into())
-}
+fn text(value: impl Into<String>) -> Value { Value::String(value.into()) }
 
 fn id_list(pdu: &Object, key: &str) -> Value {
 	match pdu.get(key) {

@@ -175,13 +175,9 @@ mod tests {
 
 	use super::topo_sort_events;
 
-	fn eid(s: &str) -> OwnedEventId {
-		format!("${s}:example.com").try_into().unwrap()
-	}
+	fn eid(s: &str) -> OwnedEventId { format!("${s}:example.com").try_into().unwrap() }
 
-	fn depth(n: u64) -> slipstream::UInt {
-		slipstream::UInt::from(n)
-	}
+	fn depth(n: u64) -> slipstream::UInt { slipstream::UInt::from(n) }
 
 	/// Linear chain: A ← B ← C
 	/// Expected output: [A, B, C] (oldest first)

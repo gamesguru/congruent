@@ -166,25 +166,22 @@ pub(crate) async fn invite_helper(
 
 		let response = services
 			.sending
-			.send_federation_request(
-				&recipient_user.server_name(),
-				create_invite::v2::Request {
-					room_id: room_id.to_owned(),
-					event_id: pdu.event_id.clone(),
-					room_version: room_version_id.clone(),
-					event: services
-						.sending
-						.convert_to_outgoing_federation_event(pdu_json.clone())
-						.await,
-					invite_room_state,
-					via: services
-						.rooms
-						.state_cache
-						.servers_route_via(room_id)
-						.await
-						.ok(),
-				},
-			)
+			.send_federation_request(&recipient_user.server_name(), create_invite::v2::Request {
+				room_id: room_id.to_owned(),
+				event_id: pdu.event_id.clone(),
+				room_version: room_version_id.clone(),
+				event: services
+					.sending
+					.convert_to_outgoing_federation_event(pdu_json.clone())
+					.await,
+				invite_room_state,
+				via: services
+					.rooms
+					.state_cache
+					.servers_route_via(room_id)
+					.await
+					.ok(),
+			})
 			.await?;
 
 		// We do not add the event_id field to the pdu here because of signature and

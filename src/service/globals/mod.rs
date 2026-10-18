@@ -57,7 +57,7 @@ impl crate::Service for Service {
 
 		let mut server_secret = [0_u8; 32];
 		match args.db["global"].get_blocking(b"server_secret") {
-			| Ok(secret) => {
+			| Ok(secret) =>
 				if secret.len() == 32 {
 					server_secret.copy_from_slice(&secret);
 				} else {
@@ -66,8 +66,7 @@ impl crate::Service for Service {
 						 database may be corrupt",
 						secret.len()
 					)));
-				}
-			},
+				},
 			| Err(e) if e.is_not_found() => {
 				use rand::Rng;
 				rand::rng().fill_bytes(&mut server_secret);
@@ -108,9 +107,7 @@ impl crate::Service for Service {
 		Ok(())
 	}
 
-	async fn clear_cache(&self) {
-		self.bad_event_ratelimiter.write().clear();
-	}
+	async fn clear_cache(&self) { self.bad_event_ratelimiter.write().clear(); }
 
 	async fn worker(self: Arc<Self>) -> Result<()> {
 		let mut interval = async_io::Timer::interval(std::time::Duration::from_mins(1)); // 1 min
@@ -372,26 +369,18 @@ impl crate::Service for Service {
 		Ok(())
 	}
 
-	fn name(&self) -> &str {
-		service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { service::make_name(std::module_path!()) }
 }
 
 impl Service {
 	#[inline]
-	pub fn next_count(&self) -> Result<u64> {
-		self.db.next_count()
-	}
+	pub fn next_count(&self) -> Result<u64> { self.db.next_count() }
 
 	#[inline]
-	pub fn next_count_batch(&self, diff: u64) -> Result<u64> {
-		self.db.next_count_batch(diff)
-	}
+	pub fn next_count_batch(&self, diff: u64) -> Result<u64> { self.db.next_count_batch(diff) }
 
 	#[inline]
-	pub fn current_count(&self) -> Result<u64> {
-		Ok(self.db.current_count())
-	}
+	pub fn current_count(&self) -> Result<u64> { Ok(self.db.current_count()) }
 
 	#[inline]
 	pub fn with_cork_and_flush<R, F>(&self, f: F) -> R
@@ -403,9 +392,7 @@ impl Service {
 	}
 
 	#[inline]
-	pub fn server_name(&self) -> &ServerName {
-		self.server.name.as_ref()
-	}
+	pub fn server_name(&self) -> &ServerName { self.server.name.as_ref() }
 
 	pub fn allow_public_room_directory_over_federation(&self) -> bool {
 		self.server
@@ -425,9 +412,7 @@ impl Service {
 		self.server.config.allow_device_name_federation
 	}
 
-	pub fn allow_room_creation(&self) -> bool {
-		self.server.config.allow_room_creation
-	}
+	pub fn allow_room_creation(&self) -> bool { self.server.config.allow_room_creation }
 
 	pub fn new_user_displayname_suffix(&self) -> &String {
 		&self.server.config.new_user_displayname_suffix
@@ -437,29 +422,17 @@ impl Service {
 		self.server.config.allow_announcements_check
 	}
 
-	pub fn trusted_servers(&self) -> &[OwnedServerName] {
-		&self.server.config.trusted_servers
-	}
+	pub fn trusted_servers(&self) -> &[OwnedServerName] { &self.server.config.trusted_servers }
 
-	pub fn turn_password(&self) -> &String {
-		&self.server.config.turn_password
-	}
+	pub fn turn_password(&self) -> &String { &self.server.config.turn_password }
 
-	pub fn turn_ttl(&self) -> u64 {
-		self.server.config.turn_ttl
-	}
+	pub fn turn_ttl(&self) -> u64 { self.server.config.turn_ttl }
 
-	pub fn turn_uris(&self) -> &[String] {
-		&self.server.config.turn_uris
-	}
+	pub fn turn_uris(&self) -> &[String] { &self.server.config.turn_uris }
 
-	pub fn turn_username(&self) -> &String {
-		&self.server.config.turn_username
-	}
+	pub fn turn_username(&self) -> &String { &self.server.config.turn_username }
 
-	pub fn notification_push_path(&self) -> &String {
-		&self.server.config.notification_push_path
-	}
+	pub fn notification_push_path(&self) -> &String { &self.server.config.notification_push_path }
 
 	pub fn url_preview_domain_contains_allowlist(&self) -> &Vec<String> {
 		&self.server.config.url_preview_domain_contains_allowlist
@@ -489,13 +462,9 @@ impl Service {
 		self.server.config.url_preview_allow_audio_video
 	}
 
-	pub fn forbidden_alias_names(&self) -> &RegexSet {
-		&self.server.config.forbidden_alias_names
-	}
+	pub fn forbidden_alias_names(&self) -> &RegexSet { &self.server.config.forbidden_alias_names }
 
-	pub fn forbidden_usernames(&self) -> &RegexSet {
-		&self.server.config.forbidden_usernames
-	}
+	pub fn forbidden_usernames(&self) -> &RegexSet { &self.server.config.forbidden_usernames }
 
 	pub fn allow_local_users_to_bypass_history_visibility(&self) -> bool {
 		self.server

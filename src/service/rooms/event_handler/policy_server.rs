@@ -140,13 +140,12 @@ pub async fn ask_policy_server(
 	);
 	let response = conduwuit::timeout(
 		Duration::from_secs(self.services.server.config.policy_server_request_timeout),
-		self.services.sending.send_federation_request(
-			&via,
-			PolicyCheckRequest {
+		self.services
+			.sending
+			.send_federation_request(&via, PolicyCheckRequest {
 				event_id: pdu.event_id().to_owned(),
 				pdu: Some(outgoing),
-			},
-		),
+			}),
 	)
 	.await;
 	let response = match response {

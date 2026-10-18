@@ -777,7 +777,7 @@ where
 			{
 				| Ok((ref auth_eid, auth_val)) => {
 					match PduEvent::from_id_val(auth_eid, auth_val.clone(), Some(room_id)) {
-						| Ok(parsed) => {
+						| Ok(parsed) =>
 							if check_room_id(room_id, &parsed).is_ok() {
 								info!(
 									target: "state_res_debug",
@@ -790,8 +790,7 @@ where
 									.insert(auth_eid.clone(), (auth_val.clone(), parsed));
 							} else {
 								warn!(%event_id, %auth_eid, "room_id mismatch in /event_auth chain");
-							}
-						},
+							},
 						| Err(e) => {
 							warn!(%event_id, %auth_eid, "Failed to parse auth chain event as PduEvent: {e}");
 						},
@@ -856,7 +855,7 @@ where
 					))
 					.await
 					{
-						| Ok((pdu, _)) => {
+						| Ok((pdu, _)) =>
 							if pdu.state_key.is_none() {
 								warn!(
 									target: "state_res_debug",
@@ -888,8 +887,7 @@ where
 									"Auth chain event accepted"
 								);
 								auth_events.insert(pdu.event_id().to_owned(), pdu);
-							}
-						},
+							},
 						| Err(ref e) => {
 							info!(
 								target: "state_res_debug",

@@ -43,9 +43,7 @@ pub struct PromotionClaims {
 
 impl PromotionClaims {
 	#[must_use]
-	pub fn new() -> Self {
-		Self { inner: SyncMutex::new(HashMap::new()) }
-	}
+	pub fn new() -> Self { Self { inner: SyncMutex::new(HashMap::new()) } }
 
 	/// Attempts to atomically claim `event_id` for an outlier promotion: if
 	/// nothing else currently owns it, claims
@@ -74,9 +72,7 @@ impl PromotionClaims {
 }
 
 impl Default for PromotionClaims {
-	fn default() -> Self {
-		Self::new()
-	}
+	fn default() -> Self { Self::new() }
 }
 
 #[cfg(test)]

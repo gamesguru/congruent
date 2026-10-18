@@ -127,9 +127,7 @@ impl crate::Service for Service {
 		state.retain(|_, v| matches!(v, TxnState::Active(_)));
 	}
 
-	fn name(&self) -> &str {
-		crate::service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
 
 impl Service {

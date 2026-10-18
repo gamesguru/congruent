@@ -105,15 +105,11 @@ struct Pool {
 }
 
 impl Default for Pool {
-	fn default() -> Self {
-		Self::new(POOL_MAX_IDLE_PER_HOST)
-	}
+	fn default() -> Self { Self::new(POOL_MAX_IDLE_PER_HOST) }
 }
 
 impl Pool {
-	fn new(max_idle: usize) -> Self {
-		Self { idle: Mutex::default(), max_idle }
-	}
+	fn new(max_idle: usize) -> Self { Self { idle: Mutex::default(), max_idle } }
 
 	fn take(&self, key: &PoolKey) -> Option<Sender> {
 		let mut idle = self.idle.lock().unwrap_or_else(PoisonError::into_inner);
@@ -507,9 +503,8 @@ impl HttpClient {
 		let resolver = self.resolver()?;
 		match resolver.cache.get_override(host).await {
 			| Ok(over) if over.valid() => candidates.extend(over.ips.iter().copied()),
-			| Ok(CachedOverride { overriding: Some(overriding), .. }) => {
-				self.lookup(&overriding, &mut candidates).await?
-			},
+			| Ok(CachedOverride { overriding: Some(overriding), .. }) =>
+				self.lookup(&overriding, &mut candidates).await?,
 			| _ => self.lookup(host, &mut candidates).await?,
 		}
 
@@ -742,9 +737,7 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str {
-		service::make_name(std::module_path!())
-	}
+	fn name(&self) -> &str { service::make_name(std::module_path!()) }
 }
 
 fn base(config: &Config, resolver: &Arc<ResolverService>) -> Result<HttpClient> {
@@ -883,9 +876,7 @@ fn parse_url(uri: &http::Uri) -> Result<Url> {
 		.map_err(|error| Error::HttpClient(format!("invalid request URL: {error}").into()))
 }
 
-fn is_http_scheme(scheme: &str) -> bool {
-	matches!(scheme, "http" | "https")
-}
+fn is_http_scheme(scheme: &str) -> bool { matches!(scheme, "http" | "https") }
 
 fn apply_headers(
 	request: &mut Request<Bytes>,

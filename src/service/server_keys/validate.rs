@@ -17,14 +17,13 @@ pub(super) fn check_no_duplicate_json_keys(raw: &str, strict: bool) -> Result {
 	// sends 100,000 keys, since we reject it before allocating a JSON tree.
 	let counts = match scan_root_sections(raw.as_bytes()) {
 		| Ok(counts) => counts,
-		| Err(e) => {
+		| Err(e) =>
 			if strict {
 				return Err(e);
 			} else {
 				conduwuit::warn!("MSC4499 (Observation Mode): {e} — allowing payload");
 				return Ok(());
-			}
-		},
+			},
 	};
 
 	// MSC4499: "If a single key response payload contains more than 50 keys in its
@@ -69,14 +68,13 @@ pub(super) fn check_no_duplicate_json_keys(raw: &str, strict: bool) -> Result {
 
 	let value: slipstream::json::Value = match slipstream::codec::from_str(raw) {
 		| Ok(val) => val,
-		| Err(e) => {
+		| Err(e) =>
 			if strict {
 				return conduwuit::Err!(BadServerResponse("{e}"));
 			} else {
 				conduwuit::warn!("MSC4499 (Observation Mode): {e} — allowing payload");
 				return Ok(());
-			}
-		},
+			},
 	};
 
 	let Some(obj) = value.as_object() else {
@@ -248,15 +246,12 @@ fn skip_json_value(bytes: &[u8], start: usize, depth: usize) -> Result<usize> {
 		| Some(b'{') => skip_object(bytes, i, depth.saturating_add(1)),
 		| Some(b'[') => skip_array(bytes, i, depth.saturating_add(1)),
 		| Some(b'-' | b'0'..=b'9') => Ok(skip_scalar(bytes, i)),
-		| Some(b't') if bytes.get(i..i.saturating_add(4)) == Some(b"true") => {
-			Ok(i.saturating_add(4))
-		},
-		| Some(b'f') if bytes.get(i..i.saturating_add(5)) == Some(b"false") => {
-			Ok(i.saturating_add(5))
-		},
-		| Some(b'n') if bytes.get(i..i.saturating_add(4)) == Some(b"null") => {
-			Ok(i.saturating_add(4))
-		},
+		| Some(b't') if bytes.get(i..i.saturating_add(4)) == Some(b"true") =>
+			Ok(i.saturating_add(4)),
+		| Some(b'f') if bytes.get(i..i.saturating_add(5)) == Some(b"false") =>
+			Ok(i.saturating_add(5)),
+		| Some(b'n') if bytes.get(i..i.saturating_add(4)) == Some(b"null") =>
+			Ok(i.saturating_add(4)),
 		| Some(_) | None => Ok(i),
 	}
 }
@@ -349,9 +344,7 @@ fn skip_ws(bytes: &[u8], start: usize) -> usize {
 /// Check if a key contains any backslashes (JSON escapes).
 /// Matrix key IDs should never contain escapes, and allowing them
 /// makes duplicate detection vulnerable to semantic bypasses.
-fn contains_escapes(bytes: &[u8]) -> bool {
-	bytes.contains(&b'\\')
-}
+fn contains_escapes(bytes: &[u8]) -> bool { bytes.contains(&b'\\') }
 
 #[cfg(test)]
 mod tests {

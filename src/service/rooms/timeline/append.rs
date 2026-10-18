@@ -114,21 +114,15 @@ where
 	}
 
 	let pdu_id = self
-		.append_pdu(
-			pdu,
-			pdu_json,
-			new_room_leaves,
-			resolved_state_applied,
-			AppendPduContext {
-				state_lock,
-				room_id,
-				state_root_handle,
-				pending_nodes,
-				prev_state_root_handle,
-				advance_current_state,
-				was_joined_before_state_install,
-			},
-		)
+		.append_pdu(pdu, pdu_json, new_room_leaves, resolved_state_applied, AppendPduContext {
+			state_lock,
+			room_id,
+			state_root_handle,
+			pending_nodes,
+			prev_state_root_handle,
+			advance_current_state,
+			was_joined_before_state_install,
+		})
 		.await?;
 
 	// Clean up the outlier table entry now that this event is in the timeline.
@@ -354,14 +348,10 @@ where
 	let (pdu_id, pdu_count, private_read_count) = if let Some((existing_id, existing_count)) =
 		existing_pdu
 	{
-		(
-			existing_id,
-			existing_count,
-			match existing_count {
-				| PduCount::Normal(count) => Some(count),
-				| PduCount::Backfilled(_) => None,
-			},
-		)
+		(existing_id, existing_count, match existing_count {
+			| PduCount::Normal(count) => Some(count),
+			| PduCount::Backfilled(_) => None,
+		})
 	} else {
 		// Sync snapshots `current_count()` under the barrier's write side. Hold
 		// the read side from count allocation until this PDU is visible, so sync
@@ -568,7 +558,7 @@ where
 				}
 			}
 		},
-		| TimelineEventType::SpaceChild => {
+		| TimelineEventType::SpaceChild =>
 			if let Some(_state_key) = pdu.state_key() {
 				self.services
 					.spaces
@@ -576,8 +566,7 @@ where
 					.lock()
 					.await
 					.remove(room_id);
-			}
-		},
+			},
 		| TimelineEventType::RoomMember if !resolved_state_applied => {
 			if let Some(state_key) = pdu.state_key() {
 				// if the state_key fails
@@ -595,15 +584,13 @@ where
 				// join. Callers that installed such a state pass the pre-install sample; all
 				// others fall back to the cache.
 				let was_joined = match was_joined_before_state_install {
-					| Some((sampled_user_id, was_joined)) if *sampled_user_id == target_user_id => {
-						was_joined
-					},
-					| _ => {
+					| Some((sampled_user_id, was_joined)) if *sampled_user_id == target_user_id =>
+						was_joined,
+					| _ =>
 						self.services
 							.state_cache
 							.is_joined(&target_user_id, room_id)
-							.await
-					},
+							.await,
 				};
 
 				// Update our membership info, we do this here incase a user is invited or
@@ -670,12 +657,11 @@ where
 			{
 				// A profile update for someone already joined is not a new member.
 				let already_joined = match prev_state_root_handle.as_ref() {
-					| Some(handle) => {
+					| Some(handle) =>
 						self.services
 							.state_accessor
 							.user_membership_hamt(room_id, handle, &target)
-							.await == slipstream::events::room::member::MembershipState::Join
-					},
+							.await == slipstream::events::room::member::MembershipState::Join,
 					| None => false,
 				};
 				if !already_joined {

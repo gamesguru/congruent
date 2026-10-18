@@ -84,9 +84,7 @@ impl Store {
 
 	/// Returns the redundant-write counters for this store.
 	#[must_use]
-	pub fn write_stats(&self) -> &WriteStats {
-		&self.write_stats
-	}
+	pub fn write_stats(&self) -> &WriteStats { &self.write_stats }
 
 	/// Returns true when `hash` is provably already stored in `room_id`.
 	///
