@@ -521,7 +521,7 @@
 {"Action":"pass","Test":"TestMSC4500State/StateHashes/PrimaryMismatch"}
 {"Action":"pass","Test":"TestMSC4500State/StateHashes/RedactionOnlyMismatch"}
 {"Action":"pass","Test":"TestMSC4500State/StateHashes/UnknownAlgorithmDeferred"}
-{"Action":"fail","Test":"TestMSC4521"}
+{"Action":"pass","Test":"TestMSC4521"}
 {"Action":"pass","Test":"TestMSC4521/Adversarial"}
 {"Action":"pass","Test":"TestMSC4521/Adversarial/FabricatedIDs"}
 {"Action":"pass","Test":"TestMSC4521/Adversarial/PartlyFakeClaimIsSampled"}
@@ -531,14 +531,14 @@
 {"Action":"pass","Test":"TestMSC4521/Authorization/NonMembersAndACLBlocked"}
 {"Action":"pass","Test":"TestMSC4521/Compatibility"}
 {"Action":"pass","Test":"TestMSC4521/Compatibility/NonAdvertisingPeerFallsBack"}
-{"Action":"fail","Test":"TestMSC4521/Convergence"}
+{"Action":"pass","Test":"TestMSC4521/Convergence"}
 {"Action":"pass","Test":"TestMSC4521/Convergence/ActiveRoom"}
 {"Action":"pass","Test":"TestMSC4521/Convergence/ActiveRoom/Digest"}
 {"Action":"pass","Test":"TestMSC4521/Convergence/ActiveRoom/SketchDiff"}
 {"Action":"pass","Test":"TestMSC4521/Convergence/ActiveRoom/Strata"}
 {"Action":"skip","Test":"TestMSC4521/Convergence/Bulk"}
-{"Action":"fail","Test":"TestMSC4521/Convergence/PartitionHeal"}
-{"Action":"fail","Test":"TestMSC4521/Convergence/PausedHomeserverCatchesUp"}
+{"Action":"pass","Test":"TestMSC4521/Convergence/PartitionHeal"}
+{"Action":"pass","Test":"TestMSC4521/Convergence/PausedHomeserverCatchesUp"}
 {"Action":"pass","Test":"TestMSC4521/Primitives"}
 {"Action":"pass","Test":"TestMSC4521/Primitives/Plumbing"}
 {"Action":"pass","Test":"TestMSC4521/Primitives/Plumbing/Buckets"}
