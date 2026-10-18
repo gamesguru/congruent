@@ -98,7 +98,8 @@ pub struct Service {
 	wake: Notify,
 	/// Events a peer offered that we fetched and could not use, so they are not
 	/// fetched again every round.
-	remembered: parking_lot::Mutex<std::collections::HashMap<OwnedEventId, Instant>>,
+	remembered:
+		parking_lot::Mutex<std::collections::HashMap<(OwnedServerName, OwnedEventId), Instant>>,
 	/// Peers whose `/version` advertised the digest profile. A peer that does
 	/// not is not cached here: the queue backs it off as unsupported.
 	advertised: moka::sync::Cache<OwnedServerName, ()>,
@@ -208,6 +209,9 @@ impl Service {
 	pub async fn enqueue(&self, room_id: &RoomId, peer: &ServerName, reason: Reason) -> Enqueued {
 		if !self.enabled() {
 			return Self::record(room_id, peer, reason, Enqueued::Refused(Refusal::Disabled));
+		}
+		if self.services.sending.destination_aborted(peer) {
+			return Self::record(room_id, peer, reason, Enqueued::Refused(Refusal::Denied));
 		}
 		let key = Key::new(room_id, peer);
 		if reason == Reason::Activity {
@@ -546,6 +550,7 @@ impl Service {
 
 	/// Starts as many queued exchanges as the concurrency limits allow.
 	fn start_ready(self: &Arc<Self>) {
+		self.queue.lock().requeue_due_retries(Instant::now());
 		loop {
 			let now = Instant::now();
 			let mut rate = self.rate.lock();
@@ -605,13 +610,23 @@ impl Service {
 						"reconciliation exchange finished"
 					);
 				}
+				let outcome_truncated =
+					matches!(outcome, Outcome::Reconciled { truncated: true, .. });
 				let verdict = match outcome {
 					| Outcome::Failed(_) | Outcome::Abandoned(_) => Verdict::Failed,
 					| Outcome::Unsupported => Verdict::Unsupported,
 					| Outcome::Synchronized => Verdict::Synchronized,
 					| Outcome::Differs(_) | Outcome::Reconciled { .. } => Verdict::Done,
 				};
-				let requeue = this.queue.lock().finish(&key, verdict, Instant::now());
+				let mut requeue = this.queue.lock().finish(&key, verdict, Instant::now());
+				// More was offered than one exchange fetches: compare again.
+				if outcome_truncated {
+					requeue |=
+						this.queue
+							.lock()
+							.enqueue(key.clone(), Reason::Activity, Instant::now())
+							== Enqueued::Queued;
+				}
 				if requeue {
 					this.wake.notify_one();
 				}

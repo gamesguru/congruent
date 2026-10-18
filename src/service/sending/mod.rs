@@ -680,6 +680,11 @@ impl Service {
 		self.aborted.write().unwrap().remove(server);
 	}
 
+	/// Whether sending to `server` was stopped by `abort_destination`.
+	pub fn destination_aborted(&self, server: &ServerName) -> bool {
+		self.aborted.read().unwrap().contains(server)
+	}
+
 	pub(super) fn is_aborted(&self, dest: &Destination) -> bool {
 		match dest {
 			| Destination::Federation(server) => self.aborted.read().unwrap().contains(server),

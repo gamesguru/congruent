@@ -76,6 +76,8 @@ struct Entry {
 	dirty: bool,
 	failures: u32,
 	not_before: Option<Instant>,
+	/// The last exchange failed and nothing has retried it since.
+	retry_pending: bool,
 	identical_digests: u32,
 	synchronized_until: Option<Instant>,
 }
@@ -228,6 +230,27 @@ impl Queue {
 		victim.is_some_and(|key| self.entries.remove(&key).is_some())
 	}
 
+	/// Queues idle pairs whose failure delay has been served, so a failed
+	/// repair is retried even when no further trigger arrives.
+	pub(super) fn requeue_due_retries(&mut self, now: Instant) -> bool {
+		let mut due = Vec::new();
+		for (key, entry) in &mut self.entries {
+			if entry.retry_pending
+				&& !entry.queued
+				&& !entry.in_flight
+				&& entry.not_before.is_none_or(|t| t <= now)
+			{
+				entry.retry_pending = false;
+				entry.queued = true;
+				entry.reason = Reason::Periodic;
+				due.push(key.clone());
+			}
+		}
+		let any = !due.is_empty();
+		self.ready.extend(due);
+		any
+	}
+
 	/// Takes the next queued pair that fits the concurrency limits and marks
 	/// it in flight.
 	pub(super) fn next_ready(
@@ -270,6 +293,7 @@ impl Queue {
 				let entry = self.entries.get_mut(&key)?;
 				let reason = entry.reason;
 				entry.queued = false;
+				entry.retry_pending = false;
 				entry.in_flight = true;
 				entry.dirty = false;
 				entry.reason = Reason::Periodic;
@@ -314,6 +338,7 @@ impl Queue {
 				}
 			},
 			| Verdict::Failed => {
+				entry.retry_pending = true;
 				entry.failures = entry.failures.saturating_add(1);
 				entry.not_before = now.checked_add(backoff(
 					self.failure_backoff,
@@ -401,6 +426,22 @@ mod tests {
 		);
 		assert_eq!(queue.enqueue(k.clone(), Reason::Explicit, now), Enqueued::Queued);
 		assert_eq!(queue.next_ready(now, 4, 2, true), Some((k, Reason::Explicit)));
+	}
+
+	#[test]
+	fn a_failed_pair_is_retried_after_its_delay() {
+		let now = Instant::now();
+		let mut queue = Queue::new(8);
+		let k = key("!a:example.org", "peer.example");
+		queue.enqueue(k.clone(), Reason::Periodic, now);
+		queue.next_ready(now, 4, 2, true);
+		queue.finish(&k, Verdict::Failed, now);
+
+		assert!(!queue.requeue_due_retries(now));
+		let later = now + BACKOFF_MAX + Duration::from_secs(1);
+		assert!(queue.requeue_due_retries(later));
+		assert_eq!(queue.next_ready(later, 4, 2, true), Some((k, Reason::Periodic)));
+		assert!(!queue.requeue_due_retries(later));
 	}
 
 	#[test]

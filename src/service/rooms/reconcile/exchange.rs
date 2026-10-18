@@ -59,6 +59,8 @@ pub(super) enum Outcome {
 		offered: usize,
 		applied: usize,
 		unusable: usize,
+		/// More was offered than one exchange may fetch.
+		truncated: bool,
 	},
 	/// The peer's claim was not believed; the round was dropped.
 	Abandoned(String),
@@ -72,7 +74,7 @@ impl Outcome {
 		match self {
 			| Self::Synchronized => "synchronized".to_owned(),
 			| Self::Differs(action) => format!("differs ({action}, not run)"),
-			| Self::Reconciled { offered, applied, unusable } => {
+			| Self::Reconciled { offered, applied, unusable, .. } => {
 				format!("reconciled: {offered} offered, {applied} applied, {unusable} unusable")
 			},
 			| Self::Abandoned(why) => format!("abandoned: {why}"),
@@ -113,6 +115,9 @@ const HEADROOM: usize = 8;
 
 impl Service {
 	async fn admission_lapsed(&self, room_id: &RoomId, peer: &ServerName) -> Option<Outcome> {
+		if self.services.sending.destination_aborted(peer) {
+			return Some(Outcome::Abandoned("sending to the peer was aborted".to_owned()));
+		}
 		let ours = self.services.globals.server_name();
 		let state_cache = &self.services.state_cache;
 		if !state_cache.server_in_room(ours, room_id).await
@@ -279,6 +284,9 @@ impl Service {
 		remote: &get_room_digest_strata::unstable::Response,
 		requests: &[BucketRequest],
 	) -> Result<Round, Outcome> {
+		if let Some(outcome) = self.admission_lapsed(room_id, peer).await {
+			return Err(outcome);
+		}
 		let sketches = build_bucket_sketches(local.population.h64s(), requests)
 			.map_err(|e| Outcome::Failed(format!("local sketches: {e:?}")))?;
 
@@ -379,16 +387,23 @@ impl Service {
 		let total = offered.len();
 		let mut wanted = Vec::new();
 		for id in offered {
-			if self.is_remembered(&id) || self.services.timeline.non_outlier_pdu_exists(&id).await
+			if self.is_remembered(peer, &id)
+				|| self.services.timeline.non_outlier_pdu_exists(&id).await
 			{
 				continue;
 			}
 			wanted.push(id);
 		}
 		if wanted.is_empty() {
-			return Outcome::Reconciled { offered: total, applied: 0, unusable: 0 };
+			return Outcome::Reconciled {
+				offered: total,
+				applied: 0,
+				unusable: 0,
+				truncated: false,
+			};
 		}
 		wanted.shuffle(&mut rand::rng());
+		let truncated = wanted.len() > MAX_FETCHES;
 		wanted.truncate(MAX_FETCHES);
 
 		let mut fetched: Vec<(u64, OwnedRoomId, OwnedEventId, CanonicalJsonObject)> = Vec::new();
@@ -412,7 +427,7 @@ impl Service {
 					| Some(event) => fetched.push(event),
 					| None => {
 						failed = failed.saturating_add(1);
-						self.remember(id);
+						self.remember(peer, id);
 					},
 				}
 			}
@@ -449,11 +464,16 @@ impl Service {
 				applied = applied.saturating_add(1);
 			} else {
 				unusable = unusable.saturating_add(1);
-				self.remember(event_id);
+				self.remember(peer, event_id);
 			}
 		}
 
-		Outcome::Reconciled { offered: total, applied, unusable }
+		Outcome::Reconciled {
+			offered: total,
+			applied,
+			unusable,
+			truncated,
+		}
 	}
 
 	/// Fetches one event from `peer` and checks it is the event, in the room,
@@ -495,14 +515,16 @@ impl Service {
 		Some((depth, parsed_room, parsed_id, value))
 	}
 
-	fn is_remembered(&self, event_id: &EventId) -> bool {
+	/// Memory is per peer: one peer failing to serve an event says nothing
+	/// about whether another can.
+	fn is_remembered(&self, peer: &ServerName, event_id: &EventId) -> bool {
 		self.remembered
 			.lock()
-			.get(event_id)
+			.get(&(peer.to_owned(), event_id.to_owned()))
 			.is_some_and(|since| since.elapsed() < REMEMBER_FOR)
 	}
 
-	fn remember(&self, event_id: OwnedEventId) {
+	fn remember(&self, peer: &ServerName, event_id: OwnedEventId) {
 		let mut remembered = self.remembered.lock();
 		if remembered.len() >= REMEMBER_MAX {
 			remembered.retain(|_, since| since.elapsed() < REMEMBER_FOR);
@@ -514,7 +536,7 @@ impl Service {
 			let cutoff = ages[ages.len() / 2];
 			remembered.retain(|_, since| *since > cutoff);
 		}
-		remembered.insert(event_id, Instant::now());
+		remembered.insert((peer.to_owned(), event_id), Instant::now());
 	}
 }
 
