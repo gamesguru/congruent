@@ -25,7 +25,7 @@ jobs:
       COMPLEMENT_PARALLEL: 4
       COMPLEMENT_TEST_PARALLEL: 1
       COMPLEMENT_ENABLE_DIRTY_RUNS: 1
-      FEATURES: "direct_tls,url_preview"
+      FEATURES: "direct_tls,url_preview,console"
 
     strategy:
       fail-fast: false
@@ -126,7 +126,7 @@ jobs:
           CONTINUWUITY_BRANCH: ${{ github.head_ref || github.ref_name }}
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.target_cpu != '' && format('-C target-cpu={0}', matrix.target_cpu) || '' }}
-        run: SKIP_CONFIRM=1 make -j4 build PROFILE=${{ matrix.profile }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ matrix.profile }} --features direct_tls,url_preview"
+        run: SKIP_CONFIRM=1 make -j4 build PROFILE=${{ matrix.profile }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ matrix.profile }} --features ${{ env.FEATURES }}"
 
       - name: Sanity check binary
         run: ./tests/sanity_check.sh ./target/latest/conduwuit
