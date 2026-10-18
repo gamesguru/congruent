@@ -837,6 +837,15 @@ async fn materialize_remote_history_limited(
 	Ok(())
 }
 
+/// Validates and inserts a historical PDU, associates its resolved state, and
+/// invalidates the room's reconciliation snapshot. Already-visible events are
+/// skipped. `count` supplies a stream count to negate for the backfill
+/// position; when omitted, a new global count is allocated.
+///
+/// # Errors
+/// Propagates parsing, room-version, auth, state-association, count-allocation,
+/// and integer-conversion errors. Missing auth context leaves the event as an
+/// outlier and returns the validation error.
 #[implement(super::Service)]
 pub async fn backfill_pdu(
 	&self,

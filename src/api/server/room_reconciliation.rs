@@ -31,8 +31,11 @@ const DIGEST_TYPE: &str = "algebraic_v1";
 
 // --- encoding -------------------------------------------------------------
 
+/// Encodes a short identifier as eight big-endian bytes in unpadded URL-safe
+/// base64.
 fn encode_short_identifier(h64: u64) -> String { URL_SAFE_NO_PAD.encode(h64.to_be_bytes()) }
 
+/// Encodes an accumulator digest using the reconciliation wire format.
 fn encode_digest(digest: u128) -> String {
 	RoomAccumulator::from_parts(digest, 0).encode_digest()
 }
@@ -61,6 +64,7 @@ struct DigestFields {
 	origin_server_ts_range: Vec<u64>,
 }
 
+/// Builds the shared digest response fields from one snapshot.
 fn digest_fields(state: &RoomReconciliationState) -> DigestFields {
 	DigestFields {
 		digest: state.resident.accumulator().encode_digest(),
@@ -72,6 +76,15 @@ fn digest_fields(state: &RoomReconciliationState) -> DigestFields {
 	}
 }
 
+/// Checks room access, clears the peer's transport backoff for this room, and
+/// returns a cached or rebuilt timeline snapshot.
+///
+/// # Errors
+/// Returns `M_NOT_FOUND` if the local server is not a participant or the room
+/// version is unavailable, and `M_FORBIDDEN` for an ACL denial or a
+/// nonparticipant requesting a room that is not world-readable. Propagates
+/// snapshot errors, including `M_UNSUPPORTED_ROOM_VERSION` for sender-chosen
+/// event IDs.
 async fn room_snapshot(
 	services: &crate::State,
 	origin: &ServerName,
@@ -93,6 +106,8 @@ async fn room_snapshot(
 /// # `GET /_matrix/federation/unstable/tk.nutra.msc0501/room_digest/{roomId}`
 ///
 /// The digest without strata.
+/// Records the returned frame as acceptable for subsequent diff requests.
+/// Propagates access and snapshot errors from `room_snapshot`.
 pub(crate) async fn get_room_reconciliation_digest_route(
 	State(services): State<crate::State>,
 	body: Ruma<get_room_digest::unstable::Request>,
@@ -120,6 +135,8 @@ pub(crate) async fn get_room_reconciliation_digest_route(
 /// # `GET /_matrix/federation/unstable/tk.nutra.msc0501/room_digest/{roomId}/strata`
 ///
 /// The digest plus the 32 strata.
+/// Records the returned frame as acceptable for subsequent diff requests.
+/// Propagates access and snapshot errors from `room_snapshot`.
 pub(crate) async fn get_room_reconciliation_strata_route(
 	State(services): State<crate::State>,
 	body: Ruma<get_room_digest_strata::unstable::Request>,
@@ -147,6 +164,7 @@ pub(crate) async fn get_room_reconciliation_strata_route(
 
 // --- diff -----------------------------------------------------------------
 
+/// Builds an invalid-parameter error naming the malformed or missing field.
 fn bad_param(what: &str) -> conduwuit::Error {
 	err!(Request(InvalidParam("Invalid or missing `{what}`.")))
 }
@@ -168,6 +186,13 @@ struct RoomDiffRequest {
 	requests: Vec<SketchRequest>,
 }
 
+/// Validates and decodes an algebraic sketch request for `event_set` scope,
+/// the default when scope is omitted.
+///
+/// # Errors
+/// Returns `M_INVALID_PARAM` for unsupported modes, digest types, or scopes;
+/// missing negotiation events; invalid digests or bucket metadata; mismatched
+/// sketch counts; excessive bucket counts; or invalid sketch encodings.
 fn validate_room_diff_request(
 	body: &post_room_diff::unstable::Request,
 ) -> Result<RoomDiffRequest> {
@@ -257,6 +282,14 @@ enum Sketched {
 
 /// Subtracts the requester's bucket sketches from ours and decodes each
 /// residual into event IDs.
+/// Returns responder events missing on the requester, requester-only short
+/// identifiers, and the expected requester-side accumulator. Equal digests and
+/// counts produce an empty difference. Decode or budget exhaustion becomes
+/// `CapacityExceeded`, allowing the caller to return a truncated response.
+///
+/// # Errors
+/// Returns `M_INVALID_PARAM` for invalid bucket or sketch data and propagates
+/// a database error if accumulating the repair set fails.
 fn diff_buckets(state: &RoomReconciliationState, body: &RoomDiffRequest) -> Result<Sketched> {
 	let buckets: Vec<BucketRequest> = body.requests.iter().map(|r| r.bucket).collect();
 
@@ -347,6 +380,9 @@ fn common_frame(state: &RoomReconciliationState, body: &RoomDiffRequest) -> Vec<
 		.collect()
 }
 
+/// Builds a diff response using the current snapshot's count and frame.
+/// Without an outcome, marks the response truncated unless sketching was
+/// `not_applicable`; echoes the request's scope and state marker.
 fn room_diff_response(
 	state: &RoomReconciliationState,
 	body: RoomDiffRequest,
@@ -383,6 +419,14 @@ fn room_diff_response(
 }
 
 /// # `POST /_matrix/federation/unstable/tk.nutra.msc0501/room_diff/{roomId}`
+///
+/// Returns a sketch difference against the current room snapshot. Accepts the
+/// current frame or a recently advertised frame. An empty common frame skips
+/// sketching; capacity exhaustion returns `capacity_exceeded` with truncation.
+///
+/// # Errors
+/// Propagates request validation, room access, snapshot, and sketch errors.
+/// Returns `M_INVALID_PARAM` for an unrecognized frame ID.
 pub(crate) async fn post_room_reconciliation_diff_route(
 	State(services): State<crate::State>,
 	body: Ruma<post_room_diff::unstable::Request>,

@@ -44,6 +44,7 @@ pub struct RoomReconciliationState {
 }
 
 impl RoomReconciliationState {
+	/// Returns the number of distinct events successfully added to the digest.
 	#[must_use]
 	pub fn known_event_count(&self) -> u64 { self.resident.accumulator().known_event_count() }
 }
@@ -67,6 +68,8 @@ pub(super) fn event_id_format(room_version: &RoomVersionId) -> EventIdFormat {
 }
 
 /// Derives the MSC4521 element hash for an event ID.
+/// Returns the decoder's error if the ID is invalid for the room version's
+/// reference-hash format.
 pub(super) fn element_hash(
 	event_id: &str,
 	room_version: &RoomVersionId,
@@ -85,6 +88,9 @@ struct Builder {
 }
 
 impl Builder {
+	/// Adds an event once, updating ranges only after successful digest
+	/// insertion. Duplicate IDs, invalid reference hashes, and failed
+	/// insertions are skipped.
 	fn push(&mut self, pdu: &PduEvent, room_version: &RoomVersionId) {
 		// The accumulator is XOR-based: a repeated event would cancel itself.
 		if !self.seen.insert(pdu.event_id.clone()) {
@@ -119,6 +125,8 @@ impl Builder {
 		*t_max = (*t_max).max(ts);
 	}
 
+	/// Combines the accumulated events with the supplied timeline position and
+	/// frame. Empty event sets use `[0, 0]` for depth and timestamp ranges.
 	fn finish(
 		self,
 		frame_event_ids: Vec<OwnedEventId>,
@@ -143,10 +151,14 @@ impl Service {
 	/// Returns the room's reconciliation snapshot, rebuilding it when the
 	/// cached one has expired. Backfills and live appends invalidate the cache
 	/// after insertion, including when an append races snapshot publication.
+	/// Makes at most three scan attempts if the room changes; a still-changing
+	/// room gets a best-effort snapshot. Invalid events and timeline read
+	/// errors are skipped rather than failing the request.
 	///
 	/// # Errors
 	/// Fails with `M_UNSUPPORTED_ROOM_VERSION` for room versions 1 and 2,
 	/// whose event IDs are sender-chosen and cannot be hashed.
+	/// Propagates `M_NOT_FOUND` if the room's version cannot be determined.
 	pub async fn reconciliation_state(
 		&self,
 		room_id: &RoomId,
@@ -207,6 +219,8 @@ impl Service {
 		Ok(state)
 	}
 
+	/// Returns the current forward extremities in sorted order without
+	/// duplicates.
 	async fn forward_extremities_sorted(&self, room_id: &RoomId) -> Vec<OwnedEventId> {
 		let mut ids: Vec<OwnedEventId> = self
 			.services

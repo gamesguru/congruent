@@ -205,6 +205,9 @@ where
 	}
 }
 
+/// Parses the typed endpoint request from the supplied canonical JSON object,
+/// or consumes the raw body when no object is supplied. Conversion failures
+/// become `M_BAD_JSON` errors.
 fn make_body<T>(request: &mut Request, json_body: Option<&mut CanonicalJsonValue>) -> Result<T>
 where
 	T: IncomingRequest,

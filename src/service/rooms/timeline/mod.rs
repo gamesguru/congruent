@@ -321,6 +321,7 @@ impl crate::Service for Service {
 		Ok(())
 	}
 
+	/// Invalidates all cached room reconciliation snapshots.
 	async fn clear_cache(&self) { self.reconciliation_cache.invalidate_all(); }
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }

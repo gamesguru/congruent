@@ -154,6 +154,10 @@ pub(super) async fn remote_user_in_rooms(&self, user_id: OwnedUserId) -> Result 
 		.await
 }
 
+/// Displays queue counts, optionally filtered by server, or clears, aborts, or
+/// resumes sending. Clearing without a server requires `all`; abort and resume
+/// require a server. Restricted invocations, invalid options, and response
+/// writing failures are returned as errors.
 #[admin_command]
 #[allow(clippy::fn_params_excessive_bools)]
 pub(super) async fn sending_queue(
@@ -239,6 +243,9 @@ pub(super) async fn sending_queue(
 	self.write_str(&out).await
 }
 
+/// Requests reconciliation and writes the queue admission result without
+/// waiting for an exchange. Refusals are reported in the response; restricted
+/// invocations and response writing failures are returned as errors.
 #[admin_command]
 pub(super) async fn reconcile(&self, room_id: OwnedRoomId, server: OwnedServerName) -> Result {
 	self.bail_restricted()?;

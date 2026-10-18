@@ -250,6 +250,9 @@ impl Service {
 		}
 	}
 
+	/// Applies a transaction result to worker status and queues. Ignores stale
+	/// federation generations and drops active work for aborted destinations;
+	/// current failures update retry state and successes advance queued work.
 	async fn handle_response<'a>(
 		&'a self,
 		response: SendingResult,
@@ -374,6 +377,8 @@ impl Service {
 		}));
 	}
 
+	/// Removes delivered active rows and their reliable sources, then starts
+	/// queued PDUs immediately or schedules an EDU flush as needed.
 	#[allow(clippy::needless_pass_by_ref_mut)]
 	async fn handle_response_ok<'a>(
 		&'a self,
@@ -454,6 +459,9 @@ impl Service {
 		self.reschedule_flush(dest_clone, Duration::from_millis(300));
 	}
 
+	/// Handles a queued event, flush, or abort acknowledgment. Discards work
+	/// for aborted or newly stale destinations; otherwise starts a transaction
+	/// when selection permits. Selection errors leave no new send future.
 	#[allow(clippy::needless_pass_by_ref_mut)]
 	async fn handle_request<'a>(
 		&'a self,
@@ -536,6 +544,9 @@ impl Service {
 		}
 	}
 
+	/// Drains pending results until the configured shutdown timeout. Cleans up
+	/// successful current-generation work; failed and stale results leave
+	/// storage.
 	async fn finish_responses<'a>(&'a self, futures: &mut SendingFutures<'a>) {
 		let timeout = self.server.config.sender_shutdown_timeout;
 		let timeout = Duration::from_secs(timeout);
@@ -567,6 +578,10 @@ impl Service {
 		}
 	}
 
+	/// Recovers active requests belonging to sender shard `id`, retaining at
+	/// most the configured count per destination. When startup netburst is
+	/// enabled, restarts retained work and flushes queued destinations. Does
+	/// nothing when federation is disabled.
 	#[allow(clippy::needless_pass_by_ref_mut)]
 	async fn startup_netburst<'a>(
 		&'a self,
@@ -1162,6 +1177,9 @@ impl Service {
 		(Some(buf), since.1)
 	}
 
+	/// Builds a send future whose result includes the destination and, for
+	/// federation, its captured abort generation. Aborted or stale federation
+	/// work can finish successfully without sending.
 	fn send_events(
 		&self,
 		dest: Destination,
@@ -1217,6 +1235,10 @@ impl Service {
 		}
 	}
 
+	/// Sends available PDUs and opted-in ephemeral events to an application
+	/// service, skipping unreadable PDUs and invalid EDUs. Returns the
+	/// destination on success, or pairs it with a missing-registration or
+	/// request error.
 	async fn send_events_dest_appservice(
 		&self,
 		id: String,
@@ -1287,6 +1309,9 @@ impl Service {
 		}
 	}
 
+	/// Sends notices for readable, unredacted PDUs using the user's push rules,
+	/// or default rules when unavailable. Missing pushers return an error
+	/// paired with the destination; individual notice errors are ignored.
 	async fn send_events_dest_push(
 		&self,
 		user_id: OwnedUserId,
@@ -1366,6 +1391,12 @@ impl Service {
 		Ok(Destination::Push(user_id, pushkey))
 	}
 
+	/// Sends a federation transaction under the captured abort `epoch`,
+	/// skipping unavailable PDUs and invalid EDUs. Returns the destination on
+	/// delivery, empty content, or an abort-generation refusal; request errors
+	/// are paired with the destination. Per-event remote errors do not fail the
+	/// transaction. `edu_count` is the watermark to publish on delivery or
+	/// empty content; an abort-generation refusal does not advance it.
 	async fn send_events_dest_federation(
 		&self,
 		server: OwnedServerName,
