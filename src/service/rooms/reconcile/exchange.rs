@@ -50,10 +50,12 @@ const REMEMBER_MAX: usize = 20_000;
 
 enum FetchEvent {
 	Fetched((u64, OwnedRoomId, OwnedEventId, CanonicalJsonObject)),
-	/// A request failed or returned an unusable event; suppress this peer's
-	/// repeated offer, but allow another comparison after backoff.
+	/// The peer permanently refused the event, or returned an empty or unusable
+	/// one; suppress this peer's repeated offer, but allow another comparison
+	/// after backoff.
 	Failed,
-	/// Transient transport failure; retry the same ID after queue backoff.
+	/// Transport failure, timeout, rate limit, or server error; retry the same
+	/// ID after queue backoff.
 	Retryable,
 	/// Admission changed while fetching; do not treat it as a peer failure.
 	AdmissionLapsed,
@@ -536,17 +538,31 @@ impl Service {
 			.sending
 			.send_federation_request(peer, request)
 			.await
-			.map_err(|_| FetchEvent::Retryable);
-		let Ok(response) = response else {
-			return FetchEvent::Retryable;
+			.map_err(|e| {
+				let status = e.status_code();
+				if status.is_client_error()
+					&& status != http::StatusCode::REQUEST_TIMEOUT
+					&& status != http::StatusCode::TOO_MANY_REQUESTS
+				{
+					FetchEvent::Failed
+				} else {
+					FetchEvent::Retryable
+				}
+			});
+		let response = match response {
+			| Ok(response) => response,
+			| Err(outcome) => return outcome,
 		};
 		let Some(raw) = response.pdus.first() else {
 			return FetchEvent::Failed;
 		};
 		let parsed = self.services.event_handler.parse_incoming_pdu(raw).await;
-		let Ok((parsed_room, parsed_id, value)) = parsed else {
-			warn!(target: "reconcile", %event_id, "offered event unparsable");
-			return FetchEvent::Failed;
+		let (parsed_room, parsed_id, value) = match parsed {
+			| Ok(parsed) => parsed,
+			| Err(e) => {
+				warn!(target: "reconcile", %event_id, "offered event unparsable: {e}");
+				return FetchEvent::Failed;
+			},
 		};
 		if parsed_room != room_id || parsed_id != event_id {
 			return FetchEvent::Failed;

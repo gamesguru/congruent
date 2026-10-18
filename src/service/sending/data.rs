@@ -50,6 +50,20 @@ impl Data {
 		self.servercurrentevent_data.remove(key);
 	}
 
+	/// Removes specific queue rows, wherever they currently sit. Used by the
+	/// worker to discard only what it was handed, so it cannot sweep up rows
+	/// queued after a resume.
+	pub(super) fn delete_request_keys<'a, I>(&self, keys: I)
+	where
+		I: Iterator<Item = &'a [u8]>,
+	{
+		for key in keys {
+			self.servercurrentevent_data.remove(key);
+			self.servernameevent_data.remove(key);
+			self.federation_outbound_to_device.remove(key);
+		}
+	}
+
 	pub(super) async fn delete_all_active_requests_for(&self, destination: &Destination) {
 		let prefix = destination.get_prefix();
 		self.servercurrentevent_data

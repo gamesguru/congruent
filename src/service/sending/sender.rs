@@ -1,6 +1,7 @@
 use std::{
 	collections::{BTreeMap, HashMap, HashSet},
 	fmt::Debug,
+	iter::once,
 	sync::{Arc, atomic::Ordering},
 	time::{Duration, Instant},
 };
@@ -466,14 +467,19 @@ impl Service {
 			return;
 		}
 		if self.is_aborted(&msg.dest) {
-			// The request was persisted before it reached us; drop it too, or a
-			// producer racing the abort leaves rows behind forever.
+			// The request was persisted before it reached us; drop that row too, or
+			// a producer racing the abort leaves it behind forever. Only this
+			// message's row: a bulk scan here could outlive a resume and delete
+			// rows queued afterwards. `abort_destination` clears the rest.
 			statuses.remove(&msg.dest);
-			self.db.delete_all_requests_for(&msg.dest).await;
-			self.db.delete_all_reliable_requests_for(&msg.dest).await;
+			self.db.delete_request_keys(once(msg.queue_id.as_slice()));
 			return;
 		}
 
+		let epoch = match &msg.dest {
+			| Destination::Federation(server) => Some(self.abort_epoch(server)),
+			| _ => None,
+		};
 		let _cork = self.db.db.cork();
 		let is_flush = matches!(msg.event, SendingEvent::Flush);
 		let iv = if !is_flush {
@@ -497,12 +503,19 @@ impl Service {
 			reqs
 		};
 
+		let keys: Vec<Vec<u8>> = iv.iter().map(|(key, _)| key.clone()).collect();
 		if let Ok(Some((events, edu_count))) = self.select_events(&msg.dest, iv, statuses).await {
-			// An abort may have landed while the events were being selected.
-			if self.is_aborted(&msg.dest) {
+			// An abort may have landed while the events were being selected, even
+			// if a resume has since lifted it: the epoch tells those apart from a
+			// destination that was never touched.
+			let stale = self.is_aborted(&msg.dest)
+				|| matches!(
+					(&msg.dest, epoch),
+					(Destination::Federation(server), Some(epoch)) if self.abort_epoch(server) != epoch
+				);
+			if stale {
 				statuses.remove(&msg.dest);
-				self.db.delete_all_requests_for(&msg.dest).await;
-				self.db.delete_all_reliable_requests_for(&msg.dest).await;
+				self.db.delete_request_keys(keys.iter().map(Vec::as_slice));
 			} else if !events.is_empty() {
 				futures.push(self.send_events(msg.dest, events, edu_count));
 			} else {

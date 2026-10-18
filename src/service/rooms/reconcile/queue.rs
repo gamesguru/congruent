@@ -220,8 +220,9 @@ impl Queue {
 
 	/// Drops an idle failing pair whose backoff has already been served, to
 	/// make room for a new one. Returns whether anything was dropped. Pairs
-	/// that are queued, running or still backing off are never dropped, so
-	/// eviction cannot cut a dead peer's backoff short.
+	/// that are queued, running, still backing off, or waiting for a due retry
+	/// to be requeued are never dropped, so eviction cannot cut a dead peer's
+	/// backoff short or lose its retry.
 	fn evict_idle(&mut self, now: Instant) -> bool {
 		let victim = self
 			.entries
