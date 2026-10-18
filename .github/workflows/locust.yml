@@ -46,12 +46,6 @@ jobs:
         id: cpu
         uses: ./.github/actions/get-cpu-target
 
-      - name: Setup RocksDB and Jemalloc
-        uses: ./.github/actions/setup-prebuilts
-        with:
-          cache-key: ubuntu-24.04
-          arch: ${{ steps.cpu.outputs.target }}
-
       - name: Export CPU target env vars
         run: |
           echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C target-cpu=${{ steps.cpu.outputs.target }}" | tee -a $GITHUB_ENV
@@ -111,12 +105,6 @@ jobs:
       - name: Detect best CPU target
         id: cpu
         uses: ./.github/actions/get-cpu-target
-
-      - name: Setup prebuilts (RocksDB/Jemalloc)
-        uses: ./.github/actions/setup-prebuilts
-        with:
-          cache-key: ubuntu-24.04
-          arch: ${{ steps.cpu.outputs.target }}
 
       # matrix-locust only works on Python <= 3.12 (see note below).
       - name: Set up Python 3.12 (required by matrix-locust toolchain)

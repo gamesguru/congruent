@@ -54,10 +54,6 @@ on:
         description: "Feature: io_uring"
         type: boolean
         default: false
-      feat_jemalloc:
-        description: "Feature: jemalloc"
-        type: boolean
-        default: false
       feat_ldap:
         description: "Feature: ldap"
         type: boolean
@@ -124,10 +120,6 @@ jobs:
     needs: [setup]
     if: needs.setup.outputs.run_any == 'true'
     runs-on: ${{ matrix.os }}${{ contains(matrix.arch, 'arm64') && '-arm' || '' }}
-    env:
-      ROCKSDB_LIB_DIR: /usr/local/lib
-      JEMALLOC_SYS_WITH_LG_PAGE: ${{ matrix.lg_page }}
-
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
@@ -147,12 +139,6 @@ jobs:
             build-essential pkg-config liburing-dev \
             libbz2-dev clang libclang-dev llvm-dev mold
 
-      - name: Setup RocksDB and Jemalloc
-        uses: ./.github/actions/setup-prebuilts
-        with:
-          cache-key: ${{ matrix.os }}
-          arch: ${{ matrix.arch }}
-
       - name: Install Rust toolchain
         run: rustup show
 
@@ -160,7 +146,7 @@ jobs:
         with:
           shared-key: ${{ matrix.os }}-${{ matrix.arch }}-${{ matrix.profile || 'release-max-perf' }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          env-vars: CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS PROFILE JEMALLOC_SYS_WITH_LG_PAGE
+          env-vars: CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS PROFILE
 
       - name: Resolve Configuration
         id: config
@@ -177,7 +163,6 @@ jobs:
             [ "${{ inputs.feat_full }}" == "true" ] && F+=("full")
             [ "${{ inputs.feat_hardened_malloc }}" == "true" ] && F+=("hardened_malloc")
             [ "${{ inputs.feat_io_uring }}" == "true" ] && F+=("io_uring")
-            [ "${{ inputs.feat_jemalloc }}" == "true" ] && F+=("jemalloc")
             [ "${{ inputs.feat_ldap }}" == "true" ] && F+=("ldap")
             [ "${{ inputs.feat_release_max_log_level }}" == "true" ] && F+=("release_max_log_level")
             [ "${{ inputs.feat_standard }}" == "true" ] && F+=("standard")
@@ -190,19 +175,13 @@ jobs:
           echo "features=$FEATURES" >> $GITHUB_OUTPUT
 
       - name: Debug checks
-        run: echo "RUSTFLAGS=$RUSTFLAGS" && echo "JEMALLOC_OVERRIDE=$JEMALLOC_OVERRIDE" && make vars cpu-info
+        run: echo "RUSTFLAGS=$RUSTFLAGS" && make vars cpu-info
         env:
           PROFILE: ${{ steps.config.outputs.profile }}
           CONTINUWUITY_BRANCH: ${{ github.head_ref || github.ref_name }}
 
-      - name: Debug Environment & Prebuilts
+      - name: Debug Environment
         run: |
-          echo "--- Downloaded Prebuilts Info ---"
-          for lib in librocksdb libjemalloc liblz4 libzstd; do
-            echo ">> $lib"
-            file /usr/local/lib/$lib.so* || true
-            nm -D /usr/local/lib/$lib.so* | grep " T " | head -n 5 || true
-          done
           echo "--- Runner CPU Info ---"
           grep "model name" /proc/cpuinfo | head -n 1 || true
           grep "flags" /proc/cpuinfo | head -n 1 || true
@@ -222,8 +201,6 @@ jobs:
         run: make -j4 build CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ steps.config.outputs.profile }} --features ${{ steps.config.outputs.features }}"
 
       - name: Sanity check binary
-        env:
-          LD_LIBRARY_PATH: /usr/local/lib
         run: |
           if [[ "${{ matrix.arch }}" == "x86-64-v4" ]]; then
             if grep -q "avx512f" /proc/cpuinfo && \
