@@ -64,6 +64,8 @@ pub(super) enum Outcome {
 	},
 	/// The peer's claim was not believed; the round was dropped.
 	Abandoned(String),
+	/// The pair is no longer eligible (membership, ACL or abort); not retried.
+	Dropped(String),
 	/// The peer does not serve the endpoints.
 	Unsupported,
 	Failed(String),
@@ -78,6 +80,7 @@ impl Outcome {
 				format!("reconciled: {offered} offered, {applied} applied, {unusable} unusable")
 			},
 			| Self::Abandoned(why) => format!("abandoned: {why}"),
+			| Self::Dropped(why) => format!("dropped: {why}"),
 			| Self::Unsupported => "unsupported".to_owned(),
 			| Self::Failed(why) => format!("failed: {why}"),
 		}
@@ -116,14 +119,14 @@ const HEADROOM: usize = 8;
 impl Service {
 	async fn admission_lapsed(&self, room_id: &RoomId, peer: &ServerName) -> Option<Outcome> {
 		if self.services.sending.destination_aborted(peer) {
-			return Some(Outcome::Abandoned("sending to the peer was aborted".to_owned()));
+			return Some(Outcome::Dropped("sending to the peer was aborted".to_owned()));
 		}
 		let ours = self.services.globals.server_name();
 		let state_cache = &self.services.state_cache;
 		if !state_cache.server_in_room(ours, room_id).await
 			|| !state_cache.server_in_room(peer, room_id).await
 		{
-			return Some(Outcome::Abandoned("no longer in the room".to_owned()));
+			return Some(Outcome::Dropped("no longer in the room".to_owned()));
 		}
 		if self
 			.services
@@ -132,7 +135,7 @@ impl Service {
 			.await
 			.is_err()
 		{
-			return Some(Outcome::Abandoned("peer denied by room ACL".to_owned()));
+			return Some(Outcome::Dropped("peer denied by room ACL".to_owned()));
 		}
 		None
 	}
@@ -444,6 +447,16 @@ impl Service {
 			| Ok(version) => version,
 			| Err(e) => return Outcome::Failed(format!("room version: {e}")),
 		};
+
+		// Serialize with inbound /send and backfill for this room, as every other
+		// caller of the incoming-PDU pipeline does. Taken only after the
+		// federation fetches, so no lock is held across network I/O.
+		let _room_lock = self
+			.services
+			.event_handler
+			.mutex_federation
+			.lock(room_id)
+			.await;
 
 		let (mut applied, mut unusable) = (0_usize, 0_usize);
 		for (_, parsed_room, event_id, value) in fetched {

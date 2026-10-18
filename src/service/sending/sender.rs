@@ -458,6 +458,7 @@ impl Service {
 			// producer racing the abort leaves rows behind forever.
 			statuses.remove(&msg.dest);
 			self.db.delete_all_requests_for(&msg.dest).await;
+			self.db.delete_all_reliable_requests_for(&msg.dest).await;
 			return;
 		}
 
@@ -489,6 +490,7 @@ impl Service {
 			if self.is_aborted(&msg.dest) {
 				statuses.remove(&msg.dest);
 				self.db.delete_all_requests_for(&msg.dest).await;
+				self.db.delete_all_reliable_requests_for(&msg.dest).await;
 			} else if !events.is_empty() {
 				futures.push(self.send_events(msg.dest, events, edu_count));
 			} else {
@@ -1138,11 +1140,19 @@ impl Service {
 		match dest {
 			| Destination::Federation(server) => {
 				let count = events.len();
+				// Bind the transaction to the abort generation it was built under, so
+				// work queued before an abort cannot start after a later resume.
+				let epoch = self.abort_epoch(&server);
 				async move {
-					let _abort_guard = self.abort_gate.clone().read_owned().await;
 					let dest = Destination::Federation(server.clone());
-					if self.is_aborted(&dest) {
-						return Ok(dest);
+					{
+						// Held only across the check, not the network round trip: an
+						// abort must not wait for outstanding requests, and a request
+						// already on the wire is handled when its result arrives.
+						let _abort_guard = self.abort_gate.clone().read_owned().await;
+						if self.is_aborted(&dest) || self.abort_epoch(&server) != epoch {
+							return Ok(dest);
+						}
 					}
 					let started = Instant::now();
 					let log_server = server.clone();

@@ -590,7 +590,7 @@ impl Service {
 						.services
 						.event_handler
 						.update_peer_stats(key.peer(), false, elapsed),
-					| Outcome::Differs(_) | Outcome::Abandoned(_) => {},
+					| Outcome::Differs(_) | Outcome::Abandoned(_) | Outcome::Dropped(_) => {},
 				}
 				let outcome_text = outcome.describe();
 				// Only exchanges that moved events or gave up are worth an INFO line;
@@ -617,6 +617,7 @@ impl Service {
 					| Outcome::Unsupported => Verdict::Unsupported,
 					| Outcome::Synchronized => Verdict::Synchronized,
 					| Outcome::Differs(_) | Outcome::Reconciled { .. } => Verdict::Done,
+					| Outcome::Dropped(_) => Verdict::Dropped,
 				};
 				let mut requeue = this.queue.lock().finish(&key, verdict, Instant::now());
 				// More was offered than one exchange fetches: compare again.

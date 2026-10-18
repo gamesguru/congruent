@@ -922,7 +922,10 @@ pub async fn backfill_pdu(
 
 	// Serialize historical inserts with reconciliation scans. Backfilled
 	// positions do not advance the live timeline watermark, so the ordinary
-	// before/after position check cannot detect them.
+	// before/after position check cannot detect them. The federation lock is
+	// released first so inbound /send is not held up behind a scan; the insert
+	// lock and its post-lock recheck still guard against concurrent inserts.
+	drop(mutex_lock);
 	let _reconciliation_lock = self.mutex_reconciliation.lock(&room_id).await;
 	let insert_lock = self.mutex_insert.lock(&room_id).await;
 
@@ -969,7 +972,6 @@ pub async fn backfill_pdu(
 	drop(insert_lock);
 
 	self.index_pdu_search(shortroomid, &pdu_id, &pdu_event);
-	drop(mutex_lock);
 
 	debug!("Prepended backfill pdu");
 	Ok(())

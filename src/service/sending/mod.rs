@@ -48,6 +48,13 @@ pub struct Service {
 	pub(super) aborted: std::sync::RwLock<std::collections::HashSet<OwnedServerName>>,
 	/// Serializes federation queue insertion and request startup against abort.
 	abort_gate: Arc<tokio::sync::RwLock<()>>,
+	/// Serializes whole abort and resume operations against each other, so a
+	/// resume cannot slip in between an abort's flag and its cleanup. Unlike
+	/// `abort_gate` it is held while waiting for the worker.
+	abort_serial: tokio::sync::Mutex<()>,
+	/// Bumped on every abort of a destination; work built before the bump is
+	/// stale even once the destination is resumed.
+	abort_epochs: std::sync::RwLock<std::collections::HashMap<OwnedServerName, u64>>,
 	/// Monotonic counter for outgoing federation transaction IDs, seeded from
 	/// the current unix-ms timestamp at startup and incremented per
 	/// transaction sent (same scheme Synapse's `TransactionManager` uses).
@@ -105,6 +112,8 @@ impl crate::Service for Service {
 			dead_servers: std::sync::RwLock::new(std::collections::HashSet::new()),
 			aborted: std::sync::RwLock::new(std::collections::HashSet::new()),
 			abort_gate: Arc::new(tokio::sync::RwLock::new(())),
+			abort_serial: tokio::sync::Mutex::new(()),
+			abort_epochs: std::sync::RwLock::new(std::collections::HashMap::new()),
 			next_txn_id: std::sync::atomic::AtomicU64::new(
 				slipstream::MilliSecondsSinceUnixEpoch::now().get(),
 			),
@@ -325,8 +334,10 @@ impl Service {
 
 	pub fn send_reliable_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
 		let dest = Destination::Federation(server.to_owned());
+		// A reliable EDU must not be silently dropped: if an abort or resume is
+		// in progress, tell the caller to retry.
 		let Ok(_abort_guard) = self.abort_gate.try_read() else {
-			return Ok(());
+			return Err(err!(Request(Unknown("Sending is being reconfigured; retry shortly."))));
 		};
 		if self.is_aborted(&dest) {
 			return Ok(());
@@ -646,14 +657,23 @@ impl Service {
 	pub async fn clear_destination_queue(&self, server: &ServerName) {
 		let dest = Destination::Federation(server.to_owned());
 		self.db.delete_all_requests_for(&dest).await;
+		self.db.delete_all_reliable_requests_for(&dest).await;
 		self.db.delete_all_active_requests_for(&dest).await;
 	}
 
 	/// Stop sending to a federation server: clear its stored requests and make
 	/// the workers drop its retry state, pending flushes and in-flight result.
 	pub async fn abort_destination(&self, server: &ServerName) {
+		// Held for the whole operation so a resume cannot interleave; the global
+		// gate below is released before waiting on the worker.
+		let _serial = self.abort_serial.lock().await;
 		let gate = self.abort_gate.clone().write_owned().await;
 		self.aborted.write().unwrap().insert(server.to_owned());
+		{
+			let mut epochs = self.abort_epochs.write().unwrap();
+			let epoch = epochs.entry(server.to_owned()).or_insert(0);
+			*epoch = epoch.saturating_add(1);
+		}
 		drop(gate);
 
 		let dest = Destination::Federation(server.to_owned());
@@ -668,7 +688,14 @@ impl Service {
 				})
 				.is_ok()
 			{
-				let _ = acknowledged.await;
+				// The channel outlives its worker, so a send can succeed with no one
+				// left to acknowledge; do not wait forever.
+				if conduwuit::timeout(Duration::from_secs(30), acknowledged)
+					.await
+					.is_err()
+				{
+					warn!(%server, "sender worker did not acknowledge the abort in time");
+				}
 			}
 		}
 		self.clear_destination_queue(server).await;
@@ -676,6 +703,7 @@ impl Service {
 
 	/// Lifts an earlier abort so the server can be sent to again.
 	pub async fn resume_destination(&self, server: &ServerName) {
+		let _serial = self.abort_serial.lock().await;
 		let _gate = self.abort_gate.clone().write_owned().await;
 		self.aborted.write().unwrap().remove(server);
 	}
@@ -683,6 +711,16 @@ impl Service {
 	/// Whether sending to `server` was stopped by `abort_destination`.
 	pub fn destination_aborted(&self, server: &ServerName) -> bool {
 		self.aborted.read().unwrap().contains(server)
+	}
+
+	/// The abort generation of `server`; changes whenever it is aborted.
+	pub(super) fn abort_epoch(&self, server: &ServerName) -> u64 {
+		self.abort_epochs
+			.read()
+			.unwrap()
+			.get(server)
+			.copied()
+			.unwrap_or(0)
 	}
 
 	pub(super) fn is_aborted(&self, dest: &Destination) -> bool {

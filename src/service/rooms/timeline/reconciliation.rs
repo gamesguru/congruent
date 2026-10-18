@@ -185,16 +185,15 @@ impl Service {
 			}
 
 			attempts = attempts.saturating_add(1);
-			let settled = self.forward_extremities_sorted(room_id).await == frame_event_ids
-				&& self.last_timeline_count(room_id).await.ok() == timeline_count;
-			if settled {
-				break Arc::new(builder.finish(frame_event_ids, timeline_count));
-			}
-			if attempts >= MAX_SCAN_ATTEMPTS {
-				return Err(err!(Request(Unknown(
-					"Room timeline kept changing during reconciliation snapshot; retry the \
-					 request."
-				))));
+			let after_frame = self.forward_extremities_sorted(room_id).await;
+			let after_count = self.last_timeline_count(room_id).await.ok();
+			let settled = after_frame == frame_event_ids && after_count == timeline_count;
+			if settled || attempts >= MAX_SCAN_ATTEMPTS {
+				// A room that keeps changing gets a best-effort snapshot: the
+				// position read after the final scan, which is at least as new
+				// as anything the scan could have seen. The short cache TTL
+				// bounds how long it is served.
+				break Arc::new(builder.finish(after_frame, after_count));
 			}
 		};
 		self.reconciliation_cache

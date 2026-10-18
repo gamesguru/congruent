@@ -72,7 +72,13 @@ impl Data {
 			.ignore_err()
 			.ready_for_each(|key| self.servernameevent_data.remove(key))
 			.await;
+	}
 
+	/// Drops the reliable (to-device) queue for a destination. Ordinary cleanup,
+	/// such as the retry limit, must keep these; only an explicit abort or an
+	/// administrator clear removes them.
+	pub(super) async fn delete_all_reliable_requests_for(&self, destination: &Destination) {
+		let prefix = destination.get_prefix();
 		self.federation_outbound_to_device
 			.raw_keys_prefix(&prefix)
 			.ignore_err()

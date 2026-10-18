@@ -107,6 +107,8 @@ pub(super) enum Verdict {
 	Failed,
 	/// The peer does not serve the reconciliation endpoints.
 	Unsupported,
+	/// The pair is no longer eligible; forget it without scheduling a retry.
+	Dropped,
 }
 
 /// Exponential backoff after `failures` consecutive failures.
@@ -348,6 +350,12 @@ impl Queue {
 				entry.identical_digests = 0;
 				entry.synchronized_until = None;
 			},
+			| Verdict::Dropped => {
+				entry.failures = 0;
+				entry.not_before = None;
+				entry.identical_digests = 0;
+				entry.synchronized_until = None;
+			},
 			| Verdict::Unsupported => {
 				entry.failures = entry.failures.saturating_add(1);
 				entry.not_before = now.checked_add(UNSUPPORTED_BACKOFF);
@@ -442,6 +450,21 @@ mod tests {
 		assert!(queue.requeue_due_retries(later));
 		assert_eq!(queue.next_ready(later, 4, 2, true), Some((k, Reason::Periodic)));
 		assert!(!queue.requeue_due_retries(later));
+	}
+
+	#[test]
+	fn a_dropped_pair_is_forgotten_not_retried() {
+		let now = Instant::now();
+		let mut queue = Queue::new(8);
+		let k = key("!a:example.org", "peer.example");
+		queue.enqueue(k.clone(), Reason::Periodic, now);
+		queue.next_ready(now, 4, 2, true);
+		queue.finish(&k, Verdict::Dropped, now);
+
+		let later = now + BACKOFF_MAX + Duration::from_secs(1);
+		assert!(!queue.requeue_due_retries(later));
+		assert_eq!(queue.next_ready(later, 4, 2, true), None);
+		assert_eq!(queue.enqueue(k, Reason::Periodic, later), Enqueued::Queued);
 	}
 
 	#[test]
