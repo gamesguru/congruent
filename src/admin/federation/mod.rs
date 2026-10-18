@@ -52,16 +52,20 @@ pub enum FederationCommand {
 		server: Option<OwnedServerName>,
 
 		/// Clear the queued events for the specified server
-		#[arg(long)]
+		#[arg(long, conflicts_with_all = ["abort", "resume"])]
 		clear: bool,
 
 		/// Required with --clear when no server is specified
-		#[arg(long)]
+		#[arg(long, conflicts_with_all = ["abort", "resume"])]
 		all: bool,
 
 		/// Stop sending to the specified server: clear its queue and drop its
 		/// retry state, scheduled flushes and any in-flight result
-		#[arg(long)]
+		#[arg(long, conflicts_with = "resume")]
 		abort: bool,
+
+		/// Lift an earlier --abort so the server can be sent to again
+		#[arg(long)]
+		resume: bool,
 	},
 }

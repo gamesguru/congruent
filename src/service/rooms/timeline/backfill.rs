@@ -920,6 +920,10 @@ pub async fn backfill_pdu(
 		.get_or_create_shortroomid(&room_id)
 		.await;
 
+	// Serialize historical inserts with reconciliation scans. Backfilled
+	// positions do not advance the live timeline watermark, so the ordinary
+	// before/after position check cannot detect them.
+	let _reconciliation_lock = self.mutex_reconciliation.lock(&room_id).await;
 	let insert_lock = self.mutex_insert.lock(&room_id).await;
 
 	// Re-check after acquiring insert lock to prevent TOCTOU races
@@ -958,6 +962,7 @@ pub async fn backfill_pdu(
 	self.db
 		.prepend_backfill_pdu(&pdu_id, &event_id, &json_value, &pdu_event)
 		.await;
+	self.reconciliation_cache.invalidate(&room_id);
 
 	info!(target: "backfill_debug", %event_id, count, "backfill_pdu: insert complete");
 

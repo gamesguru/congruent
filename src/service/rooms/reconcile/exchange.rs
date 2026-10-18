@@ -33,11 +33,7 @@ use slipstream::{
 	},
 };
 
-use super::{Key, Service};
-
-/// The feature a peer lists in its federation `/version` when it serves the
-/// digest profile this exchange speaks.
-const DIGEST_FEATURE: &str = "tk.nutra.msc4521.digest.algebraic_v1";
+use super::{DIGEST_FEATURE, Key, Service};
 /// Events fetched from one peer in one exchange.
 const MAX_FETCHES: usize = 100;
 /// Events fetched first, before the rest are trusted enough to fetch.
@@ -115,15 +111,49 @@ fn short_id(event_id: &EventId) -> Option<u64> {
 const HEADROOM: usize = 8;
 
 impl Service {
+	async fn admission_lapsed(&self, room_id: &RoomId, peer: &ServerName) -> Option<Outcome> {
+		let ours = self.services.globals.server_name();
+		let state_cache = &self.services.state_cache;
+		if !state_cache.server_in_room(ours, room_id).await
+			|| !state_cache.server_in_room(peer, room_id).await
+		{
+			return Some(Outcome::Abandoned("no longer in the room".to_owned()));
+		}
+		if self
+			.services
+			.event_handler
+			.acl_check(peer, room_id)
+			.await
+			.is_err()
+		{
+			return Some(Outcome::Abandoned("peer denied by room ACL".to_owned()));
+		}
+		None
+	}
+
 	pub(super) async fn exchange(&self, key: &Key) -> Outcome {
 		let (room_id, peer) = (key.room_id(), key.peer());
+
+		// Admission was checked when the pair was queued; the situation may
+		// have changed while it waited.
+		if let Some(outcome) = self.admission_lapsed(room_id, peer).await {
+			return outcome;
+		}
 
 		let local = match self.services.timeline.reconciliation_state(room_id).await {
 			| Ok(local) => local,
 			| Err(e) => return Outcome::Failed(format!("local snapshot: {e}")),
 		};
 
+		// Snapshot construction may be expensive; re-check admission before
+		// any peer request so a queued exchange cannot outlive membership/ACL.
+		if let Some(outcome) = self.admission_lapsed(room_id, peer).await {
+			return outcome;
+		}
 		if let Err(outcome) = self.peer_advertises(peer).await {
+			return outcome;
+		}
+		if let Some(outcome) = self.admission_lapsed(room_id, peer).await {
 			return outcome;
 		}
 
@@ -278,6 +308,9 @@ impl Service {
 			scope: None,
 			state_at: None,
 		};
+		if let Some(outcome) = self.admission_lapsed(room_id, peer).await {
+			return Err(outcome);
+		}
 		let response = self
 			.services
 			.sending
@@ -429,6 +462,9 @@ impl Service {
 		peer: &ServerName,
 		event_id: &EventId,
 	) -> Option<(u64, OwnedRoomId, OwnedEventId, CanonicalJsonObject)> {
+		if self.admission_lapsed(room_id, peer).await.is_some() {
+			return None;
+		}
 		let request = get_event::v1::Request {
 			event_id: event_id.to_owned(),
 			include_unredacted_content: Some(false),

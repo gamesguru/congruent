@@ -172,8 +172,10 @@ impl Queue {
 				entry.synchronized_until = None;
 			}
 			if entry.in_flight {
-				entry.dirty = true;
+				// A periodic tick is not activity: it must not reset the
+				// identical-digest backoff when the exchange finishes.
 				if reason != Reason::Periodic {
+					entry.dirty = true;
 					entry.reason = reason;
 				}
 				return Enqueued::Coalesced;
@@ -187,6 +189,7 @@ impl Queue {
 			// An explicit request overrides backoff; nothing else does.
 			if reason == Reason::Explicit {
 				entry.not_before = None;
+				entry.synchronized_until = None;
 			} else if entry.not_before.is_some_and(|t| t > now)
 				|| entry.synchronized_until.is_some_and(|t| t > now)
 			{
@@ -331,6 +334,12 @@ impl Queue {
 		if entry.dirty {
 			entry.dirty = false;
 			entry.queued = true;
+			// An explicit request overrides backoff, including one that
+			// arrived while the failing exchange ran.
+			if entry.reason == Reason::Explicit {
+				entry.not_before = None;
+				entry.synchronized_until = None;
+			}
 			self.ready.push_back(key.clone());
 			return true;
 		}

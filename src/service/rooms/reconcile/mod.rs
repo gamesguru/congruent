@@ -54,6 +54,7 @@ const MAX_EXCHANGES_PER_SECOND: u32 = 4;
 struct SweepCursor {
 	rooms: Vec<OwnedRoomId>,
 	next: usize,
+	catch_up: bool,
 }
 
 struct RateBudget {
@@ -79,6 +80,16 @@ impl RateBudget {
 		}
 	}
 }
+
+/// Keep configured debounce TTLs below Moka's 1000-year maximum.
+fn activity_window(secs: u64) -> Duration {
+	const MAX_SECS: u64 = 999 * 365 * 24 * 60 * 60;
+	Duration::from_secs(secs.min(MAX_SECS))
+}
+
+/// The feature a server lists in its federation `/version` when it serves the
+/// digest profile the exchange speaks; advertised and checked by the same key.
+pub const DIGEST_FEATURE: &str = "tk.nutra.msc4521.digest.algebraic_v1";
 
 pub struct Service {
 	services: Services,
@@ -153,7 +164,7 @@ impl crate::Service for Service {
 				.build(),
 			recent: moka::sync::Cache::builder()
 				.max_capacity(MAX_RECENT)
-				.time_to_live(Duration::from_secs(
+				.time_to_live(activity_window(
 					args.server
 						.config
 						.experimental_features
@@ -162,7 +173,7 @@ impl crate::Service for Service {
 				.build(),
 			recent_rooms: moka::sync::Cache::builder()
 				.max_capacity(MAX_RECENT)
-				.time_to_live(Duration::from_secs(
+				.time_to_live(activity_window(
 					args.server
 						.config
 						.experimental_features
@@ -280,11 +291,30 @@ impl Service {
 			.msc4521_reconcile_interval_secs;
 		let mut shutdown = self.services.server.signal.subscribe();
 		let mut activity = self.services.timeline.activity.subscribe();
-		let mut cursor = SweepCursor { rooms: Vec::new(), next: 0 };
+		let mut cursor = SweepCursor {
+			rooms: Vec::new(),
+			next: 0,
+			catch_up: false,
+		};
 		let mut sweep =
 			(interval != 0).then(|| async_io::Timer::interval(Duration::from_secs(interval)));
 
+		// Persists across wake-ups so repeated interruptions cannot postpone
+		// the flush of debounced activity.
+		let mut flush_at = Instant::now() + self.rate.lock().wait(Instant::now());
+
 		loop {
+			// Check the persistent deadline before polling other ready sources.
+			// The biased select below prioritizes activity and wakeups, so an
+			// expired timer alone could otherwise starve under a steady stream.
+			if Instant::now() >= flush_at {
+				self.flush_pending_activity().await;
+				let now = Instant::now();
+				flush_at = now + self.rate.lock().wait(now);
+			}
+			if cursor.catch_up {
+				self.sweep(&mut cursor).await;
+			}
 			self.start_ready();
 
 			let woken = self.wake.notified();
@@ -299,18 +329,36 @@ impl Service {
 				}
 			};
 			// Backed-off entries become ready by the clock alone.
-			let retry = smol::Timer::after(self.rate.lock().wait(Instant::now()));
+			let retry = smol::Timer::at(flush_at);
 			pin_mut!(woken, signal, local, tick, retry);
 			futures::select_biased! {
 				_ = signal.fuse() => {},
 				room = local.fuse() => {
-					if let Ok(room_id) = room {
-						self.activity(&room_id).await;
+					match room {
+						| Ok(room_id) => self.activity(&room_id).await,
+						// Notifications were dropped in a write burst; the
+						// rooms they named are unknown, so sweep instead.
+						| Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+							cursor.rooms = self
+								.services
+								.state_cache
+								.server_rooms(self.services.globals.server_name())
+								.collect()
+								.await;
+							cursor.next = 0;
+							cursor.catch_up = true;
+							self.sweep(&mut cursor).await;
+						},
+						| Err(_) => {},
 					}
 				},
 				() = tick.fuse() => self.sweep(&mut cursor).await,
 				() = woken.fuse() => {},
-				_ = FutureExt::fuse(retry) => self.flush_pending_activity().await,
+				_ = FutureExt::fuse(retry) => {
+					self.flush_pending_activity().await;
+					let now = Instant::now();
+					flush_at = now + self.rate.lock().wait(now);
+				},
 			}
 
 			if !self.services.server.running() {
@@ -461,6 +509,10 @@ impl Service {
 			return;
 		}
 		if cursor.next >= cursor.rooms.len() {
+			if cursor.catch_up {
+				cursor.catch_up = false;
+				return;
+			}
 			cursor.rooms = self
 				.services
 				.state_cache
@@ -480,6 +532,9 @@ impl Service {
 				}
 			}
 			cursor.next = cursor.next.saturating_add(1);
+		}
+		if cursor.catch_up && cursor.next >= cursor.rooms.len() {
+			cursor.catch_up = false;
 		}
 	}
 
@@ -505,7 +560,14 @@ impl Service {
 			let runtime = self.services.server.runtime().clone();
 			drop(runtime.spawn(async move {
 				let started = Instant::now();
-				let outcome = this.exchange(&key).await;
+				// A panic must still release the pair's in-flight slot.
+				let outcome = match std::panic::AssertUnwindSafe(this.exchange(&key))
+					.catch_unwind()
+					.await
+				{
+					| Ok(outcome) => outcome,
+					| Err(_) => Outcome::Failed("exchange panicked".to_owned()),
+				};
 				let elapsed = started.elapsed();
 				let elapsed_ms = elapsed.as_millis();
 				match &outcome {

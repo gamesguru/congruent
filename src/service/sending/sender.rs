@@ -358,6 +358,7 @@ impl Service {
 					dest,
 					event: SendingEvent::Flush,
 					queue_id: Vec::new(),
+					abort_ack: None,
 				})
 				.ok();
 		}));
@@ -447,8 +448,16 @@ impl Service {
 		futures: &mut SendingFutures<'a>,
 		statuses: &mut CurTransactionStatus,
 	) {
-		if self.is_aborted(&msg.dest) {
+		if let Some(ack) = msg.abort_ack {
 			statuses.remove(&msg.dest);
+			let _ = ack.send(());
+			return;
+		}
+		if self.is_aborted(&msg.dest) {
+			// The request was persisted before it reached us; drop it too, or a
+			// producer racing the abort leaves rows behind forever.
+			statuses.remove(&msg.dest);
+			self.db.delete_all_requests_for(&msg.dest).await;
 			return;
 		}
 
@@ -476,7 +485,11 @@ impl Service {
 		};
 
 		if let Ok(Some((events, edu_count))) = self.select_events(&msg.dest, iv, statuses).await {
-			if !events.is_empty() {
+			// An abort may have landed while the events were being selected.
+			if self.is_aborted(&msg.dest) {
+				statuses.remove(&msg.dest);
+				self.db.delete_all_requests_for(&msg.dest).await;
+			} else if !events.is_empty() {
 				futures.push(self.send_events(msg.dest, events, edu_count));
 			} else {
 				statuses.remove(&msg.dest);
@@ -603,6 +616,7 @@ impl Service {
 							dest,
 							event: SendingEvent::Flush,
 							queue_id: Vec::new(),
+							abort_ack: None,
 						})
 						.ok();
 				}
@@ -1125,6 +1139,11 @@ impl Service {
 			| Destination::Federation(server) => {
 				let count = events.len();
 				async move {
+					let _abort_guard = self.abort_gate.clone().read_owned().await;
+					let dest = Destination::Federation(server.clone());
+					if self.is_aborted(&dest) {
+						return Ok(dest);
+					}
 					let started = Instant::now();
 					let log_server = server.clone();
 					let result = self

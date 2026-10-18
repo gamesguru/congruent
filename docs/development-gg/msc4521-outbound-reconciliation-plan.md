@@ -2,12 +2,15 @@
 
 ## Current boundary
 
-Congruent serves `room_digest`, `room_digest/.../strata`, and `room_diff`.
-`handle_incoming_pdu` already fetches missing predecessors inline through
-`fetch_prev` and `/get_missing_events`. There is no outbound MSC4521 client,
-reconciliation queue, or worker. A missing predecessor is evidence of a DAG gap,
-but does not prove the complete event sets differ. Conversely, two rooms can
-have different event sets without an incoming PDU exposing the difference.
+Congruent serves `room_digest`, `room_digest/.../strata`, and `room_diff`, and
+runs the outbound side: a bounded `(room_id, peer)` queue, a worker, and an
+exchange that compares digests, runs strata and sketch rounds, and fetches the
+offered events through the existing event pipeline. Explicit, activity
+(local writes and inbound transactions carrying PDUs or room-scoped EDUs), and
+periodic-sweep triggers feed the queue; all are gated on `msc4521_enabled`.
+Peer `/version` advertisement is checked before reconciliation requests.
+Reconnect-driven triggers and extremity transfer (`ExtremityDiff`) remain
+planned. The sections below record the design and the remaining work.
 
 ## Triggers
 
@@ -53,20 +56,17 @@ event merely because a sketch decoded its short ID. After accepted events
 advance the timeline, take a new snapshot and compare again within the round
 budget.
 
-## Implementation order
+## Planned follow-up
 
-1. Add the bounded, coalescing queue and explicit trigger, with no outbound
-   fetches yet. Instrument trigger, enqueue, skip, and outcome reasons.
-2. Add digest comparison and capability/backoff handling. An equal-set check
-   should complete without sketch or event fetch work.
-3. Add strata and `room_diff` rounds, followed by bounded, validated event
-   fetches. Wire the incoming-PDU and reconnect triggers only after the worker
-   has limits and peer checks.
-4. Make Complement's adversarial tests explicitly trigger an exchange after
-   `claim()`. Keep a separate test for the passive triggers. This avoids waiting
-   for an unspecified polling interval in every adversarial case.
+1. Wire incoming-gap and reconnect triggers into the existing bounded queue.
+2. Add extremity transfer for `ExtremityDiff`, with the same admission checks
+   and per-round limits as sketch reconciliation.
+3. Keep Complement's adversarial tests explicit about the activity that starts
+   an exchange, while retaining coverage for passive triggers.
 
-No normal read receipt or device-list update should be used as a trigger: those
-EDUs describe user activity and device keys, respectively. A dedicated digest
-EDU could be an optional acceleration hint later, but it cannot be the only
-recovery path because it can be lost during an outage.
+Room-scoped typing and receipt EDUs currently act only as bounded activity
+hints; they do not carry reconciliation data. They may schedule the same
+out-of-band exchange as a PDU or local write, subject to the room-wide and
+per-peer activity intervals. A dedicated digest EDU could reduce that extra
+round trip later, but it cannot be the only recovery path because it can be
+lost during an outage.

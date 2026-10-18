@@ -38,8 +38,8 @@ pub struct RoomReconciliationState {
 	pub frame_event_ids: Vec<OwnedEventId>,
 	pub depth_range: [u64; 2],
 	pub origin_server_ts_range: [u64; 2],
-	/// The room's last timeline position when the scan started. A cached
-	/// snapshot is only served while this is still the room's position.
+	/// The room's last timeline position when the scan started. A scan
+	/// that saw the position move is repeated before it is cached.
 	pub timeline_count: Option<PduCount>,
 }
 
@@ -136,9 +136,13 @@ impl Builder {
 	}
 }
 
+/// Rescans allowed when the room moves while a snapshot is being built.
+const MAX_SCAN_ATTEMPTS: u8 = 3;
+
 impl Service {
 	/// Returns the room's reconciliation snapshot, rebuilding it when the
-	/// cached one has expired or the room has moved on since it was built.
+	/// cached one has expired. Events that arrive meanwhile (including
+	/// backfilled ones) appear once the cache time-to-live has passed.
 	///
 	/// # Errors
 	/// Fails with `M_UNSUPPORTED_ROOM_VERSION` for room versions 1 and 2,
@@ -147,21 +151,13 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 	) -> Result<Arc<RoomReconciliationState>> {
-		let current = self.last_timeline_count(room_id).await.ok();
-		if let Some(state) = self.reconciliation_cache.get(room_id)
-			&& state.timeline_count == current
-		{
+		if let Some(state) = self.reconciliation_cache.get(room_id) {
 			return Ok(state);
 		}
 
 		// Singleflight the (expensive) scan per room.
 		let _guard = self.mutex_reconciliation.lock(room_id).await;
-		// Read the position before scanning: an event appended during the scan
-		// then leaves the snapshot looking stale, so the next request rebuilds.
-		let timeline_count = self.last_timeline_count(room_id).await.ok();
-		if let Some(state) = self.reconciliation_cache.get(room_id)
-			&& state.timeline_count == timeline_count
-		{
+		if let Some(state) = self.reconciliation_cache.get(room_id) {
 			return Ok(state);
 		}
 
@@ -172,28 +168,50 @@ impl Service {
 				err!(Request(UnsupportedRoomVersion("Room version has sender-chosen event IDs.")))
 			})?;
 
-		let mut frame_event_ids: Vec<OwnedEventId> = self
+		// The scan is not atomic with the extremities: if they moved while it
+		// ran, the digest and the frame describe different points, so scan again.
+		let mut attempts = 0_u8;
+		let state = loop {
+			let timeline_count = self.last_timeline_count(room_id).await.ok();
+			let frame_event_ids = self.forward_extremities_sorted(room_id).await;
+
+			let mut builder = Builder::default();
+			{
+				let pdus = self.all_pdus(room_id);
+				futures::pin_mut!(pdus);
+				while let Some((_, pdu)) = pdus.next().await {
+					builder.push(&pdu, &room_version);
+				}
+			}
+
+			attempts = attempts.saturating_add(1);
+			let settled = self.forward_extremities_sorted(room_id).await == frame_event_ids
+				&& self.last_timeline_count(room_id).await.ok() == timeline_count;
+			if settled {
+				break Arc::new(builder.finish(frame_event_ids, timeline_count));
+			}
+			if attempts >= MAX_SCAN_ATTEMPTS {
+				return Err(err!(Request(Unknown(
+					"Room timeline kept changing during reconciliation snapshot; retry the \
+					 request."
+				))));
+			}
+		};
+		self.reconciliation_cache
+			.insert(room_id.to_owned(), Arc::clone(&state));
+		Ok(state)
+	}
+
+	async fn forward_extremities_sorted(&self, room_id: &RoomId) -> Vec<OwnedEventId> {
+		let mut ids: Vec<OwnedEventId> = self
 			.services
 			.state
 			.get_forward_extremities(room_id)
 			.collect()
 			.await;
-		frame_event_ids.sort();
-		frame_event_ids.dedup();
-
-		let mut builder = Builder::default();
-		{
-			let pdus = self.all_pdus(room_id);
-			futures::pin_mut!(pdus);
-			while let Some((_, pdu)) = pdus.next().await {
-				builder.push(&pdu, &room_version);
-			}
-		}
-
-		let state = Arc::new(builder.finish(frame_event_ids, timeline_count));
-		self.reconciliation_cache
-			.insert(room_id.to_owned(), Arc::clone(&state));
-		Ok(state)
+		ids.sort();
+		ids.dedup();
+		ids
 	}
 }
 

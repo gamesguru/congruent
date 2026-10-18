@@ -20,7 +20,7 @@ pub(crate) async fn get_server_version_route(
 		.then(|| {
 			BTreeMap::from([
 				("tk.nutra.msc0501.reconciliation".to_owned(), true),
-				("tk.nutra.msc4521.digest.algebraic_v1".to_owned(), true),
+				(conduwuit_service::rooms::reconcile::DIGEST_FEATURE.to_owned(), true),
 			])
 		});
 

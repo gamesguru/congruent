@@ -841,7 +841,18 @@ async fn lacks_sender_membership(
 ) -> bool {
 	let exempt = *pdu.kind() == slipstream::events::TimelineEventType::RoomCreate
 		|| (*pdu.kind() == slipstream::events::TimelineEventType::RoomMember
-			&& pdu.state_key() == Some(pdu.sender().as_str()));
+			&& pdu.state_key() == Some(pdu.sender().as_str())
+			// Only joins and knocks legitimately have no prior member; a
+			// leave must find the membership it ends.
+			&& pdu
+				.get_content::<slipstream::events::room::member::RoomMemberEventContent>()
+				.is_ok_and(|c| {
+					matches!(
+						c.membership,
+						slipstream::events::room::member::MembershipState::Join
+							| slipstream::events::room::member::MembershipState::Knock
+					)
+				}));
 
 	let partial = self
 		.services

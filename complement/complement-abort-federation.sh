@@ -21,6 +21,7 @@ server_name=${2:?server name}
 # inherit, so derive them from SERVER_NAME exactly as the entrypoint does.
 timeout 30 docker exec "$container_id" sh -c '
 	export CONTINUWUITY_SERVER_NAME="$SERVER_NAME"
+	export LD_LIBRARY_PATH="/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 	export CONDUWUIT_DATABASE_PATH="${CONDUWUIT_DATABASE_PATH:-/var/lib/continuwuity/$SERVER_NAME}"
 	exec /usr/local/bin/conduwuit --config /etc/continuwuity/config.toml \
 		--attach --execute "$1"

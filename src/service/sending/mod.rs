@@ -46,6 +46,8 @@ pub struct Service {
 	/// Workers drop everything addressed to them, including retries, scheduled
 	/// flushes and the result of a transaction that was already in flight.
 	pub(super) aborted: std::sync::RwLock<std::collections::HashSet<OwnedServerName>>,
+	/// Serializes federation queue insertion and request startup against abort.
+	abort_gate: Arc<tokio::sync::RwLock<()>>,
 	/// Monotonic counter for outgoing federation transaction IDs, seeded from
 	/// the current unix-ms timestamp at startup and incremented per
 	/// transaction sent (same scheme Synapse's `TransactionManager` uses).
@@ -72,11 +74,11 @@ struct Services {
 	federation: Dep<federation::Service>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 struct Msg {
 	dest: Destination,
 	event: SendingEvent,
 	queue_id: Vec<u8>,
+	abort_ack: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -102,6 +104,7 @@ impl crate::Service for Service {
 			stats: stats::FederationStats::default(),
 			dead_servers: std::sync::RwLock::new(std::collections::HashSet::new()),
 			aborted: std::sync::RwLock::new(std::collections::HashSet::new()),
+			abort_gate: Arc::new(tokio::sync::RwLock::new(())),
 			next_txn_id: std::sync::atomic::AtomicU64::new(
 				slipstream::MilliSecondsSinceUnixEpoch::now().get(),
 			),
@@ -214,6 +217,7 @@ impl Service {
 			dest,
 			event,
 			queue_id: keys.into_iter().next().expect("request queue key"),
+			abort_ack: None,
 		})
 	}
 
@@ -226,6 +230,7 @@ impl Service {
 			dest,
 			event,
 			queue_id: keys.into_iter().next().expect("request queue key"),
+			abort_ack: None,
 		})
 	}
 
@@ -282,23 +287,31 @@ impl Service {
 			.collect::<Vec<_>>()
 			.await;
 
+		let _abort_guard = self.abort_gate.clone().read_owned().await;
+		let requests: Vec<_> = requests
+			.into_iter()
+			.filter(|(dest, _)| !self.is_aborted(dest))
+			.collect();
 		let num_servers = requests.len();
 		let _cork = self.db.db.cork();
 		let keys = self.db.queue_requests(requests.iter().map(|(o, e)| (e, o)));
 
 		for ((dest, event), queue_id) in requests.into_iter().zip(keys) {
-			self.dispatch(Msg { dest, event, queue_id })?;
+			self.dispatch(Msg { dest, event, queue_id, abort_ack: None })?;
 		}
 
 		Ok(num_servers)
 	}
 
 	pub fn send_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
-		if self.server_is_dead(server) {
+		let Ok(_abort_guard) = self.abort_gate.try_read() else {
+			return Ok(());
+		};
+		let dest = Destination::Federation(server.to_owned());
+		if self.server_is_dead(server) || self.is_aborted(&dest) {
 			return Ok(());
 		}
 
-		let dest = Destination::Federation(server.to_owned());
 		let event = SendingEvent::Edu(serialized);
 		let _cork = self.db.db.cork();
 		let keys = self.db.queue_requests(once((&event, &dest)));
@@ -306,11 +319,18 @@ impl Service {
 			dest,
 			event,
 			queue_id: keys.into_iter().next().expect("request queue key"),
+			abort_ack: None,
 		})
 	}
 
 	pub fn send_reliable_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
 		let dest = Destination::Federation(server.to_owned());
+		let Ok(_abort_guard) = self.abort_gate.try_read() else {
+			return Ok(());
+		};
+		if self.is_aborted(&dest) {
+			return Ok(());
+		}
 		let event = SendingEvent::Edu(serialized);
 		let _cork = self.db.db.cork();
 		let keys = self.db.queue_reliable_requests(once((&event, &dest)));
@@ -318,6 +338,7 @@ impl Service {
 			dest,
 			event,
 			queue_id: keys.into_iter().next().expect("request queue key"),
+			abort_ack: None,
 		})
 	}
 
@@ -351,6 +372,11 @@ impl Service {
 			})
 			.collect::<Vec<_>>()
 			.await;
+		let _abort_guard = self.abort_gate.clone().read_owned().await;
+		let requests: Vec<_> = requests
+			.into_iter()
+			.filter(|(dest, _)| !self.is_aborted(dest))
+			.collect();
 
 		let num_servers = requests.len();
 		info!(
@@ -362,7 +388,7 @@ impl Service {
 		let keys = self.db.queue_requests(requests.iter().map(|(o, e)| (e, o)));
 
 		for ((dest, event), queue_id) in requests.into_iter().zip(keys) {
-			self.dispatch(Msg { dest, event, queue_id })?;
+			self.dispatch(Msg { dest, event, queue_id, abort_ack: None })?;
 		}
 
 		Ok(())
@@ -457,6 +483,7 @@ impl Service {
 					dest,
 					event: SendingEvent::Flush,
 					queue_id: Vec::<u8>::new(),
+					abort_ack: None,
 				})
 			})
 			.await
@@ -625,8 +652,32 @@ impl Service {
 	/// Stop sending to a federation server: clear its stored requests and make
 	/// the workers drop its retry state, pending flushes and in-flight result.
 	pub async fn abort_destination(&self, server: &ServerName) {
+		let gate = self.abort_gate.clone().write_owned().await;
 		self.aborted.write().unwrap().insert(server.to_owned());
+		drop(gate);
+
+		let dest = Destination::Federation(server.to_owned());
+		let (ack, acknowledged) = tokio::sync::oneshot::channel();
+		if let Some((sender, _)) = self.channels.get(self.shard_id(&dest)) {
+			if sender
+				.send(Msg {
+					dest,
+					event: SendingEvent::Flush,
+					queue_id: Vec::new(),
+					abort_ack: Some(ack),
+				})
+				.is_ok()
+			{
+				let _ = acknowledged.await;
+			}
+		}
 		self.clear_destination_queue(server).await;
+	}
+
+	/// Lifts an earlier abort so the server can be sent to again.
+	pub async fn resume_destination(&self, server: &ServerName) {
+		let _gate = self.abort_gate.clone().write_owned().await;
+		self.aborted.write().unwrap().remove(server);
 	}
 
 	pub(super) fn is_aborted(&self, dest: &Destination) -> bool {
@@ -662,6 +713,18 @@ impl Service {
 			.await;
 		for key in &keys {
 			self.db.servercurrentevent_data.remove(key);
+		}
+
+		let keys: Vec<Vec<u8>> = self
+			.db
+			.federation_outbound_to_device
+			.raw_keys()
+			.boxed()
+			.filter_map(|r| async { r.ok().map(<[u8]>::to_vec) })
+			.collect()
+			.await;
+		for key in &keys {
+			self.db.federation_outbound_to_device.remove(key);
 		}
 	}
 

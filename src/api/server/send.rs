@@ -200,28 +200,26 @@ async fn process_inbound_transaction(
 	let origin = body.origin().to_owned();
 	let pdu_count = body.pdus.len();
 	let edu_count = body.edus.len();
-	let pdu_ids: Vec<_> = body
-		.pdus
-		.iter()
-		.filter_map(|pdu| codec::from_str::<Value>(pdu.get()).ok())
-		.filter_map(|pdu| {
-			pdu.get("event_id")
-				.and_then(|e| e.as_str())
-				.map(ToOwned::to_owned)
-		})
-		.collect();
 	// Every room this transaction touches, for activity-triggered
 	// reconciliation once it has been processed.
-	let mut active_rooms: std::collections::BTreeSet<OwnedRoomId> = body
+	let mut pdu_ids: Vec<String> = Vec::new();
+	let mut active_rooms: std::collections::BTreeSet<OwnedRoomId> = Default::default();
+	for pdu in body
 		.pdus
 		.iter()
 		.filter_map(|pdu| codec::from_str::<Value>(pdu.get()).ok())
-		.filter_map(|pdu| {
-			pdu.get("room_id")
-				.and_then(|r| r.as_str())
-				.and_then(|r| OwnedRoomId::parse(r).ok())
-		})
-		.collect();
+	{
+		if let Some(event_id) = pdu.get("event_id").and_then(|e| e.as_str()) {
+			pdu_ids.push(event_id.to_owned());
+		}
+		if let Some(room_id) = pdu
+			.get("room_id")
+			.and_then(|r| r.as_str())
+			.and_then(|r| OwnedRoomId::parse(r).ok())
+		{
+			active_rooms.insert(room_id);
+		}
+	}
 	let pdus = body
 		.body
 		.pdus
@@ -293,19 +291,29 @@ async fn process_inbound_transaction(
 		},
 	};
 
-	for room_id in &active_rooms {
-		if services
-			.rooms
-			.state_cache
-			.server_in_room(&origin, room_id)
-			.await
-		{
-			services
-				.rooms
-				.reconcile
-				.activity_from(room_id, &origin)
-				.await;
-		}
+	// Incoming room activity, including room-scoped EDUs, is a reconciliation
+	// hint. Scheduling runs off the transaction response path.
+	if !active_rooms.is_empty() && services.server.config.experimental_features.msc4521_enabled {
+		let owned = state.services();
+		let runtime = owned.server.runtime().clone();
+		let origin = origin.clone();
+		let services = owned;
+		drop(runtime.spawn(async move {
+			for room_id in &active_rooms {
+				if services
+					.rooms
+					.state_cache
+					.server_in_room(&origin, room_id)
+					.await
+				{
+					services
+						.rooms
+						.reconcile
+						.activity_from(room_id, &origin)
+						.await;
+				}
+			}
+		}));
 	}
 
 	for (id, result) in &results {

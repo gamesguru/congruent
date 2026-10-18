@@ -2769,7 +2769,8 @@ pub struct ExperimentalConfig {
 
 	/// MSC4521: least time, in seconds, between room-wide activity selections
 	/// and between requests to each selected peer. Activity is a local
-	/// write or an inbound transaction carrying a PDU or room-scoped EDU.
+	/// write or an inbound transaction carrying a PDU or room-scoped EDU. Values
+	/// above the cache TTL limit (999 years) are capped to that limit.
 	/// 0 disables activity triggers. Only used when `msc4521_enabled` is set.
 	///
 	/// default: 60

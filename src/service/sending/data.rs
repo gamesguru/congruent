@@ -72,6 +72,12 @@ impl Data {
 			.ignore_err()
 			.ready_for_each(|key| self.servernameevent_data.remove(key))
 			.await;
+
+		self.federation_outbound_to_device
+			.raw_keys_prefix(&prefix)
+			.ignore_err()
+			.ready_for_each(|key| self.federation_outbound_to_device.remove(key))
+			.await;
 	}
 
 	pub(super) fn mark_as_active<'a, I>(&self, events: I)

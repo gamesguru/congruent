@@ -150,6 +150,8 @@ use crate::{
 const ADVERTISED_FRAME_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 /// Upper bound on remembered `(room, frame)` pairs.
 const ADVERTISED_FRAMES_MAX: u64 = 4096;
+/// Total events across cached reconciliation snapshots.
+const RECONCILIATION_CACHE_EVENTS: u64 = 4_000_000;
 
 pub struct Service {
 	services: Services,
@@ -292,8 +294,13 @@ impl crate::Service for Service {
 			mutex_fetch: MutexMap::new(),
 			mutex_backfill: RoomMutexMap::new(),
 			mutex_reconciliation: RoomMutexMap::new(),
+			// Weighed by event count, so the capacity is an event budget rather
+			// than a snapshot count: large rooms cannot pile up unbounded.
 			reconciliation_cache: moka::sync::Cache::builder()
-				.max_capacity(256)
+				.weigher(|_, state: &Arc<RoomReconciliationState>| {
+					u32::try_from(state.known_event_count().max(1)).unwrap_or(u32::MAX)
+				})
+				.max_capacity(RECONCILIATION_CACHE_EVENTS)
 				.time_to_live(std::time::Duration::from_secs(10))
 				.build(),
 			activity: tokio::sync::broadcast::channel(256).0,

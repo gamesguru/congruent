@@ -161,8 +161,19 @@ pub(super) async fn sending_queue(
 	clear: bool,
 	all: bool,
 	abort: bool,
+	resume: bool,
 ) -> Result {
 	self.bail_restricted()?;
+
+	if resume {
+		let Some(server) = server else {
+			return Err!(Request(InvalidParam("--resume requires a server.")));
+		};
+		self.services.sending.resume_destination(&server).await;
+		return self
+			.write_str(&format!("Resumed sending to {server}"))
+			.await;
+	}
 
 	if abort {
 		let Some(server) = server else {

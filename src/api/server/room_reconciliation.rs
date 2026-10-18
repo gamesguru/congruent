@@ -353,7 +353,7 @@ fn room_diff_response(
 	sketch_status: &str,
 	outcome: Option<DiffOutcome>,
 ) -> post_room_diff::unstable::Response {
-	let truncated = outcome.is_none();
+	let truncated = outcome.is_none() && sketch_status != "not_applicable";
 	let (missing_event_ids, requester_only_short_ids, expected) = match outcome {
 		| Some(outcome) => (
 			outcome.missing_event_ids,
@@ -385,9 +385,11 @@ pub(crate) async fn post_room_reconciliation_diff_route(
 	State(services): State<crate::State>,
 	body: Ruma<post_room_diff::unstable::Request>,
 ) -> Result<post_room_diff::unstable::Response> {
-	let state = room_snapshot(&services, body.origin(), &body.room_id).await?;
+	// Reject malformed requests before paying for the room scan.
+	let validated = validate_room_diff_request(&body)?;
 	let room_id = body.room_id.clone();
-	let body = validate_room_diff_request(&body)?;
+	let state = room_snapshot(&services, body.origin(), &room_id).await?;
+	let body = validated;
 
 	// A frame we advertised recently is accepted even if it has since moved on:
 	// the sketch covers our current set, so anything newer is one more
