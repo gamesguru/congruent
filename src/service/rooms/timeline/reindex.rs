@@ -143,14 +143,15 @@ impl Service {
 				&raw_bytes,
 				&room_version,
 			) {
-				| Ok(expected_id) =>
+				| Ok(expected_id) => {
 					if expected_id != *event_id {
 						warn!(
 							"HASH_MISMATCH: room={room_id}, event={event_id}, \
 							 expected={expected_id}. Stored JSON does not match event ID hash."
 						);
 						stats.hash_mismatches = stats.hash_mismatches.saturating_add(1);
-					},
+					}
+				},
 				| Err(e) => {
 					warn!(
 						"HASH_ERROR: room={room_id}, event={event_id}, error={e:?}. Could not \

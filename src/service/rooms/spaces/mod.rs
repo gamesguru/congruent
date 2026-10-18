@@ -66,8 +66,9 @@ pub enum SummaryAccessibility {
 impl SummaryAccessibility {
 	fn for_suggested_only(self, suggested_only: bool) -> Self {
 		match self {
-			| Self::Accessible(summary) =>
-				Self::Accessible(filter_summary_children_state(summary, suggested_only)),
+			| Self::Accessible(summary) => {
+				Self::Accessible(filter_summary_children_state(summary, suggested_only))
+			},
 			| Self::Inaccessible => Self::Inaccessible,
 		}
 	}
@@ -121,7 +122,9 @@ impl crate::Service for Service {
 		self.negative_cache_ts.lock().await.clear();
 	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+	fn name(&self) -> &str {
+		crate::service::make_name(std::module_path!())
+	}
 }
 
 /// Gets the summary of a space using solely local information
@@ -582,7 +585,7 @@ where
 		.stream()
 		.any(async |room| match identifier {
 			| Identifier::UserId(user) => self.services.state_cache.is_joined(user, room).await,
-			| Identifier::ServerName(server) =>
+			| Identifier::ServerName(server) => {
 				self.services.state_cache.server_in_room(server, room).await
 					// A partial-state room lacks its member list; the server we
 					// joined through is certainly in it.
@@ -591,7 +594,8 @@ where
 						.state_partial
 						.is_partial_from_server(room, server)
 						.await
-						.unwrap_or(false),
+						.unwrap_or(false)
+			},
 		})
 		.await;
 

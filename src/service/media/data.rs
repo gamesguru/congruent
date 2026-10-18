@@ -52,7 +52,9 @@ impl Data {
 		Ok(key.to_vec())
 	}
 
-	pub(super) fn delete_file_metadata_key(&self, key: &[u8]) { self.mediaid_file.remove(key); }
+	pub(super) fn delete_file_metadata_key(&self, key: &[u8]) {
+		self.mediaid_file.remove(key);
+	}
 
 	pub(super) async fn delete_file_mxc(&self, mxc: &Mxc<'_>) {
 		debug!("MXC URI: {mxc}");
@@ -174,7 +176,9 @@ impl Data {
 		Ok(())
 	}
 
-	pub(super) async fn clear_url_previews(&self) { self.url_previews.clear().await; }
+	pub(super) async fn clear_url_previews(&self) {
+		self.url_previews.clear().await;
+	}
 
 	pub(super) fn set_url_preview(
 		&self,

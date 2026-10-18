@@ -133,7 +133,9 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+	fn name(&self) -> &str {
+		crate::service::make_name(std::module_path!())
+	}
 }
 
 #[implement(Service)]
@@ -180,7 +182,9 @@ pub fn get_appservice_in_room_cache_usage(&self) -> (usize, usize) {
 }
 
 #[implement(Service)]
-pub fn clear_appservice_in_room_cache(&self) { self.appservice_in_room_cache.write().clear(); }
+pub fn clear_appservice_in_room_cache(&self) {
+	self.appservice_in_room_cache.write().clear();
+}
 
 /// Returns an iterator of all servers participating in this room.
 #[implement(Service)]
@@ -203,7 +207,9 @@ pub async fn server_in_room<'a>(&'a self, server: &'a ServerName, room_id: &'a R
 }
 
 #[implement(Service)]
-pub fn is_joining(&self, room_id: &RoomId) -> bool { self.rooms_joining.read().contains(room_id) }
+pub fn is_joining(&self, room_id: &RoomId) -> bool {
+	self.rooms_joining.read().contains(room_id)
+}
 
 /// Returns true if the server is participating in the room (joined, invited, or
 /// knocked).

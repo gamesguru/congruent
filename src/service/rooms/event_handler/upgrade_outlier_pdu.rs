@@ -423,9 +423,10 @@ where
 				.await?
 			{
 				| Some(root) => (root, Vec::new()),
-				| None =>
+				| None => {
 					self.state_map_to_root_handle(room_id, &state_at_incoming_event)
-						.await?,
+						.await?
+				},
 			};
 			let prev_root = Some(prev_root);
 
@@ -473,9 +474,10 @@ where
 				.await?
 			{
 				| Some(root) => (root, Vec::new()),
-				| None =>
+				| None => {
 					self.state_map_to_root_handle(room_id, &state_at_incoming_event)
-						.await?,
+						.await?
+				},
 			};
 
 			(None, Some(root), root_nodes)

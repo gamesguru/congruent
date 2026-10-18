@@ -177,7 +177,9 @@ impl Data {
 	}
 
 	/// Delete a registration token.
-	pub(super) fn revoke_token(&self, token: &str) { self.registrationtoken_info.remove(token); }
+	pub(super) fn revoke_token(&self, token: &str) {
+		self.registrationtoken_info.remove(token);
+	}
 
 	/// Look up a registration token's metadata.
 	pub(super) async fn lookup_token_info(&self, token: &str) -> Option<DatabaseTokenInfo> {

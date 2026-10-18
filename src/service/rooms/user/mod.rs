@@ -50,7 +50,9 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+	fn name(&self) -> &str {
+		crate::service::make_name(std::module_path!())
+	}
 }
 
 type ThreadCounts = BTreeMap<OwnedEventId, (u64, u64)>;
@@ -224,8 +226,9 @@ pub async fn reset_notification_counts_for_thread(
 ) {
 	match thread {
 		| ReceiptThread::Main => self.reset_main_notification_counts(user_id, room_id),
-		| ReceiptThread::Thread(root) =>
-			self.reset_thread_notification_counts(user_id, room_id, root),
+		| ReceiptThread::Thread(root) => {
+			self.reset_thread_notification_counts(user_id, room_id, root)
+		},
 		| _ => {
 			self.reset_notification_counts(user_id, room_id);
 			self.clear_all_thread_notification_counts(user_id, room_id)

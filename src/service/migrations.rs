@@ -873,9 +873,10 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 					.get_blocking(event_id_bytes)
 					.is_not_found()
 			{
-				db["eventid_rejections"].insert(event_id_bytes, [
-					crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8(),
-				]);
+				db["eventid_rejections"].insert(
+					event_id_bytes,
+					[crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8()],
+				);
 			}
 
 			// roomid_topologicalorder_pducount
@@ -931,9 +932,10 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 						.get_blocking(event_id_bytes)
 						.is_not_found()
 				{
-					db["eventid_rejections"].insert(event_id_bytes, [
-						crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8(),
-					]);
+					db["eventid_rejections"].insert(
+						event_id_bytes,
+						[crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8()],
+					);
 				}
 			}
 
@@ -1884,10 +1886,11 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 					continue;
 				}
 
-				db["eventid_status"].batch_put(&mut batch, &event_id_bytes, [
-					1_u8,
-					crate::rooms::pdu_metadata::SoftFailCode::Unknown.to_u8(),
-				]);
+				db["eventid_status"].batch_put(
+					&mut batch,
+					&event_id_bytes,
+					[1_u8, crate::rooms::pdu_metadata::SoftFailCode::Unknown.to_u8()],
+				);
 				batch_count = batch_count.saturating_add(1);
 
 				if batch_count >= 1000 {

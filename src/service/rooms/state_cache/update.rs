@@ -690,7 +690,7 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 		} else {
 			false
 		} || match (leave_origin_server_ts, self.invite_state(user_id, room_id).await) {
-			| (Some(leave_origin_server_ts), Ok(pending_invite_state)) =>
+			| (Some(leave_origin_server_ts), Ok(pending_invite_state)) => {
 				pending_invite_state.into_iter().any(|event| {
 					event
 						.get_field::<String>("type")
@@ -714,7 +714,8 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 							.is_some_and(|invite_origin_server_ts| {
 								invite_origin_server_ts > leave_origin_server_ts
 							})
-				}),
+				})
+			},
 			| (_, Err(_)) | (None, _) => false,
 		};
 

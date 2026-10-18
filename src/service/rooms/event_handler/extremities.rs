@@ -75,7 +75,9 @@ mod tests {
 	use super::*;
 
 	/// Nothing is referenced in the DB by default in tests.
-	fn never_referenced(_event_id: &EventId) -> std::future::Ready<bool> { ready(false) }
+	fn never_referenced(_event_id: &EventId) -> std::future::Ready<bool> {
+		ready(false)
+	}
 
 	// ---------------------------------------------------------------
 	// Test 1: Single linear chain — extremity collapses to 1

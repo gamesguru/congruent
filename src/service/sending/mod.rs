@@ -204,7 +204,9 @@ impl crate::Service for Service {
 		}
 	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+	fn name(&self) -> &str {
+		crate::service::make_name(std::module_path!())
+	}
 }
 
 impl Service {
@@ -552,10 +554,12 @@ impl Service {
 		push_key: Option<&str>,
 	) -> Result {
 		let destination = match (appservice_id, user_id, push_key) {
-			| (None, Some(user_id), Some(push_key)) =>
-				Destination::Push(user_id.to_owned(), push_key.to_owned()),
-			| (Some(appservice_id), None, None) =>
-				Destination::Appservice(appservice_id.to_owned()),
+			| (None, Some(user_id), Some(push_key)) => {
+				Destination::Push(user_id.to_owned(), push_key.to_owned())
+			},
+			| (Some(appservice_id), None, None) => {
+				Destination::Appservice(appservice_id.to_owned())
+			},
 			| _ => {
 				debug_warn!("cleanup_events called with too many or too few arguments");
 				return Ok(());

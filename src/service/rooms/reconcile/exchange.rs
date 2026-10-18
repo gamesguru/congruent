@@ -72,8 +72,9 @@ impl Outcome {
 		match self {
 			| Self::Synchronized => "synchronized".to_owned(),
 			| Self::Differs(action) => format!("differs ({action}, not run)"),
-			| Self::Reconciled { offered, applied, unusable } =>
-				format!("reconciled: {offered} offered, {applied} applied, {unusable} unusable"),
+			| Self::Reconciled { offered, applied, unusable } => {
+				format!("reconciled: {offered} offered, {applied} applied, {unusable} unusable")
+			},
 			| Self::Abandoned(why) => format!("abandoned: {why}"),
 			| Self::Unsupported => "unsupported".to_owned(),
 			| Self::Failed(why) => format!("failed: {why}"),
@@ -203,8 +204,9 @@ impl Service {
 
 		for _ in 0..MAX_RECONCILIATION_ROUNDS {
 			match action {
-				| ClientAction::Synchronized if offered.is_empty() =>
-					return Outcome::Synchronized,
+				| ClientAction::Synchronized if offered.is_empty() => {
+					return Outcome::Synchronized;
+				},
 				| ClientAction::Synchronized | ClientAction::ResolveRoots { .. } => {
 					return self.fetch_offered(room_id, peer, offered).await;
 				},

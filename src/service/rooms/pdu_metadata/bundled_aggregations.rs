@@ -148,8 +148,9 @@ impl super::Service {
 					// Compare by origin_server_ts first, then event_id lexicographically
 					match pdu.origin_server_ts().cmp(&current.origin_server_ts()) {
 						| std::cmp::Ordering::Greater => Some(pdu),
-						| std::cmp::Ordering::Equal if pdu.event_id() > current.event_id() =>
-							Some(pdu),
+						| std::cmp::Ordering::Equal if pdu.event_id() > current.event_id() => {
+							Some(pdu)
+						},
 						| _ => None,
 					}
 				},

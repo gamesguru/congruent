@@ -160,7 +160,9 @@ where
 mod tests {
 	use super::*;
 
-	fn prefix(byte: u8) -> NodePrefix { [byte; 16] }
+	fn prefix(byte: u8) -> NodePrefix {
+		[byte; 16]
+	}
 
 	#[test]
 	fn samples_are_capped_and_hex_encoded() {

@@ -408,8 +408,9 @@ where
 				.multi_get_eventid_from_short(shorteventids),
 		)
 		.ready_filter_map(move |(key, event_id)| match (key, event_id) {
-			| (Ok((event_type_, state_key)), Ok(event_id)) if event_type_.eq(event_type) =>
-				Some((state_key, event_id)),
+			| (Ok((event_type_, state_key)), Ok(event_id)) if event_type_.eq(event_type) => {
+				Some((state_key, event_id))
+			},
 			| _ => None,
 		})
 }

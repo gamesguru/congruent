@@ -262,13 +262,14 @@ async fn acquire_notary_result(&self, missing: &mut Batch, server_keys: Raw<Serv
 		.add_signing_keys(&server_keys, super::FetchSource::Notary)
 		.await
 	{
-		| Ok(server_keys) =>
+		| Ok(server_keys) => {
 			if let Some(key_ids) = missing.get_mut(&server) {
 				key_ids.retain(|key_id| !key_exists(&server_keys, key_id));
 				if key_ids.is_empty() {
 					missing.remove(&server);
 				}
-			},
+			}
+		},
 		| Err(e) => {
 			debug_error!("Failed to add signing keys: {e}");
 		},

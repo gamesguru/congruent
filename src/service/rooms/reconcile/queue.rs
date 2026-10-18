@@ -62,9 +62,13 @@ impl Key {
 		}
 	}
 
-	pub(super) fn room_id(&self) -> &RoomId { &self.room_id }
+	pub(super) fn room_id(&self) -> &RoomId {
+		&self.room_id
+	}
 
-	pub(super) fn peer(&self) -> &ServerName { &self.peer }
+	pub(super) fn peer(&self) -> &ServerName {
+		&self.peer
+	}
 }
 
 #[derive(Default)]

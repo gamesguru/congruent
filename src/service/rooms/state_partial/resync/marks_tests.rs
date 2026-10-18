@@ -30,7 +30,9 @@ struct TempDbGuard {
 }
 
 impl Drop for TempDbGuard {
-	fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.path); }
+	fn drop(&mut self) {
+		let _ = std::fs::remove_dir_all(&self.path);
+	}
 }
 
 async fn setup_test_services() -> (TempDbGuard, Arc<Server>, Arc<Services>) {
@@ -51,10 +53,14 @@ async fn setup_test_services() -> (TempDbGuard, Arc<Server>, Arc<Services>) {
 	.expect("failed to parse test config");
 	let config = Config::new(&config_raw).expect("failed to parse config");
 	let runtime_handle = ();
-	let server = Arc::new(Server::new(config, Some(&runtime_handle), Log {
-		reload: LogLevelReloadHandles,
-		capture: Arc::new(capture::State),
-	}));
+	let server = Arc::new(Server::new(
+		config,
+		Some(&runtime_handle),
+		Log {
+			reload: LogLevelReloadHandles,
+			capture: Arc::new(capture::State),
+		},
+	));
 	let services = Services::build(server.clone()).expect("failed to build services");
 	(guard, server, services)
 }

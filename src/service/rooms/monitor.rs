@@ -29,9 +29,13 @@ impl crate::Service for Service {
 		}))
 	}
 
-	async fn worker(self: Arc<Self>) -> Result<()> { self.worker().await }
+	async fn worker(self: Arc<Self>) -> Result<()> {
+		self.worker().await
+	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+	fn name(&self) -> &str {
+		crate::service::make_name(std::module_path!())
+	}
 }
 
 pub(crate) struct InnerServices {

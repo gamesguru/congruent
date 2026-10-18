@@ -27,7 +27,9 @@ pub(crate) struct SmolRuntimeProvider {
 }
 
 impl SmolRuntimeProvider {
-	pub(crate) fn new(runtime: conduwuit_core::RuntimeHandle) -> Self { Self { runtime } }
+	pub(crate) fn new(runtime: conduwuit_core::RuntimeHandle) -> Self {
+		Self { runtime }
+	}
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -35,7 +37,9 @@ pub(crate) struct SmolTime;
 
 #[async_trait::async_trait]
 impl Time for SmolTime {
-	async fn delay_for(duration: Duration) { let _ = smol::Timer::after(duration).await; }
+	async fn delay_for(duration: Duration) {
+		let _ = smol::Timer::after(duration).await;
+	}
 
 	async fn timeout<F: Future + Send + 'static>(
 		duration: Duration,
@@ -43,8 +47,9 @@ impl Time for SmolTime {
 	) -> io::Result<F::Output> {
 		match select(Box::pin(future), Box::pin(smol::Timer::after(duration))).await {
 			| Either::Left((output, _)) => Ok(output),
-			| Either::Right((..)) =>
-				Err(io::Error::new(io::ErrorKind::TimedOut, "future timed out")),
+			| Either::Right((..)) => {
+				Err(io::Error::new(io::ErrorKind::TimedOut, "future timed out"))
+			},
 		}
 	}
 }
@@ -61,7 +66,9 @@ impl RuntimeProvider for SmolRuntimeProvider {
 	type Timer = SmolTime;
 	type Udp = SmolUdpSocket;
 
-	fn create_handle(&self) -> Self::Handle { self.clone() }
+	fn create_handle(&self) -> Self::Handle {
+		self.clone()
+	}
 
 	fn connect_tcp(
 		&self,
@@ -78,8 +85,9 @@ impl RuntimeProvider for SmolRuntimeProvider {
 			.await
 			{
 				| Either::Left((result, _)) => result.map(SmolTcpStream),
-				| Either::Right((..)) =>
-					Err(io::Error::new(io::ErrorKind::TimedOut, "TCP connect timed out")),
+				| Either::Right((..)) => {
+					Err(io::Error::new(io::ErrorKind::TimedOut, "TCP connect timed out"))
+				},
 			}
 		})
 	}
@@ -232,7 +240,9 @@ impl Resolver {
 	}
 
 	#[inline]
-	pub fn clear_cache(&self) { self.resolver.clear_cache(); }
+	pub fn clear_cache(&self) {
+		self.resolver.clear_cache();
+	}
 
 	pub async fn lookup_ip<N: hickory_resolver::proto::rr::IntoName>(
 		&self,

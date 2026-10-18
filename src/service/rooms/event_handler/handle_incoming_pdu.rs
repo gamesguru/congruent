@@ -38,8 +38,9 @@ type PrefetchedPrev = (
 /// either timestamp unknown, or equal timestamps, it is not.
 fn leave_predates_invite(leave_ts: Option<i64>, invite_ts: Option<u64>) -> bool {
 	match (leave_ts, invite_ts) {
-		| (Some(leave_ts), Some(invite_ts)) =>
-			u64::try_from(leave_ts).is_ok_and(|leave_ts| leave_ts < invite_ts),
+		| (Some(leave_ts), Some(invite_ts)) => {
+			u64::try_from(leave_ts).is_ok_and(|leave_ts| leave_ts < invite_ts)
+		},
 		| _ => false,
 	}
 }

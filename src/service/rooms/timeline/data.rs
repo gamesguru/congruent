@@ -1159,7 +1159,9 @@ impl Data {
 	}
 
 	#[allow(clippy::unused_self)]
-	pub(super) fn db_batch(&self) -> database::Batch<'_> { database::Batch::new() }
+	pub(super) fn db_batch(&self) -> database::Batch<'_> {
+		database::Batch::new()
+	}
 
 	pub(super) fn db_apply_batch(&self, batch: database::Batch<'_>) {
 		self.eventid_pdu.apply_batch(batch);

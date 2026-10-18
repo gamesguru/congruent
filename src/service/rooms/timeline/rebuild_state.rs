@@ -36,7 +36,9 @@ type EventMeta = (
 
 /// Safe u32 -> usize for Vec indexing of roaring bitmap indices.
 #[inline]
-fn to_usize(v: u32) -> usize { usize::try_from(v).expect("u32 fits in usize") }
+fn to_usize(v: u32) -> usize {
+	usize::try_from(v).expect("u32 fits in usize")
+}
 
 /// Shared context threaded through all phases of rebuild_state.
 /// Metadata carries everything needed for the walk; state event PDUs
@@ -478,8 +480,9 @@ impl super::Service {
 		// ── Map room version to StateResVersion ──
 		let version = match ctx.room_version.as_str() {
 			| "1" => rezzy::StateResVersion::V1,
-			| "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" =>
-				rezzy::StateResVersion::V2,
+			| "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" => {
+				rezzy::StateResVersion::V2
+			},
 			| "12" => rezzy::StateResVersion::V2_1,
 			| _ => rezzy::StateResVersion::V2_1_1,
 		};
@@ -514,10 +517,12 @@ impl super::Service {
 			)
 			.try_compute_optimized(|id, update| {
 				let owned_update = match update {
-					| rezzy::StateUpdate::New { state, hash } =>
-						StateUpdateOwned::New { state, hash: Box::new(*hash) },
-					| rezzy::StateUpdate::Unchanged { parent_event_id, .. } =>
-						StateUpdateOwned::Unchanged { parent_event_id: parent_event_id.clone() },
+					| rezzy::StateUpdate::New { state, hash } => {
+						StateUpdateOwned::New { state, hash: Box::new(*hash) }
+					},
+					| rezzy::StateUpdate::Unchanged { parent_event_id, .. } => {
+						StateUpdateOwned::Unchanged { parent_event_id: parent_event_id.clone() }
+					},
 				};
 				tx.blocking_send((id, owned_update))
 					.map_err(|_| "state output channel closed")
@@ -781,8 +786,9 @@ impl super::Service {
 		// 2. Map room version early — needed to decide auth chain diff vs subgraph
 		let version = match ctx.room_version.as_str() {
 			| "1" => rezzy::StateResVersion::V1,
-			| "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" =>
-				rezzy::StateResVersion::V2,
+			| "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" => {
+				rezzy::StateResVersion::V2
+			},
 			| "12" => rezzy::StateResVersion::V2_1,
 			| _ => rezzy::StateResVersion::V2_1_1,
 		};

@@ -28,7 +28,9 @@ pub(crate) trait Service: Any + Send + Sync {
 
 	/// Implement the service's worker loop. The service manager spawns a
 	/// task and calls this function after all services have been built.
-	async fn worker(self: Arc<Self>) -> Result<()> { Ok(()) }
+	async fn worker(self: Arc<Self>) -> Result<()> {
+		Ok(())
+	}
 
 	/// Interrupt the service. This is sent to initiate a graceful shutdown.
 	/// The service worker should return from its work loop.
@@ -38,7 +40,9 @@ pub(crate) trait Service: Any + Send + Sync {
 	async fn clear_cache(&self) {}
 
 	/// Memory usage report in a markdown string.
-	async fn memory_usage(&self, _out: &mut (dyn Write + Send)) -> Result { Ok(()) }
+	async fn memory_usage(&self, _out: &mut (dyn Write + Send)) -> Result {
+		Ok(())
+	}
 
 	/// Return the name of the service.
 	/// i.e. `crate::service::make_name(std::module_path!())`
@@ -85,7 +89,9 @@ impl<T: Service + Send + Sync> Deref for Dep<T> {
 
 	/// Dereference a dependency. The dependency must be ready or panics.
 	#[inline]
-	fn deref(&self) -> &Self::Target { self.get() }
+	fn deref(&self) -> &Self::Target {
+		self.get()
+	}
 }
 
 impl<T: Service + Send + Sync> Clone for Dep<T> {
@@ -108,7 +114,9 @@ impl<T: Service + Send + Sync> Dep<T> {
 	}
 
 	#[inline]
-	pub(crate) fn arc(&self) -> Arc<T> { Arc::clone(self.get()) }
+	pub(crate) fn arc(&self) -> Arc<T> {
+		Arc::clone(self.get())
+	}
 }
 
 impl<T: Service + Send + Sync> Dep<T> {
@@ -203,4 +211,6 @@ where
 
 /// Utility for service implementations; see Service::name() in the trait.
 #[inline]
-pub(crate) fn make_name(module_path: &str) -> &str { module_path.split_once_infallible("::").1 }
+pub(crate) fn make_name(module_path: &str) -> &str {
+	module_path.split_once_infallible("::").1
+}

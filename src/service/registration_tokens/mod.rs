@@ -40,7 +40,9 @@ impl std::fmt::Display for ValidToken {
 }
 
 impl PartialEq<str> for ValidToken {
-	fn eq(&self, other: &str) -> bool { self.token == other }
+	fn eq(&self, other: &str) -> bool {
+		self.token == other
+	}
 }
 
 /// The source of a valid database token.
@@ -100,7 +102,9 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+	fn name(&self) -> &str {
+		crate::service::make_name(std::module_path!())
+	}
 }
 
 impl Service {
@@ -108,7 +112,9 @@ impl Service {
 
 	/// Generate a random string suitable to be used as a registration token.
 	#[must_use]
-	pub fn generate_token_string() -> String { utils::random_string(Self::RANDOM_TOKEN_LENGTH) }
+	pub fn generate_token_string() -> String {
+		utils::random_string(Self::RANDOM_TOKEN_LENGTH)
+	}
 
 	/// Issue a new registration token and save it in the database.
 	pub fn issue_token(

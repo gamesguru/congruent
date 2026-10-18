@@ -184,11 +184,17 @@ impl crate::Service for Service {
 		}))
 	}
 
-	async fn worker(self: Arc<Self>) -> Result<()> { self.run().await }
+	async fn worker(self: Arc<Self>) -> Result<()> {
+		self.run().await
+	}
 
-	fn interrupt(&self) { self.wake.notify_waiters(); }
+	fn interrupt(&self) {
+		self.wake.notify_waiters();
+	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+	fn name(&self) -> &str {
+		crate::service::make_name(std::module_path!())
+	}
 }
 
 impl Service {
@@ -282,6 +288,12 @@ impl Service {
 		outcome
 	}
 
+	/// When the debounced activity is next due, `now` plus the rate window.
+	fn next_flush(&self, now: Instant) -> Instant {
+		let wait = self.rate.lock().wait(now);
+		now.checked_add(wait).unwrap_or(now)
+	}
+
 	async fn run(self: Arc<Self>) -> Result<()> {
 		let interval = self
 			.services
@@ -301,7 +313,7 @@ impl Service {
 
 		// Persists across wake-ups so repeated interruptions cannot postpone
 		// the flush of debounced activity.
-		let mut flush_at = Instant::now() + self.rate.lock().wait(Instant::now());
+		let mut flush_at = self.next_flush(Instant::now());
 
 		loop {
 			// Check the persistent deadline before polling other ready sources.
@@ -310,7 +322,7 @@ impl Service {
 			if Instant::now() >= flush_at {
 				self.flush_pending_activity().await;
 				let now = Instant::now();
-				flush_at = now + self.rate.lock().wait(now);
+				flush_at = self.next_flush(now);
 			}
 			if cursor.catch_up {
 				self.sweep(&mut cursor).await;
@@ -357,7 +369,7 @@ impl Service {
 				_ = FutureExt::fuse(retry) => {
 					self.flush_pending_activity().await;
 					let now = Instant::now();
-					flush_at = now + self.rate.lock().wait(now);
+					flush_at = self.next_flush(now);
 				},
 			}
 

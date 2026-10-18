@@ -49,7 +49,9 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+	fn name(&self) -> &str {
+		crate::service::make_name(std::module_path!())
+	}
 }
 
 /// Returns the pdu from the outlier tree.
@@ -396,7 +398,9 @@ pub fn clear_outlier_flag(&self, event_id: &EventId) {
 }
 
 #[implement(Service)]
-pub fn fix_pdu_event_ids(&self) -> Result<usize> { Ok(0) }
+pub fn fix_pdu_event_ids(&self) -> Result<usize> {
+	Ok(0)
+}
 
 #[implement(Service)]
 pub async fn startup_janitor(&self) {

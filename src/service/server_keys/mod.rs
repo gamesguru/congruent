@@ -116,7 +116,9 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+	fn name(&self) -> &str {
+		crate::service::make_name(std::module_path!())
+	}
 }
 
 /// Returns true if the server is currently in backoff (a recent fetch failed).
@@ -284,11 +286,15 @@ pub enum FetchSource {
 
 #[implement(Service)]
 #[inline]
-pub fn keypair(&self) -> &Ed25519KeyPair { &self.keypair }
+pub fn keypair(&self) -> &Ed25519KeyPair {
+	&self.keypair
+}
 
 #[implement(Service)]
 #[inline]
-pub fn active_key_id(&self) -> &ServerSigningKeyId { self.active_verify_key().0 }
+pub fn active_key_id(&self) -> &ServerSigningKeyId {
+	self.active_verify_key().0
+}
 
 #[implement(Service)]
 #[inline]
@@ -1110,7 +1116,9 @@ fn key_exists(keys: &ServerSigningKeys, key_id: &ServerSigningKeyId) -> bool {
 	keys.verify_keys.contains_key(key_id) || keys.old_verify_keys.contains_key(key_id)
 }
 
-fn bounded_msc4499_backoff_secs(secs: u64) -> u64 { secs.clamp(1, 3600) }
+fn bounded_msc4499_backoff_secs(secs: u64) -> u64 {
+	secs.clamp(1, 3600)
+}
 
 #[cfg(test)]
 mod tests {

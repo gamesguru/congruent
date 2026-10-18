@@ -64,9 +64,13 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+	fn name(&self) -> &str {
+		crate::service::make_name(std::module_path!())
+	}
 
-	async fn worker(self: Arc<Self>) -> Result { self.initialize_first_run_marker().await }
+	async fn worker(self: Arc<Self>) -> Result {
+		self.initialize_first_run_marker().await
+	}
 }
 
 impl Service {

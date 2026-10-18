@@ -151,10 +151,11 @@ where
 	let mut all_succeeded = true;
 	for (root_handle, prev_event) in &extremity_roothandles {
 		match self.get_extremity_lthash(root_handle, prev_event).await {
-			| Ok(lthash) =>
+			| Ok(lthash) => {
 				if !unique_forks.iter().any(|(hash, _)| *hash == lthash) {
 					unique_forks.push((lthash, (root_handle.clone(), prev_event)));
-				},
+				}
+			},
 			| Err(_) => {
 				all_succeeded = false;
 				break;

@@ -142,12 +142,13 @@ async fn compute_outbound_state_hashes(
 				let inputs = if with_inputs {
 					let pdu = services.timeline.get_pdu(event_id).await.ok();
 					let digest = match pdu {
-						| Some(pdu) =>
+						| Some(pdu) => {
 							services
 								.state_accessor
 								.arc()
 								.msc4500_resolution_inputs_digest(&pdu, &mut inputs_cache)
-								.await,
+								.await
+						},
 						| None => None,
 					};
 					Some(digest)
@@ -1162,8 +1163,9 @@ impl Service {
 				.boxed()
 			},
 			| Destination::Appservice(id) => self.send_events_dest_appservice(id, events).boxed(),
-			| Destination::Push(user_id, pushkey) =>
-				self.send_events_dest_push(user_id, pushkey, events).boxed(),
+			| Destination::Push(user_id, pushkey) => {
+				self.send_events_dest_push(user_id, pushkey, events).boxed()
+			},
 		}
 	}
 
@@ -1198,12 +1200,13 @@ impl Service {
 						pdu_jsons.push(pdu.to_format());
 					}
 				},
-				| SendingEvent::Edu(edu) =>
+				| SendingEvent::Edu(edu) => {
 					if appservice.receive_ephemeral {
 						if let Ok(edu) = database::from_json_slice(edu) {
 							edu_jsons.push(edu);
 						}
-					},
+					}
+				},
 				| SendingEvent::Flush => {}, // flush only; no new content
 			}
 		}
@@ -1683,10 +1686,11 @@ pub(crate) fn build_receipt_map(
 				}
 				e.insert(receipt_data);
 			},
-			| Entry::Occupied(mut e) =>
+			| Entry::Occupied(mut e) => {
 				if is_unthreaded {
 					e.insert(receipt_data);
-				},
+				}
+			},
 		}
 	}
 

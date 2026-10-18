@@ -82,7 +82,9 @@ impl InvocationSource {
 	/// commands, i.e. ones that could be potentially dangerous if executed by
 	/// an attacker or in a public room.
 	#[must_use]
-	pub fn allows_restricted(&self) -> bool { !matches!(self, Self::EscapedCommand) }
+	pub fn allows_restricted(&self) -> bool {
+		!matches!(self, Self::EscapedCommand)
+	}
 }
 
 /// Prototype of the tab-completer. The input is buffered text when tab
@@ -167,7 +169,9 @@ impl crate::Service for Service {
 		}
 	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+	fn name(&self) -> &str {
+		crate::service::make_name(std::module_path!())
+	}
 }
 
 impl Service {
@@ -225,18 +229,20 @@ impl Service {
 			.body()
 			.len()
 			.saturating_add(match &content.msgtype {
-				| MessageType::Text(t) =>
+				| MessageType::Text(t) => {
 					if t.formatted.is_some() {
 						t.formatted.as_ref().map_or(0, |f| f.body.len())
 					} else {
 						0
-					},
-				| MessageType::Notice(n) =>
+					}
+				},
+				| MessageType::Notice(n) => {
 					if n.formatted.is_some() {
 						n.formatted.as_ref().map_or(0, |f| f.body.len())
 					} else {
 						0
-					},
+					}
+				},
 				| _ => 0,
 			})
 			.try_into()

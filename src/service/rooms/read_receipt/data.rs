@@ -175,20 +175,26 @@ impl Data {
 		let event_id = pdu.event_id;
 
 		let mut user_map = BTreeMap::new();
-		user_map.insert(user_id.to_owned(), Receipt {
-			thread: ReceiptThread::Unthreaded,
-			ts: None,
-		});
+		user_map.insert(
+			user_id.to_owned(),
+			Receipt {
+				thread: ReceiptThread::Unthreaded,
+				ts: None,
+			},
+		);
 
 		let mut receipt_map = BTreeMap::new();
 		receipt_map.insert(ReceiptType::ReadPrivate, user_map);
 		let mut content = BTreeMap::new();
 		content.insert(event_id, receipt_map);
 
-		Ok(Some((count, ReceiptEvent {
-			content: slipstream::events::receipt::ReceiptEventContent(content),
-			room_id: room_id.to_owned(),
-		})))
+		Ok(Some((
+			count,
+			ReceiptEvent {
+				content: slipstream::events::receipt::ReceiptEventContent(content),
+				room_id: room_id.to_owned(),
+			},
+		)))
 	}
 
 	pub(super) async fn readreceipt_update(
@@ -696,10 +702,13 @@ fn combine_private_read_receipts(
 	}
 
 	(!content.is_empty()).then(|| {
-		(count, ReceiptEvent {
-			content: slipstream::events::receipt::ReceiptEventContent(content),
-			room_id: room_id.to_owned(),
-		})
+		(
+			count,
+			ReceiptEvent {
+				content: slipstream::events::receipt::ReceiptEventContent(content),
+				room_id: room_id.to_owned(),
+			},
+		)
 	})
 }
 

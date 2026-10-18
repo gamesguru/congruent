@@ -62,7 +62,9 @@ pub struct InputNode {
 /// event that could not be loaded, so a gap is only discovered once.
 pub type InputCache = HashMap<OwnedEventId, Option<InputNode>>;
 
-fn encode_digest(digest: [u8; 32]) -> String { URL_SAFE_NO_PAD.encode(digest) }
+fn encode_digest(digest: [u8; 32]) -> String {
+	URL_SAFE_NO_PAD.encode(digest)
+}
 
 /// Valid-looking redactions in the causal past of an event, as
 /// `redaction event ID -> target event ID`. Shared between events through `Arc`.
@@ -564,7 +566,9 @@ impl StateHashes {
 
 	/// Whether entries may carry a resolution-input digest.
 	#[must_use]
-	pub fn has_resolution_inputs(&self) -> bool { self.algorithm == ALGORITHM_WITH_INPUTS }
+	pub fn has_resolution_inputs(&self) -> bool {
+		self.algorithm == ALGORITHM_WITH_INPUTS
+	}
 }
 
 /// One PDU's assertion. See the MSC4500 transaction payload.
@@ -803,7 +807,9 @@ mod wire_tests {
 mod causal_tests {
 	use super::*;
 
-	fn id(s: &str) -> OwnedEventId { OwnedEventId::parse(format!("${s}")).unwrap() }
+	fn id(s: &str) -> OwnedEventId {
+		OwnedEventId::parse(format!("${s}")).unwrap()
+	}
 
 	fn node(prevs: &[&str], redaction_of: Option<&str>) -> DagNode {
 		DagNode {
