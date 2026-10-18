@@ -131,17 +131,6 @@ jobs:
       - name: Sanity check binary
         run: ./tests/sanity_check.sh ./target/latest/conduwuit
 
-      - name: Import GPG key
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
-        with:
-          gpg_private_key: ${{ secrets.C10Y_BINARY_RELEASE_GPG_PRIVATE_KEY }}
-          passphrase: ${{ secrets.C10Y_BINARY_RELEASE_GPG_PRIVATE_KEY_PASSWORD }}
-
-      - name: Sign binary
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        run: gpg --batch --yes --detach-sign --armor target/latest/conduwuit
-
       - name: Build Complement Docker image
         run: make -j4 complement/docker PROFILE=${{ matrix.profile }}
 
@@ -151,7 +140,6 @@ jobs:
           name: conduwuit-${{ matrix.profile }}-direct_tls-${{ matrix.arch }}-${{ matrix.os }}-v${{ matrix.room_version }}
           path: |
             target/latest/conduwuit
-            target/latest/conduwuit.asc
             target/latest/lib/
           retention-days: 60
           overwrite: true
