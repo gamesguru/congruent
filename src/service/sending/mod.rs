@@ -7,9 +7,11 @@ pub mod stats;
 
 use std::{
 	fmt::Debug,
+	future::Future,
 	hash::{DefaultHasher, Hash, Hasher},
 	iter::once,
 	sync::Arc,
+	task::Poll,
 	time::Duration,
 };
 
@@ -17,7 +19,9 @@ use async_trait::async_trait;
 use conduwuit::{
 	JoinError, Result, Server, debug, debug_warn, err, error, info,
 	smallvec::SmallVec,
-	utils::{ReadyExt, TryReadyExt, available_parallelism, math::usize_from_u64_truncated},
+	utils::{
+		MutexMap, ReadyExt, TryReadyExt, available_parallelism, math::usize_from_u64_truncated,
+	},
 	warn,
 };
 use futures::{Stream, StreamExt, stream::FuturesUnordered};
@@ -51,7 +55,7 @@ pub struct Service {
 	/// Serializes whole abort and resume operations against each other, so a
 	/// resume cannot slip in between an abort's flag and its cleanup. Unlike
 	/// `abort_gate` it is held while waiting for the worker.
-	abort_serial: tokio::sync::Mutex<()>,
+	abort_serial: MutexMap<OwnedServerName, ()>,
 	/// Bumped on every abort of a destination; work built before the bump is
 	/// stale even once the destination is resumed.
 	abort_epochs: std::sync::RwLock<std::collections::HashMap<OwnedServerName, u64>>,
@@ -112,7 +116,7 @@ impl crate::Service for Service {
 			dead_servers: std::sync::RwLock::new(std::collections::HashSet::new()),
 			aborted: std::sync::RwLock::new(std::collections::HashSet::new()),
 			abort_gate: Arc::new(tokio::sync::RwLock::new(())),
-			abort_serial: tokio::sync::Mutex::new(()),
+			abort_serial: MutexMap::new(),
 			abort_epochs: std::sync::RwLock::new(std::collections::HashMap::new()),
 			next_txn_id: std::sync::atomic::AtomicU64::new(
 				slipstream::MilliSecondsSinceUnixEpoch::now().get(),
@@ -552,6 +556,46 @@ impl Service {
 			.await
 	}
 
+	/// Starts a transaction only if it still belongs to the current abort
+	/// generation. The abort gate covers the first poll of the HTTP operation,
+	/// then is released while the request is in flight.
+	pub(super) async fn send_federation_request_on_if_current<T>(
+		&self,
+		client: &client::HttpClient,
+		dest: &ServerName,
+		epoch: u64,
+		request: T,
+	) -> Result<Option<T::IncomingResponse>>
+	where
+		T: OutgoingRequest + Debug + Send,
+	{
+		let _permit = self
+			.semaphore
+			.clone()
+			.acquire_owned()
+			.await
+			.expect("Semaphore should not be closed");
+		let gate = self.abort_gate.clone().read_owned().await;
+		if self.destination_aborted(dest) || self.abort_epoch(dest) != epoch {
+			return Ok(None);
+		}
+
+		let mut request = Box::pin(self.services.federation.execute_on(client, dest, request));
+		let first_poll = futures::future::poll_fn(|cx| {
+			Poll::Ready(match request.as_mut().poll(cx) {
+				| Poll::Ready(result) => Some(result),
+				| Poll::Pending => None,
+			})
+		})
+		.await;
+		drop(gate);
+
+		match first_poll {
+			| Some(result) => result.map(Some),
+			| None => request.await.map(Some),
+		}
+	}
+
 	/// Clean up queued sending event data
 	///
 	/// Used after we remove an appservice registration or a user deletes a push
@@ -666,14 +710,10 @@ impl Service {
 	pub async fn abort_destination(&self, server: &ServerName) {
 		// Held for the whole operation so a resume cannot interleave; the global
 		// gate below is released before waiting on the worker.
-		let _serial = self.abort_serial.lock().await;
+		let _serial = self.abort_serial.lock(server).await;
 		let gate = self.abort_gate.clone().write_owned().await;
 		self.aborted.write().unwrap().insert(server.to_owned());
-		{
-			let mut epochs = self.abort_epochs.write().unwrap();
-			let epoch = epochs.entry(server.to_owned()).or_insert(0);
-			*epoch = epoch.saturating_add(1);
-		}
+		self.increment_abort_epoch(server);
 		drop(gate);
 
 		let dest = Destination::Federation(server.to_owned());
@@ -703,7 +743,7 @@ impl Service {
 
 	/// Lifts an earlier abort so the server can be sent to again.
 	pub async fn resume_destination(&self, server: &ServerName) {
-		let _serial = self.abort_serial.lock().await;
+		let _serial = self.abort_serial.lock(server).await;
 		let _gate = self.abort_gate.clone().write_owned().await;
 		self.aborted.write().unwrap().remove(server);
 	}
@@ -721,6 +761,12 @@ impl Service {
 			.get(server)
 			.copied()
 			.unwrap_or(0)
+	}
+
+	fn increment_abort_epoch(&self, server: &ServerName) {
+		let mut epochs = self.abort_epochs.write().unwrap();
+		let epoch = epochs.entry(server.to_owned()).or_insert(0);
+		*epoch = epoch.saturating_add(1);
 	}
 
 	pub(super) fn is_aborted(&self, dest: &Destination) -> bool {

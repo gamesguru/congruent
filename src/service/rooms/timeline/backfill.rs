@@ -926,7 +926,7 @@ pub async fn backfill_pdu(
 	// released first so inbound /send is not held up behind a scan; the insert
 	// lock and its post-lock recheck still guard against concurrent inserts.
 	drop(mutex_lock);
-	let _reconciliation_lock = self.mutex_reconciliation.lock(&room_id).await;
+	let reconciliation_lock = self.mutex_reconciliation.lock(&room_id).await;
 	let insert_lock = self.mutex_insert.lock(&room_id).await;
 
 	// Re-check after acquiring insert lock to prevent TOCTOU races
@@ -966,6 +966,7 @@ pub async fn backfill_pdu(
 		.prepend_backfill_pdu(&pdu_id, &event_id, &json_value, &pdu_event)
 		.await;
 	self.reconciliation_cache.invalidate(&room_id);
+	drop(reconciliation_lock);
 
 	info!(target: "backfill_debug", %event_id, count, "backfill_pdu: insert complete");
 

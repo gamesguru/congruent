@@ -308,6 +308,10 @@ impl Queue {
 	/// Records the end of an exchange. Returns whether the pair was queued
 	/// again because a trigger arrived while it ran.
 	pub(super) fn finish(&mut self, key: &Key, verdict: Verdict, now: Instant) -> bool {
+		if verdict == Verdict::Dropped {
+			self.entries.remove(key);
+			return false;
+		}
 		let Some(entry) = self.entries.get_mut(key) else {
 			return false;
 		};
@@ -350,12 +354,7 @@ impl Queue {
 				entry.identical_digests = 0;
 				entry.synchronized_until = None;
 			},
-			| Verdict::Dropped => {
-				entry.failures = 0;
-				entry.not_before = None;
-				entry.identical_digests = 0;
-				entry.synchronized_until = None;
-			},
+			| Verdict::Dropped => unreachable!("dropped verdict handled above"),
 			| Verdict::Unsupported => {
 				entry.failures = entry.failures.saturating_add(1);
 				entry.not_before = now.checked_add(UNSUPPORTED_BACKOFF);
@@ -459,6 +458,7 @@ mod tests {
 		let k = key("!a:example.org", "peer.example");
 		queue.enqueue(k.clone(), Reason::Periodic, now);
 		queue.next_ready(now, 4, 2, true);
+		assert_eq!(queue.enqueue(k.clone(), Reason::Explicit, now), Enqueued::Coalesced);
 		queue.finish(&k, Verdict::Dropped, now);
 
 		let later = now + BACKOFF_MAX + Duration::from_secs(1);

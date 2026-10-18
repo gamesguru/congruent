@@ -1157,7 +1157,7 @@ impl Service {
 					let started = Instant::now();
 					let log_server = server.clone();
 					let result = self
-						.send_events_dest_federation(server, events, edu_count)
+						.send_events_dest_federation(server, events, edu_count, epoch)
 						.await;
 					info!(
 						target: "sender_debug",
@@ -1331,6 +1331,7 @@ impl Service {
 		server: OwnedServerName,
 		events: Vec<SendingEvent>,
 		edu_count: Option<u64>,
+		epoch: u64,
 	) -> SendingResult {
 		let mut source_pdus: Vec<(OwnedEventId, CanonicalJsonObject)> = Vec::new();
 		for event in &events {
@@ -1452,9 +1453,19 @@ impl Service {
 		let msc4500_req = Msc4500SendTransactionRequest { inner: request, state_hashes };
 
 		let result = self
-			.send_federation_request_on(&self.services.client.sender, &server, msc4500_req)
+			.send_federation_request_on_if_current(
+				&self.services.client.sender,
+				&server,
+				epoch,
+				msc4500_req,
+			)
 			.await;
 		conduwuit::debug!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
+		let result = match result {
+			| Ok(Some(result)) => Ok(result),
+			| Ok(None) => return Ok(Destination::Federation(server)),
+			| Err(error) => Err(error),
+		};
 
 		for (event_id, result) in result.iter().flat_map(|resp| resp.pdus.iter()) {
 			if let Err(e) = result {
