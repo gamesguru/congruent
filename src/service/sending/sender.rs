@@ -503,7 +503,6 @@ impl Service {
 			reqs
 		};
 
-		let keys: Vec<Vec<u8>> = iv.iter().map(|(key, _)| key.clone()).collect();
 		if let Ok(Some((events, edu_count))) = self.select_events(&msg.dest, iv, statuses).await {
 			// An abort may have landed while the events were being selected, even
 			// if a resume has since lifted it: the epoch tells those apart from a
@@ -514,8 +513,11 @@ impl Service {
 					(Destination::Federation(server), Some(epoch)) if self.abort_epoch(server) != epoch
 				);
 			if stale {
+				// Rows `select_events` activated are not removed here: the abort is
+				// waiting for this worker's acknowledgement, and clears the whole
+				// destination queue once it has it. Deleting by key now could also
+				// take a row re-queued under the same key after a resume.
 				statuses.remove(&msg.dest);
-				self.db.delete_request_keys(keys.iter().map(Vec::as_slice));
 			} else if !events.is_empty() {
 				futures.push(self.send_events(msg.dest, events, edu_count));
 			} else {
