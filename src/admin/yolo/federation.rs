@@ -303,7 +303,6 @@ pub(super) async fn resend_receipts(
 	use std::collections::BTreeMap;
 
 	use slipstream::{
-		OwnedEventId,
 		api::federation::transactions::edu::{Edu, ReceiptContent, ReceiptData, ReceiptMap},
 		events::{AnySyncEphemeralRoomEvent, receipt::ReceiptType},
 	};
@@ -311,7 +310,10 @@ pub(super) async fn resend_receipts(
 	// Collect latest receipt per local user in this room
 	let mut latest_receipts: BTreeMap<
 		OwnedUserId,
-		(OwnedEventId, slipstream::events::receipt::Receipt),
+		(
+			slipstream::events::receipt::ReceiptEventId,
+			slipstream::events::receipt::Receipt,
+		),
 	> = BTreeMap::new();
 
 	let receipts = self
