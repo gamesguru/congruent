@@ -155,6 +155,8 @@ impl Queue {
 		}
 	}
 
+	/// Creates an empty queue bounded by the number of tracked room-peer pairs,
+	/// including pairs retained for retries or cooldowns.
 	pub(super) fn new(max_tracked: usize) -> Self {
 		Self {
 			entries: HashMap::new(),
@@ -165,12 +167,19 @@ impl Queue {
 		}
 	}
 
+	/// Sets the exponential failure delay; the effective cap is at least
+	/// `base`.
 	pub(super) fn with_failure_backoff(mut self, base: Duration, max: Duration) -> Self {
 		self.failure_backoff = base;
 		self.failure_backoff_max = max;
 		self
 	}
 
+	/// Queues a pair or coalesces an existing request. Nonperiodic triggers
+	/// clear synchronized cooldowns and mark running exchanges for another
+	/// pass; only explicit triggers override failure or unsupported-peer
+	/// backoff. Returns a refusal when backoff or tracking capacity prevents
+	/// admission.
 	pub(super) fn enqueue(&mut self, key: Key, reason: Reason, now: Instant) -> Enqueued {
 		if let Some(entry) = self.entries.get_mut(&key) {
 			// New activity invalidates equal-digest observations, but does not
@@ -218,7 +227,7 @@ impl Queue {
 		Enqueued::Queued
 	}
 
-	/// Drops an idle failing pair whose backoff has already been served, to
+	/// Drops an idle pair whose cooldowns have already been served, to
 	/// make room for a new one. Returns whether anything was dropped. Pairs
 	/// that are queued, running, still backing off, or waiting for a due retry
 	/// to be requeued are never dropped, so eviction cannot cut a dead peer's
@@ -240,6 +249,7 @@ impl Queue {
 
 	/// Queues idle pairs whose failure delay has been served, so a failed
 	/// repair is retried even when no further trigger arrives.
+	/// Returns whether any pairs were queued.
 	pub(super) fn requeue_due_retries(&mut self, now: Instant) -> bool {
 		let mut due = Vec::new();
 		for (key, entry) in &mut self.entries {
@@ -260,7 +270,9 @@ impl Queue {
 	}
 
 	/// Takes the next queued pair that fits the concurrency limits and marks
-	/// it in flight.
+	/// it in flight. Nonperiodic requests take priority; `periodic_allowed`
+	/// gates periodic requests, including automatic retries. Returns `None`
+	/// when no pair is eligible at `now`.
 	pub(super) fn next_ready(
 		&mut self,
 		now: Instant,
@@ -311,8 +323,10 @@ impl Queue {
 		None
 	}
 
-	/// Records the end of an exchange. Returns whether the pair was queued
-	/// again because a trigger arrived while it ran.
+	/// Records the end of an exchange and updates its cooldown or retry state.
+	/// Returns whether a continuation or a nonperiodic trigger received during
+	/// the exchange queued another pass. Failed exchanges without such a
+	/// trigger become eligible through `requeue_due_retries` after backoff.
 	pub(super) fn finish(&mut self, key: &Key, verdict: Verdict, now: Instant) -> bool {
 		if verdict == Verdict::Dropped {
 			self.entries.remove(key);

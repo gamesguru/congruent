@@ -221,6 +221,8 @@ impl crate::Service for Service {
 }
 
 impl Service {
+	/// Persists a PDU for the user's push key and wakes its sender worker.
+	/// Returns a worker dispatch error after persistence if dispatch fails.
 	pub fn send_pdu_push(&self, pdu_id: &RawPduId, user: &UserId, pushkey: String) -> Result {
 		let dest = Destination::Push(user.to_owned(), pushkey);
 		let event = SendingEvent::Pdu(*pdu_id);
@@ -234,6 +236,8 @@ impl Service {
 		})
 	}
 
+	/// Persists a PDU for an application service and wakes its sender worker.
+	/// Returns a worker dispatch error after persistence if dispatch fails.
 	pub fn send_pdu_appservice(&self, appservice_id: String, pdu_id: RawPduId) -> Result {
 		let dest = Destination::Appservice(appservice_id);
 		let event = SendingEvent::Pdu(pdu_id);
@@ -291,6 +295,10 @@ impl Service {
 		Ok(())
 	}
 
+	/// Persists a PDU for the supplied servers, skipping aborted destinations,
+	/// and wakes their workers. Returns the number of retained destinations.
+	/// Dispatch errors propagate after persistence and may leave some workers
+	/// unwoken; success indicates queueing rather than remote delivery.
 	pub async fn send_pdu_servers<'a, S>(&self, servers: S, pdu_id: &RawPduId) -> Result<usize>
 	where
 		S: Stream<Item = OwnedServerName> + Send + 'a,
@@ -316,6 +324,9 @@ impl Service {
 		Ok(num_servers)
 	}
 
+	/// Queues a serialized EDU for a server. Silently discards it if the server
+	/// is dead or aborted, or an abort/resume operation holds the sending gate.
+	/// Worker dispatch errors propagate after persistence.
 	pub fn send_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
 		let Ok(_abort_guard) = self.abort_gate.try_read() else {
 			return Ok(());
@@ -336,6 +347,14 @@ impl Service {
 		})
 	}
 
+	/// Queues a serialized EDU in storage that survives ordinary retry cleanup
+	/// until successful delivery or an explicit clear. Aborted destinations
+	/// discard it and return success.
+	///
+	/// # Errors
+	/// Returns an error asking the caller to retry if an abort/resume operation
+	/// holds the sending gate. Worker dispatch errors propagate after
+	/// persistence.
 	pub fn send_reliable_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
 		let dest = Destination::Federation(server.to_owned());
 		// While an abort or resume is in progress, tell the caller to retry rather
@@ -378,6 +397,9 @@ impl Service {
 			.await
 	}
 
+	/// Queues a serialized EDU for each supplied server except aborted ones.
+	/// Worker dispatch errors propagate after persistence; success does not
+	/// indicate remote delivery.
 	pub async fn send_edu_servers<'a, S>(&self, servers: S, serialized: EduBuf) -> Result
 	where
 		S: Stream<Item = OwnedServerName> + Send + 'a,
@@ -487,6 +509,9 @@ impl Service {
 		}
 	}
 
+	/// Asks each supplied server's worker to send pending events without adding
+	/// new content. Returns the first dispatch error; does not wait for
+	/// delivery.
 	pub async fn flush_servers<'a, S>(&self, servers: S) -> Result<()>
 	where
 		S: Stream<Item = OwnedServerName> + Send + 'a,
@@ -557,9 +582,15 @@ impl Service {
 			.await
 	}
 
-	/// Starts a transaction only if it still belongs to the current abort
-	/// generation. The abort gate covers the first poll of the HTTP operation,
-	/// then is released while the request is in flight.
+	/// Checks the destination's abort flag and generation before first polling
+	/// a federation request. `epoch` is the generation captured when the work
+	/// was built. Returns `None` if aborted or stale, or the response when
+	/// completed. The gate covers only the first poll, which may stop during
+	/// address lookup; later aborts do not cancel the remaining operation.
+	///
+	/// # Errors
+	/// Propagates federation policy, address resolution, request construction,
+	/// transport, and response errors from the federation service.
 	pub(super) async fn send_federation_request_on_if_current<T>(
 		&self,
 		client: &client::HttpClient,
@@ -699,6 +730,7 @@ impl Service {
 	}
 
 	/// Clear all queued and active requests for a specific federation server.
+	/// Includes reliable EDUs; does not set the destination's abort flag.
 	pub async fn clear_destination_queue(&self, server: &ServerName) {
 		let dest = Destination::Federation(server.to_owned());
 		self.db.delete_all_requests_for(&dest).await;
@@ -706,8 +738,12 @@ impl Service {
 		self.db.delete_all_active_requests_for(&dest).await;
 	}
 
-	/// Stop sending to a federation server: clear its stored requests and make
-	/// the workers drop its retry state, pending flushes and in-flight result.
+	/// Marks a federation destination aborted, advances its generation, asks
+	/// its worker to discard retry state, and clears stored requests, including
+	/// reliable EDUs. Waits up to 30 seconds for worker acknowledgment before
+	/// clearing storage anyway. Resume is serialized with this operation.
+	/// Requests already polled are not canceled; stale results are ignored by
+	/// the worker. Delayed flush messages are discarded while the flag is set.
 	pub async fn abort_destination(&self, server: &ServerName) {
 		// Held for the whole operation so a resume cannot interleave; the global
 		// gate below is released before waiting on the worker.
@@ -743,6 +779,8 @@ impl Service {
 	}
 
 	/// Lifts an earlier abort so the server can be sent to again.
+	/// Waits for any abort cleanup to finish; discarded requests are not
+	/// restored.
 	pub async fn resume_destination(&self, server: &ServerName) {
 		let _serial = self.abort_serial.lock(server).await;
 		let _gate = self.abort_gate.clone().write_owned().await;
@@ -754,7 +792,8 @@ impl Service {
 		self.aborted.read().unwrap().contains(server)
 	}
 
-	/// The abort generation of `server`; changes whenever it is aborted.
+	/// The abort generation of `server`, initially zero; increments on abort
+	/// until it saturates at `u64::MAX`.
 	pub(super) fn abort_epoch(&self, server: &ServerName) -> u64 {
 		self.abort_epochs
 			.read()
@@ -764,12 +803,15 @@ impl Service {
 			.unwrap_or(0)
 	}
 
+	/// Advances the server's abort generation, saturating at `u64::MAX`.
 	fn increment_abort_epoch(&self, server: &ServerName) {
 		let mut epochs = self.abort_epochs.write().unwrap();
 		let epoch = epochs.entry(server.to_owned()).or_insert(0);
 		*epoch = epoch.saturating_add(1);
 	}
 
+	/// Whether this federation destination is aborted. Push and application
+	/// service destinations always return `false`.
 	pub(super) fn is_aborted(&self, dest: &Destination) -> bool {
 		match dest {
 			| Destination::Federation(server) => self.aborted.read().unwrap().contains(server),
@@ -777,7 +819,9 @@ impl Service {
 		}
 	}
 
-	/// Clear all queued and active requests for ALL federation destinations.
+	/// Clears all ordinary queued and active requests, including push and
+	/// application service requests, and all reliable federation EDUs.
+	/// Does not set abort flags or cancel requests already in flight.
 	pub async fn clear_all_federation_queues(&self) {
 		// Walk the queued table and delete everything
 		let keys: Vec<Vec<u8>> = self

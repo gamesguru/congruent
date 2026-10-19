@@ -8,6 +8,7 @@ use crate::{Ruma, router::extract::State};
 /// # `GET /_matrix/federation/v1/version`
 ///
 /// Get version information on this server.
+/// Includes reconciliation capability flags when MSC4521 is enabled.
 pub(crate) async fn get_server_version_route(
 	State(services): State<crate::State>,
 	_body: Ruma<get_server_version::v1::Request>,

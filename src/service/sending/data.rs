@@ -79,6 +79,8 @@ impl Data {
 			.await;
 	}
 
+	/// Deletes reliable source rows matching the destination's active requests
+	/// after successful delivery. Leaves the active rows for separate cleanup.
 	pub(super) async fn delete_reliable_requests_for_active(&self, destination: &Destination) {
 		let mut active = self.active_requests_for(destination);
 		while let Some((key, _)) = active.next().await {
@@ -113,6 +115,9 @@ impl Data {
 			.await;
 	}
 
+	/// Copies nonempty queue keys to active storage and removes ordinary queue
+	/// rows. Reliable source rows remain until successful delivery or explicit
+	/// clear.
 	pub(super) fn mark_as_active<'a, I>(&self, events: I)
 	where
 		I: Iterator<Item = &'a QueueItem>,

@@ -63,6 +63,8 @@ struct RateBudget {
 }
 
 impl RateBudget {
+	/// Resets an elapsed one-second window and reports whether it has room for
+	/// another periodic exchange. The caller records the start separately.
 	fn available(&mut self, now: Instant) -> bool {
 		if now.duration_since(self.window_start) >= Duration::from_secs(1) {
 			self.window_start = now;
@@ -71,6 +73,8 @@ impl RateBudget {
 		self.started < MAX_EXCHANGES_PER_SECOND
 	}
 
+	/// Returns the remaining delay for an exhausted window, or one second when
+	/// budget remains.
 	fn wait(&self, now: Instant) -> Duration {
 		if self.started < MAX_EXCHANGES_PER_SECOND {
 			Duration::from_secs(1)
@@ -205,7 +209,9 @@ impl Service {
 	///
 	/// Admission is checked here, before any network I/O: the feature is on,
 	/// the peer is another server, both servers are in the room and the peer
-	/// is not ACL-denied.
+	/// is neither ACL-denied nor aborted. Activity requests also honor the
+	/// configured debounce. Returns whether work was queued, coalesced, or
+	/// refused; an ACL error becomes a `Denied` refusal.
 	pub async fn enqueue(&self, room_id: &RoomId, peer: &ServerName, reason: Reason) -> Enqueued {
 		if !self.enabled() {
 			return Self::record(room_id, peer, reason, Enqueued::Refused(Refusal::Disabled));
@@ -292,6 +298,8 @@ impl Service {
 		now.checked_add(wait).unwrap_or(now)
 	}
 
+	/// Processes room activity, sweep ticks, and queued retries until shutdown.
+	/// Lost activity notifications trigger a catch-up sweep over local rooms.
 	async fn run(self: Arc<Self>) -> Result<()> {
 		let interval = self
 			.services
@@ -444,6 +452,9 @@ impl Service {
 
 	/// A local write or inbound transaction touched `room_id`. Use the same
 	/// bounded peer selection as the periodic sweep.
+	/// Debounces each room and remembers suppressed activity for a later pass
+	/// while pending capacity permits. Does nothing if the feature, federation,
+	/// or activity triggers are disabled.
 	pub async fn activity(&self, room_id: &RoomId) {
 		if !self.enabled()
 			|| !self.services.server.config.allow_federation

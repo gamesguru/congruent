@@ -17,6 +17,23 @@ use slipstream::{CanonicalJsonValue, OwnedEventId, RoomId, ServerName, events::S
 use super::{get_room_version_id, to_room_version};
 use crate::rooms::{pdu_metadata::RejectionCode, timeline::RawPduId};
 
+/// Authenticates an outlier against state at the event and attempts to append
+/// it, resolving room state as needed. `is_timeline_event` enables
+/// current-state auth checks and state advancement;
+/// `predecessors_were_recovered` also forces state resolution for non-state
+/// timeline events. `state_ids_anchor` is an optional predecessor or deeper
+/// event used to recover missing state.
+///
+/// Returns the timeline ID, if appended, and whether state or predecessors were
+/// recovered. An already-present event returns its ID and `false`. Reused state
+/// missing the sender's membership may trigger a remote fetch.
+///
+/// # Errors
+/// Propagates state recovery, resolution, storage, and append errors. Failed
+/// auth returns `M_FORBIDDEN` and may persist a rejection; soft failures return
+/// `M_INVALID_PARAM` and keep the event outside the visible timeline. Policy
+/// server errors are ignored, while an explicit spam verdict soft-fails the
+/// event.
 #[implement(super::Service)]
 #[allow(clippy::too_many_arguments)]
 pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
@@ -826,12 +843,16 @@ pub async fn state_map_to_root_handle(
 
 /// Whether a reused snapshot is too incomplete to judge an event by. A full
 /// snapshot holds the membership of anyone who can send; it is not expected
-/// for a join or create event (`exempt`) or while the room is `partial`.
+/// for create events or self-joins/self-knocks (`exempt`), or while the room is
+/// `partial`.
 const fn snapshot_lacks_sender(exempt: bool, partial: bool, sender_present: bool) -> bool {
 	!exempt && !partial && !sender_present
 }
 
 /// Whether `state` leaves out the membership of `pdu`'s sender.
+/// Returns `false` for create events, self-joins, self-knocks, and
+/// partial-state rooms. A failed membership-key lookup counts as absent
+/// membership; a failed partial-state lookup counts as a full-state room.
 #[implement(super::Service)]
 async fn lacks_sender_membership(
 	&self,

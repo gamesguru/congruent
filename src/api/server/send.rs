@@ -179,6 +179,11 @@ async fn wait_for_result(
 	}
 }
 
+/// Processes PDUs and EDUs concurrently, then completes `txn_key` and notifies
+/// its waiters through `sender`. Unparsable events are skipped; a PDU pipeline
+/// failure fails the transaction, while individual PDU errors enter the
+/// response. When enabled, schedules reconciliation for touched rooms in a
+/// separate task.
 async fn process_inbound_transaction(
 	services: crate::State,
 	body: Ruma<send_transaction_message::v1::Request>,

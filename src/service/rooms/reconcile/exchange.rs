@@ -134,6 +134,8 @@ fn short_id(event_id: &EventId) -> Option<u64> {
 const HEADROOM: usize = 8;
 
 impl Service {
+	/// Returns a dropped outcome if abort, membership, or ACL checks disallow
+	/// the exchange. ACL errors are treated as denial.
 	async fn admission_lapsed(&self, room_id: &RoomId, peer: &ServerName) -> Option<Outcome> {
 		if self.services.sending.destination_aborted(peer) {
 			return Some(Outcome::Dropped("sending to the peer was aborted".to_owned()));
@@ -157,6 +159,10 @@ impl Service {
 		None
 	}
 
+	/// Compares a local snapshot with the peer and fetches offered events after
+	/// bounded sketch rounds. Snapshot, transport, and protocol errors become
+	/// outcomes for the scheduler; exhausted rounds are abandoned. Membership,
+	/// ACL, and abort checks can drop the pair without retrying it.
 	pub(super) async fn exchange(&self, key: &Key) -> Outcome {
 		let (room_id, peer) = (key.room_id(), key.peer());
 
@@ -296,6 +302,9 @@ impl Service {
 	}
 
 	/// Sends one `room_diff` for `requests` and returns what the peer decoded.
+	/// Capacity exhaustion returns failed buckets for further subdivision.
+	/// Admission changes return a dropped outcome; sketch construction,
+	/// request, and malformed-response errors return a failed outcome.
 	async fn sketch_round(
 		&self,
 		room_id: &RoomId,
@@ -398,6 +407,12 @@ impl Service {
 
 	/// Fetches the events a peer offered, a sample first, and runs the ones
 	/// that check out through the incoming-PDU pipeline.
+	/// Skips events already in the timeline or remembered as unusable for this
+	/// peer, and attempts at most 100 remaining events. A failure rate above
+	/// 25% after either batch abandons the exchange. Accepted events are
+	/// applied in depth order under the room federation lock. Events that
+	/// remain outside the timeline are remembered. Reports fetch failures and
+	/// truncation so the scheduler can retry or continue.
 	async fn fetch_offered(
 		&self,
 		room_id: &RoomId,
@@ -520,6 +535,9 @@ impl Service {
 
 	/// Fetches one event from `peer` and checks it is the event, in the room,
 	/// that was asked for.
+	/// Empty, unparsable, or mismatched responses and client errors other than
+	/// 408 or 429 are permanent failures. Other request errors are retryable;
+	/// admission changes are reported separately. Missing depth sorts last.
 	async fn fetch_event(
 		&self,
 		room_id: &RoomId,
@@ -581,6 +599,9 @@ impl Service {
 			.is_some_and(|since| since.elapsed() < REMEMBER_FOR)
 	}
 
+	/// Suppresses this peer's offer of the event for one hour, subject to
+	/// bounded memory. At capacity, removes expired entries, then the oldest
+	/// half if needed.
 	fn remember(&self, peer: &ServerName, event_id: OwnedEventId) {
 		let mut remembered = self.remembered.lock();
 		if remembered.len() >= REMEMBER_MAX {
