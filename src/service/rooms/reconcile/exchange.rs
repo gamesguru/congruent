@@ -556,13 +556,11 @@ impl Service {
 		let Some(raw) = response.pdus.first() else {
 			return FetchEvent::Failed;
 		};
-		let parsed = self.services.event_handler.parse_incoming_pdu(raw).await;
-		let (parsed_room, parsed_id, value) = match parsed {
-			| Ok(parsed) => parsed,
-			| Err(_) => {
-				warn!(target: "reconcile", %event_id, "offered event unparsable");
-				return FetchEvent::Failed;
-			},
+		let Ok((parsed_room, parsed_id, value)) =
+			self.services.event_handler.parse_incoming_pdu(raw).await
+		else {
+			warn!(target: "reconcile", %event_id, "offered event unparsable");
+			return FetchEvent::Failed;
 		};
 		if parsed_room != room_id || parsed_id != event_id {
 			return FetchEvent::Failed;
