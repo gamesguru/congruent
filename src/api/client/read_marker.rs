@@ -294,7 +294,7 @@ async fn update_read_receipt(
 
 	if !ignore_receipt {
 		let receipt_content = BTreeMap::from_iter([(
-			event_id.to_owned(),
+			slipstream::events::receipt::ReceiptEventId::from_opaque(event_id.as_str()),
 			BTreeMap::from_iter([(
 				ReceiptType::Read,
 				BTreeMap::from_iter([(
@@ -362,7 +362,7 @@ async fn update_private_read_receipt(
 	};
 
 	let receipt_content = BTreeMap::from_iter([(
-		event_id.to_owned(),
+		slipstream::events::receipt::ReceiptEventId::from_opaque(event_id.as_str()),
 		BTreeMap::from_iter([(
 			ReceiptType::ReadPrivate,
 			BTreeMap::from_iter([(
