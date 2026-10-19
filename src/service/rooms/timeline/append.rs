@@ -407,7 +407,7 @@ where
 	}
 	drop(cork);
 	let receipt_content = BTreeMap::from_iter([(
-		pdu.event_id().to_owned(),
+		slipstream::events::receipt::ReceiptEventId::from_opaque(pdu.event_id().as_str()),
 		BTreeMap::from_iter([(
 			slipstream::events::receipt::ReceiptType::ReadPrivate,
 			BTreeMap::from_iter([(

@@ -1036,7 +1036,11 @@ impl Service {
 				let Some((event_id, _)) = receipt.content.0.iter().next() else {
 					continue;
 				};
-				let Ok(event_count) = self.services.timeline.get_pdu_count(event_id).await else {
+				let Ok(event_id) = OwnedEventId::parse(event_id.as_str()) else {
+					continue;
+				};
+				let Ok(event_count) = self.services.timeline.get_pdu_count(&event_id).await
+				else {
 					continue;
 				};
 				collected.push((user_id, count, read_receipt.get().to_owned(), event_count));
@@ -2088,6 +2092,8 @@ mod tests {
 
 		assert_eq!(map.read.len(), 1);
 		assert_eq!(num.load(Ordering::Relaxed), 1);
-		assert_eq!(map.read[&user_id].event_ids, vec!["$event2".to_owned()]);
+		assert_eq!(map.read[&user_id].event_ids, vec![
+			slipstream::events::receipt::ReceiptEventId::from_opaque("$event2")
+		]);
 	}
 }

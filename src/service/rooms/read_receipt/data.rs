@@ -84,7 +84,9 @@ impl Data {
 		if let Ok(value) = self.roomuserid_readreceipt.get(&key).await {
 			if let Ok(receipts) = decode::<PublicReadReceipts>(&value) {
 				if let Some((_, receipt_event)) = receipts.get(&target_thread_key) {
-					return receipt_event.content.0.keys().next().cloned();
+					return receipt_event.content.0.keys().next().and_then(|event_id| {
+						slipstream::OwnedEventId::parse(event_id.as_str()).ok()
+					});
 				}
 			}
 
@@ -93,7 +95,7 @@ impl Data {
 					if let Some(users) = receipts.get(&ReceiptType::Read) {
 						if let Some(receipt) = users.get(user_id) {
 							if Some(&receipt.thread) == target_thread {
-								return Some(event_id);
+								return slipstream::OwnedEventId::parse(event_id.as_str()).ok();
 							}
 						}
 					}
@@ -126,7 +128,7 @@ impl Data {
 					let receipt_data = users.get(user_id)?;
 
 					if Some(&receipt_data.thread) == target_thread {
-						return Some(event_id);
+						return slipstream::OwnedEventId::parse(event_id.as_str()).ok();
 					}
 				}
 				None
@@ -183,7 +185,10 @@ impl Data {
 		let mut receipt_map = BTreeMap::new();
 		receipt_map.insert(ReceiptType::ReadPrivate, user_map);
 		let mut content = BTreeMap::new();
-		content.insert(event_id, receipt_map);
+		content.insert(
+			slipstream::events::receipt::ReceiptEventId::from_opaque(event_id.as_str()),
+			receipt_map,
+		);
 
 		Ok(Some((count, ReceiptEvent {
 			content: slipstream::events::receipt::ReceiptEventContent(content),
@@ -201,7 +206,9 @@ impl Data {
 		for (event_id, receipts) in &event.content.0 {
 			for (receipt_type, users) in receipts {
 				if let Some(receipt) = users.get(user_id) {
-					new_receipts.push((event_id.clone(), *receipt_type, receipt.clone(), false));
+					if let Ok(event_id) = slipstream::OwnedEventId::parse(event_id.as_str()) {
+						new_receipts.push((event_id, *receipt_type, receipt.clone(), false));
+					}
 				}
 			}
 		}
@@ -280,7 +287,7 @@ impl Data {
 							.get(&new_type)
 							.and_then(|users| users.get(user_id))
 							.filter(|receipt| receipt.thread == new_receipt.thread)
-							.map(|_| event_id.clone())
+							.and_then(|_| slipstream::OwnedEventId::parse(event_id.as_str()).ok())
 					});
 
 			if let Some(existing_event_id) = existing_event_id {
@@ -313,7 +320,9 @@ impl Data {
 			let new_count = self.services.globals.next_count().unwrap();
 			let new_event = ReceiptEvent {
 				content: slipstream::events::receipt::ReceiptEventContent(BTreeMap::from([(
-					new_event_id,
+					slipstream::events::receipt::ReceiptEventId::from_opaque(
+						new_event_id.as_str(),
+					),
 					BTreeMap::from([(
 						new_type,
 						BTreeMap::from([(user_id.to_owned(), new_receipt)]),
@@ -560,10 +569,13 @@ impl Data {
 			// `(event, type, user)` arrives, MSC4102 requires the unthreaded receipt
 			// to win in the current sync/federation window too.
 			if target_event_id == *new_event_id {
+				let receipt_event_id = slipstream::events::receipt::ReceiptEventId::from_opaque(
+					new_event_id.as_str(),
+				);
 				let has_same_event_unthreaded = existing_event
 					.content
 					.0
-					.get(new_event_id)
+					.get(&receipt_event_id)
 					.and_then(|receipts| receipts.get(new_type))
 					.and_then(|users| users.get(user_id))
 					.is_some_and(|receipt| receipt.thread == ReceiptThread::Unthreaded);
@@ -601,7 +613,7 @@ impl Data {
 									ReceiptThread::Unthreaded | ReceiptThread::Main
 								)
 							})
-							.map(|_| ev_id.clone())
+							.and_then(|_| slipstream::OwnedEventId::parse(ev_id.as_str()).ok())
 					});
 
 			if let Some(existing_ev_id) = existing_unthreaded_event_id {
