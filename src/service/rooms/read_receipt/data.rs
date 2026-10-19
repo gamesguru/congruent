@@ -206,9 +206,7 @@ impl Data {
 		for (event_id, receipts) in &event.content.0 {
 			for (receipt_type, users) in receipts {
 				if let Some(receipt) = users.get(user_id) {
-					if let Ok(event_id) = slipstream::OwnedEventId::parse(event_id.as_str()) {
-						new_receipts.push((event_id, *receipt_type, receipt.clone(), false));
-					}
+					new_receipts.push((event_id.clone(), *receipt_type, receipt.clone(), false));
 				}
 			}
 		}
@@ -266,10 +264,27 @@ impl Data {
 		}
 
 		// MSC4102: Synthesize unthreaded receipts for threaded ones
+		let timeline_receipts: Vec<_> = new_receipts
+			.iter()
+			.filter_map(|(event_id, receipt_type, receipt, synthetic)| {
+				slipstream::OwnedEventId::parse(event_id.as_str())
+					.ok()
+					.map(|event_id| (event_id, *receipt_type, receipt.clone(), *synthetic))
+			})
+			.collect();
 		let synthetic_receipts = self
-			.synthesize_msc4102_unthreaded(user_id, &new_receipts, &existing_event)
+			.synthesize_msc4102_unthreaded(user_id, &timeline_receipts, &existing_event)
 			.await;
-		new_receipts.extend(synthetic_receipts);
+		new_receipts.extend(synthetic_receipts.into_iter().map(
+			|(event_id, receipt_type, receipt, synthetic)| {
+				(
+					slipstream::events::receipt::ReceiptEventId::from_opaque(event_id.as_str()),
+					receipt_type,
+					receipt,
+					synthetic,
+				)
+			},
+		));
 
 		// Drop receipts that would move the user's read position backwards for the
 		// same (type, thread). Federation EDUs (and replayed client requests) can
@@ -291,19 +306,23 @@ impl Data {
 					});
 
 			if let Some(existing_event_id) = existing_event_id {
-				if existing_event_id != new_event_id {
-					if let (
-						Ok(PduCount::Normal(new_count)),
-						Ok(PduCount::Normal(existing_count)),
-					) = (
-						self.services.timeline.get_pdu_count(&new_event_id).await,
-						self.services
-							.timeline
-							.get_pdu_count(&existing_event_id)
-							.await,
-					) {
-						if existing_count > new_count {
-							continue;
+				if existing_event_id.as_str() != new_event_id.as_str() {
+					if let Ok(new_event_id) =
+						slipstream::OwnedEventId::parse(new_event_id.as_str())
+					{
+						if let (
+							Ok(PduCount::Normal(new_count)),
+							Ok(PduCount::Normal(existing_count)),
+						) = (
+							self.services.timeline.get_pdu_count(&new_event_id).await,
+							self.services
+								.timeline
+								.get_pdu_count(&existing_event_id)
+								.await,
+						) {
+							if existing_count > new_count {
+								continue;
+							}
 						}
 					}
 				}
@@ -320,9 +339,7 @@ impl Data {
 			let new_count = self.services.globals.next_count().unwrap();
 			let new_event = ReceiptEvent {
 				content: slipstream::events::receipt::ReceiptEventContent(BTreeMap::from([(
-					slipstream::events::receipt::ReceiptEventId::from_opaque(
-						new_event_id.as_str(),
-					),
+					new_event_id.clone(),
 					BTreeMap::from([(
 						new_type,
 						BTreeMap::from([(user_id.to_owned(), new_receipt)]),
