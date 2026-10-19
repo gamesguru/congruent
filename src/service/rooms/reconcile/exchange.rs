@@ -559,8 +559,8 @@ impl Service {
 		let parsed = self.services.event_handler.parse_incoming_pdu(raw).await;
 		let (parsed_room, parsed_id, value) = match parsed {
 			| Ok(parsed) => parsed,
-			| Err(e) => {
-				warn!(target: "reconcile", %event_id, "offered event unparsable: {e}");
+			| Err(_) => {
+				warn!(target: "reconcile", %event_id, "offered event unparsable");
 				return FetchEvent::Failed;
 			},
 		};
