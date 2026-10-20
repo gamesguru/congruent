@@ -547,8 +547,8 @@ impl Service {
 	}
 
 	/// Drains pending results until the configured shutdown timeout. Cleans up
-	/// successful current-generation work; failed and stale results leave
-	/// storage.
+	/// successful current-generation work; failed and stale results keep their
+	/// rows in storage.
 	async fn finish_responses<'a>(&'a self, futures: &mut SendingFutures<'a>) {
 		let timeout = self.server.config.sender_shutdown_timeout;
 		let timeout = Duration::from_secs(timeout);
@@ -1036,12 +1036,9 @@ impl Service {
 				let Some((event_id, _)) = receipt.content.0.iter().next() else {
 					continue;
 				};
-				let Ok(event_id) = OwnedEventId::parse(event_id.as_str()) else {
-					continue;
-				};
-				let Ok(event_count) = self.services.timeline.get_pdu_count(&event_id).await
-				else {
-					continue;
+				let event_count = match OwnedEventId::parse(event_id.as_str()) {
+					| Ok(event_id) => self.services.timeline.get_pdu_count(&event_id).await.ok(),
+					| Err(_) => None,
 				};
 				collected.push((user_id, count, read_receipt.get().to_owned(), event_count));
 			}

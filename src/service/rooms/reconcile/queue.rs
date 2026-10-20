@@ -237,8 +237,7 @@ impl Queue {
 			.iter()
 			.filter(|(_, e)| {
 				!e.queued
-					&& !e.in_flight
-					&& !e.retry_pending
+					&& !e.in_flight && !e.retry_pending
 					&& e.not_before.is_none_or(|t| t <= now)
 					&& e.synchronized_until.is_none_or(|t| t <= now)
 			})
