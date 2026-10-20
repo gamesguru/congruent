@@ -620,12 +620,8 @@ impl Service {
 		drop(gate);
 		let mut request = Box::pin(self.services.federation.execute_on(client, dest, request));
 		loop {
-			match futures::future::select(
-				Box::pin(abort_notifications.changed()),
-				request.as_mut(),
-			)
-			.await
-			{
+			let changed = std::pin::pin!(abort_notifications.changed());
+			match futures::future::select(changed, request.as_mut()).await {
 				| futures::future::Either::Left((changed, _)) => {
 					if changed.is_err()
 						|| self.destination_aborted(dest)
