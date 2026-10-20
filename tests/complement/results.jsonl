@@ -743,7 +743,7 @@
 {"Action":"pass","Test":"TestPartialStateJoin/Outgoing_device_list_updates/Device_list_updates_reach_newly_joined_servers_in_partial_state_rooms"}
 {"Action":"pass","Test":"TestPartialStateJoin/PartialStateJoinContinuesAfterRestart"}
 {"Action":"pass","Test":"TestPartialStateJoin/PartialStateJoinSyncsUsingOtherHomeservers"}
-{"Action":"skip","Test":"TestPartialStateJoin/Purge_during_resync"}
+{"Action":"pass","Test":"TestPartialStateJoin/Purge_during_resync"}
 {"Action":"pass","Test":"TestPartialStateJoin/Rejected_events_remain_rejected_after_resync"}
 {"Action":"pass","Test":"TestPartialStateJoin/Rejects_make_join_during_partial_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/Rejects_make_knock_during_partial_join"}
