@@ -156,12 +156,17 @@ impl CacheCommit {
 		sender_user: &UserId,
 		sender_device: &DeviceId,
 		conn_id: Option<String>,
+		expected_pos: Option<u64>,
 		pos: Option<u64>,
 	) {
 		let snake_key = into_snake_key(sender_user, sender_device, conn_id);
-		services
-			.sync
-			.commit_snake_sync(&snake_key, self.known_rooms, self.timeline_limits, pos);
+		services.sync.commit_snake_sync(
+			&snake_key,
+			self.known_rooms,
+			self.timeline_limits,
+			expected_pos,
+			pos,
+		);
 	}
 }
 
@@ -798,15 +803,22 @@ async fn sync_events_v5_route_inner(
 		thread_subscriptions_enabled,
 	)
 	.await?;
-	// Nothing below awaits: the connection state advances only once the response
-	// is fully built, so a request the client drops during the build leaves it
-	// untouched and a retry at the same `pos` resends the same events. This does
-	// not cover a response lost after this point; that still needs the client to
-	// resync.
+	// Per-room cursors, timeline limits and `pos` advance only once the response
+	// is fully built, so a request dropped during the build leaves them untouched.
+	// Sticky request parameters are stored at request start and are not rolled
+	// back. A response lost after the commit still requires the client to resync.
 	let pos = endpoint
 		.validates_exact_pos()
 		.then(|| response.pos.parse().unwrap_or(globalsince));
-	commit.apply(services, sender_user, sender_device, request.conn_id.clone(), pos);
+	let expected_pos = endpoint.validates_exact_pos().then_some(globalsince);
+	commit.apply(
+		services,
+		sender_user,
+		sender_device,
+		request.conn_id.clone(),
+		expected_pos,
+		pos,
+	);
 	sync_events_v5_json_response(&response, room_extras, thread_subscriptions)
 }
 

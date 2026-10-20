@@ -516,12 +516,22 @@ impl Service {
 		key: &SnakeConnectionsKey,
 		known_rooms: Vec<(String, BTreeSet<OwnedRoomId>, u64)>,
 		timeline_limits: Option<BTreeMap<OwnedRoomId, usize>>,
+		expected_pos: Option<u64>,
 		pos: Option<u64>,
 	) {
 		let cached_arc = self
 			.snake_connections
 			.get_with(key.clone(), || Arc::new(SyncMutex::new(SnakeSyncCache::default())));
 		let mut cached = cached_arc.lock();
+
+		// A sync may have spent a long time building from an older snapshot while
+		// another request for this connection completed. Do not let its deferred
+		// cursors, limits, or position overwrite the newer commit.
+		if expected_pos
+			.is_some_and(|expected| cached.last_pos.is_some_and(|current| current > expected))
+		{
+			return;
+		}
 
 		for (list_id, new_cached_rooms, globalsince) in known_rooms {
 			for (room_id, lastsince) in cached.known_rooms.entry(list_id.clone()).or_default() {
