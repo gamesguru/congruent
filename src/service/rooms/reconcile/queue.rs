@@ -620,7 +620,7 @@ mod tests {
 		assert_eq!(q.enqueue(a.clone(), Reason::Periodic, now), Enqueued::Queued);
 		assert_eq!(q.next_ready(now, 4, 4, true), Some((a.clone(), Reason::Periodic)));
 		q.finish(&a, Verdict::Failed, now);
-		assert_eq!(q.enqueue(b, Reason::Periodic, now), Enqueued::Queued);
+		assert_eq!(q.enqueue(b.clone(), Reason::Periodic, now), Enqueued::Queued);
 
 		// `a` is still backing off, but yields its idle slot to new work.
 		assert_eq!(q.enqueue(c.clone(), Reason::Explicit, now), Enqueued::Queued);
