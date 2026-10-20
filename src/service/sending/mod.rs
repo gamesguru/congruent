@@ -7,11 +7,9 @@ pub mod stats;
 
 use std::{
 	fmt::Debug,
-	future::Future,
 	hash::{DefaultHasher, Hash, Hasher},
 	iter::once,
 	sync::Arc,
-	task::Poll,
 	time::Duration,
 };
 
@@ -59,6 +57,9 @@ pub struct Service {
 	/// Bumped on every abort of a destination; work built before the bump is
 	/// stale even once the destination is resumed.
 	abort_epochs: std::sync::RwLock<std::collections::HashMap<OwnedServerName, u64>>,
+	/// Wakes federation requests so they can cancel address lookup or HTTP
+	/// startup when their destination's abort epoch changes.
+	abort_notifications: tokio::sync::watch::Sender<()>,
 	/// Monotonic counter for outgoing federation transaction IDs, seeded from
 	/// the current unix-ms timestamp at startup and incremented per
 	/// transaction sent (same scheme Synapse's `TransactionManager` uses).
@@ -110,6 +111,7 @@ const EDU_VEC_CAP: usize = 1;
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let num_senders = num_senders(&args);
+		let (abort_notifications, _) = tokio::sync::watch::channel(());
 		Ok(Arc::new(Self {
 			db: Data::new(&args),
 			stats: stats::FederationStats::default(),
@@ -118,6 +120,7 @@ impl crate::Service for Service {
 			abort_gate: Arc::new(tokio::sync::RwLock::new(())),
 			abort_serial: MutexMap::new(),
 			abort_epochs: std::sync::RwLock::new(std::collections::HashMap::new()),
+			abort_notifications,
 			next_txn_id: std::sync::atomic::AtomicU64::new(
 				slipstream::MilliSecondsSinceUnixEpoch::now().get(),
 			),
@@ -582,11 +585,11 @@ impl Service {
 			.await
 	}
 
-	/// Checks the destination's abort flag and generation before first polling
-	/// a federation request. `epoch` is the generation captured when the work
-	/// was built. Returns `None` if aborted or stale, or the response when
-	/// completed. The gate covers only the first poll, which may stop during
-	/// address lookup; later aborts do not cancel the remaining operation.
+	/// Checks the destination's abort flag and generation before starting a
+	/// federation request, then cancels it if an abort changes that generation
+	/// while address lookup or HTTP startup is pending. `epoch` is the generation
+	/// captured when the work was built. Returns `None` if aborted or stale, or
+	/// the response when completed.
 	///
 	/// # Errors
 	/// Propagates federation policy, address resolution, request construction,
@@ -607,24 +610,23 @@ impl Service {
 			.acquire_owned()
 			.await
 			.expect("Semaphore should not be closed");
+		let mut abort_notifications = self.abort_notifications.subscribe();
 		let gate = self.abort_gate.clone().read_owned().await;
 		if self.destination_aborted(dest) || self.abort_epoch(dest) != epoch {
 			return Ok(None);
 		}
-
-		let mut request = Box::pin(self.services.federation.execute_on(client, dest, request));
-		let first_poll = futures::future::poll_fn(|cx| {
-			Poll::Ready(match request.as_mut().poll(cx) {
-				| Poll::Ready(result) => Some(result),
-				| Poll::Pending => None,
-			})
-		})
-		.await;
 		drop(gate);
-
-		match first_poll {
-			| Some(result) => result.map(Some),
-			| None => request.await.map(Some),
+		let mut request = Box::pin(self.services.federation.execute_on(client, dest, request));
+		loop {
+			tokio::select! {
+				biased;
+				changed = abort_notifications.changed() => {
+					if changed.is_err() || self.destination_aborted(dest) || self.abort_epoch(dest) != epoch {
+						return Ok(None);
+					}
+				}
+				result = &mut request => return result.map(Some),
+			}
 		}
 	}
 
@@ -742,8 +744,10 @@ impl Service {
 	/// its worker to discard retry state, and clears stored requests, including
 	/// reliable EDUs. Waits up to 30 seconds for worker acknowledgment before
 	/// clearing storage anyway. Resume is serialized with this operation.
-	/// Requests already polled are not canceled; stale results are ignored by
-	/// the worker. Delayed flush messages are discarded while the flag is set.
+	/// Requests still resolving or starting are canceled when their epoch
+	/// changes; requests already on the wire cannot be recalled. Stale results
+	/// are ignored by the worker, and delayed flush messages are discarded while
+	/// the flag is set.
 	pub async fn abort_destination(&self, server: &ServerName) {
 		// Held for the whole operation so a resume cannot interleave; the global
 		// gate below is released before waiting on the worker.
@@ -808,6 +812,7 @@ impl Service {
 		let mut epochs = self.abort_epochs.write().unwrap();
 		let epoch = epochs.entry(server.to_owned()).or_insert(0);
 		*epoch = epoch.saturating_add(1);
+		self.abort_notifications.send_replace(());
 	}
 
 	/// Whether this federation destination is aborted. Push and application
