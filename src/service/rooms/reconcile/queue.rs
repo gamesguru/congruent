@@ -227,22 +227,28 @@ impl Queue {
 		Enqueued::Queued
 	}
 
-	/// Drops an idle pair whose cooldowns have already been served, to
-	/// make room for a new one. Returns whether anything was dropped. Pairs
-	/// that are queued, running, still backing off, or waiting for a due retry
-	/// to be requeued are never dropped, so eviction cannot cut a dead peer's
-	/// backoff short or lose its retry.
+	/// Drops an idle pair whose cooldowns have already been served to make room
+	/// for a new one. If there is no such pair, the oldest idle failed pair may
+	/// yield its slot under queue pressure; its retry remains eligible while it
+	/// is tracked. Queued and running pairs are never dropped.
 	fn evict_idle(&mut self, now: Instant) -> bool {
 		let victim = self
 			.entries
 			.iter()
 			.filter(|(_, e)| {
 				!e.queued
-					&& !e.in_flight && !e.retry_pending
+					&& !e.in_flight
+					&& !e.retry_pending
 					&& e.not_before.is_none_or(|t| t <= now)
 					&& e.synchronized_until.is_none_or(|t| t <= now)
 			})
 			.min_by_key(|(_, e)| e.not_before)
+			.or_else(|| {
+				self.entries
+					.iter()
+					.filter(|(_, e)| !e.queued && !e.in_flight && e.retry_pending)
+					.min_by_key(|(_, e)| e.not_before)
+			})
 			.map(|(k, _)| k.clone());
 		victim.is_some_and(|key| self.entries.remove(&key).is_some())
 	}
@@ -479,7 +485,7 @@ mod tests {
 	}
 
 	#[test]
-	fn retry_pending_pair_cannot_be_evicted_before_requeue() {
+	fn retry_pending_pair_yields_capacity_when_queue_is_full() {
 		let now = Instant::now();
 		let mut queue = Queue::new(1);
 		let failed = key("!a:example.org", "peer.example");
@@ -488,10 +494,9 @@ mod tests {
 		queue.finish(&failed, Verdict::Failed, now);
 
 		let another = key("!b:example.org", "peer.example");
-		assert_eq!(
-			queue.enqueue(another, Reason::Periodic, now + BACKOFF_MAX),
-			Enqueued::Refused(Refusal::QueueFull)
-		);
+		assert_eq!(queue.enqueue(another.clone(), Reason::Periodic, now), Enqueued::Queued);
+		assert!(!queue.entries.contains_key(&failed));
+		assert!(queue.entries.contains_key(&another));
 	}
 
 	#[test]
@@ -606,7 +611,7 @@ mod tests {
 	}
 
 	#[test]
-	fn a_full_queue_keeps_a_due_retry_until_it_runs() {
+	fn a_full_queue_evicts_an_idle_failed_retry_before_a_new_pair() {
 		let now = Instant::now();
 		let mut q = Queue::new(2);
 		let a = key("!a:example.org", "peer.example");
@@ -618,22 +623,11 @@ mod tests {
 		q.finish(&a, Verdict::Failed, now);
 		assert_eq!(q.enqueue(b, Reason::Periodic, now), Enqueued::Queued);
 
-		// `a` is still backing off, `b` is queued: nothing may go.
-		assert_eq!(
-			q.enqueue(c.clone(), Reason::Periodic, now),
-			Enqueued::Refused(Refusal::QueueFull)
-		);
-		assert!(q.entries.contains_key(&a));
-
-		// A due retry remains tracked until the worker requeues it.
-		let later = now + BACKOFF_MAX;
-		assert_eq!(
-			q.enqueue(c.clone(), Reason::Periodic, later),
-			Enqueued::Refused(Refusal::QueueFull)
-		);
-		assert!(q.entries.contains_key(&a));
-		assert!(q.requeue_due_retries(later));
-		assert_eq!(q.enqueue(c, Reason::Periodic, later), Enqueued::Refused(Refusal::QueueFull));
+		// `a` is still backing off, but yields its idle slot to new work.
+		assert_eq!(q.enqueue(c.clone(), Reason::Explicit, now), Enqueued::Queued);
+		assert!(!q.entries.contains_key(&a));
+		assert!(q.entries.contains_key(&b));
+		assert!(q.entries.contains_key(&c));
 	}
 
 	#[test]
