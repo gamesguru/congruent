@@ -620,14 +620,21 @@ impl Service {
 		drop(gate);
 		let mut request = Box::pin(self.services.federation.execute_on(client, dest, request));
 		loop {
-			tokio::select! {
-				biased;
-				changed = abort_notifications.changed() => {
-					if changed.is_err() || self.destination_aborted(dest) || self.abort_epoch(dest) != epoch {
+			match futures::future::select(
+				Box::pin(abort_notifications.changed()),
+				request.as_mut(),
+			)
+			.await
+			{
+				| futures::future::Either::Left((changed, _)) => {
+					if changed.is_err()
+						|| self.destination_aborted(dest)
+						|| self.abort_epoch(dest) != epoch
+					{
 						return Ok(None);
 					}
-				}
-				result = &mut request => return result.map(Some),
+				},
+				| futures::future::Either::Right((result, _)) => return result.map(Some),
 			}
 		}
 	}
