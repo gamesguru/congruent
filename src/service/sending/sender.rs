@@ -278,7 +278,9 @@ impl Service {
 		}
 
 		match response {
-			| Ok(dest) => self.handle_response_ok(&dest, futures, statuses).await,
+			| Ok(dest) =>
+				self.handle_response_ok(&dest, epoch, futures, statuses)
+					.await,
 			| Err(err) => self.handle_response_err(err.0, statuses, &err.1),
 		}
 	}
@@ -383,6 +385,7 @@ impl Service {
 	async fn handle_response_ok<'a>(
 		&'a self,
 		dest: &Destination,
+		epoch: Option<u64>,
 		futures: &mut SendingFutures<'a>,
 		statuses: &mut CurTransactionStatus,
 	) {
@@ -417,10 +420,16 @@ impl Service {
 
 		if !new_events.is_empty() && has_pdu {
 			// Immediately send the critical PDUs without trailing cooldown!
-			self.db.mark_as_active(new_events.iter());
+			if !self
+				.mark_as_active_if_current(dest, epoch, &new_events)
+				.await
+			{
+				statuses.remove(dest);
+				return;
+			}
 			let new_events_vec = new_events.into_iter().map(|(_, e)| e).collect();
 			statuses.insert(dest.clone(), TransactionStatus::Running);
-			futures.push(self.send_events(dest.clone(), new_events_vec, None));
+			futures.push(self.send_events(dest.clone(), new_events_vec, None, epoch));
 			return;
 		}
 
@@ -457,6 +466,32 @@ impl Service {
 
 		let dest_clone = dest.clone();
 		self.reschedule_flush(dest_clone, Duration::from_millis(300));
+	}
+
+	/// Activates selected queue rows only while their captured federation
+	/// generation is still current. The read gate makes the generation check and
+	/// activation atomic with abort's flag/epoch update; it is held only for the
+	/// synchronous database writes, never while scanning or awaiting the network.
+	async fn mark_as_active_if_current(
+		&self,
+		dest: &Destination,
+		epoch: Option<u64>,
+		events: &[QueueItem],
+	) -> bool {
+		if let Destination::Federation(server) = dest {
+			let Some(epoch) = epoch else {
+				return false;
+			};
+			let _guard = self.abort_gate.clone().read_owned().await;
+			if self.is_aborted(dest) || self.abort_epoch(server) != epoch {
+				return false;
+			}
+			self.db.mark_as_active(events.iter());
+			return true;
+		}
+
+		self.db.mark_as_active(events.iter());
+		true
 	}
 
 	/// Handles a queued event, flush, or abort acknowledgment. Discards work
@@ -511,7 +546,9 @@ impl Service {
 			reqs
 		};
 
-		if let Ok(Some((events, edu_count))) = self.select_events(&msg.dest, iv, statuses).await {
+		if let Ok(Some((events, edu_count))) =
+			self.select_events(&msg.dest, iv, statuses, epoch).await
+		{
 			// An abort may have landed while the events were being selected, even
 			// if a resume has since lifted it: the epoch tells those apart from a
 			// destination that was never touched.
@@ -527,7 +564,7 @@ impl Service {
 				// take a row re-queued under the same key after a resume.
 				statuses.remove(&msg.dest);
 			} else if !events.is_empty() {
-				futures.push(self.send_events(msg.dest, events, edu_count));
+				futures.push(self.send_events(msg.dest, events, edu_count, epoch));
 			} else {
 				statuses.remove(&msg.dest);
 			}
@@ -617,6 +654,7 @@ impl Service {
 							old_dest,
 							std::mem::take(&mut current_events),
 							None,
+							None,
 						));
 					}
 				}
@@ -685,6 +723,7 @@ impl Service {
 		dest: &Destination,
 		new_events: Vec<QueueItem>, // Events we want to send: event and full key
 		statuses: &mut CurTransactionStatus,
+		epoch: Option<u64>,
 	) -> Result<Option<(Vec<SendingEvent>, Option<u64>)>> {
 		let has_pdu = new_events
 			.iter()
@@ -720,7 +759,12 @@ impl Service {
 		// Compose the next transaction
 		let _cork = self.db.db.cork();
 		if !new_events.is_empty() {
-			self.db.mark_as_active(new_events.iter());
+			if !self
+				.mark_as_active_if_current(dest, epoch, &new_events)
+				.await
+			{
+				return Ok(None);
+			}
 			for (_, e) in new_events {
 				events.push(e);
 			}
@@ -1188,6 +1232,7 @@ impl Service {
 		dest: Destination,
 		events: Vec<SendingEvent>,
 		edu_count: Option<u64>,
+		epoch: Option<u64>,
 	) -> SendingFuture<'_> {
 		debug_assert!(
 			!events.is_empty() || matches!(dest, Destination::Federation(_)),
@@ -1198,7 +1243,7 @@ impl Service {
 				let count = events.len();
 				// Bind the transaction to the abort generation it was built under, so
 				// work queued before an abort cannot start after a later resume.
-				let epoch = self.abort_epoch(&server);
+				let epoch = epoch.unwrap_or_else(|| self.abort_epoch(&server));
 				async move {
 					let dest = Destination::Federation(server.clone());
 					{
