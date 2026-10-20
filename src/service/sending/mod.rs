@@ -586,10 +586,12 @@ impl Service {
 	}
 
 	/// Checks the destination's abort flag and generation before starting a
-	/// federation request, then cancels it if an abort changes that generation
-	/// while address lookup or HTTP startup is pending. `epoch` is the generation
-	/// captured when the work was built. Returns `None` if aborted or stale, or
-	/// the response when completed.
+	/// federation request, then drops the request future if an abort changes that
+	/// generation. This can happen during address lookup, HTTP startup, or while
+	/// awaiting the response. A request canceled in flight may already have been
+	/// processed by the remote. `epoch` is the generation captured when the work
+	/// was built. Returns `None` if aborted or stale, or the response when
+	/// completed.
 	///
 	/// # Errors
 	/// Propagates federation policy, address resolution, request construction,
@@ -744,10 +746,10 @@ impl Service {
 	/// its worker to discard retry state, and clears stored requests, including
 	/// reliable EDUs. Waits up to 30 seconds for worker acknowledgment before
 	/// clearing storage anyway. Resume is serialized with this operation.
-	/// Requests still resolving or starting are canceled when their epoch
-	/// changes; requests already on the wire cannot be recalled. Stale results
-	/// are ignored by the worker, and delayed flush messages are discarded while
-	/// the flag is set.
+	/// Request futures are dropped when their epoch changes, including while
+	/// awaiting a response; the remote may already have processed an in-flight
+	/// request. Stale results are ignored by the worker, and delayed flush
+	/// messages are discarded while the flag is set.
 	pub async fn abort_destination(&self, server: &ServerName) {
 		// Held for the whole operation so a resume cannot interleave; the global
 		// gate below is released before waiting on the worker.
