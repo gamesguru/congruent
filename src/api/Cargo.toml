@@ -74,6 +74,7 @@ matchit.workspace = true
 percent-encoding.workspace = true
 rand.workspace = true
 rezzy.workspace = true
+rezzy-recon.workspace = true
 slipstream.workspace = true
 serde_urlencoded.workspace = true
 serde.workspace = true

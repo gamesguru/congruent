@@ -205,14 +205,26 @@ where
 	}
 }
 
+/// Parses the typed endpoint request from the supplied canonical JSON object,
+/// or consumes the raw body when no object is supplied. Conversion failures
+/// become `M_BAD_JSON` errors.
 fn make_body<T>(request: &mut Request, json_body: Option<&mut CanonicalJsonValue>) -> Result<T>
 where
 	T: IncomingRequest,
 {
 	let body = take_body(request, json_body);
+	let body_len = body.len();
 	let http_request = into_http_request(request, body);
 	let path = request.parts.uri.path();
 	T::try_from_http_request(http_request, request.path.0.as_slice()).map_err(|e| {
+		if path.starts_with("/_matrix/federation/") {
+			// Bodies carry private room events; log only their shape.
+			conduwuit::debug!(
+				target: "federation_debug",
+				%path, body_len, path_args = ?request.path.0,
+				"typed request failed to deserialize: {e}"
+			);
+		}
 		err!(Request(BadJson(debug_warn!("Failed to deserialize request for {path}: {e}"))))
 	})
 }

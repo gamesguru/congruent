@@ -154,14 +154,41 @@ pub(super) async fn remote_user_in_rooms(&self, user_id: OwnedUserId) -> Result 
 		.await
 }
 
+/// Displays queue counts, optionally filtered by server, or clears, aborts, or
+/// resumes sending. Clearing without a server requires `all`; abort and resume
+/// require a server. Restricted invocations, invalid options, and response
+/// writing failures are returned as errors.
 #[admin_command]
+#[allow(clippy::fn_params_excessive_bools)]
 pub(super) async fn sending_queue(
 	&self,
 	server: Option<OwnedServerName>,
 	clear: bool,
 	all: bool,
+	abort: bool,
+	resume: bool,
 ) -> Result {
 	self.bail_restricted()?;
+
+	if resume {
+		let Some(server) = server else {
+			return Err!(Request(InvalidParam("--resume requires a server.")));
+		};
+		self.services.sending.resume_destination(&server).await;
+		return self
+			.write_str(&format!("Resumed sending to {server}"))
+			.await;
+	}
+
+	if abort {
+		let Some(server) = server else {
+			return Err!(Request(InvalidParam("--abort requires a server.")));
+		};
+		self.services.sending.abort_destination(&server).await;
+		return self
+			.write_str(&format!("Aborted sending to {server}"))
+			.await;
+	}
 
 	if clear {
 		if let Some(ref server) = server {
@@ -214,4 +241,20 @@ pub(super) async fn sending_queue(
 	)?;
 
 	self.write_str(&out).await
+}
+
+/// Requests reconciliation and writes the queue admission result without
+/// waiting for an exchange. Refusals are reported in the response; restricted
+/// invocations and response writing failures are returned as errors.
+#[admin_command]
+pub(super) async fn reconcile(&self, room_id: OwnedRoomId, server: OwnedServerName) -> Result {
+	self.bail_restricted()?;
+
+	let outcome = self
+		.services
+		.rooms
+		.reconcile
+		.enqueue(&room_id, &server, service::rooms::reconcile::Reason::Explicit)
+		.await;
+	self.write_str(&format!("{outcome:?}")).await
 }

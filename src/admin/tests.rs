@@ -2333,7 +2333,9 @@ async fn test_yolo_heal_receipts() {
 	});
 	let mut types1 = std::collections::BTreeMap::new();
 	types1.insert(ReceiptType::Read, users1);
-	content1.0.insert(slipstream::event_id!("$event1"), types1);
+	content1
+		.0
+		.insert(slipstream::events::receipt::ReceiptEventId::from_opaque("$event1"), types1);
 
 	let event1 = ReceiptEvent {
 		content: content1,
@@ -2348,7 +2350,9 @@ async fn test_yolo_heal_receipts() {
 	});
 	let mut types2 = std::collections::BTreeMap::new();
 	types2.insert(ReceiptType::Read, users2);
-	content2.0.insert(slipstream::event_id!("$event2"), types2);
+	content2
+		.0
+		.insert(slipstream::events::receipt::ReceiptEventId::from_opaque("$event2"), types2);
 
 	let event2 = ReceiptEvent {
 		content: content2,

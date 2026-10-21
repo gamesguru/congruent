@@ -75,9 +75,9 @@ dependencies = [
 
 [[package]]
 name = "arc-swap"
-version = "1.9.2"
+version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
+checksum = "380962b3d93b99642e50b9febf72c071e97e8b32d86eae9cf4ef582bb960ae6e"
 dependencies = [
  "rustversion",
 ]
@@ -533,9 +533,9 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "combine"
-version = "4.6.8"
+version = "4.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfc320937d09e6de266b31b9afb480f197d7a861be86be7cb2ea7e5d1bfffc5e"
+checksum = "4356eba6976435498d05a311ee9fc486da3bc81c200d3f0d7dd9703b41913f92"
 dependencies = [
  "bytes",
  "memchr",
@@ -623,6 +623,7 @@ dependencies = [
  "percent-encoding",
  "rand",
  "rezzy",
+ "rezzy-recon",
  "rustls",
  "serde",
  "serde_urlencoded",
@@ -827,6 +828,7 @@ dependencies = [
  "rand",
  "regex",
  "rezzy",
+ "rezzy-recon",
  "roaring",
  "rustls",
  "sd-notify",
@@ -1926,9 +1928,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.190"
+version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "libloading"
@@ -2122,7 +2124,7 @@ dependencies = [
 [[package]]
 name = "mtx-slipstream"
 version = "0.1.0"
-source = "git+https://gitlab.com/Wombat-Foundation/mtx-slipstream.git?branch=dev#45c816486afdf93ae59b7536fe7bfd6349794378"
+source = "git+https://gitlab.com/Wombat-Foundation/mtx-slipstream.git?branch=dev#5af723a78c82f316c4bc6b109fb949e529a5d66c"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -2134,7 +2136,7 @@ dependencies = [
 [[package]]
 name = "mtxdb"
 version = "0.1.0-beta.2"
-source = "git+https://gitlab.com/Wombat-Foundation/mtxdb.git?branch=dev#9f9951713ff58f109ceac14de005d059462ff097"
+source = "git+https://gitlab.com/Wombat-Foundation/mtxdb.git?branch=dev#81facf9a53e0baa071de6375b369fadc5ee32fa3"
 dependencies = [
  "arc-swap",
  "blake3",
@@ -2495,7 +2497,7 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 [[package]]
 name = "rezzy"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master#44c098d0d1f3301053583cb3d1ff7302c6d79722"
+source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=dev#1f241eb820bf5bd63eed973caf89090c12b8b251"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -2509,7 +2511,7 @@ dependencies = [
 [[package]]
 name = "rezzy-json"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master#44c098d0d1f3301053583cb3d1ff7302c6d79722"
+source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=dev#1f241eb820bf5bd63eed973caf89090c12b8b251"
 dependencies = [
  "ryu",
 ]
@@ -2517,7 +2519,7 @@ dependencies = [
 [[package]]
 name = "rezzy-recon"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=master#44c098d0d1f3301053583cb3d1ff7302c6d79722"
+source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=dev#1f241eb820bf5bd63eed973caf89090c12b8b251"
 dependencies = [
  "base64 0.23.1",
  "sha2",
@@ -2663,9 +2665,9 @@ dependencies = [
 
 [[package]]
 name = "schannel"
-version = "0.1.29"
+version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
+checksum = "9cb23c424d8ee841bb4d813677ca237e2a610067d594fec130f87d6093495ab5"
 dependencies = [
  "windows-sys 0.61.2",
 ]
@@ -3664,27 +3666,27 @@ checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
 
 [[package]]
 name = "zstd"
-version = "0.14.2"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "057cfd910cfac363a0ada849592624b4c9ff2e10bef504c3433810d78ed96f93"
+checksum = "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70"
 dependencies = [
  "zstd-safe",
 ]
 
 [[package]]
 name = "zstd-safe"
-version = "8.1.0"
+version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdd44c6a7284e91f3717755b24315a302edd9153a01f753c3cba3d765e8eafac"
+checksum = "ded520f16b29e1a9b771c722221b2b0a0398c2316d9bb3c42b458a5414d7434b"
 dependencies = [
  "zstd-sys",
 ]
 
 [[package]]
 name = "zstd-sys"
-version = "2.1.1+zstd.1.5.7"
+version = "2.1.2+zstd.1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aeec9eaf2dffbbd09201e23bd0ffcbaa33bb8e9266a10734fd7ed90a85eca078"
+checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 dependencies = [
  "cc",
  "pkg-config",

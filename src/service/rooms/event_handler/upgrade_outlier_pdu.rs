@@ -17,6 +17,23 @@ use slipstream::{CanonicalJsonValue, OwnedEventId, RoomId, ServerName, events::S
 use super::{get_room_version_id, to_room_version};
 use crate::rooms::{pdu_metadata::RejectionCode, timeline::RawPduId};
 
+/// Authenticates an outlier against state at the event and attempts to append
+/// it, resolving room state as needed. `is_timeline_event` enables
+/// current-state auth checks and state advancement;
+/// `predecessors_were_recovered` also forces state resolution for non-state
+/// timeline events. `state_ids_anchor` is an optional predecessor or deeper
+/// event used to recover missing state.
+///
+/// Returns the timeline ID, if appended, and whether state or predecessors were
+/// recovered. An already-present event returns its ID and `false`. Reused state
+/// missing the sender's membership may trigger a remote fetch.
+///
+/// # Errors
+/// Propagates state recovery, resolution, storage, and append errors. Failed
+/// auth returns `M_FORBIDDEN` and may persist a rejection; soft failures return
+/// `M_INVALID_PARAM` and keep the event outside the visible timeline. Policy
+/// server errors are ignored, while an explicit spam verdict soft-fails the
+/// event.
 #[implement(super::Service)]
 #[allow(clippy::too_many_arguments)]
 pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
@@ -79,6 +96,27 @@ where
 			} else {
 				self.state_at_incoming_resolved(&incoming_pdu, room_id, &room_version_id)
 					.await?
+			};
+
+			// A snapshot reused from a predecessor can predate the room's full
+			// state: a predecessor promoted from a partial-state join keeps a
+			// snapshot without any members. Judging this event against it would
+			// reject it for want of the sender's membership, and the rejection
+			// is stored, so a later backfill could never replace it. Ask the
+			// peer for the state at this event instead.
+			let state = match state {
+				| Some(reused)
+					if self
+						.lacks_sender_membership(&incoming_pdu, room_id, &reused)
+						.await =>
+				{
+					debug!(
+						event_id = %incoming_pdu.event_id,
+						"reused state has no membership for the sender; fetching state"
+					);
+					None
+				},
+				| other => other,
 			};
 
 			if state.is_none() {
@@ -801,4 +839,84 @@ pub async fn state_map_to_root_handle(
 		.persist_node_recursive_deferred(room_id.as_bytes(), root_node)?;
 
 	Ok((root_handle, nodes))
+}
+
+/// Whether a reused snapshot is too incomplete to judge an event by. A full
+/// snapshot holds the membership of anyone who can send; it is not expected
+/// for create events or self-joins/self-knocks (`exempt`), or while the room is
+/// `partial`.
+const fn snapshot_lacks_sender(exempt: bool, partial: bool, sender_present: bool) -> bool {
+	!exempt && !partial && !sender_present
+}
+
+/// Whether `state` leaves out the membership of `pdu`'s sender.
+/// Returns `false` for create events, self-joins, self-knocks, and
+/// partial-state rooms. A failed membership-key lookup counts as absent
+/// membership; a failed partial-state lookup counts as a full-state room.
+#[implement(super::Service)]
+async fn lacks_sender_membership(
+	&self,
+	pdu: &PduEvent,
+	room_id: &RoomId,
+	state: &HashMap<u64, OwnedEventId>,
+) -> bool {
+	let exempt = *pdu.kind() == slipstream::events::TimelineEventType::RoomCreate
+		|| (*pdu.kind() == slipstream::events::TimelineEventType::RoomMember
+			&& pdu.state_key() == Some(pdu.sender().as_str())
+			// Only joins and knocks legitimately have no prior member; a
+			// leave must find the membership it ends.
+			&& pdu
+				.get_content::<slipstream::events::room::member::RoomMemberEventContent>()
+				.is_ok_and(|c| {
+					matches!(
+						c.membership,
+						slipstream::events::room::member::MembershipState::Join
+							| slipstream::events::room::member::MembershipState::Knock
+					)
+				}));
+
+	let partial = self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|server| server.is_some());
+
+	let sender_present = match self
+		.services
+		.short
+		.get_shortstatekey(&StateEventType::RoomMember, pdu.sender().as_str())
+		.await
+	{
+		| Ok(ssk) => state.contains_key(&ssk),
+		| Err(_) => false,
+	};
+
+	snapshot_lacks_sender(exempt, partial, sender_present)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::snapshot_lacks_sender;
+
+	#[test]
+	fn stale_partial_join_snapshot_is_incomplete() {
+		// Predecessor promoted from a partial join, room since resynced.
+		assert!(snapshot_lacks_sender(false, false, false));
+	}
+
+	#[test]
+	fn snapshot_with_the_sender_is_complete() {
+		assert!(!snapshot_lacks_sender(false, false, true));
+	}
+
+	#[test]
+	fn partial_rooms_use_the_auth_events_fallback() {
+		assert!(!snapshot_lacks_sender(false, true, false));
+	}
+
+	#[test]
+	fn joins_and_creates_are_judged_without_the_sender() {
+		assert!(!snapshot_lacks_sender(true, false, false));
+	}
 }

@@ -837,6 +837,15 @@ async fn materialize_remote_history_limited(
 	Ok(())
 }
 
+/// Validates and inserts a historical PDU, associates its resolved state, and
+/// invalidates the room's reconciliation snapshot. Already-visible events are
+/// skipped. `count` supplies a stream count to negate for the backfill
+/// position; when omitted, a new global count is allocated.
+///
+/// # Errors
+/// Propagates parsing, room-version, auth, state-association, count-allocation,
+/// and integer-conversion errors. Missing auth context leaves the event as an
+/// outlier and returns the validation error.
 #[implement(super::Service)]
 pub async fn backfill_pdu(
 	&self,
@@ -920,6 +929,13 @@ pub async fn backfill_pdu(
 		.get_or_create_shortroomid(&room_id)
 		.await;
 
+	// Serialize historical inserts with reconciliation scans. Backfilled
+	// positions do not advance the live timeline watermark, so the ordinary
+	// before/after position check cannot detect them. The federation lock is
+	// released first so inbound /send is not held up behind a scan; the insert
+	// lock and its post-lock recheck still guard against concurrent inserts.
+	drop(mutex_lock);
+	let reconciliation_lock = self.mutex_reconciliation.lock(&room_id).await;
 	let insert_lock = self.mutex_insert.lock(&room_id).await;
 
 	// Re-check after acquiring insert lock to prevent TOCTOU races
@@ -958,13 +974,14 @@ pub async fn backfill_pdu(
 	self.db
 		.prepend_backfill_pdu(&pdu_id, &event_id, &json_value, &pdu_event)
 		.await;
+	self.reconciliation_cache.invalidate(&room_id);
+	drop(reconciliation_lock);
 
 	info!(target: "backfill_debug", %event_id, count, "backfill_pdu: insert complete");
 
 	drop(insert_lock);
 
 	self.index_pdu_search(shortroomid, &pdu_id, &pdu_event);
-	drop(mutex_lock);
 
 	debug!("Prepended backfill pdu");
 	Ok(())

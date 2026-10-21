@@ -2750,7 +2750,56 @@ pub struct ExperimentalConfig {
 	/// default.
 	#[serde(default)]
 	pub msc4500_resolution_inputs: bool,
+
+	/// MSC4521: algebraic digest set reconciliation (`room_digest` and
+	/// `room_diff` federation endpoints). Each request is served from a
+	/// per-room snapshot that is rebuilt by scanning the room's timeline, so
+	/// it is off by default.
+	#[serde(default)]
+	pub msc4521_enabled: bool,
+
+	/// MSC4521: interval between bounded periodic sweep ticks, in seconds.
+	/// Each tick visits at most eight rooms and selects at most four peers;
+	/// a full pass can take many ticks. 0 disables the sweep. Explicit and
+	/// activity triggers still apply when enabled.
+	///
+	/// default: 0
+	#[serde(default)]
+	pub msc4521_reconcile_interval_secs: u64,
+
+	/// MSC4521: least time, in seconds, between room-wide activity selections
+	/// and between requests to each selected peer. Activity is a local
+	/// write or an inbound transaction carrying a PDU or room-scoped EDU. Values
+	/// above the cache TTL limit (999 years) are capped to that limit.
+	/// 0 disables activity triggers. Only used when `msc4521_enabled` is set.
+	///
+	/// default: 60
+	#[serde(default = "default_msc4521_reconcile_activity_interval_secs")]
+	pub msc4521_reconcile_activity_interval_secs: u64,
+
+	/// MSC4521: base delay, in seconds, before retrying a room and peer pair
+	/// whose reconciliation request failed. It doubles with each consecutive
+	/// failure (exponential backoff) up to
+	/// `msc4521_reconcile_failure_backoff_max_secs`. Values below 1 are
+	/// treated as 1.
+	///
+	/// default: 5
+	#[serde(default = "default_msc4521_reconcile_failure_backoff_base_secs")]
+	pub msc4521_reconcile_failure_backoff_base_secs: u64,
+
+	/// MSC4521: longest delay, in seconds, between retries of a failing room
+	/// and peer pair. Never applied below the base delay.
+	///
+	/// default: 900
+	#[serde(default = "default_msc4521_reconcile_failure_backoff_max_secs")]
+	pub msc4521_reconcile_failure_backoff_max_secs: u64,
 }
+
+fn default_msc4521_reconcile_activity_interval_secs() -> u64 { 60 }
+
+fn default_msc4521_reconcile_failure_backoff_base_secs() -> u64 { 5 }
+
+fn default_msc4521_reconcile_failure_backoff_max_secs() -> u64 { 900 }
 
 impl Default for ExperimentalConfig {
 	fn default() -> Self {
@@ -2760,6 +2809,14 @@ impl Default for ExperimentalConfig {
 			msc3030_enabled: true,
 			msc4500_enabled: true,
 			msc4500_resolution_inputs: false,
+			msc4521_enabled: false,
+			msc4521_reconcile_interval_secs: 0,
+			msc4521_reconcile_activity_interval_secs:
+				default_msc4521_reconcile_activity_interval_secs(),
+			msc4521_reconcile_failure_backoff_base_secs:
+				default_msc4521_reconcile_failure_backoff_base_secs(),
+			msc4521_reconcile_failure_backoff_max_secs:
+				default_msc4521_reconcile_failure_backoff_max_secs(),
 		}
 	}
 }

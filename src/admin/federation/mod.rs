@@ -40,17 +40,32 @@ pub enum FederationCommand {
 		user_id: OwnedUserId,
 	},
 
+	/// Queue an MSC4521 reconciliation of a room with a remote server
+	Reconcile {
+		room_id: OwnedRoomId,
+		server: OwnedServerName,
+	},
+
 	/// Show the outbound sending queue with per-destination event counts.
 	/// Optionally filter to a single server. Use --clear to drop queued events.
 	SendingQueue {
 		server: Option<OwnedServerName>,
 
 		/// Clear the queued events for the specified server
-		#[arg(long)]
+		#[arg(long, conflicts_with_all = ["abort", "resume"])]
 		clear: bool,
 
 		/// Required with --clear when no server is specified
-		#[arg(long)]
+		#[arg(long, conflicts_with_all = ["abort", "resume"])]
 		all: bool,
+
+		/// Stop sending to the specified server: clear its queue and drop its
+		/// retry state, scheduled flushes and any in-flight result
+		#[arg(long, conflicts_with = "resume")]
+		abort: bool,
+
+		/// Lift an earlier --abort so the server can be sent to again
+		#[arg(long)]
+		resume: bool,
 	},
 }

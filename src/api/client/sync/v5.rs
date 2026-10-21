@@ -138,6 +138,38 @@ impl CachePolicy {
 	}
 }
 
+/// Per-connection state a response advances, held back until that response is
+/// complete. A client may drop a request mid-build and retry the same `pos`;
+/// had the dropped request already advanced the per-room positions, the retry
+/// would start past the events the lost response carried and never resend them.
+#[derive(Default)]
+struct CacheCommit {
+	known_rooms: Vec<(String, BTreeSet<OwnedRoomId>, u64)>,
+	timeline_limits: Option<BTreeMap<OwnedRoomId, usize>>,
+}
+
+impl CacheCommit {
+	/// Applies the commit together with the connection position, atomically.
+	fn apply(
+		self,
+		services: &Services,
+		sender_user: &UserId,
+		sender_device: &DeviceId,
+		conn_id: Option<String>,
+		expected_pos: Option<u64>,
+		pos: Option<u64>,
+	) {
+		let snake_key = into_snake_key(sender_user, sender_device, conn_id);
+		services.sync.commit_snake_sync(
+			&snake_key,
+			self.known_rooms,
+			self.timeline_limits,
+			expected_pos,
+			pos,
+		);
+	}
+}
+
 struct BuildContext<'a> {
 	sender_user: &'a UserId,
 	sender_device: &'a DeviceId,
@@ -704,7 +736,8 @@ async fn sync_events_v5_route_inner(
 		persist_cache: !waits_for_updates,
 	};
 
-	let (mut response, mut room_extras) = build_sync_events_v5(services, &context).await?;
+	let (mut response, mut room_extras, mut commit) =
+		build_sync_events_v5(services, &context).await?;
 
 	if waits_for_updates {
 		if response.rooms.is_empty() && response.extensions.is_empty() {
@@ -726,7 +759,7 @@ async fn sync_events_v5_route_inner(
 						}
 
 						watcher = services.sync.setup_watch(sender_user, sender_device).await;
-						let (r, re) = build_sync_events_v5(services, &context).await?;
+						let (r, re, _) = build_sync_events_v5(services, &context).await?;
 						response = r;
 						// Read after the loop (or on the next iteration's break check);
 						// clippy can't see across the loop boundary that this is used.
@@ -754,7 +787,7 @@ async fn sync_events_v5_route_inner(
 		// without their associated events. The probe above intentionally did not
 		// update sticky room state because no response had been delivered yet.
 		context.persist_cache = true;
-		(response, room_extras) = build_sync_events_v5(services, &context).await?;
+		(response, room_extras, commit) = build_sync_events_v5(services, &context).await?;
 	}
 
 	trace!(
@@ -763,28 +796,36 @@ async fn sync_events_v5_route_inner(
 		receipts = ?response.extensions.receipts.rooms.len(),
 		"responding to request with"
 	);
-	if endpoint.validates_exact_pos() {
-		services
-			.sync
-			.update_snake_sync_pos(&snake_key, response.pos.parse().unwrap_or(globalsince));
-	}
-	sync_events_v5_json_response(
-		&response,
-		room_extras,
-		collect_thread_subscriptions_extension(
-			services,
-			sender_user,
-			globalsince,
-			thread_subscriptions_enabled,
-		)
-		.await?,
+	let thread_subscriptions = collect_thread_subscriptions_extension(
+		services,
+		sender_user,
+		globalsince,
+		thread_subscriptions_enabled,
 	)
+	.await?;
+	// Per-room cursors, timeline limits and `pos` advance only once the response
+	// is fully built, so a request dropped during the build leaves them untouched.
+	// Sticky request parameters are stored at request start and are not rolled
+	// back. A response lost after the commit still requires the client to resync.
+	let pos = endpoint
+		.validates_exact_pos()
+		.then(|| response.pos.parse().unwrap_or(globalsince));
+	let expected_pos = endpoint.validates_exact_pos().then_some(globalsince);
+	commit.apply(
+		services,
+		sender_user,
+		sender_device,
+		request.conn_id.clone(),
+		expected_pos,
+		pos,
+	);
+	sync_events_v5_json_response(&response, room_extras, thread_subscriptions)
 }
 
 async fn build_sync_events_v5(
 	services: &Services,
 	context: &BuildContext<'_>,
-) -> Result<(sync_events::v5::Response, RoomExtras)> {
+) -> Result<(sync_events::v5::Response, RoomExtras, CacheCommit)> {
 	let BuildContext {
 		sender_user,
 		sender_device,
@@ -897,6 +938,7 @@ async fn build_sync_events_v5(
 		extensions,
 	};
 	let mut room_extras = RoomExtras::new();
+	let mut commit = CacheCommit::default();
 
 	handle_lists(
 		services,
@@ -913,6 +955,7 @@ async fn build_sync_events_v5(
 		known_rooms,
 		&mut response,
 		&mut room_extras,
+		&mut commit,
 	)
 	.await;
 
@@ -925,6 +968,7 @@ async fn build_sync_events_v5(
 		required_state_excludes,
 		CachePolicy { endpoint, persist: persist_cache },
 		&mut todo_rooms,
+		&mut commit,
 	)
 	.await;
 
@@ -947,7 +991,6 @@ async fn build_sync_events_v5(
 
 	if persist_cache && (endpoint.stores_connection_without_id() || body.conn_id.is_some()) {
 		// Save the current timeline limits back into our snake connections cache.
-		let snake_key = into_snake_key(sender_user, sender_device, body.conn_id.clone());
 		let next_limits: BTreeMap<OwnedRoomId, usize> = todo_rooms
 			.iter()
 			.map(|(room_id, (_, limit, roomsince))| {
@@ -957,24 +1000,23 @@ async fn build_sync_events_v5(
 				)
 			})
 			.collect();
-		services
-			.sync
-			.update_snake_sync_timeline_limits(&snake_key, next_limits);
+		commit.timeline_limits = Some(next_limits);
 	}
 
-	Ok((response, room_extras))
+	Ok((response, room_extras, commit))
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn fetch_subscriptions(
 	services: &Services,
-	(sender_user, sender_device, _, _, body): SyncInfo<'_>,
+	(_, _, _, _, body): SyncInfo<'_>,
 	next_batch: u64,
 	known_rooms: &KnownRooms,
 	allowed_rooms: &BTreeSet<OwnedRoomId>,
 	required_state_excludes: Option<&CompatRequiredStateExcludes>,
 	cache_policy: CachePolicy,
 	todo_rooms: &mut TodoRooms,
+	commit: &mut CacheCommit,
 ) {
 	let mut known_subscription_rooms = BTreeSet::new();
 	for (room_id, room) in &body.room_subscriptions {
@@ -1030,20 +1072,18 @@ async fn fetch_subscriptions(
 	//}
 
 	if cache_policy.should_store(body.conn_id.as_ref()) {
-		let snake_key = into_snake_key(sender_user, sender_device, body.conn_id.clone());
-		services.sync.update_snake_sync_known_rooms(
-			&snake_key,
+		commit.known_rooms.push((
 			"subscriptions".to_owned(),
 			known_subscription_rooms,
 			next_batch,
-		);
+		));
 	}
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_lists<'a, Rooms, AllRooms>(
 	services: &Services,
-	(sender_user, sender_device, _, _, body): SyncInfo<'_>,
+	(sender_user, _, _, _, body): SyncInfo<'_>,
 	next_batch: u64,
 	all_invited_rooms: Rooms,
 	all_joined_rooms: Rooms,
@@ -1056,6 +1096,7 @@ async fn handle_lists<'a, Rooms, AllRooms>(
 	known_rooms: &'a KnownRooms,
 	response: &'_ mut sync_events::v5::Response,
 	room_extras: &mut RoomExtras,
+	commit: &mut CacheCommit,
 ) -> KnownRooms
 where
 	Rooms: Iterator<Item = &'a RoomId> + Clone + Send + 'a,
@@ -1200,13 +1241,9 @@ where
 			});
 
 		if persist_cache && (endpoint.stores_connection_without_id() || body.conn_id.is_some()) {
-			let snake_key = into_snake_key(sender_user, sender_device, body.conn_id.clone());
-			services.sync.update_snake_sync_known_rooms(
-				&snake_key,
-				list_id.clone(),
-				new_known_rooms,
-				next_batch,
-			);
+			commit
+				.known_rooms
+				.push((list_id.clone(), new_known_rooms, next_batch));
 		}
 	}
 

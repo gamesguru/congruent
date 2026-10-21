@@ -137,7 +137,7 @@ impl Service {
 fn aggregate_receipts<I>(
 	receipts: I,
 ) -> BTreeMap<
-	OwnedEventId,
+	slipstream::events::receipt::ReceiptEventId,
 	BTreeMap<
 		slipstream::events::receipt::ReceiptType,
 		BTreeMap<OwnedUserId, slipstream::events::receipt::Receipt>,
@@ -146,10 +146,13 @@ fn aggregate_receipts<I>(
 where
 	I: Iterator<Item = Raw<AnySyncEphemeralRoomEvent>>,
 {
-	let mut json: BTreeMap<OwnedEventId, BTreeMap<_, BTreeMap<OwnedUserId, _>>> = BTreeMap::new();
+	let mut json: BTreeMap<
+		slipstream::events::receipt::ReceiptEventId,
+		BTreeMap<_, BTreeMap<OwnedUserId, _>>,
+	> = BTreeMap::new();
 	let mut user_locations: BTreeMap<
 		(OwnedUserId, slipstream::events::receipt::ReceiptType, Option<String>),
-		OwnedEventId,
+		slipstream::events::receipt::ReceiptEventId,
 	> = BTreeMap::new();
 
 	for value in receipts {

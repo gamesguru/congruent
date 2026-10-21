@@ -507,52 +507,48 @@ impl Service {
 		}
 	}
 
-	pub fn update_snake_sync_known_rooms(
+	/// Applies everything a completed response advanced - per-room cursors,
+	/// timeline limits and the connection position - under one hold of the
+	/// connection lock, so a concurrent request never sees a new position with
+	/// old cursors or the reverse.
+	pub fn commit_snake_sync(
 		&self,
 		key: &SnakeConnectionsKey,
-		list_id: String,
-		new_cached_rooms: BTreeSet<OwnedRoomId>,
-		globalsince: u64,
+		known_rooms: Vec<(String, BTreeSet<OwnedRoomId>, u64)>,
+		timeline_limits: Option<BTreeMap<OwnedRoomId, usize>>,
+		expected_pos: Option<u64>,
+		pos: Option<u64>,
 	) {
 		let cached_arc = self
 			.snake_connections
 			.get_with(key.clone(), || Arc::new(SyncMutex::new(SnakeSyncCache::default())));
 		let mut cached = cached_arc.lock();
 
-		for (room_id, lastsince) in cached
-			.known_rooms
-			.entry(list_id.clone())
-			.or_default()
-			.iter_mut()
+		// A sync may have spent a long time building from an older snapshot while
+		// another request for this connection completed. Do not let its deferred
+		// cursors, limits, or position overwrite the newer commit.
+		if expected_pos
+			.is_some_and(|expected| cached.last_pos.is_some_and(|current| current > expected))
 		{
-			if !new_cached_rooms.contains(room_id) {
-				*lastsince = 0;
+			return;
+		}
+
+		for (list_id, new_cached_rooms, globalsince) in known_rooms {
+			for (room_id, lastsince) in cached.known_rooms.entry(list_id.clone()).or_default() {
+				if !new_cached_rooms.contains(room_id) {
+					*lastsince = 0;
+				}
+			}
+			let list = cached.known_rooms.entry(list_id).or_default();
+			for room_id in new_cached_rooms {
+				list.insert(room_id, globalsince);
 			}
 		}
-		let list = cached.known_rooms.entry(list_id).or_default();
-		for room_id in new_cached_rooms {
-			list.insert(room_id, globalsince);
+		if let Some(limits) = timeline_limits {
+			cached.timeline_limits.extend(limits);
 		}
-	}
-
-	pub fn update_snake_sync_pos(&self, key: &SnakeConnectionsKey, pos: u64) {
-		let cached_arc = self
-			.snake_connections
-			.get_with(key.clone(), || Arc::new(SyncMutex::new(SnakeSyncCache::default())));
-		cached_arc.lock().last_pos = Some(pos);
-	}
-
-	pub fn update_snake_sync_timeline_limits(
-		&self,
-		key: &SnakeConnectionsKey,
-		limits: BTreeMap<OwnedRoomId, usize>,
-	) {
-		let cached_arc = self
-			.snake_connections
-			.get_with(key.clone(), || Arc::new(SyncMutex::new(SnakeSyncCache::default())));
-		let mut cached = cached_arc.lock();
-		for (room_id, limit) in limits {
-			cached.timeline_limits.insert(room_id, limit);
+		if let Some(pos) = pos {
+			cached.last_pos = Some(pos);
 		}
 	}
 }
