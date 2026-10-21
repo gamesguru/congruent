@@ -56,12 +56,6 @@ jobs:
         run: |
           echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C target-cpu=${{ steps.cpu.outputs.target }}" | tee -a $GITHUB_ENV
 
-      - name: Setup RocksDB and Jemalloc
-        uses: ./.github/actions/setup-prebuilts
-        with:
-          cache-key: ubuntu-24.04
-          arch: ${{ steps.cpu.outputs.target }}
-
       - name: Install Rust toolchain
         run: rustup show && rustup component add clippy rustfmt
 
@@ -80,7 +74,7 @@ jobs:
         run: pip install pre-commit
 
       - name: Debug checks
-        run: echo "RUSTFLAGS=$RUSTFLAGS" && echo "JEMALLOC_OVERRIDE=$JEMALLOC_OVERRIDE" && make vars doctor cpu-info
+        run: echo "RUSTFLAGS=$RUSTFLAGS" && make vars doctor cpu-info
 
       - name: Format
         env:

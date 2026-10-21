@@ -5,7 +5,7 @@ use conduwuit::{
 	utils::{ReadyExt, stream::TryIgnore},
 };
 use database::{Database, Deserialized, Map};
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use slipstream::{OwnedServerName, ServerName, UserId};
 
 use super::{Destination, SendingEvent};
@@ -50,6 +50,26 @@ impl Data {
 		self.servercurrentevent_data.remove(key);
 	}
 
+	/// Removes specific queue rows, wherever they currently sit. Used by the
+	/// worker to discard only what it was handed, so it cannot sweep up rows
+	/// queued after a resume.
+	pub(super) fn delete_request_keys<'a, I>(&self, keys: I)
+	where
+		I: Iterator<Item = &'a [u8]>,
+	{
+		let mut batch = database::Batch::new();
+		for key in keys.filter(|key| !key.is_empty()) {
+			self.servercurrentevent_data.batch_delete(&mut batch, key);
+			self.servernameevent_data.batch_delete(&mut batch, key);
+			self.federation_outbound_to_device
+				.batch_delete(&mut batch, key);
+		}
+
+		if !batch.is_empty() {
+			self.servercurrentevent_data.apply_batch(batch);
+		}
+	}
+
 	pub(super) async fn delete_all_active_requests_for(&self, destination: &Destination) {
 		let prefix = destination.get_prefix();
 		self.servercurrentevent_data
@@ -57,6 +77,15 @@ impl Data {
 			.ignore_err()
 			.ready_for_each(|key| self.servercurrentevent_data.remove(key))
 			.await;
+	}
+
+	/// Deletes reliable source rows matching the destination's active requests
+	/// after successful delivery. Leaves the active rows for separate cleanup.
+	pub(super) async fn delete_reliable_requests_for_active(&self, destination: &Destination) {
+		let mut active = self.active_requests_for(destination);
+		while let Some((key, _)) = active.next().await {
+			self.federation_outbound_to_device.remove(&key);
+		}
 	}
 
 	pub(super) async fn delete_all_requests_for(&self, destination: &Destination) {
@@ -74,6 +103,21 @@ impl Data {
 			.await;
 	}
 
+	/// Drops the reliable (to-device) queue for a destination. Ordinary cleanup,
+	/// such as the retry limit, must keep these; only an explicit abort or an
+	/// administrator clear removes them.
+	pub(super) async fn delete_all_reliable_requests_for(&self, destination: &Destination) {
+		let prefix = destination.get_prefix();
+		self.federation_outbound_to_device
+			.raw_keys_prefix(&prefix)
+			.ignore_err()
+			.ready_for_each(|key| self.federation_outbound_to_device.remove(key))
+			.await;
+	}
+
+	/// Copies nonempty queue keys to active storage and removes ordinary queue
+	/// rows. Reliable source rows remain until successful delivery or explicit
+	/// clear.
 	pub(super) fn mark_as_active<'a, I>(&self, events: I)
 	where
 		I: Iterator<Item = &'a QueueItem>,
@@ -85,7 +129,6 @@ impl Data {
 
 				self.servercurrentevent_data.insert(key, val);
 				self.servernameevent_data.remove(key);
-				self.federation_outbound_to_device.remove(key);
 			});
 	}
 

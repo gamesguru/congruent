@@ -25,7 +25,7 @@ jobs:
       COMPLEMENT_PARALLEL: 4
       COMPLEMENT_TEST_PARALLEL: 1
       COMPLEMENT_ENABLE_DIRTY_RUNS: 1
-      FEATURES: "direct_tls,url_preview"
+      FEATURES: "direct_tls,url_preview,console"
 
     strategy:
       fail-fast: false
@@ -40,9 +40,7 @@ jobs:
             profile: dev-quick
             room_version: "12"
           - arch: arm64
-            prebuilt_arch: arm64-cortex-a76
             target_cpu: cortex-a76
-            jemalloc_lg_page: 16
             os: ubuntu-24.04
             profile: dev-quick
             room_version: "12"
@@ -51,9 +49,7 @@ jobs:
             profile: dev-quick
             room_version: "11"
           - arch: arm64
-            prebuilt_arch: arm64-cortex-a76
             target_cpu: cortex-a76
-            jemalloc_lg_page: 16
             os: ubuntu-24.04
             profile: dev-quick
             room_version: "11"
@@ -97,12 +93,6 @@ jobs:
         if: matrix.arch == 'amd64'
         uses: ./.github/actions/get-cpu-target
 
-      - name: Setup RocksDB and Jemalloc
-        uses: ./.github/actions/setup-prebuilts
-        with:
-          cache-key: ${{ matrix.os }}
-          arch: ${{ matrix.prebuilt_arch != '' && matrix.prebuilt_arch || steps.cpu.outputs.target }}
-
       - name: Export CPU target env vars
         if: matrix.arch == 'amd64'
         run: |
@@ -115,16 +105,10 @@ jobs:
         with:
           shared-key: ${{ matrix.os }}-${{ matrix.arch }}-${{ steps.cpu.outputs.target || 'generic' }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          env-vars: CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS PROFILE JEMALLOC_SYS_WITH_LG_PAGE
+          env-vars: CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS PROFILE
 
-      - name: Debug Environment & Prebuilts
+      - name: Debug Environment
         run: |
-          echo "--- Downloaded Prebuilts Info ---"
-          for lib in librocksdb libjemalloc liblz4 libzstd; do
-            echo ">> $lib"
-            file /usr/local/lib/$lib.so* || true
-            nm -D /usr/local/lib/$lib.so* | grep " T " | head -n 5 || true
-          done
           echo "--- Runner CPU Info ---"
           grep "model name" /proc/cpuinfo | head -n 1 || true
           grep "flags" /proc/cpuinfo | head -n 1 || true
@@ -132,7 +116,6 @@ jobs:
           echo "--- Build Environment ---"
           echo "OS: ${{ matrix.os }}"
           echo "Arch: ${{ matrix.arch }}"
-          echo "Prebuilt Arch: ${{ matrix.prebuilt_arch }}"
           echo "Detected CPU Target: ${{ steps.cpu.outputs.target }}"
 
       # Every cell builds its own binary on its own runner (as before the
@@ -142,23 +125,11 @@ jobs:
         env:
           CONTINUWUITY_BRANCH: ${{ github.head_ref || github.ref_name }}
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
-          JEMALLOC_SYS_WITH_LG_PAGE: ${{ matrix.jemalloc_lg_page || '' }}
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.target_cpu != '' && format('-C target-cpu={0}', matrix.target_cpu) || '' }}
-        run: SKIP_CONFIRM=1 make -j4 build PROFILE=${{ matrix.profile }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ matrix.profile }} --features direct_tls,url_preview"
+        run: SKIP_CONFIRM=1 make -j4 build PROFILE=${{ matrix.profile }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ matrix.profile }} --features ${{ env.FEATURES }}"
 
       - name: Sanity check binary
         run: ./tests/sanity_check.sh ./target/latest/conduwuit
-
-      - name: Import GPG key
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
-        with:
-          gpg_private_key: ${{ secrets.C10Y_BINARY_RELEASE_GPG_PRIVATE_KEY }}
-          passphrase: ${{ secrets.C10Y_BINARY_RELEASE_GPG_PRIVATE_KEY_PASSWORD }}
-
-      - name: Sign binary
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        run: gpg --batch --yes --detach-sign --armor target/latest/conduwuit
 
       - name: Build Complement Docker image
         run: make -j4 complement/docker PROFILE=${{ matrix.profile }}
@@ -169,7 +140,6 @@ jobs:
           name: conduwuit-${{ matrix.profile }}-direct_tls-${{ matrix.arch }}-${{ matrix.os }}-v${{ matrix.room_version }}
           path: |
             target/latest/conduwuit
-            target/latest/conduwuit.asc
             target/latest/lib/
           retention-days: 60
           overwrite: true

@@ -8,8 +8,6 @@ use hyper::body::Incoming;
 #[derive(Debug)]
 pub(crate) struct Path<T>(pub(crate) T);
 #[derive(Debug)]
-pub(crate) struct Query<T>(pub(crate) T);
-#[derive(Debug)]
 pub(crate) struct RawQuery(pub(crate) Option<String>);
 #[derive(Debug)]
 pub(crate) struct State<T>(pub(crate) T);

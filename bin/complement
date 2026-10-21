@@ -126,6 +126,13 @@ fi
 # Mark homeserver containers spawned by this wrapper run so cleanup never
 # guesses based on timing or broad complement_ container names.
 COMPLEMENT_WRAPPER_TOKEN="${COMPLEMENT_WRAPPER_TOKEN:-"complement-$$-$(date +%s%N)"}"
+# Share one federation-port allocator namespace across every `go test` process
+# and invocation started by this wrapper run.
+COMPLEMENT_PORT_ALLOCATOR_ID="${COMPLEMENT_PORT_ALLOCATOR_ID:-$COMPLEMENT_WRAPPER_TOKEN}"
+export COMPLEMENT_PORT_ALLOCATOR_ID
+# Stop homeservers sending to a test's mock federation server once it closes.
+COMPLEMENT_FEDERATION_ABORT_SCRIPT="${COMPLEMENT_FEDERATION_ABORT_SCRIPT:-$(cd "$(dirname "$0")/.." && pwd)/complement/complement-abort-federation.sh}"
+export COMPLEMENT_FEDERATION_ABORT_SCRIPT
 COMPLEMENT_WRAPPER_ENV_PREFIX="${COMPLEMENT_SHARE_ENV_PREFIX:-COMPLEMENT_WRAPPER_}"
 COMPLEMENT_WRAPPER_ENV_NAME="${COMPLEMENT_WRAPPER_ENV_PREFIX}COMPLEMENT_WRAPPER_TOKEN"
 printf -v "$COMPLEMENT_WRAPPER_ENV_NAME" '%s' "$COMPLEMENT_WRAPPER_TOKEN"
@@ -349,6 +356,16 @@ finish() {
 	echo ""
 	echo "RESULTS: ${_pass:-0} pass / ${_fail:-0} fail / ${_skip:-0} skip"
 	echo "TIME: $(printf '%d:%02d' $((test_duration_seconds / 60)) $((test_duration_seconds % 60))) min"
+
+	# Where the wall time went, from the go test events already in the log.
+	if [ -f "$LOG_FILE" ] && command -v jq >/dev/null 2>&1; then
+		echo "SLOWEST:"
+		jq -rs '[.[] | select((.Action == "pass" or .Action == "fail") and .Test != null and .Elapsed != null)]
+			| sort_by(-.Elapsed) | .[:8][] | "\(.Elapsed * 10 | round | tostring | if length < 2 then "0" + . else . end | .[:-1] + "." + .[-1:])s \(.Test)"' "$LOG_FILE" 2>/dev/null \
+			| awk '{ printf "  %5s  %s\n", $1, substr($0, index($0, $2)) }' || true
+		jq -rs '[.[] | select((.Action == "pass" or .Action == "fail") and .Test == null and .Elapsed != null)]
+			| .[] | "PACKAGE: \(.Package | split("/") | last)  \(.Elapsed)s in go test (of \('"$test_duration_seconds"')s wall)"' "$LOG_FILE" 2>/dev/null || true
+	fi
 	echo ""
 	echo "complement logs saved at $LOG_FILE"
 	echo "complement results staged at $RESULTS_FILE"

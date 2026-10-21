@@ -1,6 +1,7 @@
 use std::{
 	collections::{BTreeMap, HashMap, HashSet},
 	fmt::Debug,
+	iter::once,
 	sync::{Arc, atomic::Ordering},
 	time::{Duration, Instant},
 };
@@ -164,7 +165,8 @@ async fn compute_outbound_state_hashes(
 }
 
 type SendingError = Box<(Destination, Error)>;
-type SendingResult = Result<Destination, SendingError>;
+type SendingResponse = Result<Destination, SendingError>;
+type SendingResult = (Option<u64>, SendingResponse);
 type SendingFuture<'a> = BoxFuture<'a, SendingResult>;
 type SendingFutures<'a> = FuturesUnordered<SendingFuture<'a>>;
 type CurTransactionStatus = HashMap<Destination, TransactionStatus>;
@@ -248,14 +250,37 @@ impl Service {
 		}
 	}
 
+	/// Applies a transaction result to worker status and queues. Ignores stale
+	/// federation generations and drops active work for aborted destinations;
+	/// current failures update retry state and successes advance queued work.
 	async fn handle_response<'a>(
 		&'a self,
 		response: SendingResult,
 		futures: &mut SendingFutures<'a>,
 		statuses: &mut CurTransactionStatus,
 	) {
+		let (epoch, response) = response;
+		let dest = match &response {
+			| Ok(dest) => dest,
+			| Err(err) => &err.0,
+		};
+		if let (Some(epoch), Destination::Federation(server)) = (epoch, dest)
+			&& self.abort_epoch(server) != epoch
+		{
+			// A result from before abort/resume must not alter the newer
+			// transaction's status or active queue rows.
+			return;
+		}
+		if self.is_aborted(dest) {
+			statuses.remove(dest);
+			self.db.delete_all_active_requests_for(dest).await;
+			return;
+		}
+
 		match response {
-			| Ok(dest) => self.handle_response_ok(&dest, futures, statuses).await,
+			| Ok(dest) =>
+				self.handle_response_ok(&dest, epoch, futures, statuses)
+					.await,
 			| Err(err) => self.handle_response_err(err.0, statuses, &err.1),
 		}
 	}
@@ -348,15 +373,19 @@ impl Service {
 					dest,
 					event: SendingEvent::Flush,
 					queue_id: Vec::new(),
+					abort_ack: None,
 				})
 				.ok();
 		}));
 	}
 
+	/// Removes delivered active rows and their reliable sources, then starts
+	/// queued PDUs immediately or schedules an EDU flush as needed.
 	#[allow(clippy::needless_pass_by_ref_mut)]
 	async fn handle_response_ok<'a>(
 		&'a self,
 		dest: &Destination,
+		epoch: Option<u64>,
 		futures: &mut SendingFutures<'a>,
 		statuses: &mut CurTransactionStatus,
 	) {
@@ -364,6 +393,9 @@ impl Service {
 			self.dead_servers.write().unwrap().remove(server);
 		}
 		let _cork = self.db.db.cork();
+		// Reliable EDUs keep their source row while active so ordinary retry
+		// cleanup cannot lose them. Remove those source rows only after success.
+		self.db.delete_reliable_requests_for_active(dest).await;
 		self.db.delete_all_active_requests_for(dest).await;
 
 		let mut has_pdu = false;
@@ -388,10 +420,16 @@ impl Service {
 
 		if !new_events.is_empty() && has_pdu {
 			// Immediately send the critical PDUs without trailing cooldown!
-			self.db.mark_as_active(new_events.iter());
+			if !self
+				.mark_as_active_if_current(dest, epoch, &new_events)
+				.await
+			{
+				statuses.remove(dest);
+				return;
+			}
 			let new_events_vec = new_events.into_iter().map(|(_, e)| e).collect();
 			statuses.insert(dest.clone(), TransactionStatus::Running);
-			futures.push(self.send_events(dest.clone(), new_events_vec, None));
+			futures.push(self.send_events(dest.clone(), new_events_vec, None, epoch));
 			return;
 		}
 
@@ -430,6 +468,35 @@ impl Service {
 		self.reschedule_flush(dest_clone, Duration::from_millis(300));
 	}
 
+	/// Activates selected queue rows only while their captured federation
+	/// generation is still current. The read gate makes the generation check and
+	/// activation atomic with abort's flag/epoch update; it is held only for the
+	/// synchronous database writes, never while scanning or awaiting the network.
+	async fn mark_as_active_if_current(
+		&self,
+		dest: &Destination,
+		epoch: Option<u64>,
+		events: &[QueueItem],
+	) -> bool {
+		if let Destination::Federation(server) = dest {
+			let Some(epoch) = epoch else {
+				return false;
+			};
+			let _guard = self.abort_gate.clone().read_owned().await;
+			if self.is_aborted(dest) || self.abort_epoch(server) != epoch {
+				return false;
+			}
+			self.db.mark_as_active(events.iter());
+			return true;
+		}
+
+		self.db.mark_as_active(events.iter());
+		true
+	}
+
+	/// Handles a queued event, flush, or abort acknowledgment. Discards work
+	/// for aborted or newly stale destinations; otherwise starts a transaction
+	/// when selection permits. Selection errors leave no new send future.
 	#[allow(clippy::needless_pass_by_ref_mut)]
 	async fn handle_request<'a>(
 		&'a self,
@@ -437,6 +504,25 @@ impl Service {
 		futures: &mut SendingFutures<'a>,
 		statuses: &mut CurTransactionStatus,
 	) {
+		if let Some(ack) = msg.abort_ack {
+			statuses.remove(&msg.dest);
+			let _ = ack.send(());
+			return;
+		}
+		if self.is_aborted(&msg.dest) {
+			// The request was persisted before it reached us; drop that row too, or
+			// a producer racing the abort leaves it behind forever. Only this
+			// message's row: a bulk scan here could outlive a resume and delete
+			// rows queued afterwards. `abort_destination` clears the rest.
+			statuses.remove(&msg.dest);
+			self.db.delete_request_keys(once(msg.queue_id.as_slice()));
+			return;
+		}
+
+		let epoch = match &msg.dest {
+			| Destination::Federation(server) => Some(self.abort_epoch(server)),
+			| _ => None,
+		};
 		let _cork = self.db.db.cork();
 		let is_flush = matches!(msg.event, SendingEvent::Flush);
 		let iv = if !is_flush {
@@ -460,9 +546,25 @@ impl Service {
 			reqs
 		};
 
-		if let Ok(Some((events, edu_count))) = self.select_events(&msg.dest, iv, statuses).await {
-			if !events.is_empty() {
-				futures.push(self.send_events(msg.dest, events, edu_count));
+		if let Ok(Some((events, edu_count))) =
+			self.select_events(&msg.dest, iv, statuses, epoch).await
+		{
+			// An abort may have landed while the events were being selected, even
+			// if a resume has since lifted it: the epoch tells those apart from a
+			// destination that was never touched.
+			let stale = self.is_aborted(&msg.dest)
+				|| matches!(
+					(&msg.dest, epoch),
+					(Destination::Federation(server), Some(epoch)) if self.abort_epoch(server) != epoch
+				);
+			if stale {
+				// Rows `select_events` activated are not removed here: the abort is
+				// waiting for this worker's acknowledgement, and clears the whole
+				// destination queue once it has it. Deleting by key now could also
+				// take a row re-queued under the same key after a resume.
+				statuses.remove(&msg.dest);
+			} else if !events.is_empty() {
+				futures.push(self.send_events(msg.dest, events, edu_count, epoch));
 			} else {
 				statuses.remove(&msg.dest);
 			}
@@ -481,6 +583,9 @@ impl Service {
 		}
 	}
 
+	/// Drains pending results until the configured shutdown timeout. Cleans up
+	/// successful current-generation work; failed and stale results keep their
+	/// rows in storage.
 	async fn finish_responses<'a>(&'a self, futures: &mut SendingFutures<'a>) {
 		let timeout = self.server.config.sender_shutdown_timeout;
 		let timeout = Duration::from_secs(timeout);
@@ -494,7 +599,17 @@ impl Service {
 			futures::select_biased! {
 				_ = timer => return,
 				response = response.fuse() => match response {
-					Some(Ok(dest)) => self.db.delete_all_active_requests_for(&dest).await,
+					Some((epoch, Ok(dest))) => {
+						let current = match (&dest, epoch) {
+							| (Destination::Federation(server), Some(epoch)) => self.abort_epoch(server) == epoch,
+							| (Destination::Federation(_), None) => false,
+							| (_, _) => true,
+						};
+						if current {
+							self.db.delete_reliable_requests_for_active(&dest).await;
+							self.db.delete_all_active_requests_for(&dest).await;
+						}
+					},
 					Some(_) => continue,
 					None => return,
 				},
@@ -502,6 +617,10 @@ impl Service {
 		}
 	}
 
+	/// Recovers active requests belonging to sender shard `id`, retaining at
+	/// most the configured count per destination. When startup netburst is
+	/// enabled, restarts retained work and flushes queued destinations. Does
+	/// nothing when federation is disabled.
 	#[allow(clippy::needless_pass_by_ref_mut)]
 	async fn startup_netburst<'a>(
 		&'a self,
@@ -534,6 +653,7 @@ impl Service {
 						futures.push(self.send_events(
 							old_dest,
 							std::mem::take(&mut current_events),
+							None,
 							None,
 						));
 					}
@@ -588,6 +708,7 @@ impl Service {
 							dest,
 							event: SendingEvent::Flush,
 							queue_id: Vec::new(),
+							abort_ack: None,
 						})
 						.ok();
 				}
@@ -602,6 +723,7 @@ impl Service {
 		dest: &Destination,
 		new_events: Vec<QueueItem>, // Events we want to send: event and full key
 		statuses: &mut CurTransactionStatus,
+		epoch: Option<u64>,
 	) -> Result<Option<(Vec<SendingEvent>, Option<u64>)>> {
 		let has_pdu = new_events
 			.iter()
@@ -637,7 +759,12 @@ impl Service {
 		// Compose the next transaction
 		let _cork = self.db.db.cork();
 		if !new_events.is_empty() {
-			self.db.mark_as_active(new_events.iter());
+			if !self
+				.mark_as_active_if_current(dest, epoch, &new_events)
+				.await
+			{
+				return Ok(None);
+			}
 			for (_, e) in new_events {
 				events.push(e);
 			}
@@ -953,8 +1080,9 @@ impl Service {
 				let Some((event_id, _)) = receipt.content.0.iter().next() else {
 					continue;
 				};
-				let Ok(event_count) = self.services.timeline.get_pdu_count(event_id).await else {
-					continue;
+				let event_count = match OwnedEventId::parse(event_id.as_str()) {
+					| Ok(event_id) => self.services.timeline.get_pdu_count(&event_id).await.ok(),
+					| Err(_) => None,
 				};
 				collected.push((user_id, count, read_receipt.get().to_owned(), event_count));
 			}
@@ -1096,11 +1224,15 @@ impl Service {
 		(Some(buf), since.1)
 	}
 
+	/// Builds a send future whose result includes the destination and, for
+	/// federation, its captured abort generation. Aborted or stale federation
+	/// work can finish successfully without sending.
 	fn send_events(
 		&self,
 		dest: Destination,
 		events: Vec<SendingEvent>,
 		edu_count: Option<u64>,
+		epoch: Option<u64>,
 	) -> SendingFuture<'_> {
 		debug_assert!(
 			!events.is_empty() || matches!(dest, Destination::Federation(_)),
@@ -1109,11 +1241,24 @@ impl Service {
 		match dest {
 			| Destination::Federation(server) => {
 				let count = events.len();
+				// Bind the transaction to the abort generation it was built under, so
+				// work queued before an abort cannot start after a later resume.
+				let epoch = epoch.unwrap_or_else(|| self.abort_epoch(&server));
 				async move {
+					let dest = Destination::Federation(server.clone());
+					{
+						// Held only across the check, not the network round trip: an
+						// abort must not wait for outstanding requests, and a request
+						// already on the wire is handled when its result arrives.
+						let _abort_guard = self.abort_gate.clone().read_owned().await;
+						if self.is_aborted(&dest) || self.abort_epoch(&server) != epoch {
+							return (Some(epoch), Ok(dest));
+						}
+					}
 					let started = Instant::now();
 					let log_server = server.clone();
 					let result = self
-						.send_events_dest_federation(server, events, edu_count)
+						.send_events_dest_federation(server, events, edu_count, epoch)
 						.await;
 					info!(
 						target: "sender_debug",
@@ -1123,21 +1268,30 @@ impl Service {
 						ok = result.is_ok(),
 						"federation transaction finished"
 					);
-					result
+					(Some(epoch), result)
 				}
 				.boxed()
 			},
-			| Destination::Appservice(id) => self.send_events_dest_appservice(id, events).boxed(),
-			| Destination::Push(user_id, pushkey) =>
-				self.send_events_dest_push(user_id, pushkey, events).boxed(),
+			| Destination::Appservice(id) => self
+				.send_events_dest_appservice(id, events)
+				.map(|result| (None, result))
+				.boxed(),
+			| Destination::Push(user_id, pushkey) => self
+				.send_events_dest_push(user_id, pushkey, events)
+				.map(|result| (None, result))
+				.boxed(),
 		}
 	}
 
+	/// Sends available PDUs and opted-in ephemeral events to an application
+	/// service, skipping unreadable PDUs and invalid EDUs. Returns the
+	/// destination on success, or pairs it with a missing-registration or
+	/// request error.
 	async fn send_events_dest_appservice(
 		&self,
 		id: String,
 		events: Vec<SendingEvent>,
-	) -> SendingResult {
+	) -> SendingResponse {
 		let Some(appservice) = self.services.appservice.get_registration(&id).await else {
 			return Err(Box::new((
 				Destination::Appservice(id.clone()),
@@ -1203,12 +1357,15 @@ impl Service {
 		}
 	}
 
+	/// Sends notices for readable, unredacted PDUs using the user's push rules,
+	/// or default rules when unavailable. Missing pushers return an error
+	/// paired with the destination; individual notice errors are ignored.
 	async fn send_events_dest_push(
 		&self,
 		user_id: OwnedUserId,
 		pushkey: String,
 		events: Vec<SendingEvent>,
-	) -> SendingResult {
+	) -> SendingResponse {
 		let Ok(pusher) = self.services.pusher.get_pusher(&user_id, &pushkey).await else {
 			return Err(Box::new((
 				Destination::Push(user_id.clone(), pushkey.clone()),
@@ -1282,12 +1439,19 @@ impl Service {
 		Ok(Destination::Push(user_id, pushkey))
 	}
 
+	/// Sends a federation transaction under the captured abort `epoch`,
+	/// skipping unavailable PDUs and invalid EDUs. Returns the destination on
+	/// delivery, empty content, or an abort-generation refusal; request errors
+	/// are paired with the destination. Per-event remote errors do not fail the
+	/// transaction. `edu_count` is the watermark to publish on delivery or
+	/// empty content; an abort-generation refusal does not advance it.
 	async fn send_events_dest_federation(
 		&self,
 		server: OwnedServerName,
 		events: Vec<SendingEvent>,
 		edu_count: Option<u64>,
-	) -> SendingResult {
+		epoch: u64,
+	) -> SendingResponse {
 		let mut source_pdus: Vec<(OwnedEventId, CanonicalJsonObject)> = Vec::new();
 		for event in &events {
 			let SendingEvent::Pdu(pdu_id) = event else {
@@ -1408,9 +1572,19 @@ impl Service {
 		let msc4500_req = Msc4500SendTransactionRequest { inner: request, state_hashes };
 
 		let result = self
-			.send_federation_request_on(&self.services.client.sender, &server, msc4500_req)
+			.send_federation_request_on_if_current(
+				&self.services.client.sender,
+				&server,
+				epoch,
+				msc4500_req,
+			)
 			.await;
 		conduwuit::debug!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
+		let result = match result {
+			| Ok(Some(result)) => Ok(result),
+			| Ok(None) => return Ok(Destination::Federation(server)),
+			| Err(error) => Err(error),
+		};
 
 		for (event_id, result) in result.iter().flat_map(|resp| resp.pdus.iter()) {
 			if let Err(e) = result {
@@ -1960,6 +2134,8 @@ mod tests {
 
 		assert_eq!(map.read.len(), 1);
 		assert_eq!(num.load(Ordering::Relaxed), 1);
-		assert_eq!(map.read[&user_id].event_ids, vec!["$event2".to_owned()]);
+		assert_eq!(map.read[&user_id].event_ids, vec![
+			slipstream::events::receipt::ReceiptEventId::from_opaque("$event2")
+		]);
 	}
 }

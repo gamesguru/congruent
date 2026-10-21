@@ -11,8 +11,9 @@ pub fn gen_event_id_canonical_json(
 	pdu: &RawJson,
 	room_version_id: &RoomVersionId,
 ) -> Result<(OwnedEventId, CanonicalJsonObject)> {
-	let value = slipstream::canonical_json::from_json_str(pdu.get())
-		.map_err(|e| err!(BadServerResponse(warn!("Error parsing incoming event: {e:?}"))))?;
+	let value = slipstream::canonical_json::from_json_str(pdu.get()).map_err(|_| {
+		err!(BadServerResponse(warn!("Incoming event is not valid canonical JSON")))
+	})?;
 	let value = slipstream::canonical_json::into_object(value)
 		.ok_or_else(|| err!(BadServerResponse(warn!("incoming event is not an object"))))?;
 

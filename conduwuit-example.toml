@@ -2210,6 +2210,41 @@
 #
 #msc4500_resolution_inputs = false
 
+# MSC4521: algebraic digest set reconciliation (`room_digest` and
+# `room_diff` federation endpoints). Each request is served from a
+# per-room snapshot that is rebuilt by scanning the room's timeline, so
+# it is off by default.
+#
+#msc4521_enabled = false
+
+# MSC4521: interval between bounded periodic sweep ticks, in seconds.
+# Each tick visits at most eight rooms and selects at most four peers;
+# a full pass can take many ticks. 0 disables the sweep. Explicit and
+# activity triggers still apply when enabled.
+#
+#msc4521_reconcile_interval_secs = 0
+
+# MSC4521: least time, in seconds, between room-wide activity selections
+# and between requests to each selected peer. Activity is a local
+# write or an inbound transaction carrying a PDU or room-scoped EDU. Values
+# above the cache TTL limit (999 years) are capped to that limit.
+# 0 disables activity triggers. Only used when `msc4521_enabled` is set.
+#
+#msc4521_reconcile_activity_interval_secs = 60
+
+# MSC4521: base delay, in seconds, before retrying a room and peer pair
+# whose reconciliation request failed. It doubles with each consecutive
+# failure (exponential backoff) up to
+# `msc4521_reconcile_failure_backoff_max_secs`. Values below 1 are
+# treated as 1.
+#
+#msc4521_reconcile_failure_backoff_base_secs = 5
+
+# MSC4521: longest delay, in seconds, between retries of a failing room
+# and peer pair. Never applied below the base delay.
+#
+#msc4521_reconcile_failure_backoff_max_secs = 900
+
 #[global.email]
 
 # HTTP endpoint which accepts the email webhook payload.

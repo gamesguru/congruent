@@ -13,6 +13,7 @@ mod notifications;
 mod promotion_claims;
 mod reachability;
 mod rebuild_state;
+mod reconciliation;
 mod redact;
 pub mod reindex;
 mod reorder;
@@ -23,6 +24,7 @@ use std::{fmt::Write, ops::Bound, sync::Arc};
 pub use append::AppendPduContext;
 use async_trait::async_trait;
 pub use conduwuit_core::matrix::pdu::{PduId, RawPduId, ShortRoomId, TopoToken};
+pub use reconciliation::RoomReconciliationState;
 /// Proof that the caller already holds `Service::mutex_insert` for a room.
 /// Threaded through the state-transition path so the outlier demotion step
 /// can skip re-acquiring the same non-reentrant per-room lock when called
@@ -141,6 +143,16 @@ use crate::{
 	sending, server_keys, users,
 };
 
+/// How long a frame ID we advertised stays acceptable in `room_diff`. This is
+/// a tuning choice, not part of MSC4521: it only has to outlast one exchange.
+/// Expiry makes a late `room_diff` fail and the initiator retry; it never makes
+/// a sketch wrong.
+const ADVERTISED_FRAME_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Upper bound on remembered `(room, frame)` pairs.
+const ADVERTISED_FRAMES_MAX: u64 = 4096;
+/// Total events across cached reconciliation snapshots.
+const RECONCILIATION_CACHE_EVENTS: u64 = 4_000_000;
+
 pub struct Service {
 	services: Services,
 	db: Data,
@@ -154,6 +166,18 @@ pub struct Service {
 	/// are pure waste. See
 	/// `docs/development-gg/fable/boundary-flake-advisory.md` §3.
 	pub mutex_backfill: RoomMutexMap,
+	/// Singleflights the MSC4521 reconciliation snapshot scan per room.
+	pub mutex_reconciliation: RoomMutexMap,
+	/// MSC4521 per-room reconciliation snapshots. Short-lived by design; see
+	/// the `reconciliation` module docs.
+	pub reconciliation_cache: moka::sync::Cache<OwnedRoomId, Arc<RoomReconciliationState>>,
+	/// Frame IDs advertised to peers in the last minute. A `room_diff` may name
+	/// one of these after the frame has since moved: the responder sketches its
+	/// current set, which is the old set plus whatever arrived meanwhile.
+	pub advertised_frames: moka::sync::Cache<(OwnedRoomId, String), ()>,
+	/// Rooms in which a local PDU was just appended. Reconciliation listens;
+	/// the timeline does not depend on it.
+	pub activity: tokio::sync::broadcast::Sender<OwnedRoomId>,
 	/// Tier 2 of the backfill scan perf work (see
 	/// `docs/development-gg/room-issues.csv`): remembers the exact
 	/// `(state_hash, from, limit)` of the most recent gap-free
@@ -269,6 +293,21 @@ impl crate::Service for Service {
 			mutex_insert: RoomMutexMap::new(),
 			mutex_fetch: MutexMap::new(),
 			mutex_backfill: RoomMutexMap::new(),
+			mutex_reconciliation: RoomMutexMap::new(),
+			// Weighed by event count, so the capacity is an event budget rather
+			// than a snapshot count: large rooms cannot pile up unbounded.
+			reconciliation_cache: moka::sync::Cache::builder()
+				.weigher(|_, state: &Arc<RoomReconciliationState>| {
+					u32::try_from(state.known_event_count().max(1)).unwrap_or(u32::MAX)
+				})
+				.max_capacity(RECONCILIATION_CACHE_EVENTS)
+				.time_to_live(std::time::Duration::from_secs(10))
+				.build(),
+			activity: tokio::sync::broadcast::channel(256).0,
+			advertised_frames: moka::sync::Cache::builder()
+				.max_capacity(ADVERTISED_FRAMES_MAX)
+				.time_to_live(ADVERTISED_FRAME_TTL)
+				.build(),
 			pending_promotions: PromotionClaims::new(),
 		}))
 	}
@@ -282,7 +321,8 @@ impl crate::Service for Service {
 		Ok(())
 	}
 
-	async fn clear_cache(&self) {}
+	/// Invalidates all cached room reconciliation snapshots.
+	async fn clear_cache(&self) { self.reconciliation_cache.invalidate_all(); }
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }

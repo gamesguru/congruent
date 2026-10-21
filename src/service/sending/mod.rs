@@ -17,7 +17,9 @@ use async_trait::async_trait;
 use conduwuit::{
 	JoinError, Result, Server, debug, debug_warn, err, error, info,
 	smallvec::SmallVec,
-	utils::{ReadyExt, TryReadyExt, available_parallelism, math::usize_from_u64_truncated},
+	utils::{
+		MutexMap, ReadyExt, TryReadyExt, available_parallelism, math::usize_from_u64_truncated,
+	},
 	warn,
 };
 use futures::{Stream, StreamExt, stream::FuturesUnordered};
@@ -42,6 +44,22 @@ pub struct Service {
 	channels: Vec<(loole::Sender<Msg>, loole::Receiver<Msg>)>,
 	pub(super) semaphore: Arc<Semaphore>,
 	pub(super) dead_servers: std::sync::RwLock<std::collections::HashSet<OwnedServerName>>,
+	/// Destinations whose sending was abandoned on request (`abort_destination`).
+	/// Workers drop everything addressed to them, including retries, scheduled
+	/// flushes and the result of a transaction that was already in flight.
+	pub(super) aborted: std::sync::RwLock<std::collections::HashSet<OwnedServerName>>,
+	/// Serializes federation queue insertion and request startup against abort.
+	abort_gate: Arc<tokio::sync::RwLock<()>>,
+	/// Serializes whole abort and resume operations against each other, so a
+	/// resume cannot slip in between an abort's flag and its cleanup. Unlike
+	/// `abort_gate` it is held while waiting for the worker.
+	abort_serial: MutexMap<OwnedServerName, ()>,
+	/// Bumped on every abort of a destination; work built before the bump is
+	/// stale even once the destination is resumed.
+	abort_epochs: std::sync::RwLock<std::collections::HashMap<OwnedServerName, u64>>,
+	/// Wakes federation requests so they can cancel address lookup or HTTP
+	/// startup when their destination's abort epoch changes.
+	abort_notifications: tokio::sync::watch::Sender<()>,
 	/// Monotonic counter for outgoing federation transaction IDs, seeded from
 	/// the current unix-ms timestamp at startup and incremented per
 	/// transaction sent (same scheme Synapse's `TransactionManager` uses).
@@ -68,11 +86,11 @@ struct Services {
 	federation: Dep<federation::Service>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 struct Msg {
 	dest: Destination,
 	event: SendingEvent,
 	queue_id: Vec<u8>,
+	abort_ack: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -93,10 +111,16 @@ const EDU_VEC_CAP: usize = 1;
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let num_senders = num_senders(&args);
+		let (abort_notifications, _) = tokio::sync::watch::channel(());
 		Ok(Arc::new(Self {
 			db: Data::new(&args),
 			stats: stats::FederationStats::default(),
 			dead_servers: std::sync::RwLock::new(std::collections::HashSet::new()),
+			aborted: std::sync::RwLock::new(std::collections::HashSet::new()),
+			abort_gate: Arc::new(tokio::sync::RwLock::new(())),
+			abort_serial: MutexMap::new(),
+			abort_epochs: std::sync::RwLock::new(std::collections::HashMap::new()),
+			abort_notifications,
 			next_txn_id: std::sync::atomic::AtomicU64::new(
 				slipstream::MilliSecondsSinceUnixEpoch::now().get(),
 			),
@@ -200,6 +224,8 @@ impl crate::Service for Service {
 }
 
 impl Service {
+	/// Persists a PDU for the user's push key and wakes its sender worker.
+	/// Returns a worker dispatch error after persistence if dispatch fails.
 	pub fn send_pdu_push(&self, pdu_id: &RawPduId, user: &UserId, pushkey: String) -> Result {
 		let dest = Destination::Push(user.to_owned(), pushkey);
 		let event = SendingEvent::Pdu(*pdu_id);
@@ -209,9 +235,12 @@ impl Service {
 			dest,
 			event,
 			queue_id: keys.into_iter().next().expect("request queue key"),
+			abort_ack: None,
 		})
 	}
 
+	/// Persists a PDU for an application service and wakes its sender worker.
+	/// Returns a worker dispatch error after persistence if dispatch fails.
 	pub fn send_pdu_appservice(&self, appservice_id: String, pdu_id: RawPduId) -> Result {
 		let dest = Destination::Appservice(appservice_id);
 		let event = SendingEvent::Pdu(pdu_id);
@@ -221,6 +250,7 @@ impl Service {
 			dest,
 			event,
 			queue_id: keys.into_iter().next().expect("request queue key"),
+			abort_ack: None,
 		})
 	}
 
@@ -268,6 +298,10 @@ impl Service {
 		Ok(())
 	}
 
+	/// Persists a PDU for the supplied servers, skipping aborted destinations,
+	/// and wakes their workers. Returns the number of retained destinations.
+	/// Dispatch errors propagate after persistence and may leave some workers
+	/// unwoken; success indicates queueing rather than remote delivery.
 	pub async fn send_pdu_servers<'a, S>(&self, servers: S, pdu_id: &RawPduId) -> Result<usize>
 	where
 		S: Stream<Item = OwnedServerName> + Send + 'a,
@@ -277,23 +311,34 @@ impl Service {
 			.collect::<Vec<_>>()
 			.await;
 
+		let _abort_guard = self.abort_gate.clone().read_owned().await;
+		let requests: Vec<_> = requests
+			.into_iter()
+			.filter(|(dest, _)| !self.is_aborted(dest))
+			.collect();
 		let num_servers = requests.len();
 		let _cork = self.db.db.cork();
 		let keys = self.db.queue_requests(requests.iter().map(|(o, e)| (e, o)));
 
 		for ((dest, event), queue_id) in requests.into_iter().zip(keys) {
-			self.dispatch(Msg { dest, event, queue_id })?;
+			self.dispatch(Msg { dest, event, queue_id, abort_ack: None })?;
 		}
 
 		Ok(num_servers)
 	}
 
+	/// Queues a serialized EDU for a server. Silently discards it if the server
+	/// is dead or aborted, or an abort/resume operation holds the sending gate.
+	/// Worker dispatch errors propagate after persistence.
 	pub fn send_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
-		if self.server_is_dead(server) {
+		let Ok(_abort_guard) = self.abort_gate.try_read() else {
+			return Ok(());
+		};
+		let dest = Destination::Federation(server.to_owned());
+		if self.server_is_dead(server) || self.is_aborted(&dest) {
 			return Ok(());
 		}
 
-		let dest = Destination::Federation(server.to_owned());
 		let event = SendingEvent::Edu(serialized);
 		let _cork = self.db.db.cork();
 		let keys = self.db.queue_requests(once((&event, &dest)));
@@ -301,11 +346,29 @@ impl Service {
 			dest,
 			event,
 			queue_id: keys.into_iter().next().expect("request queue key"),
+			abort_ack: None,
 		})
 	}
 
+	/// Queues a serialized EDU in storage that survives ordinary retry cleanup
+	/// until successful delivery or an explicit clear. Aborted destinations
+	/// discard it and return success.
+	///
+	/// # Errors
+	/// Returns an error asking the caller to retry if an abort/resume operation
+	/// holds the sending gate. Worker dispatch errors propagate after
+	/// persistence.
 	pub fn send_reliable_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
 		let dest = Destination::Federation(server.to_owned());
+		// While an abort or resume is in progress, tell the caller to retry rather
+		// than lose the EDU. A destination that is already aborted discards its
+		// queue by design, reliable rows included.
+		let Ok(_abort_guard) = self.abort_gate.try_read() else {
+			return Err(err!(Request(Unknown("Sending is being reconfigured; retry shortly."))));
+		};
+		if self.is_aborted(&dest) {
+			return Ok(());
+		}
 		let event = SendingEvent::Edu(serialized);
 		let _cork = self.db.db.cork();
 		let keys = self.db.queue_reliable_requests(once((&event, &dest)));
@@ -313,6 +376,7 @@ impl Service {
 			dest,
 			event,
 			queue_id: keys.into_iter().next().expect("request queue key"),
+			abort_ack: None,
 		})
 	}
 
@@ -336,6 +400,9 @@ impl Service {
 			.await
 	}
 
+	/// Queues a serialized EDU for each supplied server except aborted ones.
+	/// Worker dispatch errors propagate after persistence; success does not
+	/// indicate remote delivery.
 	pub async fn send_edu_servers<'a, S>(&self, servers: S, serialized: EduBuf) -> Result
 	where
 		S: Stream<Item = OwnedServerName> + Send + 'a,
@@ -346,6 +413,11 @@ impl Service {
 			})
 			.collect::<Vec<_>>()
 			.await;
+		let _abort_guard = self.abort_gate.clone().read_owned().await;
+		let requests: Vec<_> = requests
+			.into_iter()
+			.filter(|(dest, _)| !self.is_aborted(dest))
+			.collect();
 
 		let num_servers = requests.len();
 		info!(
@@ -357,7 +429,7 @@ impl Service {
 		let keys = self.db.queue_requests(requests.iter().map(|(o, e)| (e, o)));
 
 		for ((dest, event), queue_id) in requests.into_iter().zip(keys) {
-			self.dispatch(Msg { dest, event, queue_id })?;
+			self.dispatch(Msg { dest, event, queue_id, abort_ack: None })?;
 		}
 
 		Ok(())
@@ -440,6 +512,9 @@ impl Service {
 		}
 	}
 
+	/// Asks each supplied server's worker to send pending events without adding
+	/// new content. Returns the first dispatch error; does not wait for
+	/// delivery.
 	pub async fn flush_servers<'a, S>(&self, servers: S) -> Result<()>
 	where
 		S: Stream<Item = OwnedServerName> + Send + 'a,
@@ -452,6 +527,7 @@ impl Service {
 					dest,
 					event: SendingEvent::Flush,
 					queue_id: Vec::<u8>::new(),
+					abort_ack: None,
 				})
 			})
 			.await
@@ -507,6 +583,56 @@ impl Service {
 			.federation
 			.execute_on(client, dest, request)
 			.await
+	}
+
+	/// Checks the destination's abort flag and generation before starting a
+	/// federation request, then drops the request future if an abort changes that
+	/// generation. This can happen during address lookup, HTTP startup, or while
+	/// awaiting the response. A request canceled in flight may already have been
+	/// processed by the remote. `epoch` is the generation captured when the work
+	/// was built. Returns `None` if aborted or stale, or the response when
+	/// completed.
+	///
+	/// # Errors
+	/// Propagates federation policy, address resolution, request construction,
+	/// transport, and response errors from the federation service.
+	pub(super) async fn send_federation_request_on_if_current<T>(
+		&self,
+		client: &client::HttpClient,
+		dest: &ServerName,
+		epoch: u64,
+		request: T,
+	) -> Result<Option<T::IncomingResponse>>
+	where
+		T: OutgoingRequest + Debug + Send,
+	{
+		let _permit = self
+			.semaphore
+			.clone()
+			.acquire_owned()
+			.await
+			.expect("Semaphore should not be closed");
+		let mut abort_notifications = self.abort_notifications.subscribe();
+		let gate = self.abort_gate.clone().read_owned().await;
+		if self.destination_aborted(dest) || self.abort_epoch(dest) != epoch {
+			return Ok(None);
+		}
+		drop(gate);
+		let mut request = Box::pin(self.services.federation.execute_on(client, dest, request));
+		loop {
+			let changed = std::pin::pin!(abort_notifications.changed());
+			match futures::future::select(changed, request.as_mut()).await {
+				| futures::future::Either::Left((changed, _)) => {
+					if changed.is_err()
+						|| self.destination_aborted(dest)
+						|| self.abort_epoch(dest) != epoch
+					{
+						return Ok(None);
+					}
+				},
+				| futures::future::Either::Right((result, _)) => return result.map(Some),
+			}
+		}
 	}
 
 	/// Clean up queued sending event data
@@ -611,13 +737,101 @@ impl Service {
 	}
 
 	/// Clear all queued and active requests for a specific federation server.
+	/// Includes reliable EDUs; does not set the destination's abort flag.
 	pub async fn clear_destination_queue(&self, server: &ServerName) {
 		let dest = Destination::Federation(server.to_owned());
 		self.db.delete_all_requests_for(&dest).await;
+		self.db.delete_all_reliable_requests_for(&dest).await;
 		self.db.delete_all_active_requests_for(&dest).await;
 	}
 
-	/// Clear all queued and active requests for ALL federation destinations.
+	/// Marks a federation destination aborted, advances its generation, asks
+	/// its worker to discard retry state, and clears stored requests, including
+	/// reliable EDUs. Waits up to 30 seconds for worker acknowledgment before
+	/// clearing storage anyway. Resume is serialized with this operation.
+	/// Request futures are dropped when their epoch changes, including while
+	/// awaiting a response; the remote may already have processed an in-flight
+	/// request. Stale results are ignored by the worker, and delayed flush
+	/// messages are discarded while the flag is set.
+	pub async fn abort_destination(&self, server: &ServerName) {
+		// Held for the whole operation so a resume cannot interleave; the global
+		// gate below is released before waiting on the worker.
+		let _serial = self.abort_serial.lock(server).await;
+		let gate = self.abort_gate.clone().write_owned().await;
+		self.aborted.write().unwrap().insert(server.to_owned());
+		self.increment_abort_epoch(server);
+		drop(gate);
+
+		let dest = Destination::Federation(server.to_owned());
+		let (ack, acknowledged) = tokio::sync::oneshot::channel();
+		if let Some((sender, _)) = self.channels.get(self.shard_id(&dest)) {
+			if sender
+				.send(Msg {
+					dest,
+					event: SendingEvent::Flush,
+					queue_id: Vec::new(),
+					abort_ack: Some(ack),
+				})
+				.is_ok()
+			{
+				// The channel outlives its worker, so a send can succeed with no one
+				// left to acknowledge; do not wait forever.
+				if conduwuit::timeout(Duration::from_secs(30), acknowledged)
+					.await
+					.is_err()
+				{
+					warn!(%server, "sender worker did not acknowledge the abort in time");
+				}
+			}
+		}
+		self.clear_destination_queue(server).await;
+	}
+
+	/// Lifts an earlier abort so the server can be sent to again.
+	/// Waits for any abort cleanup to finish; discarded requests are not
+	/// restored.
+	pub async fn resume_destination(&self, server: &ServerName) {
+		let _serial = self.abort_serial.lock(server).await;
+		let _gate = self.abort_gate.clone().write_owned().await;
+		self.aborted.write().unwrap().remove(server);
+	}
+
+	/// Whether sending to `server` was stopped by `abort_destination`.
+	pub fn destination_aborted(&self, server: &ServerName) -> bool {
+		self.aborted.read().unwrap().contains(server)
+	}
+
+	/// The abort generation of `server`, initially zero; increments on abort
+	/// until it saturates at `u64::MAX`.
+	pub(super) fn abort_epoch(&self, server: &ServerName) -> u64 {
+		self.abort_epochs
+			.read()
+			.unwrap()
+			.get(server)
+			.copied()
+			.unwrap_or(0)
+	}
+
+	/// Advances the server's abort generation, saturating at `u64::MAX`.
+	fn increment_abort_epoch(&self, server: &ServerName) {
+		let mut epochs = self.abort_epochs.write().unwrap();
+		let epoch = epochs.entry(server.to_owned()).or_insert(0);
+		*epoch = epoch.saturating_add(1);
+		self.abort_notifications.send_replace(());
+	}
+
+	/// Whether this federation destination is aborted. Push and application
+	/// service destinations always return `false`.
+	pub(super) fn is_aborted(&self, dest: &Destination) -> bool {
+		match dest {
+			| Destination::Federation(server) => self.aborted.read().unwrap().contains(server),
+			| _ => false,
+		}
+	}
+
+	/// Clears all ordinary queued and active requests, including push and
+	/// application service requests, and all reliable federation EDUs.
+	/// Does not set abort flags or cancel requests already in flight.
 	pub async fn clear_all_federation_queues(&self) {
 		// Walk the queued table and delete everything
 		let keys: Vec<Vec<u8>> = self
@@ -643,6 +857,18 @@ impl Service {
 			.await;
 		for key in &keys {
 			self.db.servercurrentevent_data.remove(key);
+		}
+
+		let keys: Vec<Vec<u8>> = self
+			.db
+			.federation_outbound_to_device
+			.raw_keys()
+			.boxed()
+			.filter_map(|r| async { r.ok().map(<[u8]>::to_vec) })
+			.collect()
+			.await;
+		for key in &keys {
+			self.db.federation_outbound_to_device.remove(key);
 		}
 	}
 

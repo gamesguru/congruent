@@ -407,7 +407,7 @@ where
 	}
 	drop(cork);
 	let receipt_content = BTreeMap::from_iter([(
-		pdu.event_id().to_owned(),
+		slipstream::events::receipt::ReceiptEventId::from_opaque(pdu.event_id().as_str()),
 		BTreeMap::from_iter([(
 			slipstream::events::receipt::ReceiptType::ReadPrivate,
 			BTreeMap::from_iter([(
@@ -435,6 +435,12 @@ where
 	}
 
 	drop(insert_lock);
+
+	// The cached reconciliation snapshot predates this event. Drop it so the
+	// next digest request reflects the write, rather than serving a stale set
+	// until the cache TTL passes; a scan that raced the write re-checks the
+	// timeline position before and after it publishes its snapshot.
+	self.reconciliation_cache.invalidate(room_id);
 
 	// See if the event matches any known pushers via power level
 	let power_levels: RoomPowerLevelsEventContent = match state_root_handle {

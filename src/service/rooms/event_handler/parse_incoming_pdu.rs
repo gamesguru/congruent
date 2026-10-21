@@ -161,8 +161,8 @@ async fn room_version_without_room_state(
 #[implement(super::Service)]
 pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
 	let value = slipstream::canonical_json::into_object(
-		slipstream::canonical_json::from_json_str(pdu.get()).map_err(|e| {
-			err!(BadServerResponse(debug_warn!("Error parsing incoming event {e:?}")))
+		slipstream::canonical_json::from_json_str(pdu.get()).map_err(|_| {
+			err!(BadServerResponse(debug_warn!("Incoming event is not valid canonical JSON")))
 		})?,
 	)
 	.ok_or_else(|| err!(Request(BadJson("Incoming event must be a JSON object"))))?;
@@ -204,11 +204,9 @@ pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
 		| Ok(room_version_id) => room_version_id,
 		| Err(_) => self.room_version_without_room_state(&room_id, &value).await,
 	};
-	let (event_id, value) = gen_event_id_canonical_json(pdu, &room_version_id).map_err(|e| {
-		err!(Request(InvalidParam(warn!(
-			"Could not convert event to canonical json: {e}. Raw PDU: {}",
-			pdu.get()
-		))))
+	// The underlying error can quote peer-supplied content, so it is not kept.
+	let (event_id, value) = gen_event_id_canonical_json(pdu, &room_version_id).map_err(|_| {
+		err!(Request(InvalidParam(warn!("Could not convert event to canonical json"))))
 	})?;
 	self.validate_pdu(&value)?;
 	Ok((room_id, event_id, value))

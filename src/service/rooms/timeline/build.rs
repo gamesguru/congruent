@@ -18,8 +18,15 @@ use slipstream::{
 use super::{ExtractBody, RoomMutexGuard};
 
 /// Creates a new persisted data unit and adds it to a room. This function
-/// takes a roomid_mutex_state, meaning that only this function is able to
-/// mutate the room state.
+/// requires the caller's room state lock. `room_id` may be omitted when the
+/// room ID is derived from the created event. Returns the new event ID after
+/// appending, queueing federation sends, and notifying reconciliation
+/// listeners.
+///
+/// # Errors
+/// Propagates event construction, authorization, content parsing, state,
+/// storage, admin command dispatch, and federation queue errors. An error after
+/// append does not undo the persisted event.
 #[implement(super::Service)]
 pub async fn build_and_append_pdu(
 	&self,
@@ -230,6 +237,9 @@ pub async fn build_and_append_pdu(
 	if num_sent > 0 {
 		info!("Sending to federation");
 	}
+
+	// Tell reconciliation a local write happened. No receiver is not an error.
+	let _ = self.activity.send(room_id.clone());
 
 	// Our member list is incomplete until the resync finishes; send this event to
 	// the remaining servers then.

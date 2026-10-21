@@ -394,11 +394,11 @@ pub fn build(
 				get(server::room_digest::get_room_digest_route),
 			);
 
-		if config.experimental_features.msc4500_enabled {
-			router = router.route(
-				"/_matrix/federation/unstable/tk.nutra.msc4500/state_accumulator/{room_id}",
-				get(server::get_state_accumulator_route),
-			);
+		if config.experimental_features.msc4521_enabled {
+			router = router
+				.ruma_route(&server::get_room_reconciliation_digest_route)
+				.ruma_route(&server::get_room_reconciliation_strata_route)
+				.ruma_route(&server::post_room_reconciliation_diff_route);
 		}
 
 		router = router

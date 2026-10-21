@@ -49,12 +49,6 @@ jobs:
         id: cpu
         uses: ./.github/actions/get-cpu-target
 
-      - name: Setup RocksDB and Jemalloc
-        uses: ./.github/actions/setup-prebuilts
-        with:
-          cache-key: ubuntu-24.04
-          arch: ${{ steps.cpu.outputs.target }}
-
       - name: Export CPU target env vars
         run: |
           echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C target-cpu=${{ steps.cpu.outputs.target }}" | tee -a $GITHUB_ENV
@@ -189,7 +183,7 @@ jobs:
         run: git submodule update --init complement-crypto-src
 
       # The suite needs the system libs Rust links against (mounts them into the
-      # complement homeserver image), so set up the toolchain/prebuilts even
+      # complement homeserver image), so set up the toolchain even
       # though we download rather than compile the binary.
       - name: Install system dependencies
         run: |
@@ -209,12 +203,6 @@ jobs:
       - name: Detect best CPU target
         id: cpu
         uses: ./.github/actions/get-cpu-target
-
-      - name: Setup RocksDB and Jemalloc
-        uses: ./.github/actions/setup-prebuilts
-        with:
-          cache-key: ubuntu-24.04
-          arch: ${{ steps.cpu.outputs.target }}
 
       - name: Configure Docker Network Firewall
         run: |

@@ -117,26 +117,6 @@ where
 	}
 }
 
-impl<T> ExtractArg for extract::Query<T>
-where
-	T: serde::de::DeserializeOwned + Send + 'static,
-{
-	fn extract<'a>(
-		context: &'a mut Context,
-		_state: &'a State,
-	) -> BoxFuture<'a, Result<Self, ApiError>> {
-		Box::pin(async move {
-			let request = context
-				.request
-				.as_ref()
-				.expect("request exists while extracting");
-			serde_urlencoded::from_str(request.uri().query().unwrap_or_default())
-				.map(Self)
-				.map_err(|e| conduwuit::err!(Request(InvalidParam("Invalid query: {e}"))).into())
-		})
-	}
-}
-
 impl<Req> ExtractArg for Ruma<Req>
 where
 	Req: EndpointRequest + IncomingRequest + Send + Sync + 'static,
