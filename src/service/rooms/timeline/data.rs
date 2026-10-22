@@ -970,6 +970,51 @@ impl Data {
 		Ok(pdu)
 	}
 
+	/// Preload the full auth context for the given events from mtxdb's persisted
+	/// auth-chain closures. State resolution can then decode the room's event
+	/// bodies in one batch instead of walking a deep auth chain one event at a
+	/// time.
+	pub(super) fn get_mtxdb_auth_context(
+		&self,
+		room_id: &RoomId,
+		starting_events: &[OwnedEventId],
+	) -> Result<Vec<PduEvent>> {
+		let mut seen = HashSet::new();
+		let mut event_ids = Vec::new();
+		for event_id in starting_events {
+			if seen.insert(event_id.clone()) {
+				event_ids.push(event_id.clone());
+			}
+			let auth_chain = self
+				.mtxdb_events
+				.get_auth_chain(room_id.as_bytes(), event_id.as_bytes())
+				.map_err(|error| err!(Database("mtxdb auth-chain lookup failed: {error}")))?;
+			for auth_event_id in auth_chain {
+				let auth_event_id =
+					OwnedEventId::parse(std::str::from_utf8(&auth_event_id).map_err(
+						|error| err!(Database("invalid event ID in mtxdb auth chain: {error}")),
+					)?)
+					.map_err(|error| {
+						err!(Database("invalid event ID in mtxdb auth chain: {error}"))
+					})?;
+				if seen.insert(auth_event_id.clone()) {
+					event_ids.push(auth_event_id);
+				}
+			}
+		}
+
+		let event_id_bytes: Vec<&[u8]> = event_ids.iter().map(OwnedEventId::as_bytes).collect();
+		let pdus = self
+			.mtxdb_events
+			.get_events(room_id.as_bytes(), &event_id_bytes)
+			.map_err(|error| err!(Database("mtxdb auth-context lookup failed: {error}")))?;
+		Ok(pdus
+			.into_iter()
+			.flatten()
+			.filter_map(|bytes| database::from_json_slice(&bytes).ok())
+			.collect())
+	}
+
 	pub(super) async fn get_pdus_in_room_batch(
 		&self,
 		room_id: Option<&RoomId>,

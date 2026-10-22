@@ -685,6 +685,18 @@ impl Service {
 		self.db.get_pdu_in_room(room_id, event_id)
 	}
 
+	/// Preload events reachable through the auth chains of the supplied PDUs.
+	/// Used by room-version 12 state resolution to avoid serial reads on deep
+	/// chains.
+	#[inline]
+	pub fn get_mtxdb_auth_context(
+		&self,
+		room_id: &RoomId,
+		starting_events: &[OwnedEventId],
+	) -> Result<Vec<PduEvent>> {
+		self.db.get_mtxdb_auth_context(room_id, starting_events)
+	}
+
 	/// Returns the pdu.
 	///
 	/// This does __NOT__ check the outliers `Tree`.

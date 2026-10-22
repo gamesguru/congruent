@@ -376,23 +376,32 @@ impl EventAdapter {
 	) -> Result<(), StorageError> {
 		// Short-id allocation makes the commit conditional on the room's auth
 		// collection being unchanged; a concurrent writer fails it and the
-		// whole write is redone against the new version.
+		// whole write is redone against the new version. Reads made while
+		// staging can also be blocked when the collection keeps advancing, so
+		// retry the complete transaction for those transient errors too.
 		let mut attempts = 0_u8;
 		loop {
 			let tx = self.store.begin_transaction();
-			self.put_event_with_edges(
+			let staged = self.put_event_with_edges(
 				&tx,
 				room_id,
 				event_id,
 				event_body,
 				prev_events,
 				auth_events,
-			)?;
-			match tx.commit() {
-				| Err(StorageError::StaleRead { .. }) if attempts < 3 => {
+			);
+			let result = match staged {
+				| Ok(()) => tx.commit(),
+				| Err(error) => Err(error),
+			};
+			match result {
+				| Err(error)
+					if (error.is_stale_read() || error.is_would_block()) && attempts < 32 =>
+				{
 					attempts = attempts
 						.checked_add(1)
-						.expect("attempts is less than three");
+						.expect("attempts is less than thirty-two");
+					std::thread::sleep(std::time::Duration::from_millis(1));
 				},
 				| result => return result,
 			}
