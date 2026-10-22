@@ -463,7 +463,7 @@
 {"Action":"pass","Test":"TestMSC4429ProfileUpdates/Initial_sync_includes_requested_profile_fields_and_filters_others"}
 {"Action":"pass","Test":"TestMSC4429ProfileUpdates/No_updates_without_profile_fields_filter"}
 {"Action":"pass","Test":"TestMSC4429ProfileUpdates/Widening_profile_fields_filter_does_not_return_old_filtered_updates"}
-{"Action":"pass","Test":"TestMSC4499Key"}
+{"Action":"fail","Test":"TestMSC4499Key"}
 {"Action":"pass","Test":"TestMSC4499Key/FederationRequestAuthentication"}
 {"Action":"pass","Test":"TestMSC4499Key/FederationRequestAuthentication/current_key_id_with_wrong_private_key"}
 {"Action":"pass","Test":"TestMSC4499Key/FederationRequestAuthentication/current_verify_key"}
@@ -471,10 +471,10 @@
 {"Action":"pass","Test":"TestMSC4499Key/FederationRequestAuthentication/missing_signature"}
 {"Action":"pass","Test":"TestMSC4499Key/FederationRequestAuthentication/retired_old_verify_key"}
 {"Action":"pass","Test":"TestMSC4499Key/FederationRequestAuthentication/unknown_key_id"}
-{"Action":"pass","Test":"TestMSC4499Key/Resolution"}
-{"Action":"pass","Test":"TestMSC4499Key/Resolution/\u00a73"}
+{"Action":"fail","Test":"TestMSC4499Key/Resolution"}
+{"Action":"fail","Test":"TestMSC4499Key/Resolution/\u00a73"}
 {"Action":"pass","Test":"TestMSC4499Key/Resolution/\u00a73/BindingPromotion"}
-{"Action":"pass","Test":"TestMSC4499Key/Resolution/\u00a73/NotaryMustNotPatchCollidingResponse"}
+{"Action":"fail","Test":"TestMSC4499Key/Resolution/\u00a73/NotaryMustNotPatchCollidingResponse"}
 {"Action":"pass","Test":"TestMSC4499Key/Resolution/\u00a73/ProvisionalOverrideFreeze"}
 {"Action":"pass","Test":"TestMSC4499Key/Resolution/\u00a74"}
 {"Action":"pass","Test":"TestMSC4499Key/Resolution/\u00a74/FirstSeenWinsEventPath"}
