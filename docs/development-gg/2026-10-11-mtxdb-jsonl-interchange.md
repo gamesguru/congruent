@@ -234,12 +234,18 @@ not individually checksummed.
 ## Global signing-key export
 
 Signing keys are global, so they use a separate JSONL file produced by
-`!admin yolo export-mtxdb-keys`. Each line has `t: "server_keys"`, an `origin`,
-a `kind`, and a base64 `payload`. The supported kinds are `historical`,
-`provisional`, `corroborated`, and `notary`. The first three payloads are the
-serialized record values; the notary payload is the original self-signed JSON
-document. Importers decode each payload and store it in the matching global
-mtxdb key record.
+`!admin yolo export-mtxdb-keys`. The format is mtxdb's native per-key layout.
+Each line has `t: "server_keys"` and an `origin`; `kind` is `permanent`,
+`provisional`, or `notary`. A key line carries `key_id`, the base64 key body
+(or only `digest` when the body was evicted), `valid_until_ts`, `source`,
+`ts_added_ms`, and the optional observation fields. A notary line carries the
+origin's original self-signed JSON document as base64 `payload`.
+
+The mtxdb CLI importer reads this layout directly: key lines become one record
+per key id in the origin's native collection, and notary lines become the
+origin's verbatim notary record. The server reads the same layout through
+`conduwuit_mtxdb::server_keys`, so an export/import cycle does not change the
+storage shape.
 
 The room exports are produced by `!admin yolo export-mtxdb --all`. Import all
 room files and the global key file before starting the server. Importing only

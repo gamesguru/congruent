@@ -15,6 +15,7 @@ const MAP_NAMES: &[&str] = &[
 	"roomid_shortroomid",
 	"shorteventid_authchain",
 	"shorteventid_eventid",
+	"server_signingkeys",
 	"shorteventid_shortauthevents",
 	"shortstatekey_statekey",
 	"statekey_shortstatekey",

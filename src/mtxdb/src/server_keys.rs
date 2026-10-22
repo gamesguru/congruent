@@ -1,14 +1,28 @@
 //! Domain adapter for federation signing-key records.
 //!
-//! Keys are global, not per-room, so every origin's records share one
-//! collection in the server-info shard. Each origin has several independent
-//! records, told apart by [`KeyRecordKind`]; the payloads are opaque bytes
-//! (JSON, written by the caller). Validity windows (`valid_until_ts`,
-//! `expired_ts`) live inside the payloads.
+//! The authoritative layout is mtxdb's native one: one collection per origin,
+//! one record per key id. Each record carries its tier, validity window,
+//! digest binding and observation timestamps, and [`ServerKeysAdapter::update`]
+//! applies mtxdb's MSC4499 binding rules. The origin's verbatim Notary payload
+//! is stored beside the per-origin collections. The shared-collection methods
+//! remain for reading databases written before the native layout.
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
-use crate::keys::server_key_record_id;
+use mtxdb::server_keys as native;
+pub use mtxdb::server_keys::{
+	KeyIssue, KeyIssueKind, KeyLimits, KeyMerge, KeySighting, KeyTier, KeyUpdate, ObservedKey,
+	ServerKey,
+};
+
+use crate::keys::{derive_id, server_key_record_id};
+
+const ORIGIN_INDEX_DOMAIN: &[u8] = b"server-key-origins-v1";
+const ORIGIN_INDEX_NODE_DOMAIN: &[u8] = b"server-key-origin-index-v1";
+
+fn origin_index_collection() -> [u8; 16] { derive_id(ORIGIN_INDEX_DOMAIN, b"index") }
+
+fn origin_index_node(origin: &[u8]) -> [u8; 16] { derive_id(ORIGIN_INDEX_NODE_DOMAIN, origin) }
 
 /// Logical class of a server's signing-key payload.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,6 +149,94 @@ impl ServerKeysAdapter {
 			}
 		}
 		tx.remove(ShardType::ServerInfo, collection, node)
+	}
+
+	/// One key of `origin` from mtxdb's native per-key layout.
+	pub fn read_key(
+		&self,
+		origin: &[u8],
+		key_id: &[u8],
+	) -> Result<Option<ServerKey>, StorageError> {
+		native::read_server_key(self.store.database().pool(ShardType::ServerInfo), origin, key_id)
+	}
+
+	/// Every key of `origin`, ordered by key id.
+	pub fn read_keys(&self, origin: &[u8]) -> Result<Vec<ServerKey>, StorageError> {
+		native::read_server_keys(self.store.database().pool(ShardType::ServerInfo), origin)
+	}
+
+	/// The verbatim Notary payload for `origin`.
+	pub fn read_notary(&self, origin: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+		native::read_notary_payload(self.store.database().pool(ShardType::ServerInfo), origin)
+	}
+
+	/// Merge one observation batch through mtxdb's MSC4499 binding rules.
+	///
+	/// The write is native: one record per key id, plus the origin's Notary
+	/// payload, committed in one transaction by mtxdb.
+	pub fn update(&self, update: &KeyUpdate<'_>) -> Result<KeyMerge, StorageError> {
+		let merged = native::update_server_keys(self.store.database(), update)?;
+		self.record_origin(update.origin)?;
+		Ok(merged)
+	}
+
+	/// Persist an origin in the index used by the export path, which cannot
+	/// enumerate per-origin collections otherwise.
+	fn record_origin(&self, origin: &[u8]) -> Result<(), StorageError> {
+		let tx = self.store.begin_transaction();
+		tx.put(
+			ShardType::ServerInfo,
+			origin_index_collection(),
+			origin_index_node(origin),
+			origin,
+		)?;
+		tx.commit()
+	}
+
+	/// Every origin with native key records, in no particular order.
+	///
+	/// The index covers writes made through this adapter. Origins written by
+	/// the mtxdb CLI importer, which only knows the native layout, are found by
+	/// scanning the server-info pool for collections whose first record decodes
+	/// as a key belonging to that same collection.
+	pub fn origins(&self) -> Result<Vec<Vec<u8>>, StorageError> {
+		let mut origins: BTreeSet<Vec<u8>> = self
+			.store
+			.scan(ShardType::ServerInfo, &origin_index_collection())?
+			.into_iter()
+			.map(|(_, origin)| origin)
+			.collect();
+
+		let pool = self.store.database().pool(ShardType::ServerInfo);
+		for collection in pool.collection_ids() {
+			let Some((_, bytes)) = self
+				.store
+				.scan(ShardType::ServerInfo, &collection)?
+				.into_iter()
+				.next()
+			else {
+				continue;
+			};
+			let Ok((origin, _)) = native::decode_server_key_record(&bytes) else {
+				continue;
+			};
+			if native::origin_keys_collection_id(&origin) == collection {
+				origins.insert(origin);
+			}
+		}
+
+		Ok(origins.into_iter().collect())
+	}
+
+	/// Whether any native key record exists, for startup's incomplete-import
+	/// check.
+	pub fn has_any_native_records(&self) -> Result<bool, StorageError> {
+		for origin in self.origins()? {
+			if !self.read_keys(&origin)?.is_empty() {
+				return Ok(true);
+			}
+		}
+		Ok(false)
 	}
 }
 

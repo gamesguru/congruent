@@ -74,7 +74,6 @@ const MAP_NAMES: &[&str] = &[
 	"roomuseroncejoinedids",
 	"roomusertype_roomuserdataid",
 	"senderkey_pusher",
-	"server_signingkeys",
 	"servercurrentevent_data",
 	"servername_destination",
 	"servername_educount",

@@ -217,7 +217,9 @@ impl Services {
 		}
 
 		let has_legacy_events = self.db["eventid_pdu"].raw_keys().next().await.is_some();
-		let has_legacy_signing_keys = self.db["server_signingkeys"]
+		let has_legacy_signing_keys = self
+			.db
+			.deprecated("server_signingkeys")?
 			.raw_keys()
 			.next()
 			.await
@@ -233,12 +235,13 @@ impl Services {
 				.map_err(|error| {
 					conduwuit::err!(Database(error!("Checking mtxdb verdict data: {error}")))
 				})?;
-		let has_mtxdb_signing_keys =
-			conduwuit_mtxdb::server_keys::ServerKeysAdapter::new(self.mtxdb.clone())
-				.has_any_records()
-				.map_err(|error| {
-					conduwuit::err!(Database(error!("Checking mtxdb signing-key data: {error}")))
-				})?;
+		let signing_keys =
+			conduwuit_mtxdb::server_keys::ServerKeysAdapter::new(self.mtxdb.clone());
+		let has_mtxdb_signing_keys = signing_keys.has_any_records().map_err(|error| {
+			conduwuit::err!(Database(error!("Checking mtxdb signing-key data: {error}")))
+		})? || signing_keys.has_any_native_records().map_err(
+			|error| conduwuit::err!(Database(error!("Checking mtxdb signing-key data: {error}"))),
+		)?;
 		let has_mtxdb_short_ids = conduwuit_mtxdb::shortids::ShortIdAdapter::has_any_records(
 			&self.mtxdb,
 		)

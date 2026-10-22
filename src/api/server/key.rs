@@ -431,26 +431,22 @@ mod tests {
 		let raw = key_payload("ed25519:active", "AAA", None, None);
 		let merged =
 			key_payload("ed25519:active", "AAA", Some("ed25519:historical"), Some("BBB"));
-		let adapter =
-			conduwuit_mtxdb::server_keys::ServerKeysAdapter::new(services.mtxdb.clone());
-		let tx = services.mtxdb.begin_transaction();
-		adapter
-			.put(
-				&tx,
-				conduwuit_mtxdb::server_keys::KeyRecordKind::Notary,
-				origin.as_bytes(),
-				&slipstream::codec::to_vec(&Raw::new(&raw).unwrap()),
+		services
+			.server_keys
+			.add_signing_keys(
+				&Raw::new(&raw).unwrap(),
+				conduwuit_service::server_keys::FetchSource::Direct,
 			)
+			.await
 			.unwrap();
-		adapter
-			.put(
-				&tx,
-				conduwuit_mtxdb::server_keys::KeyRecordKind::Historical,
-				origin.as_bytes(),
-				&slipstream::codec::to_vec(&merged),
+		services
+			.server_keys
+			.add_signing_keys(
+				&Raw::new(&merged).unwrap(),
+				conduwuit_service::server_keys::FetchSource::Direct,
 			)
+			.await
 			.unwrap();
-		tx.commit().unwrap();
 		let (state, guard) = conduwuit_service::state::create(services.clone());
 		let router =
 			crate::router::build(crate::hyper_router::MinimalRouter::new(), &services.server);
