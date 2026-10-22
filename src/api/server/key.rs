@@ -115,6 +115,19 @@ fn select_server_key_response(
 	merged_server_key: Option<ServerSigningKeys>,
 ) -> Result<Raw<ServerSigningKeys>> {
 	if let Some(keys) = merged_server_key {
+		// The native merge re-encodes the key set without the origin's
+		// signatures. When it adds nothing over the stored Notary payload, serve
+		// the original bytes so the origin's self-signature still verifies.
+		if let Some(raw) = &raw_server_key {
+			let unchanged_from_raw = raw.deserialize().is_ok_and(|raw_keys| {
+				keys.verify_keys == raw_keys.verify_keys
+					&& keys.old_verify_keys == raw_keys.old_verify_keys
+			});
+			if unchanged_from_raw {
+				return Ok(raw.clone());
+			}
+		}
+
 		Raw::new(&keys).map_err(Into::into)
 	} else if let Some(keys) = raw_server_key {
 		Ok(keys)
@@ -380,6 +393,16 @@ mod tests {
 			reload: LogLevelReloadHandles,
 			capture: Arc::new(CaptureState::new()),
 		}
+	}
+
+	#[test]
+	fn unchanged_merge_preserves_raw_notary_payload() {
+		let raw = Raw::new(&key_payload("ed25519:active", "AAA", None, None)).unwrap();
+		let merged = key_payload("ed25519:active", "AAA", None, None);
+
+		let selected = select_server_key_response(Some(raw.clone()), Some(merged)).unwrap();
+
+		assert_eq!(selected.get(), raw.get());
 	}
 
 	#[test]

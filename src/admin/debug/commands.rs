@@ -117,8 +117,7 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 		self.services
 			.rooms
 			.outlier
-			.get_outlier_pdu_json(&event_id)
-			.await?
+			.get_outlier_pdu_json(&event_id)?
 	} else {
 		return Err!("PDU not found locally.");
 	};
@@ -1203,7 +1202,6 @@ async fn validate_and_extract_state(
 			.rooms
 			.outlier
 			.get_outlier_pdu_json(&event_id)
-			.await
 			.is_ok();
 		let already_exists = has_timeline || has_outlier;
 
@@ -1335,12 +1333,7 @@ async fn validate_and_add_auth_chain(
 			.get_pdu_id(&event_id)
 			.await
 			.is_ok();
-		let outlier_json = self
-			.services
-			.rooms
-			.outlier
-			.get_outlier_pdu_json(&event_id)
-			.await;
+		let outlier_json = self.services.rooms.outlier.get_outlier_pdu_json(&event_id);
 		let has_outlier = outlier_json.is_ok();
 
 		if has_timeline || has_outlier {
@@ -1615,7 +1608,7 @@ async fn promote_sync_anchor(
 			// state events into the outlier table, not timeline.
 			let json_result = match self.services.rooms.timeline.get_pdu_json(&eid).await {
 				| Ok(json) => Ok(json),
-				| Err(_) => self.services.rooms.outlier.get_outlier_pdu_json(&eid).await,
+				| Err(_) => self.services.rooms.outlier.get_outlier_pdu_json(&eid),
 			};
 			if let Ok(json) = json_result {
 				// Use from_id_val to inject the room_id into V3+ events

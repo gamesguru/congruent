@@ -194,13 +194,7 @@ pub(super) async fn get_room_dag(
 			.await;
 
 		for event_id in outlier_ids {
-			if let Ok(pdu_json) = self
-				.services
-				.rooms
-				.outlier
-				.get_outlier_pdu_json(&event_id)
-				.await
-			{
+			if let Ok(pdu_json) = self.services.rooms.outlier.get_outlier_pdu_json(&event_id) {
 				let pdu_result = self.services.rooms.outlier.get_pdu_outlier(&event_id).await;
 				if let Err(e) = stats
 					.process_and_write_pdu(

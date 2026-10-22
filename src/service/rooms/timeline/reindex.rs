@@ -133,7 +133,7 @@ impl Service {
 				);
 			}
 
-			let Ok((pdu, raw_bytes)) = self.db.get_pdu_and_raw_bytes(event_id).await else {
+			let Ok((pdu, raw_bytes)) = self.db.get_pdu_and_raw_bytes(event_id) else {
 				stats.missing_pdu = stats.missing_pdu.saturating_add(1);
 				continue;
 			};
@@ -260,7 +260,7 @@ impl Service {
 			let stored_auth_shorts = self.db.get_shortauthevents(short_eid).await.ok();
 			let auth_events_repaired = stored_auth_shorts.as_ref() != Some(&auth_shorts);
 			if auth_events_repaired {
-				if let Ok(json) = self.db.get_pdu_json(event_id).await {
+				if let Ok(json) = self.db.get_pdu_json(event_id) {
 					self.db.write_event_to_mtxdb(&pdu, &json).await?;
 				}
 				stats.repaired_auth_events = stats.repaired_auth_events.saturating_add(1);

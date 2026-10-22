@@ -55,9 +55,7 @@ impl crate::Service for Service {
 
 /// Returns the pdu from the outlier tree.
 #[implement(Service)]
-pub async fn get_outlier_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
-	std::future::ready(()).await;
-
+pub fn get_outlier_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
 	let room_id = self
 		.db
 		.mtxdb_events
@@ -76,7 +74,7 @@ pub async fn get_outlier_pdu_json(&self, event_id: &EventId) -> Result<Canonical
 /// Returns the pdu from the outlier tree.
 #[implement(Service)]
 pub async fn get_pdu_outlier(&self, event_id: &EventId) -> Result<PduEvent> {
-	let json = self.get_outlier_pdu_json(event_id).await?;
+	let json = self.get_outlier_pdu_json(event_id)?;
 	Ok(slipstream::codec::from_value(&slipstream::json::Value::Object(json))?)
 }
 

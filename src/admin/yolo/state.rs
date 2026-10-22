@@ -112,13 +112,7 @@ pub(super) async fn compare_room_state(
 				return Ok::<Option<(PduEvent, bool)>, conduwuit::Error>(Some((pdu, false)));
 			}
 
-			if let Ok(json) = self
-				.services
-				.rooms
-				.outlier
-				.get_outlier_pdu_json(&event_id)
-				.await
-			{
+			if let Ok(json) = self.services.rooms.outlier.get_outlier_pdu_json(&event_id) {
 				let pdu_res = slipstream::codec::from_value::<PduEvent>(
 					&slipstream::json::Value::Object(json),
 				)
@@ -868,7 +862,6 @@ pub(super) async fn set_state_event(
 				.rooms
 				.outlier
 				.get_outlier_pdu_json(&event_id)
-				.await
 				.map_err(|_| err!(Request(NotFound("Event {event_id} not found locally"))))?;
 			slipstream::codec::from_value::<PduEvent>(&slipstream::json::Value::Object(json))
 				.map_err(|e| err!(Request(InvalidParam("Failed to parse outlier: {e}"))))?

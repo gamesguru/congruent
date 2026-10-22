@@ -146,17 +146,12 @@ impl Data {
 	}
 
 	/// Returns the json of a pdu.
-	pub(super) async fn get_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
-		std::future::ready(()).await;
-
+	pub(super) fn get_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
 		database::from_json_slice(&self.get_event_json_bytes(event_id.as_bytes())?)
 	}
 
-	pub(super) async fn get_outlier_pdu_json(
-		&self,
-		event_id: &EventId,
-	) -> Result<CanonicalJsonObject> {
-		self.get_pdu_json(event_id).await
+	pub(super) fn get_outlier_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
+		self.get_pdu_json(event_id)
 	}
 
 	/// Returns the json of a pdu.
@@ -166,7 +161,7 @@ impl Data {
 	) -> Result<CanonicalJsonObject> {
 		let _pduid = self.get_pdu_id(event_id).await?;
 
-		self.get_pdu_json(event_id).await
+		self.get_pdu_json(event_id)
 	}
 
 	fn get_event_json_bytes(&self, event_id: &[u8]) -> Result<Vec<u8>> {
@@ -183,12 +178,10 @@ impl Data {
 
 	/// Directly gets the PDU and JSON from the authoritative mtxdb event store.
 	/// Used for timeline re-insertion when other indices are cleared.
-	pub(super) async fn get_from_eventid_pdu(
+	pub(super) fn get_from_eventid_pdu(
 		&self,
 		event_id: &EventId,
 	) -> Result<(PduEvent, CanonicalJsonObject)> {
-		std::future::ready(()).await;
-
 		let bytes = self.get_event_json_bytes(event_id.as_bytes())?;
 		let pdu: PduEvent = database::from_json_slice(&bytes)?;
 		let json: CanonicalJsonObject = database::from_json_slice(&bytes)?;
@@ -196,12 +189,10 @@ impl Data {
 	}
 
 	/// Directly get raw PDU bytes from the authoritative mtxdb event store.
-	pub(super) async fn get_pdu_and_raw_bytes(
+	pub(super) fn get_pdu_and_raw_bytes(
 		&self,
 		event_id: &EventId,
 	) -> Result<(PduEvent, Vec<u8>)> {
-		std::future::ready(()).await;
-
 		let raw_bytes = self.get_event_json_bytes(event_id.as_bytes())?;
 		let pdu: PduEvent = database::from_json_slice(&raw_bytes)?;
 		Ok((pdu, raw_bytes))
@@ -226,7 +217,7 @@ impl Data {
 
 	pub(super) async fn fallback_prev_events(&self, event_id: &EventId) -> HashSet<OwnedEventId> {
 		let mut prevs = HashSet::new();
-		if let Ok((pdu, _)) = self.get_from_eventid_pdu(event_id).await {
+		if let Ok((pdu, _)) = self.get_from_eventid_pdu(event_id) {
 			for prev_id in pdu.prev_events() {
 				prevs.insert(prev_id.to_owned());
 			}
@@ -407,7 +398,7 @@ impl Data {
 			if let Ok(event_id_str) = std::str::from_utf8(event_id_bytes) {
 				if let Ok(event_id) = OwnedEventId::parse(event_id_str) {
 					let _pdu_id: RawPduId = pdu_id_bytes.into();
-					if let Ok(mut json) = self.get_pdu_json(&event_id).await {
+					if let Ok(mut json) = self.get_pdu_json(&event_id) {
 						if !json.contains_key("event_id") {
 							json.insert(
 								"event_id".into(),
@@ -958,13 +949,11 @@ impl Data {
 	///
 	/// Checks the mtxdb event store if not found in the timeline.
 	/// If `room_id` is provided, validates the PDU belongs to that room.
-	pub(super) async fn get_pdu_in_room(
+	pub(super) fn get_pdu_in_room(
 		&self,
 		room_id: Option<&RoomId>,
 		event_id: &EventId,
 	) -> Result<PduEvent> {
-		std::future::ready(()).await;
-
 		let pdu: PduEvent =
 			database::from_json_slice(&self.get_event_json_bytes(event_id.as_bytes())?)?;
 
@@ -1107,9 +1096,7 @@ impl Data {
 	}
 
 	/// Like get_pdu(), but without the expense of fetching and parsing the data
-	pub(super) async fn pdu_exists(&self, event_id: &EventId) -> Result {
-		std::future::ready(()).await;
-
+	pub(super) fn pdu_exists(&self, event_id: &EventId) -> Result {
 		match self
 			.mtxdb_events
 			.locate_event(event_id.as_bytes())
@@ -1162,7 +1149,7 @@ impl Data {
 	) -> Result<CanonicalJsonObject> {
 		let event_id_bytes = self.room_pducount_eventid.get(pdu_id).await?;
 		let event_id = EventId::parse(std::str::from_utf8(&event_id_bytes)?)?;
-		self.get_pdu_json(&event_id).await
+		self.get_pdu_json(&event_id)
 	}
 
 	#[allow(clippy::unused_self)]
@@ -1521,7 +1508,7 @@ impl Data {
 					// RocksDB cursor invalidation through try_buffered
 					.map_ok(|(key, val)| (key.to_vec(), val.to_vec()))
 					.and_then(
-						move |(key, val)| async move { self.resolve_pdu((&key, &val)).await },
+						move |(key, val)| async move { self.resolve_pdu((&key, &val)) },
 					)
 			})
 			.inspect_err(|e| conduwuit::warn!("pdus_rev count_to_id failed: {e}"))
@@ -1555,7 +1542,7 @@ impl Data {
 					// RocksDB cursor invalidation through try_buffered
 					.map_ok(|(key, val)| (key.to_vec(), val.to_vec()))
 					.and_then(
-						move |(key, val)| async move { self.resolve_pdu((&key, &val)).await },
+						move |(key, val)| async move { self.resolve_pdu((&key, &val)) },
 					)
 			})
 			.try_flatten_stream()
@@ -1698,9 +1685,9 @@ mod boundary_tests {
 impl Data {
 	/// Resolve a (pdu_id, event_id_bytes) pair from `room_pducount_eventid`
 	/// into a full `PdusIterItem` by looking up the PDU JSON in mtxdb.
-	async fn resolve_pdu(&self, (pdu_id, event_id_bytes): KeyVal<'_>) -> Result<PdusIterItem> {
+	fn resolve_pdu(&self, (pdu_id, event_id_bytes): KeyVal<'_>) -> Result<PdusIterItem> {
 		let json_bytes = self.get_event_json_bytes(event_id_bytes)?;
-		std::future::ready(Self::parse_json_slice(None, (pdu_id, &json_bytes))).await
+		Self::parse_json_slice(None, (pdu_id, &json_bytes))
 	}
 
 	/// Resolve a batch of `pdu_id`s via the two-hop path:
