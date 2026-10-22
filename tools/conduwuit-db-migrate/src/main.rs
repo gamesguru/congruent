@@ -9,6 +9,8 @@ use std::{
 use redb::{Database, TableDefinition};
 use rust_rocksdb::{DB, IteratorMode, Options};
 
+mod mtxdb_export;
+
 const FORMAT: &str = "conduwuit-metadata/v1";
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("conduwuit_metadata");
 
@@ -51,6 +53,7 @@ const MTXDB_OWNED_MAPS: &[&str] = &[
 
 fn usage() -> ! {
 	eprintln!("usage: conduwuit-db-migrate export <rocksdb> <bundle.jsonl> [map ...]");
+	eprintln!("       conduwuit-db-migrate export-mtxdb <rocksdb> <output-dir> <server-name>");
 	eprintln!("       conduwuit-db-migrate import <bundle.jsonl> <new-metadata.redb>");
 	eprintln!("       conduwuit-db-migrate list <rocksdb>");
 	std::process::exit(2);
@@ -77,7 +80,7 @@ fn hex(bytes: &[u8]) -> String {
 	let mut output = String::with_capacity(bytes.len().saturating_mul(2));
 	for byte in bytes {
 		output.push(char::from(DIGITS[usize::from(byte >> 4)]));
-		output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+		output.push(char::from(DIGITS[usize::from(byte & 0x0F)]));
 	}
 	output
 }
@@ -184,7 +187,8 @@ fn export(
 			json_line(
 				&mut writer,
 				&format!(
-					"{{\"type\":\"record\",\"map\":\"{map}\",\"key_hex\":\"{}\",\"value_hex\":\"{}\"}}",
+					"{{\"type\":\"record\",\"map\":\"{map}\",\"key_hex\":\"{}\",\"value_hex\":\"\
+					 {}\"}}",
 					hex(&key),
 					hex(&value),
 				),
@@ -379,6 +383,15 @@ fn import(bundle_path: &Path, redb_path: &Path) -> Result<(), Box<dyn std::error
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let mut args = env::args().skip(1);
 	match args.next().as_deref() {
+		| Some("export-mtxdb") => {
+			let rocks = args.next().unwrap_or_else(|| usage());
+			let output = args.next().unwrap_or_else(|| usage());
+			let server = args.next().unwrap_or_else(|| usage());
+			if args.next().is_some() {
+				usage();
+			}
+			mtxdb_export::export(Path::new(&rocks), Path::new(&output), &server)
+		},
 		| Some("export") => {
 			let rocks = args.next().unwrap_or_else(|| usage());
 			let bundle = args.next().unwrap_or_else(|| usage());
