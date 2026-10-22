@@ -64,6 +64,11 @@ export CONTINUWUITY_TLS__CERTS="/$SERVER_NAME.crt"
 export CONTINUWUITY_SERVER_NAME="$SERVER_NAME"
 # Ensure each test node gets an isolated database to prevent reuse errors
 export CONDUWUIT_DATABASE_PATH="${CONDUWUIT_DATABASE_PATH:-/var/lib/continuwuity/$SERVER_NAME}"
+if [[ "$CONDUWUIT_DATABASE_PATH" == *@HOSTNAME@* ]]; then
+	export CONDUWUIT_DATABASE_PATH="${CONDUWUIT_DATABASE_PATH//@HOSTNAME@/$(hostname)}"
+	mkdir -p "$CONDUWUIT_DATABASE_PATH"
+	chown -R "${CONDUWUIT_UID}:${CONDUWUIT_GID}" "$CONDUWUIT_DATABASE_PATH"
+fi
 echo "rocksdb: $CONDUWUIT_DATABASE_PATH/rocksdb"
 echo "mtxdb: $CONDUWUIT_DATABASE_PATH/mtxdb"
 
