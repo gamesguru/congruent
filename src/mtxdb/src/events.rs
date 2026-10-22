@@ -117,6 +117,19 @@ impl EventAdapter {
 		self.get_edges(Self::auth_collection(room_id), event_id)
 	}
 
+	/// Return auth edges when a row exists, distinguishing an empty edge list
+	/// from a missing row so callers can use their compatibility fallback.
+	pub fn get_auth_events_if_present(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+	) -> Result<Option<Vec<Vec<u8>>>, StorageError> {
+		self.store
+			.get(ShardType::Edges, &Self::auth_collection(room_id), event_record_id(event_id))?
+			.map(|bytes| Self::deserialize_edges(&bytes))
+			.transpose()
+	}
+
 	/// The full auth chain of `event_id`: every event reachable through auth
 	/// edges, excluding `event_id` itself, each exactly once. Order is
 	/// unspecified.
@@ -293,6 +306,11 @@ impl EventAdapter {
 			// An encoded bitmap is never empty (it carries a header), so a
 			// leaf event's empty closure is not mistaken for a removed record.
 			tx.put(ShardType::Edges, collection, closure_node(own_short), &closure.encode())?;
+		} else {
+			// Replacing the event's auth edges can invalidate an existing
+			// closure. Remove it rather than leaving readers a stale answer;
+			// they fall back to walking the new edges.
+			tx.remove(ShardType::Edges, collection, closure_node(own_short))?;
 		}
 		if next != start {
 			tx.put(ShardType::Edges, collection, counter_node(), &next.to_be_bytes())?;

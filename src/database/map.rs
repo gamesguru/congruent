@@ -376,6 +376,11 @@ impl Map {
 		materialized(self.raw_items(crate::util::IteratorMode::Start))
 	}
 
+	/// Read the map's raw key/value rows synchronously for startup migrations.
+	pub fn raw_entries(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+		self.raw_items(crate::util::IteratorMode::Start)
+	}
+
 	pub fn raw_stream_from<P>(
 		&self,
 		from: &P,

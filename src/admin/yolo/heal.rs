@@ -327,7 +327,7 @@ pub(super) async fn clean_corrupt_rooms(&self, execute: bool) -> Result {
 				self.services.rooms.state_cache.server_rooms_remove_raw(
 					&conduwuit_database::serialize_to_vec(prefix).unwrap(),
 				);
-			self.services.rooms.metadata.remove_room_raw(room_id);
+			self.services.rooms.metadata.remove_room_raw(room_id)?;
 		}
 	}
 

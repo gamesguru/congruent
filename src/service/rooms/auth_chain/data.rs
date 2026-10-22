@@ -1,6 +1,6 @@
-use std::{future::Future, sync::Arc};
+use std::sync::Arc;
 
-use conduwuit::{Result, SyncMutex, err, utils::math::usize_from_f64};
+use conduwuit::{Result, RuntimeHandle, SyncMutex, err, utils::math::usize_from_f64};
 use conduwuit_mtxdb::{events::EventAdapter, shortids::ShortIdAdapter};
 use lru_cache::LruCache;
 use roaring::RoaringTreemap;
@@ -8,6 +8,7 @@ use roaring::RoaringTreemap;
 pub(super) struct Data {
 	events: EventAdapter,
 	shortids: ShortIdAdapter,
+	runtime: RuntimeHandle,
 	pub(super) auth_chain_cache: SyncMutex<LruCache<Vec<u64>, Arc<RoaringTreemap>>>,
 }
 
@@ -21,19 +22,12 @@ impl Data {
 			events: EventAdapter::new(args.mtxdb.clone()),
 			shortids: ShortIdAdapter::new(args.mtxdb.clone())
 				.expect("mtxdb short IDs must open before auth-chain service"),
+			runtime: args.server.runtime().clone(),
 			auth_chain_cache: SyncMutex::new(LruCache::new(cache_size)),
 		}
 	}
 
-	pub(super) fn get_cached_eventid_authchain(
-		&self,
-		shortroomid: u64,
-		shorteventid: u64,
-	) -> impl Future<Output = Result<Arc<RoaringTreemap>>> {
-		std::future::ready(self.get_cached_eventid_authchain_blocking(shortroomid, shorteventid))
-	}
-
-	fn get_cached_eventid_authchain_blocking(
+	pub(super) async fn get_cached_eventid_authchain(
 		&self,
 		shortroomid: u64,
 		shorteventid: u64,
@@ -45,32 +39,44 @@ impl Data {
 			return Ok(Arc::clone(result));
 		}
 
-		// Key by room first so a room's closures occupy a contiguous key range.
-		// Stored as a serialized `RoaringTreemap`.
-		let room_id = self
-			.shortids
-			.get_room_id(shortroomid)
-			.map_err(|e| err!(Database("mtxdb room short-id lookup failed: {e}")))?
-			.ok_or_else(|| err!(Request(NotFound("room for short room id not found"))))?;
-		let event_id = self
-			.shortids
-			.get_event_id(shorteventid)
-			.map_err(|e| err!(Database("mtxdb event short-id lookup failed: {e}")))?
-			.ok_or_else(|| err!(Request(NotFound("event for short event id not found"))))?;
-		let ancestors = self
-			.events
-			.get_auth_chain(&room_id, &event_id)
-			.map_err(|e| err!(Database("mtxdb auth-chain lookup failed: {e}")))?;
-		let mut bitmap = RoaringTreemap::new();
-		for ancestor in ancestors {
-			let short = self
-				.shortids
-				.get_event(&ancestor)
-				.map_err(|e| err!(Database("mtxdb auth short-id lookup failed: {e}")))?
-				.ok_or_else(|| err!(Request(NotFound("short ID for auth ancestor not found"))))?;
-			bitmap.insert(short);
-		}
-		let chain = Arc::new(bitmap);
+		// Keep synchronous mtxdb reads off executor workers. Only persisted
+		// closures are cacheable; a missing closure uses the server's checked PDU
+		// walk instead.
+		let events = self.events.clone();
+		let shortids = self.shortids.clone();
+		let chain = self
+			.runtime
+			.spawn_blocking(move || {
+				let room_id = shortids
+					.get_room_id(shortroomid)
+					.map_err(|e| err!(Database("mtxdb room short-id lookup failed: {e}")))?
+					.ok_or_else(|| err!(Request(NotFound("room for short room id not found"))))?;
+				let event_id = shortids
+					.get_event_id(shorteventid)
+					.map_err(|e| err!(Database("mtxdb event short-id lookup failed: {e}")))?
+					.ok_or_else(|| {
+						err!(Request(NotFound("event for short event id not found")))
+					})?;
+				let Some(ancestors) = events
+					.persisted_auth_chain(&room_id, &event_id)
+					.map_err(|e| err!(Database("mtxdb auth-chain lookup failed: {e}")))?
+				else {
+					return Err(err!(Request(NotFound("no persisted auth chain for event"))));
+				};
+				let mut bitmap = RoaringTreemap::new();
+				for ancestor in ancestors {
+					let short = shortids
+						.get_event(&ancestor)
+						.map_err(|e| err!(Database("mtxdb auth short-id lookup failed: {e}")))?
+						.ok_or_else(|| {
+							err!(Request(NotFound("short ID for auth ancestor not found")))
+						})?;
+					bitmap.insert(short);
+				}
+				Ok::<_, conduwuit::Error>(Arc::new(bitmap))
+			})
+			.await
+			.map_err(|e| err!(Database("mtxdb blocking auth-chain lookup failed: {e}")))??;
 
 		// Cache in RAM
 		self.auth_chain_cache

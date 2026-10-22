@@ -1,8 +1,9 @@
-//! Read-only audit of the global derived short-ID indexes.
+//! Read-only audit of the legacy RocksDB short-ID indexes.
 //!
-//! Phase 1 of `check-rooms --deep`. Verifies the short-ID bijections and the
-//! derived edge/state index families against the canonical `eventid_pdu` and
-//! short-ID maps. It never decodes a PDU and never writes to the database.
+//! mtxdb is authoritative for live short IDs; this audit covers the retired
+//! RocksDB maps kept for migration and cleanup, and is used by `heal` when it
+//! needs to reason about that older layout. It never decodes a PDU and never
+//! writes to the database.
 
 use std::{fmt::Write as _, sync::Arc};
 
@@ -80,7 +81,12 @@ impl DerivedIndexAudit {
 			return out;
 		}
 
-		writeln!(out, "  short-id counter: {}", self.counter).ok();
+		writeln!(
+			out,
+			"  legacy RocksDB short-ID indexes (mtxdb is authoritative): counter {}",
+			self.counter
+		)
+		.ok();
 		match &self.internal_error {
 			| Some(error) => {
 				writeln!(out, "  audit validity: INVALID -- {error}").ok();

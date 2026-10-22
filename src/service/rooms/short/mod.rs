@@ -42,6 +42,60 @@ struct Data {
 	mtxdb: Arc<conduwuit_mtxdb::store::MtxdbStore>,
 }
 
+/// Import the legacy event and state-key mappings before any HAMT leaf or
+/// auth-chain entry can be resolved through the mtxdb-backed adapter.
+fn import_legacy_short_ids(shortids: &ShortIdAdapter, db: &Arc<database::Database>) -> Result {
+	let event_map = db
+		.deprecated("eventid_shorteventid")
+		.expect("legacy event short-ID map is registered")
+		.clone();
+	let event_rows = event_map.raw_entries()?;
+	let mut events = Vec::with_capacity(event_rows.len());
+	for (event_id, short) in event_rows {
+		let short = u64::from_be_bytes(
+			short
+				.as_slice()
+				.try_into()
+				.map_err(|_| err!(Database("Malformed legacy event short ID")))?,
+		);
+		events.push((event_id, short));
+	}
+	for chunk in events.chunks(512) {
+		let mappings: Vec<_> = chunk
+			.iter()
+			.map(|(event_id, short)| (event_id.as_slice(), *short))
+			.collect();
+		shortids.import_event_mappings(&mappings).map_err(|error| {
+			err!(Database("Failed to import legacy event short IDs: {error}"))
+		})?;
+	}
+
+	let state_map = db
+		.deprecated("shortstatekey_statekey")
+		.expect("legacy reverse state-key map is registered")
+		.clone();
+	let mut states = Vec::new();
+	for (short_bytes, _) in state_map.raw_entries()? {
+		let short = u64::from_be_bytes(
+			short_bytes
+				.as_slice()
+				.try_into()
+				.map_err(|_| err!(Database("Malformed legacy state-key short ID")))?,
+		);
+		let (event_type, state_key) = state_map
+			.get_blocking(&short_bytes)?
+			.deserialized::<(StateEventType, StateKey)>()?;
+		states.push((event_type.to_string(), state_key.to_string(), short));
+	}
+	for chunk in states.chunks(512) {
+		shortids.import_state_key_mappings(chunk).map_err(|error| {
+			err!(Database("Failed to import legacy state-key short IDs: {error}"))
+		})?;
+	}
+
+	Ok(())
+}
+
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let eventidshort_cap = utils::math::usize_from_f64(
@@ -78,6 +132,15 @@ impl crate::Service for Service {
 
 		let shortids = ShortIdAdapter::new(args.mtxdb.clone())
 			.map_err(|error| err!(Database("Failed to open mtxdb short ids: {error}")))?;
+		if !shortids
+			.legacy_import_complete()
+			.map_err(|error| err!(Database("Failed to check legacy short-ID import: {error}")))?
+		{
+			import_legacy_short_ids(&shortids, args.db)?;
+			shortids.mark_legacy_import_complete().map_err(|error| {
+				err!(Database("Failed to mark legacy short-ID import: {error}"))
+			})?;
+		}
 		let globals = args.depend::<globals::Service>("globals");
 		shortids
 			.advance_counter(globals.current_count().unwrap_or(0))
@@ -509,11 +572,12 @@ pub async fn get_or_create_shortroomid(&self, room_id: &RoomId) -> ShortRoomId {
 }
 
 #[implement(Service)]
-pub fn remove_shortroomid(&self, room_id: &RoomId) {
-	if let Err(error) = self.shortids.remove_room(room_id.as_bytes()) {
-		conduwuit::warn!(?error, %room_id, "Failed to remove mtxdb room short ID");
-	}
+pub fn remove_shortroomid(&self, room_id: &RoomId) -> Result {
+	self.shortids
+		.remove_room(room_id.as_bytes())
+		.map_err(|error| short_error("room removal", error))?;
 	self.db.legacy_roomid_shortroomid.remove(room_id);
+	Ok(())
 }
 
 #[implement(Service)]
@@ -527,12 +591,10 @@ pub fn iter_room_ids(&self) -> impl Stream<Item = OwnedRoomId> + Send + '_ {
 		OwnedRoomId::parse(text).ok()
 	}));
 	let legacy = self.db.legacy_roomid_shortroomid.keys().ignore_err();
+	let mut seen = std::collections::HashSet::new();
 	current
 		.chain(legacy)
-		.scan(std::collections::HashSet::new(), |seen, room_id| {
-			let item = seen.insert(room_id.clone()).then_some(room_id);
-			std::future::ready(item)
-		})
+		.filter(move |room_id| std::future::ready(seen.insert((*room_id).clone())))
 }
 
 #[implement(Service)]

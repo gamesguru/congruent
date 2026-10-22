@@ -409,7 +409,7 @@ impl Service {
 	/// that check out through the incoming-PDU pipeline.
 	/// Skips events already in the timeline or remembered as unusable for this
 	/// peer, and attempts at most 100 remaining events. A failure rate above
-	/// 25% after either batch abandons the exchange. Accepted events are
+	/// 25% abandons the exchange as soon as it is observed. Accepted events are
 	/// applied in depth order under the room federation lock. Events that
 	/// remain outside the timeline are remembered. Reports fetch failures and
 	/// truncation so the scheduler can retry or continue.
@@ -449,15 +449,13 @@ impl Service {
 		// Sample first; a peer whose sample mostly fails is not believed.
 		let rest = wanted.split_off(SAMPLE.min(wanted.len()));
 		for batch in [wanted, rest] {
-			let results: Vec<_> = stream::iter(batch)
+			let mut results = stream::iter(batch)
 				.map(|id| async move {
 					let result = self.fetch_event(room_id, peer, &id).await;
 					(id, result)
 				})
-				.buffer_unordered(FETCH_CONCURRENCY)
-				.collect()
-				.await;
-			for (id, result) in results {
+				.buffer_unordered(FETCH_CONCURRENCY);
+			while let Some((id, result)) = results.next().await {
 				attempted = attempted.saturating_add(1);
 				match result {
 					| FetchEvent::Fetched(event) => fetched.push(event),
@@ -472,11 +470,11 @@ impl Service {
 						);
 					},
 				}
-			}
-			if failed.saturating_mul(100) > attempted.saturating_mul(MAX_FAILED_PERCENT) {
-				return Outcome::Abandoned(format!(
-					"{failed} of {attempted} offered events could not be fetched"
-				));
+				if failed.saturating_mul(100) > attempted.saturating_mul(MAX_FAILED_PERCENT) {
+					return Outcome::Abandoned(format!(
+						"{failed} of {attempted} offered events could not be fetched"
+					));
+				}
 			}
 		}
 

@@ -1182,7 +1182,7 @@ impl Data {
 	/// id and idempotent, so it needs no stream count and can run before one is
 	/// allocated. A failure is logged and leaves the event unrecorded there.
 	pub(super) async fn write_event_to_mtxdb(&self, pdu: &PduEvent, json: &CanonicalJsonObject) {
-		let Some(room_id) = pdu.room_id.as_ref() else {
+		let Some(room_id) = pdu.room_id_or_hash() else {
 			conduwuit::warn!(event_id = %pdu.event_id, "Skipping mtxdb event write without room ID");
 			return;
 		};
@@ -1192,7 +1192,7 @@ impl Data {
 					if let Err(error) = self
 						.services
 						.short
-						.set_room_version(room_id, &content.room_version)
+						.set_room_version(&room_id, &content.room_version)
 					{
 						conduwuit::warn!(?error, %room_id, "Skipping mtxdb create-event write without room-version record");
 						return;
@@ -1203,7 +1203,7 @@ impl Data {
 					return;
 				},
 			}
-		} else if let Err(error) = self.services.state.get_room_version(room_id).await {
+		} else if let Err(error) = self.services.state.get_room_version(&room_id).await {
 			conduwuit::warn!(?error, %room_id, event_id = %pdu.event_id, "Skipping mtxdb event write before room version is established");
 			return;
 		}
@@ -1430,6 +1430,8 @@ impl Data {
 		json: &CanonicalJsonObject,
 		pdu: &PduEvent,
 	) {
+		self.write_event_to_mtxdb(pdu, json).await;
+
 		let event_id_bytes = event_id.as_bytes();
 		let existing_metadata = if let Ok(bytes) = self.eventid_metadata.get(event_id_bytes).await
 		{
@@ -2388,8 +2390,11 @@ impl Data {
 		};
 		let auth_ids = self
 			.mtxdb_events
-			.get_auth_events(&room_id, event_id.as_bytes())
+			.get_auth_events_if_present(&room_id, event_id.as_bytes())
 			.map_err(|e| err!(Database("mtxdb direct auth-edge lookup failed: {e}")))?;
+		let Some(auth_ids) = auth_ids else {
+			return Err(err!(Request(NotFound("event has no mtxdb auth edges"))));
+		};
 		let auth_ids: Vec<OwnedEventId> = auth_ids
 			.into_iter()
 			.map(|bytes| {
