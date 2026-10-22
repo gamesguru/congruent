@@ -293,7 +293,31 @@ async fn knock_room_helper_local(
 ) -> Result {
 	debug_info!("We can knock locally");
 
-	let room_version_id = services.rooms.state.get_room_version(room_id).await?;
+	let room_version_id = match services.rooms.state.get_room_version(room_id).await {
+		| Ok(room_version_id) => room_version_id,
+		| Err(error) => {
+			// A room can be known to this server through membership or partial
+			// state before its create event has arrived. In that case we cannot
+			// build a local knock, but a remote server may still be able to do so.
+			if servers
+				.iter()
+				.any(|server| !services.globals.server_is_ours(server))
+			{
+				warn!(?error, %room_id, "Room version unavailable locally; trying remote knock");
+				return knock_room_helper_remote(
+					services,
+					sender_user,
+					room_id,
+					reason,
+					servers,
+					state_lock,
+				)
+				.await;
+			}
+
+			return Err(error);
+		},
+	};
 
 	if matches!(
 		room_version_id,
@@ -476,6 +500,13 @@ async fn knock_room_helper_remote(
 			"Remote room version {room_version_id} is not supported by conduwuit"
 		));
 	}
+
+	// Establish the authoritative version before processing stripped state or
+	// the knock event, which may arrive before the room's create event locally.
+	services
+		.rooms
+		.short
+		.set_room_version(room_id, &room_version_id)?;
 
 	let mut knock_event_stub: CanonicalJsonObject =
 		codec::from_str(make_knock_response.event.get()).map_err(|e| {
