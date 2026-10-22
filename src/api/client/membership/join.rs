@@ -588,8 +588,10 @@ async fn persist_send_join_create_event(
 	state: &[(slipstream::OwnedEventId, CanonicalJsonObject)],
 	auth_chain: &[(slipstream::OwnedEventId, CanonicalJsonObject)],
 ) -> Result<Option<slipstream::OwnedEventId>> {
-	let create_event = state.iter().chain(auth_chain).find(|(_, value)| {
+	let create_event = state.iter().chain(auth_chain).find(|(event_id, value)| {
 		value.get("type").and_then(|value| value.as_str()) == Some("m.room.create")
+			&& PduEvent::from_id_val(event_id, value.clone(), Some(room_id)).is_ok()
+			&& pdu_fits(&mut value.clone())
 	});
 
 	let Some((event_id, value)) = create_event else {

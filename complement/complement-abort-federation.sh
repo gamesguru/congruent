@@ -23,6 +23,12 @@ timeout 30 docker exec "$container_id" sh -c '
 	export CONTINUWUITY_SERVER_NAME="$SERVER_NAME"
 	export LD_LIBRARY_PATH="/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 	export CONDUWUIT_DATABASE_PATH="${CONDUWUIT_DATABASE_PATH:-/var/lib/continuwuity/$SERVER_NAME}"
+	case "$CONDUWUIT_DATABASE_PATH" in
+		*@HOSTNAME@*)
+			container_hostname=$(hostname)
+			CONDUWUIT_DATABASE_PATH=$(printf '%s\n' "$CONDUWUIT_DATABASE_PATH" | sed "s/@HOSTNAME@/$container_hostname/g")
+			;;
+	esac
 	exec /usr/local/bin/conduwuit --config /etc/continuwuity/config.toml \
 		--attach --execute "$1"
 ' sh "federation sending-queue ${server_name} --abort"
