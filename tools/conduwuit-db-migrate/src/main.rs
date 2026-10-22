@@ -53,7 +53,7 @@ const MTXDB_OWNED_MAPS: &[&str] = &[
 
 fn usage() -> ! {
 	eprintln!("usage: conduwuit-db-migrate export <rocksdb> <bundle.jsonl> [map ...]");
-	eprintln!("       conduwuit-db-migrate export-mtxdb <rocksdb> <output-dir> <server-name>");
+	eprintln!("       conduwuit-db-migrate export-mtxdb <rocksdb> <output-dir> [server-name]");
 	eprintln!("       conduwuit-db-migrate import <bundle.jsonl> <new-metadata.redb>");
 	eprintln!("       conduwuit-db-migrate list <rocksdb>");
 	std::process::exit(2);
@@ -386,11 +386,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		| Some("export-mtxdb") => {
 			let rocks = args.next().unwrap_or_else(|| usage());
 			let output = args.next().unwrap_or_else(|| usage());
-			let server = args.next().unwrap_or_else(|| usage());
+			let server = args.next();
 			if args.next().is_some() {
 				usage();
 			}
-			mtxdb_export::export(Path::new(&rocks), Path::new(&output), &server)
+			mtxdb_export::export(Path::new(&rocks), Path::new(&output), server.as_deref())
 		},
 		| Some("export") => {
 			let rocks = args.next().unwrap_or_else(|| usage());
