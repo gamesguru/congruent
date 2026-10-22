@@ -67,6 +67,8 @@ export CONDUWUIT_DATABASE_PATH="${CONDUWUIT_DATABASE_PATH:-/var/lib/continuwuity
 if [[ "$CONDUWUIT_DATABASE_PATH" == *@HOSTNAME@* ]]; then
 	export CONDUWUIT_DATABASE_PATH="${CONDUWUIT_DATABASE_PATH//@HOSTNAME@/$(hostname)}"
 	mkdir -p "$CONDUWUIT_DATABASE_PATH"
+	# These values are supplied to the container by bin/complement.
+	# shellcheck disable=SC2153
 	chown -R "${CONDUWUIT_UID}:${CONDUWUIT_GID}" "$CONDUWUIT_DATABASE_PATH"
 fi
 echo "rocksdb: $CONDUWUIT_DATABASE_PATH/rocksdb"
