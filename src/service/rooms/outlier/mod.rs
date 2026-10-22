@@ -7,6 +7,7 @@ use conduwuit::{
 		ReadyExt,
 		stream::{BroadbandExt, TryIgnore},
 	},
+	warn,
 };
 use database::{Deserialized, Json, Map};
 use futures::{FutureExt, Stream, StreamExt};
@@ -25,7 +26,7 @@ struct Data {
 	eventid_pdu: Arc<Map>,
 	eventid_metadata: Arc<Map>,
 	shorteventid_shortprevevents: Arc<Map>,
-	shorteventid_shortauthevents: Arc<Map>,
+	mtxdb_events: conduwuit_mtxdb::events::EventAdapter,
 }
 
 struct Services {
@@ -40,7 +41,7 @@ impl crate::Service for Service {
 				eventid_pdu: args.db["eventid_pdu"].clone(),
 				eventid_metadata: args.db["eventid_metadata"].clone(),
 				shorteventid_shortprevevents: args.db["shorteventid_shortprevevents"].clone(),
-				shorteventid_shortauthevents: args.db["shorteventid_shortauthevents"].clone(),
+				mtxdb_events: conduwuit_mtxdb::events::EventAdapter::new(args.mtxdb.clone()),
 			},
 			services: Services {
 				short: args.depend::<rooms::short::Service>("rooms::short"),
@@ -286,6 +287,26 @@ fn add_pdu_outlier_batch_impl<'a>(
 	if let Ok(parsed_pdu) =
 		slipstream::codec::from_value::<PduEvent>(&slipstream::json::Value::Object(pdu.clone()))
 	{
+		if let Some(room_id) = room_id_from_pdu.as_ref() {
+			let json = slipstream::codec::to_string(&pdu);
+			let prev: Vec<_> = parsed_pdu.prev_events().map(EventId::as_bytes).collect();
+			let auth: Vec<_> = parsed_pdu.auth_events().map(EventId::as_bytes).collect();
+			for auth_event in parsed_pdu.auth_events() {
+				let _ = self
+					.services
+					.short
+					.get_or_create_shorteventid_blocking(auth_event);
+			}
+			if let Err(error) = self.db.mtxdb_events.write_event_with_edges(
+				room_id.as_bytes(),
+				event_id.as_bytes(),
+				json.as_bytes(),
+				&prev,
+				&auth,
+			) {
+				warn!(?error, %event_id, "Failed to write outlier event and auth edges to mtxdb");
+			}
+		}
 		let short_room_id = room_id_from_pdu
 			.as_ref()
 			.map_or(0, |rid| self.services.short.get_or_create_shortroomid_blocking(rid));
@@ -334,24 +355,6 @@ fn add_pdu_outlier_batch_impl<'a>(
 		self.db
 			.shorteventid_shortprevevents
 			.batch_put(batch, &key_bytes, &val_bytes);
-
-		let auth_shorts: Vec<rooms::short::ShortEventId> = parsed_pdu
-			.auth_events()
-			.map(|auth| {
-				self.services
-					.short
-					.get_or_create_shorteventid_blocking(auth)
-			})
-			.collect();
-
-		let auth_val_bytes = auth_shorts
-			.iter()
-			.flat_map(|s| s.to_be_bytes())
-			.collect::<Vec<u8>>();
-
-		self.db
-			.shorteventid_shortauthevents
-			.batch_put(batch, &key_bytes, &auth_val_bytes);
 	}
 }
 

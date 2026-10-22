@@ -13,6 +13,7 @@ mod benches;
 mod cork;
 pub mod dbkey;
 mod de;
+mod deprecated_maps;
 mod deserialized;
 mod engine;
 mod handle;
@@ -43,6 +44,7 @@ use crate::maps::{Maps, MapsKey, MapsVal};
 
 pub struct Database {
 	maps: Maps,
+	deprecated_maps: deprecated_maps::Maps,
 	pub db: Arc<Engine>,
 }
 
@@ -50,7 +52,18 @@ impl Database {
 	/// Load an existing database or create a new one.
 	pub fn open(server: &Arc<Server>) -> Result<Arc<Self>> {
 		let db = Arc::new(Engine::open(&server.config.database_path)?);
-		Ok(Arc::new(Self { maps: maps::open(&db), db }))
+		Ok(Arc::new(Self {
+			maps: maps::open(&db),
+			deprecated_maps: deprecated_maps::open(&db),
+			db,
+		}))
+	}
+
+	/// Access a map retained only for migrating or cleaning up old records.
+	pub fn deprecated(&self, name: &str) -> Result<&Arc<Map>> {
+		self.deprecated_maps
+			.get(name)
+			.ok_or_else(|| err!(Request(NotFound("deprecated column not found"))))
 	}
 
 	/// Logs cumulative write-path counters (commits, operations, commit time).

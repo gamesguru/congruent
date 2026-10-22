@@ -1,8 +1,9 @@
 //! Domain adapter for short ids: the `u64` handles HAMT leaves use for event
 //! ids and `(type, state_key)` pairs.
 //!
-//! Four maps (event id <-> short event id, state key <-> short state key) and
-//! one allocation counter live in the `ServerInfo` shard. Every allocation
+//! Six maps (event id <-> short event id, state key <-> short state key, and
+//! room id <-> short room id) plus one allocation counter live in the
+//! `ServerInfo` shard. Every allocation
 //! commits its mappings and the advanced counter in one transaction, so a
 //! crash cannot leave the counter behind a mapped id. The adapter is the only
 //! allocator: the server and the offline importer both allocate through it, so
@@ -31,6 +32,8 @@ enum Map {
 	EventReverse,
 	StateKeyForward,
 	StateKeyReverse,
+	RoomForward,
+	RoomReverse,
 }
 
 impl Map {
@@ -40,6 +43,8 @@ impl Map {
 			| Self::EventReverse => "short-eid-rev",
 			| Self::StateKeyForward => "short-sk",
 			| Self::StateKeyReverse => "short-sk-rev",
+			| Self::RoomForward => "short-room",
+			| Self::RoomReverse => "short-room-rev",
 		}
 	}
 
@@ -112,9 +117,14 @@ impl ShortIdAdapter {
 			return Ok(true);
 		}
 
-		for map in
-			[Map::EventForward, Map::EventReverse, Map::StateKeyForward, Map::StateKeyReverse]
-		{
+		for map in [
+			Map::EventForward,
+			Map::EventReverse,
+			Map::StateKeyForward,
+			Map::StateKeyReverse,
+			Map::RoomForward,
+			Map::RoomReverse,
+		] {
 			for bucket in 0..EVENT_LOCATOR_BUCKETS {
 				let mut node = [0_u8; 16];
 				node[..4].copy_from_slice(&bucket.to_le_bytes());
@@ -147,6 +157,21 @@ impl ShortIdAdapter {
 	#[must_use]
 	pub fn last_allocated(&self) -> u64 {
 		*self.counter.lock().unwrap_or_else(PoisonError::into_inner)
+	}
+
+	/// Advance the allocator past IDs issued by the legacy global counter.
+	/// This is used during the room-ID migration so new IDs cannot collide with
+	/// room IDs that have not been copied from the legacy map yet.
+	pub fn advance_counter(&self, minimum: u64) -> Result<(), StorageError> {
+		let mut counter = self.counter.lock().unwrap_or_else(PoisonError::into_inner);
+		if minimum <= *counter {
+			return Ok(());
+		}
+		let tx = self.store.begin_transaction();
+		Self::put_counter(&tx, minimum)?;
+		tx.commit()?;
+		*counter = minimum;
+		Ok(())
 	}
 
 	fn read(&self, map: Map, node: NodeId) -> Result<Option<Vec<u8>>, StorageError> {
@@ -191,6 +216,99 @@ impl ShortIdAdapter {
 	) -> Result<Option<(String, String)>, StorageError> {
 		self.read(Map::StateKeyReverse, reverse_node(b"short-sk-rev", short))?
 			.map_or(Ok(None), |bytes| decode_state_key(&bytes).map(Some))
+	}
+
+	/// Resolve a room ID to its stable short room ID.
+	pub fn get_room(&self, room_id: &[u8]) -> Result<Option<u64>, StorageError> {
+		self.read(Map::RoomForward, derive_id(b"short-room", room_id))?
+			.map_or(Ok(None), |bytes| {
+				let (short, stored) = split_prefix(&bytes)?;
+				Ok((stored == room_id).then_some(short))
+			})
+	}
+
+	/// Resolve a short room ID to its room ID.
+	pub fn get_room_id(&self, short: u64) -> Result<Option<Vec<u8>>, StorageError> {
+		self.read(Map::RoomReverse, derive_id(b"short-room-rev", &short.to_be_bytes()))
+	}
+
+	/// Get or allocate a room ID. `legacy_short` preserves an existing room ID
+	/// during migration; new rooms use the shared short-ID counter.
+	pub fn allocate_room(
+		&self,
+		room_id: &[u8],
+		legacy_short: Option<u64>,
+	) -> Result<u64, StorageError> {
+		let mut counter = self.counter.lock().unwrap_or_else(PoisonError::into_inner);
+		let node = derive_id(b"short-room", room_id);
+		if let Some(bytes) = self.read(Map::RoomForward, node)? {
+			let (short, stored) = split_prefix(&bytes)?;
+			if stored != room_id {
+				return Err(StorageError::Corrupt(
+					"room record id collision in short ids".to_owned(),
+				));
+			}
+			return Ok(short);
+		}
+
+		let short = match legacy_short {
+			| Some(short) => short,
+			| None => counter
+				.checked_add(1)
+				.ok_or_else(|| StorageError::Corrupt("short id counter overflow".to_owned()))?,
+		};
+		if short == 0 {
+			return Err(StorageError::Corrupt("short room id zero is invalid".to_owned()));
+		}
+		let reverse = derive_id(b"short-room-rev", &short.to_be_bytes());
+		if let Some(existing) = self.read(Map::RoomReverse, reverse)? {
+			if existing != room_id {
+				return Err(StorageError::Corrupt(
+					"short room id is already assigned".to_owned(),
+				));
+			}
+		}
+		let next = (*counter).max(short);
+		let tx = self.store.begin_transaction();
+		Self::put(&tx, Map::RoomForward, node, &with_prefix(short, room_id))?;
+		Self::put(&tx, Map::RoomReverse, reverse, room_id)?;
+		Self::put_counter(&tx, next)?;
+		tx.commit()?;
+		*counter = next;
+		Ok(short)
+	}
+
+	/// Remove both directions of a room short-ID mapping.
+	pub fn remove_room(&self, room_id: &[u8]) -> Result<(), StorageError> {
+		let Some(short) = self.get_room(room_id)? else { return Ok(()) };
+		let tx = self.store.begin_transaction();
+		tx.remove(
+			ShardType::ServerInfo,
+			Map::RoomForward.collection(&derive_id(b"short-room", room_id)),
+			derive_id(b"short-room", room_id),
+		)?;
+		tx.remove(
+			ShardType::ServerInfo,
+			Map::RoomReverse.collection(&derive_id(b"short-room-rev", &short.to_be_bytes())),
+			derive_id(b"short-room-rev", &short.to_be_bytes()),
+		)?;
+		tx.commit()
+	}
+
+	/// Enumerate room IDs from their reverse mappings.
+	pub fn room_ids(&self) -> Result<Vec<Vec<u8>>, StorageError> {
+		let mut rooms = Vec::new();
+		for bucket in 0..EVENT_LOCATOR_BUCKETS {
+			let mut node = [0_u8; 16];
+			node[..4].copy_from_slice(&bucket.to_le_bytes());
+			for (_, room) in self
+				.store
+				.scan(ShardType::ServerInfo, &Map::RoomReverse.collection(&node))?
+			{
+				rooms.push(room);
+			}
+		}
+		Ok(rooms)
 	}
 
 	/// Get or allocate a short id for each event, in one transaction. Ids for

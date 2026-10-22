@@ -34,7 +34,6 @@ pub(super) struct Data {
 	eventid_metadata: Arc<Map>,
 	room_pducount_eventid: Arc<Map>,
 	roomid_topologicalorder_pducount: Arc<Map>,
-	shorteventid_shortauthevents: Arc<Map>,
 	shorteventid_shortprevevents: Arc<Map>,
 	pub(super) db: Arc<Database>,
 	services: Services,
@@ -61,7 +60,6 @@ impl Data {
 			eventid_metadata: db["eventid_metadata"].clone(),
 			room_pducount_eventid: db["room_pducount_eventid"].clone(),
 			roomid_topologicalorder_pducount: db["roomid_topologicalorder_pducount"].clone(),
-			shorteventid_shortauthevents: db["shorteventid_shortauthevents"].clone(),
 			shorteventid_shortprevevents: db["shorteventid_shortprevevents"].clone(),
 			db: args.db.clone(),
 			services: Services {
@@ -1182,6 +1180,12 @@ impl Data {
 	/// id and idempotent, so it needs no stream count and can run before one is
 	/// allocated. A failure is logged and leaves the event unrecorded there.
 	pub(super) fn write_event_to_mtxdb(&self, pdu: &PduEvent, json: &CanonicalJsonObject) {
+		for auth_event in pdu.auth_events() {
+			let _ = self
+				.services
+				.short
+				.get_or_create_shorteventid_blocking(auth_event);
+		}
 		let event_id_bytes = pdu.event_id.as_bytes();
 		let room_id_bytes = pdu
 			.room_id
@@ -1317,14 +1321,6 @@ impl Data {
 			.collect()
 			.await;
 		self.store_shortprevevents_into_batch(batch, short_event_id, &prev_shorts);
-
-		let auth_shorts: Vec<_> = self
-			.services
-			.short
-			.multi_get_or_create_shorteventid(pdu.auth_events())
-			.collect()
-			.await;
-		self.store_shortauthevents_into_batch(batch, short_event_id, &auth_shorts);
 
 		self.record_backward_extremities_into_batch(batch, pdu_id, pdu)
 			.await;
@@ -1490,14 +1486,6 @@ impl Data {
 			.await;
 		self.store_shortprevevents_into_batch(batch, short_event_id, &prev_shorts);
 
-		let auth_shorts: Vec<_> = self
-			.services
-			.short
-			.multi_get_or_create_shorteventid(pdu.auth_events())
-			.collect()
-			.await;
-		self.store_shortauthevents_into_batch(batch, short_event_id, &auth_shorts);
-
 		self.record_backward_extremities_into_batch(batch, pdu_id, pdu)
 			.await;
 	}
@@ -1579,14 +1567,6 @@ impl Data {
 				.collect()
 				.await;
 			self.store_shortprevevents_into_batch(&mut batch, short_event_id, &prev_shorts);
-
-			let auth_shorts: Vec<_> = self
-				.services
-				.short
-				.multi_get_or_create_shorteventid(pdu.auth_events())
-				.collect()
-				.await;
-			self.store_shortauthevents_into_batch(&mut batch, short_event_id, &auth_shorts);
 		}
 
 		self.eventid_pdu.apply_batch(batch);
@@ -2366,47 +2346,42 @@ impl Data {
 		Ok(prev_shorts)
 	}
 
-	pub(super) fn store_shortauthevents(
-		&self,
-		shorteventid: rooms::short::ShortEventId,
-		shortauthevents: &[rooms::short::ShortEventId],
-	) {
-		let key = shorteventid.to_be_bytes();
-		let val = shortauthevents
-			.iter()
-			.flat_map(|s| s.to_be_bytes())
-			.collect::<Vec<u8>>();
-		self.shorteventid_shortauthevents.insert(&key, &val);
-	}
-
 	pub(super) async fn get_shortauthevents(
 		&self,
 		shorteventid: rooms::short::ShortEventId,
 	) -> Result<Vec<rooms::short::ShortEventId>> {
-		let key = shorteventid.to_be_bytes();
-		let val = self.shorteventid_shortauthevents.get(&key).await?;
-		let auth_shorts = val
-			.as_chunks::<{ size_of::<u64>() }>()
-			.0
-			.iter()
-			.map(|c| u64::from_be_bytes(*c))
-			.collect();
-		Ok(auth_shorts)
-	}
-
-	pub(super) fn store_shortauthevents_into_batch<'a>(
-		&'a self,
-		batch: &mut database::Batch<'a>,
-		shorteventid: rooms::short::ShortEventId,
-		shortauthevents: &[rooms::short::ShortEventId],
-	) {
-		let key = shorteventid.to_be_bytes();
-		let val = shortauthevents
-			.iter()
-			.flat_map(|s| s.to_be_bytes())
-			.collect::<Vec<u8>>();
-		self.shorteventid_shortauthevents
-			.batch_put(batch, &key, &val);
+		let event_id = self
+			.services
+			.short
+			.get_eventid_from_short::<OwnedEventId>(shorteventid)
+			.await?;
+		let Some(room_id) = self
+			.mtxdb_events
+			.locate_event(event_id.as_bytes())
+			.map_err(|e| err!(Database("mtxdb event locator lookup failed: {e}")))?
+		else {
+			return Err(err!(Request(NotFound("event has no mtxdb auth edges"))));
+		};
+		let auth_ids = self
+			.mtxdb_events
+			.get_auth_events(&room_id, event_id.as_bytes())
+			.map_err(|e| err!(Database("mtxdb direct auth-edge lookup failed: {e}")))?;
+		let auth_ids: Vec<OwnedEventId> = auth_ids
+			.into_iter()
+			.map(|bytes| {
+				utils::string::str_from_bytes(&bytes).and_then(|text| {
+					OwnedEventId::parse(text)
+						.map_err(|e| err!(Database("Invalid event ID in mtxdb auth edges: {e}")))
+				})
+			})
+			.collect::<Result<_>>()?;
+		let shorts = self
+			.services
+			.short
+			.multi_get_or_create_shorteventid(auth_ids.iter())
+			.collect()
+			.await;
+		Ok(shorts)
 	}
 
 	pub(super) fn multi_get_shortprevevents<'a, I>(
@@ -2438,19 +2413,7 @@ impl Data {
 	where
 		I: Stream<Item = rooms::short::ShortEventId> + Send + 'a,
 	{
-		use futures::StreamExt;
-		self.shorteventid_shortauthevents
-			.get_batch(shorteventids.map(u64::to_be_bytes))
-			.map(|res| {
-				let val = res?;
-				let auth_shorts = val
-					.as_chunks::<{ size_of::<u64>() }>()
-					.0
-					.iter()
-					.map(|c| u64::from_be_bytes(*c))
-					.collect();
-				Ok(auth_shorts)
-			})
+		shorteventids.then(move |short| self.get_shortauthevents(short))
 	}
 
 	pub(super) async fn get_origin_server_ts(

@@ -1,15 +1,11 @@
-use std::{
-	borrow::Borrow,
-	mem::{size_of, size_of_val},
-	sync::Arc,
-};
+use std::{borrow::Borrow, mem::size_of, sync::Arc};
 
 pub use conduwuit::matrix::pdu::{ShortEventId, ShortId, ShortRoomId, ShortStateKey};
 use conduwuit::{
 	Result, err, implement,
 	matrix::StateKey,
 	pair_of,
-	utils::{self, IterStream, ReadyExt},
+	utils::{self, IterStream, ReadyExt, stream::TryIgnore},
 };
 use conduwuit_mtxdb::shortids::ShortIdAdapter;
 use database::{Deserialized, Map};
@@ -18,10 +14,11 @@ use futures::{
 	stream::{self},
 };
 use slipstream::{
-	EventId, OwnedEventId, RoomId, RoomVersionId, codec::Deserialize, events::StateEventType,
+	EventId, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, codec::Deserialize,
+	events::StateEventType,
 };
 
-use crate::{Dep, globals};
+use crate::globals;
 
 /// Short ids for events and state keys. They are allocated and stored by
 /// mtxdb, which is also where the HAMT leaves that carry them live; the
@@ -29,7 +26,6 @@ use crate::{Dep, globals};
 pub struct Service {
 	db: Data,
 	shortids: ShortIdAdapter,
-	services: Services,
 	pub eventid_shorteventid_cache: moka::sync::Cache<OwnedEventId, ShortEventId>,
 	pub shorteventid_eventid_cache: moka::sync::Cache<ShortEventId, OwnedEventId>,
 	pub statekey_shortstatekey_cache:
@@ -40,12 +36,8 @@ pub struct Service {
 }
 
 struct Data {
-	roomid_shortroomid: Arc<Map>,
+	legacy_roomid_shortroomid: Arc<Map>,
 	roomid_roomversion: Arc<Map>,
-}
-
-struct Services {
-	globals: Dep<globals::Service>,
 }
 
 impl crate::Service for Service {
@@ -82,16 +74,22 @@ impl crate::Service for Service {
 		.try_into()
 		.unwrap_or(args.server.config.shortstatekey_cache_capacity);
 
+		let shortids = ShortIdAdapter::new(args.mtxdb.clone())
+			.map_err(|error| err!(Database("Failed to open mtxdb short ids: {error}")))?;
+		let globals = args.depend::<globals::Service>("globals");
+		shortids
+			.advance_counter(globals.current_count().unwrap_or(0))
+			.map_err(|error| err!(Database("Failed to seed mtxdb short ID counter: {error}")))?;
 		Ok(Arc::new(Self {
 			db: Data {
-				roomid_shortroomid: args.db["roomid_shortroomid"].clone(),
+				legacy_roomid_shortroomid: args
+					.db
+					.deprecated("roomid_shortroomid")
+					.expect("room short-id migration map is registered")
+					.clone(),
 				roomid_roomversion: args.db["roomid_roomversion"].clone(),
 			},
-			shortids: ShortIdAdapter::new(args.mtxdb.clone())
-				.map_err(|error| err!(Database("Failed to open mtxdb short ids: {error}")))?,
-			services: Services {
-				globals: args.depend::<globals::Service>("globals"),
-			},
+			shortids,
 			eventid_shorteventid_cache: moka::sync::Cache::builder()
 				.max_capacity(eventidshort_cap.into())
 				.build(),
@@ -119,6 +117,13 @@ fn short_error(what: &str, error: impl std::fmt::Display) -> conduwuit::Error {
 fn not_found(what: &str) -> conduwuit::Error { err!(Request(NotFound("{what} not found"))) }
 
 impl Service {
+	fn mirror_room_shortid(&self, room_id: &RoomId, short: ShortRoomId) {
+		const BUFSIZE: usize = size_of::<ShortRoomId>();
+		self.db
+			.legacy_roomid_shortroomid
+			.raw_aput::<BUFSIZE, _, _>(room_id, short);
+	}
+
 	fn cache_event(&self, event_id: &EventId, short: ShortEventId) {
 		self.eventid_shorteventid_cache
 			.insert(event_id.to_owned(), short);
@@ -152,6 +157,7 @@ pub fn get_or_create_shorteventid(
 }
 
 #[implement(Service)]
+#[must_use]
 pub fn get_or_create_shorteventid_blocking(&self, event_id: &EventId) -> ShortEventId {
 	if let Some(short) = self.eventid_shorteventid_cache.get(&event_id.to_owned()) {
 		return short;
@@ -243,6 +249,7 @@ pub fn get_or_create_shortstatekey(
 }
 
 #[implement(Service)]
+#[must_use]
 pub fn get_or_create_shortstatekey_blocking(
 	&self,
 	event_type: &StateEventType,
@@ -444,46 +451,99 @@ where
 
 #[implement(Service)]
 pub async fn get_shortroomid(&self, room_id: &RoomId) -> Result<ShortRoomId> {
-	self.db.roomid_shortroomid.get(room_id).await.deserialized()
+	if let Some(short) = self
+		.shortids
+		.get_room(room_id.as_bytes())
+		.map_err(|e| short_error("room lookup", e))?
+	{
+		if self
+			.db
+			.legacy_roomid_shortroomid
+			.get(room_id)
+			.await
+			.is_err()
+		{
+			self.mirror_room_shortid(room_id, short);
+		}
+		return Ok(short);
+	}
+	let legacy = self
+		.db
+		.legacy_roomid_shortroomid
+		.get(room_id)
+		.await
+		.ok()
+		.and_then(|v| v.deserialized().ok());
+	let Some(legacy) = legacy else {
+		return Err(not_found("short room id"));
+	};
+	let short = self
+		.shortids
+		.allocate_room(room_id.as_bytes(), Some(legacy))
+		.map_err(|e| short_error("room migration", e))?;
+	self.mirror_room_shortid(room_id, short);
+	Ok(short)
 }
 
 #[implement(Service)]
 pub async fn get_or_create_shortroomid(&self, room_id: &RoomId) -> ShortRoomId {
-	self.db
-		.roomid_shortroomid
+	let legacy = self
+		.db
+		.legacy_roomid_shortroomid
 		.get(room_id)
 		.await
-		.deserialized()
-		.unwrap_or_else(|_| {
-			const BUFSIZE: usize = size_of::<ShortRoomId>();
+		.ok()
+		.and_then(|v| v.deserialized().ok());
+	let short = self
+		.shortids
+		.allocate_room(room_id.as_bytes(), legacy)
+		.expect("mtxdb short room id allocation");
+	self.mirror_room_shortid(room_id, short);
+	short
+}
 
-			let short = self.services.globals.next_count().unwrap();
-			debug_assert!(size_of_val(&short) == BUFSIZE, "buffer requirement changed");
+#[implement(Service)]
+pub fn remove_shortroomid(&self, room_id: &RoomId) {
+	if let Err(error) = self.shortids.remove_room(room_id.as_bytes()) {
+		conduwuit::warn!(?error, %room_id, "Failed to remove mtxdb room short ID");
+	}
+	self.db.legacy_roomid_shortroomid.remove(room_id);
+}
 
-			self.db
-				.roomid_shortroomid
-				.raw_aput::<BUFSIZE, _, _>(room_id, short);
-
-			short
+#[implement(Service)]
+pub fn iter_room_ids(&self) -> impl Stream<Item = OwnedRoomId> + Send + '_ {
+	let ids = self.shortids.room_ids().unwrap_or_else(|error| {
+		conduwuit::warn!(?error, "Failed to scan mtxdb room short IDs");
+		Vec::new()
+	});
+	let current = stream::iter(ids.into_iter().filter_map(|bytes| {
+		let text = String::from_utf8(bytes).ok()?;
+		OwnedRoomId::parse(text).ok()
+	}));
+	let legacy = self.db.legacy_roomid_shortroomid.keys().ignore_err();
+	current
+		.chain(legacy)
+		.scan(std::collections::HashSet::new(), |seen, room_id| {
+			let item = seen.insert(room_id.clone()).then_some(room_id);
+			std::future::ready(item)
 		})
 }
 
 #[implement(Service)]
+#[must_use]
 pub fn get_or_create_shortroomid_blocking(&self, room_id: &RoomId) -> ShortRoomId {
-	if let Ok(handle) = self.db.roomid_shortroomid.get_blocking(room_id.as_bytes()) {
-		utils::u64_from_u8(&handle)
-	} else {
-		const BUFSIZE: usize = size_of::<ShortRoomId>();
-
-		let short = self.services.globals.next_count().unwrap();
-		debug_assert!(size_of_val(&short) == BUFSIZE, "buffer requirement changed");
-
-		self.db
-			.roomid_shortroomid
-			.raw_aput::<BUFSIZE, _, _>(room_id, short);
-
-		short
-	}
+	let legacy = self
+		.db
+		.legacy_roomid_shortroomid
+		.get_blocking(room_id.as_bytes())
+		.ok()
+		.and_then(|v| v.deserialized().ok());
+	let short = self
+		.shortids
+		.allocate_room(room_id.as_bytes(), legacy)
+		.expect("mtxdb short room id allocation");
+	self.mirror_room_shortid(room_id, short);
+	short
 }
 
 #[implement(Service)]

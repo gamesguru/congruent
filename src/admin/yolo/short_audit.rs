@@ -189,10 +189,22 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 	let mut audit = DerivedIndexAudit { counter, ..Default::default() };
 
 	// Event short-ID bijection.
-	let (event_fwd, event_fwd_malformed) =
-		forward_vals(&services.db["eventid_shorteventid"], words).await;
-	let (event_rev, event_rev_rows, event_rev_malformed) =
-		reverse_keys(&services.db["shorteventid_eventid"], words).await;
+	let (event_fwd, event_fwd_malformed) = forward_vals(
+		services
+			.db
+			.deprecated("eventid_shorteventid")
+			.expect("deprecated short ID map"),
+		words,
+	)
+	.await;
+	let (event_rev, event_rev_rows, event_rev_malformed) = reverse_keys(
+		services
+			.db
+			.deprecated("shorteventid_eventid")
+			.expect("deprecated short ID map"),
+		words,
+	)
+	.await;
 	audit.event_rows_fwd = count_bits(&event_fwd);
 	audit.event_rows_rev = event_rev_rows;
 	audit.event_malformed = event_fwd_malformed.saturating_add(event_rev_malformed);
@@ -201,10 +213,22 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 	audit.event_reverse_only_samples = sample_diff(&event_rev, &event_fwd, counter, 8);
 
 	// State-key short-ID bijection.
-	let (statekey_fwd, statekey_fwd_malformed) =
-		forward_vals(&services.db["statekey_shortstatekey"], words).await;
-	let (statekey_rev, statekey_rev_rows, statekey_rev_malformed) =
-		reverse_keys(&services.db["shortstatekey_statekey"], words).await;
+	let (statekey_fwd, statekey_fwd_malformed) = forward_vals(
+		services
+			.db
+			.deprecated("statekey_shortstatekey")
+			.expect("deprecated short ID map"),
+		words,
+	)
+	.await;
+	let (statekey_rev, statekey_rev_rows, statekey_rev_malformed) = reverse_keys(
+		services
+			.db
+			.deprecated("shortstatekey_statekey")
+			.expect("deprecated short ID map"),
+		words,
+	)
+	.await;
 	audit.statekey_rows_fwd = count_bits(&statekey_fwd);
 	audit.statekey_rows_rev = statekey_rev_rows;
 	audit.statekey_malformed = statekey_fwd_malformed.saturating_add(statekey_rev_malformed);
@@ -231,9 +255,16 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 	audit.prev_missing = masked_diff_count(&canonical, &prev.indexed, counter);
 	audit.prev_stale_samples = sample_diff(&prev.indexed, &canonical, counter, 8);
 
-	let auth =
-		scan_edges(&services.db["shorteventid_shortauthevents"], &event_rev, &canonical, words)
-			.await;
+	let auth = scan_edges(
+		services
+			.db
+			.deprecated("shorteventid_shortauthevents")
+			.expect("deprecated auth-edge map"),
+		&event_rev,
+		&canonical,
+		words,
+	)
+	.await;
 	audit.auth_rows = auth.rows;
 	audit.auth_malformed = auth.malformed;
 	audit.auth_parent_unresolved = auth.parent_unresolved;
@@ -246,7 +277,10 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 
 	// Auth-chain cache: room-prefixed keys, counted but not deeply verified.
 	audit.authchain_rows = u64::try_from(
-		services.db["shorteventid_authchain"]
+		services
+			.db
+			.deprecated("shorteventid_authchain")
+			.expect("deprecated auth-chain map")
 			.raw_keys()
 			.ignore_err()
 			.count()
@@ -352,7 +386,11 @@ async fn scan_edges(
 /// in `eventid_shorteventid`. Returns the bitmap and the number resolved.
 async fn canonical_bits(services: &Services, words: usize) -> (Bits, u64) {
 	let pdu = services.db["eventid_pdu"].clone();
-	let lookup = services.db["eventid_shorteventid"].clone();
+	let lookup = services
+		.db
+		.deprecated("eventid_shorteventid")
+		.expect("deprecated short ID map")
+		.clone();
 	let mut bits = vec![0_u64; words];
 	let mut count = 0_u64;
 

@@ -629,11 +629,10 @@ pub enum YoloCommand {
 	/// Sweep `eventid_pdu` (source of truth) and repopulate any missing or
 	/// corrupt derived data:
 	///
-	/// - `eventid_shorteventid` / `shorteventid_eventid` (ID mappings)
+	/// - mtxdb short-ID mappings (allocated while the event is processed)
 	/// - `eventid_metadata` (bincode metadata: timestamps, depth, pdu_count)
-	/// - `shorteventid_shortprevevents` / `shortauthevents` (DAG edge caches)
-	/// - `shorteventid_authchain` (transitive auth chain, computed
-	///   incrementally)
+	/// - `shorteventid_shortprevevents` (legacy prev-edge index)
+	/// - mtxdb event bodies, direct auth edges, and auth closures
 	/// - `roomid_topologicalorder_pducount` (topo index entries)
 	/// - `roomid_pduleaves` (forward extremities from true DAG tips)
 	/// - `tofrom_relation` (thread/reply/reaction relations)

@@ -260,7 +260,9 @@ impl Service {
 			let stored_auth_shorts = self.db.get_shortauthevents(short_eid).await.ok();
 			let auth_events_repaired = stored_auth_shorts.as_ref() != Some(&auth_shorts);
 			if auth_events_repaired {
-				self.db.store_shortauthevents(short_eid, &auth_shorts);
+				if let Ok(json) = self.db.get_pdu_json(event_id).await {
+					self.db.write_event_to_mtxdb(&pdu, &json);
+				}
 				stats.repaired_auth_events = stats.repaired_auth_events.saturating_add(1);
 			}
 

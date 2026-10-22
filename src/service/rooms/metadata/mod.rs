@@ -15,7 +15,6 @@ pub struct Service {
 struct Data {
 	disabledroomids: Arc<Map>,
 	bannedroomids: Arc<Map>,
-	roomid_shortroomid: Arc<Map>,
 	room_pducount_eventid: Arc<Map>,
 }
 
@@ -29,7 +28,6 @@ impl crate::Service for Service {
 			db: Data {
 				disabledroomids: args.db["disabledroomids"].clone(),
 				bannedroomids: args.db["bannedroomids"].clone(),
-				roomid_shortroomid: args.db["roomid_shortroomid"].clone(),
 				room_pducount_eventid: args.db["room_pducount_eventid"].clone(),
 			},
 			services: Services {
@@ -59,7 +57,7 @@ pub async fn exists(&self, room_id: &RoomId) -> bool {
 
 #[implement(Service)]
 pub fn iter_ids(&self) -> impl Stream<Item = OwnedRoomId> + Send + '_ {
-	self.db.roomid_shortroomid.keys().ignore_err()
+	self.services.short.iter_room_ids()
 }
 
 #[implement(Service)]
@@ -101,7 +99,7 @@ pub async fn is_banned(&self, room_id: &RoomId) -> bool {
 
 #[implement(Service)]
 pub fn remove_room_raw(&self, room_id: &RoomId) {
-	self.db.roomid_shortroomid.remove(room_id);
+	self.services.short.remove_shortroomid(room_id);
 	self.db.disabledroomids.remove(room_id);
 	self.db.bannedroomids.remove(room_id);
 }
