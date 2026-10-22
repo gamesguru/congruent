@@ -19,6 +19,8 @@ fn version_collection(room_id: &[u8]) -> [u8; 16] { derive_id(ROOM_VERSION_DOMAI
 
 fn version_node() -> [u8; 16] { derive_id(ROOM_VERSION_COLLECTION, ROOM_VERSION_NODE) }
 
+/// Encode the room ID and version, rejecting lengths that cannot fit in the
+/// record with `StorageError::Corrupt`.
 fn encode_record(room_id: &[u8], version: &str) -> Result<Vec<u8>, StorageError> {
 	let room_len = u32::try_from(room_id.len()).map_err(|_| {
 		StorageError::Corrupt("room id is too long for room-version record".into())
@@ -35,6 +37,8 @@ fn encode_record(room_id: &[u8], version: &str) -> Result<Vec<u8>, StorageError>
 	Ok(bytes)
 }
 
+/// Decode a version for the requested room, returning `None` for another room.
+/// Malformed records and empty or non-UTF-8 versions return `StorageError::Corrupt`.
 fn decode_record(bytes: &[u8], room_id: &[u8]) -> Result<Option<String>, StorageError> {
 	if bytes.len() < ROOM_VERSION_HEADER_LEN
 		|| bytes.get(..ROOM_VERSION_MAGIC.len()) != Some(ROOM_VERSION_MAGIC.as_slice())
@@ -69,6 +73,9 @@ fn decode_record(bytes: &[u8], room_id: &[u8]) -> Result<Option<String>, Storage
 }
 
 /// Read the authoritative version record for a room, if present.
+///
+/// A record for a different room is a miss. Malformed records return
+/// `StorageError::Corrupt`; storage read errors propagate.
 pub fn get_room_version(
 	store: &MtxdbStore,
 	room_id: &[u8],
@@ -82,6 +89,10 @@ pub fn get_room_version(
 /// Persist an immutable room version. Repeated writes of the same value are
 /// idempotent; conflicting versions fail rather than silently changing room
 /// validation rules.
+///
+/// Returns `StorageError::Collision` for a conflicting version or room ID,
+/// `StorageError::WouldBlock` after four stale commit attempts, and propagates
+/// record encoding, decoding, and storage errors.
 pub fn set_room_version(
 	store: &MtxdbStore,
 	room_id: &[u8],
@@ -123,7 +134,8 @@ pub fn set_room_version(
 /// Read a room version from the collection header written by the mtxdb importer.
 ///
 /// This is a metadata-only lookup: it does not read or parse the create event.
-/// Collections created by older server code may not have this header.
+/// Collections created by older server code may not have this header. Missing,
+/// malformed, or unrecognized extensions yield `None`; storage errors propagate.
 pub fn room_version_from_collection(
 	store: &MtxdbStore,
 	room_id: &[u8],

@@ -811,7 +811,10 @@ impl Service {
 		root_handle_from_bytes(&data)
 	}
 
-	/// Returns the room's version.
+	/// Returns the room's version, falling back from direct lookup to the create
+	/// event in current state and then outliers. Fallback versions are persisted.
+	/// Lookup failures are ignored while searching; persistence errors propagate.
+	/// Returns `NotFound` if no usable version is found.
 	pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> {
 		if let Ok(version) = self.services.short.get_room_version(room_id).await {
 			return Ok(version);

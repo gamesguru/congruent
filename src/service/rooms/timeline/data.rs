@@ -1240,6 +1240,9 @@ impl Data {
 		self.room_pducount_eventid.apply_batch(batch);
 	}
 
+	/// Write the event and edges to mtxdb, then stage timeline rows in `batch`.
+	/// The mtxdb write is separate from the caller's batch and may be skipped or
+	/// fail without preventing timeline rows from being staged.
 	pub(super) async fn append_pdu_batch<'a>(
 		&'a self,
 		batch: &mut database::Batch<'a>,
@@ -2248,6 +2251,10 @@ impl Data {
 		Ok(prev_shorts)
 	}
 
+	/// Read direct auth edges from mtxdb and resolve or allocate their short IDs.
+	/// An existing empty edge row yields an empty vector; a missing event mapping,
+	/// locator, or edge row returns `NotFound`. Read and decoding errors propagate;
+	/// short-ID allocation failures panic.
 	pub(super) async fn get_shortauthevents(
 		&self,
 		shorteventid: rooms::short::ShortEventId,
@@ -2311,6 +2318,9 @@ impl Data {
 			})
 	}
 
+	/// Yield one direct-auth lookup result per input short ID, in input order.
+	/// Uses [`Self::get_shortauthevents`], including its allocation side effects
+	/// and errors; an error result does not end the stream.
 	pub(super) fn multi_get_shortauthevents<'a, I>(
 		&'a self,
 		shorteventids: I,

@@ -22,6 +22,7 @@ const MAP_NAMES: &[&str] = &[
 	"statekey_shortstatekey",
 ];
 
+/// Build handles for all registered legacy compatibility and migration maps.
 pub(super) fn open(db: &Arc<Engine>) -> Maps {
 	MAP_NAMES
 		.iter()

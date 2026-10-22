@@ -59,7 +59,8 @@ impl Database {
 		}))
 	}
 
-	/// Access a map retained only for migrating or cleaning up old records.
+	/// Access a legacy map retained for migration, compatibility, or cleanup.
+	/// Returns `NotFound` if `name` is not in the deprecated map registry.
 	pub fn deprecated(&self, name: &str) -> Result<&Arc<Map>> {
 		self.deprecated_maps
 			.get(name)

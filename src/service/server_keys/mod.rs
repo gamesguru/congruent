@@ -75,6 +75,9 @@ pub type VerifyKeys = BTreeMap<OwnedServerSigningKeyId, VerifyKey>;
 pub type PubKeyMap = PublicKeyMap;
 pub type PubKeys = PublicKeySet;
 
+/// Build the active and retired key view, excluding evicted records.
+/// Uses the greatest retained validity timestamp, or zero for no retained keys;
+/// signatures are not reconstructed. Invalid key IDs return database errors.
 fn signing_keys_from_native(
 	origin: &ServerName,
 	keys: &[conduwuit_mtxdb::server_keys::ServerKey],
@@ -326,6 +329,13 @@ pub fn add_signing_keys(
 	std::future::ready(self.add_signing_keys_sync(raw_new_keys, source))
 }
 
+/// Merge a signing-key observation into mtxdb and retain its raw payload.
+/// `source` selects direct-snapshot or notary observation semantics. Returns
+/// the merged key view with the incoming signatures and validity timestamp.
+///
+/// Malformed payloads return `BadServerResponse`; conflicting active and retired
+/// key bytes for one ID return `InvalidParam`. Storage and key-ID decoding
+/// errors return database errors, possibly after key updates have committed.
 #[implement(Service)]
 fn add_signing_keys_sync(
 	&self,
@@ -453,6 +463,10 @@ pub fn export_keys_jsonl<W: std::io::Write + Send>(
 	std::future::ready(self.export_keys_jsonl_sync(out))
 }
 
+/// Write native key records and available raw notary payloads as JSONL, then
+/// flush `out` and return record counts.
+/// Storage, invalid origin UTF-8, write, and flush failures return database
+/// errors; output already written is retained.
 #[implement(Service)]
 fn export_keys_jsonl_sync<W: std::io::Write + Send>(
 	&self,
@@ -595,6 +609,8 @@ pub fn verify_key_exists(
 	std::future::ready(self.verify_key_exists_sync(origin, key_id))
 }
 
+/// Check for the local active key or any native record for this origin and ID.
+/// Storage read errors panic.
 #[implement(Service)]
 fn verify_key_exists_sync(&self, origin: &ServerName, key_id: &ServerSigningKeyId) -> bool {
 	// Our own active signing key is held in memory, not necessarily in the DB
@@ -614,6 +630,8 @@ pub fn verify_keys_for(&self, origin: &ServerName) -> std::future::Ready<VerifyK
 	std::future::ready(self.verify_keys_for_sync(origin))
 }
 
+/// Return retained active and retired keys, adding this server's in-memory
+/// active keys for a local origin. Storage or key-ID decoding errors panic.
 #[implement(Service)]
 fn verify_keys_for_sync(&self, origin: &ServerName) -> VerifyKeys {
 	let native = self
@@ -643,6 +661,8 @@ pub fn active_verify_keys_for(&self, origin: &ServerName) -> std::future::Ready<
 	std::future::ready(self.active_verify_keys_for_sync(origin))
 }
 
+/// Return retained non-retired keys, adding this server's in-memory active
+/// keys for a local origin. Storage or key-ID decoding errors panic.
 #[implement(Service)]
 fn active_verify_keys_for_sync(&self, origin: &ServerName) -> VerifyKeys {
 	let native = self
@@ -680,6 +700,9 @@ pub fn raw_signing_keys_for(
 	std::future::ready(self.raw_signing_keys_for_sync(origin))
 }
 
+/// Read the stored raw signing-key payload without reconstructing native keys.
+/// Returns `NotFound` if absent, or a database error for storage failures,
+/// invalid UTF-8, or invalid JSON.
 #[implement(Service)]
 fn raw_signing_keys_for_sync(&self, origin: &ServerName) -> Result<Raw<ServerSigningKeys>> {
 	let payload = self
@@ -704,6 +727,9 @@ pub fn merged_signing_keys_for(
 	std::future::ready(self.merged_signing_keys_for_sync(origin))
 }
 
+/// Reconstruct active and retired keys from native records without signatures.
+/// Returns `NotFound` when there are no records; an all-evicted set yields an
+/// empty view. Storage and key-ID decoding failures return database errors.
 #[implement(Service)]
 fn merged_signing_keys_for_sync(&self, origin: &ServerName) -> Result<ServerSigningKeys> {
 	let native = self

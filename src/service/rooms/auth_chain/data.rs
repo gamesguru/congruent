@@ -13,6 +13,11 @@ pub(super) struct Data {
 }
 
 impl Data {
+	/// Create the RAM cache and adapters for persisted auth-chain lookups.
+	///
+	/// # Panics
+	///
+	/// Panics if the configured cache size is invalid or short IDs cannot be opened.
 	pub(super) fn new(args: &crate::Args<'_>) -> Self {
 		let config = &args.server.config;
 		let cache_size = f64::from(config.auth_chain_cache_capacity);
@@ -27,6 +32,11 @@ impl Data {
 		}
 	}
 
+	/// Return the RAM-cached chain or load a persisted closure and cache its
+	/// ancestor short IDs. This does not walk auth edges when a closure is missing.
+	///
+	/// Missing room, event, ancestor mappings, or closures return `NotFound`.
+	/// Storage and blocking-task failures return database errors.
 	pub(super) async fn get_cached_eventid_authchain(
 		&self,
 		shortroomid: u64,
@@ -86,6 +96,8 @@ impl Data {
 		Ok(chain)
 	}
 
+	/// Cache the supplied ancestor short IDs in RAM for this room and event.
+	/// Does not persist the chain or verify its completeness.
 	pub(super) fn cache_auth_chain(
 		&self,
 		shortroomid: u64,
@@ -99,5 +111,6 @@ impl Data {
 			.insert(key.to_vec(), auth_chain);
 	}
 
+	/// Clear the RAM auth-chain cache, leaving persisted mtxdb closures intact.
 	pub(super) async fn clear_db_cache(&self) { self.auth_chain_cache.lock().clear(); }
 }

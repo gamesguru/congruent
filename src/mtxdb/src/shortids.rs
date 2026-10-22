@@ -252,7 +252,12 @@ impl ShortIdAdapter {
 	}
 
 	/// Get or allocate a room ID. `legacy_short` preserves an existing room ID
-	/// during migration; new rooms use the shared short-ID counter.
+	/// during migration; new rooms use the shared short-ID counter. An existing
+	/// mapping takes precedence over `legacy_short`.
+	///
+	/// Both directions and any counter advance commit together. Zero IDs,
+	/// conflicting mappings, malformed records, and counter overflow return
+	/// `StorageError::Corrupt`; storage errors propagate.
 	pub fn allocate_room(
 		&self,
 		room_id: &[u8],
@@ -301,7 +306,9 @@ impl ShortIdAdapter {
 		Ok(short)
 	}
 
-	/// Remove both directions of a room short-ID mapping.
+	/// Remove both directions of a room short-ID mapping in one transaction.
+	/// A missing mapping is a no-op; the allocation counter is not reduced.
+	/// Mapping read and transaction errors propagate.
 	pub fn remove_room(&self, room_id: &[u8]) -> Result<(), StorageError> {
 		// Serialize with allocate_room so a concurrent allocation cannot return
 		// the mapping this removal is about to delete.
@@ -388,6 +395,10 @@ impl ShortIdAdapter {
 
 	/// Import pre-existing event mappings without changing their short IDs.
 	/// The normal allocator and these imports share the counter lock.
+	///
+	/// Missing directions and any counter advance commit together. Zero IDs,
+	/// malformed records, and conflicts with committed mappings return
+	/// `StorageError::Corrupt`; storage errors propagate.
 	pub fn import_event_mappings(&self, mappings: &[(&[u8], u64)]) -> Result<(), StorageError> {
 		let mut counter = self.counter.lock().unwrap_or_else(PoisonError::into_inner);
 		let mut next = *counter;
@@ -465,7 +476,12 @@ impl ShortIdAdapter {
 		Ok(next)
 	}
 
-	/// Import pre-existing state-key mappings without changing their short IDs.
+	/// Import pre-existing `(event_type, state_key, short_id)` mappings without
+	/// changing their short IDs. Missing directions and any counter advance
+	/// commit together.
+	///
+	/// Zero IDs, unencodable keys, malformed records, and conflicts with committed
+	/// mappings return `StorageError::Corrupt`; storage errors propagate.
 	pub fn import_state_key_mappings(
 		&self,
 		mappings: &[(String, String, u64)],
