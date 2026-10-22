@@ -384,7 +384,7 @@ where
 		HashMap::with_capacity(state_pdu_ids.len());
 	for eid in state_pdu_ids {
 		// Read from our outlier store or timeline
-		let Ok(pdu) = self.services.timeline.get_pdu(&eid).await else {
+		let Ok(pdu) = self.services.timeline.get_pdu(&eid) else {
 			continue;
 		};
 		let Some(state_key) = pdu.state_key() else {

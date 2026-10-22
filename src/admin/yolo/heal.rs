@@ -225,7 +225,6 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 		.rooms
 		.timeline
 		.get_pdu_json(&event_id)
-		.await
 		.map_err(|_| err!("PDU not found in database."))?;
 
 	let pdu: PduEvent =

@@ -136,7 +136,6 @@ impl Service {
 				.services
 				.timeline
 				.get_pdu(&relates_to.event_id)
-				.await
 				.ok()?
 				.get_content::<ExtractThreadRelation>()
 				.ok()?
@@ -147,7 +146,7 @@ impl Service {
 	}
 
 	pub async fn get_thread_id_for_event(&self, event_id: &EventId) -> Option<OwnedEventId> {
-		let pdu = self.services.timeline.get_pdu(event_id).await.ok()?;
+		let pdu = self.services.timeline.get_pdu(event_id).ok()?;
 		self.get_thread_id(&pdu).await
 	}
 
@@ -159,7 +158,6 @@ impl Service {
 		self.services
 			.timeline
 			.get_pdu(thread_id)
-			.await
 			.is_ok_and(|pdu| pdu.room_id.as_deref() == Some(room_id))
 	}
 

@@ -141,7 +141,7 @@ async fn compute_outbound_state_hashes(
 			| None => StateHashEntry::limited(with_inputs),
 			| Some(digests) => {
 				let inputs = if with_inputs {
-					let pdu = services.timeline.get_pdu(event_id).await.ok();
+					let pdu = services.timeline.get_pdu(event_id).ok();
 					let digest = match pdu {
 						| Some(pdu) =>
 							services
@@ -1592,7 +1592,6 @@ impl Service {
 					.services
 					.timeline
 					.get_pdu(event_id)
-					.await
 					.ok()
 					.and_then(|pdu| pdu.room_id_or_hash().map(|r| r.to_string()))
 					.unwrap_or_default();

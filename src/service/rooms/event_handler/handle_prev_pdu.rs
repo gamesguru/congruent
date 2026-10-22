@@ -93,7 +93,7 @@ where
 					return Ok(false);
 				}
 			}
-			let Ok(json) = self.services.timeline.get_outlier_pdu_json(prev_id).await else {
+			let Ok(json) = self.services.timeline.get_outlier_pdu_json(prev_id) else {
 				return Ok(false);
 			};
 			let Ok(pdu) = PduEvent::from_id_val(prev_id, json.clone(), Some(room_id)) else {

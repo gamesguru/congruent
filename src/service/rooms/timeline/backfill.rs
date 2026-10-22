@@ -653,7 +653,7 @@ async fn get_remote_pdu_limited(
 ) -> Result<PduEvent> {
 	let _mutex = self.mutex_fetch.lock(event_id).await;
 
-	let local = self.get_pdu(event_id).await;
+	let local = self.get_pdu(event_id);
 	if local.is_ok() {
 		// `get_pdu` also finds outliers, e.g. one a resync stored first. Those have
 		// no timeline position yet, so give them the same treatment as a freshly
@@ -773,7 +773,7 @@ async fn get_remote_pdu_limited(
 						self.promote_outlier(room_id, event_id).await?;
 					}
 					debug!("Successfully backfilled {event_id} from {backfill_server}");
-					Some(self.get_pdu(event_id).await)
+					Some(self.get_pdu(event_id))
 				},
 				| Err(e) => {
 					warn!(
@@ -813,7 +813,7 @@ async fn materialize_remote_history_limited(
 		return Ok(());
 	}
 
-	let pdu = self.get_pdu(event_id).await?;
+	let pdu = self.get_pdu(event_id)?;
 	for prev_id in pdu.prev_events() {
 		if self.get_pdu_id(prev_id).await.is_ok() {
 			continue;
@@ -823,7 +823,7 @@ async fn materialize_remote_history_limited(
 			continue;
 		}
 
-		if self.get_pdu(prev_id).await.is_err() {
+		if self.get_pdu(prev_id).is_err() {
 			let _ = Box::pin(self.get_remote_pdu_limited(room_id, prev_id, budget)).await;
 		} else {
 			Box::pin(self.materialize_remote_history_limited(room_id, prev_id, budget)).await?;
@@ -1073,7 +1073,7 @@ pub async fn promote_outlier_batch<'a>(
 		return Ok(PromoteOutlierOutcome::Skipped);
 	}
 
-	let value = self.get_outlier_pdu_json(event_id).await?;
+	let value = self.get_outlier_pdu_json(event_id)?;
 
 	let pdu: PduEvent =
 		slipstream::codec::from_value(&slipstream::json::Value::Object(value.clone()))
@@ -1331,7 +1331,7 @@ pub async fn promote_outliers_sorted(
 			continue;
 		}
 
-		let Ok(pdu) = self.get_pdu_outlier(event_id).await else {
+		let Ok(pdu) = self.get_pdu_outlier(event_id) else {
 			continue;
 		};
 
@@ -1429,7 +1429,7 @@ pub async fn reindex_timeline_events(
 		let Ok(pdu_id) = self.get_pdu_id(event_id).await else {
 			continue;
 		};
-		let Ok(pdu) = self.get_pdu_in_room(Some(room_id), event_id).await else {
+		let Ok(pdu) = self.get_pdu_in_room(Some(room_id), event_id) else {
 			continue;
 		};
 		pdus.insert(event_id.clone(), (pdu_id, pdu));

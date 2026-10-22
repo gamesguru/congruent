@@ -215,7 +215,7 @@ impl Data {
 		self.room_pducount_eventid.apply_batch(batch);
 	}
 
-	pub(super) async fn fallback_prev_events(&self, event_id: &EventId) -> HashSet<OwnedEventId> {
+	pub(super) fn fallback_prev_events(&self, event_id: &EventId) -> HashSet<OwnedEventId> {
 		let mut prevs = HashSet::new();
 		if let Ok((pdu, _)) = self.get_from_eventid_pdu(event_id) {
 			for prev_id in pdu.prev_events() {
@@ -232,7 +232,7 @@ impl Data {
 		&self,
 		event_id: &EventId,
 	) -> HashSet<OwnedEventId> {
-		let prevs = self.fallback_prev_events(event_id).await;
+		let prevs = self.fallback_prev_events(event_id);
 
 		if !prevs.is_empty() {
 			let short_eid = self

@@ -95,9 +95,9 @@ impl Service {
 		line(out, header)?;
 
 		for (event_id, outlier) in &events {
-			let pdu = match self.services.timeline.get_pdu_json(event_id).await {
+			let pdu = match self.services.timeline.get_pdu_json(event_id) {
 				| Ok(pdu) => pdu,
-				| Err(_) => match self.services.timeline.get_outlier_pdu_json(event_id).await {
+				| Err(_) => match self.services.timeline.get_outlier_pdu_json(event_id) {
 					| Ok(pdu) => pdu,
 					| Err(error) => {
 						warn!(%room_id, %event_id, ?error, "skipping event with no stored PDU");

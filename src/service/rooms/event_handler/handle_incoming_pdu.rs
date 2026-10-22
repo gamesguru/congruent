@@ -211,20 +211,8 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 
 	// NATIVE RETRY INTERCEPTION: If it's a known outlier that was rejected, check
 	// local auth.
-	if is_timeline_event
-		&& self
-			.services
-			.outlier
-			.get_pdu_outlier(event_id)
-			.await
-			.is_ok()
-	{
-		let pdu = self
-			.services
-			.outlier
-			.get_pdu_outlier(event_id)
-			.await
-			.unwrap();
+	if is_timeline_event && self.services.outlier.get_pdu_outlier(event_id).is_ok() {
+		let pdu = self.services.outlier.get_pdu_outlier(event_id).unwrap();
 		let is_accepted = self.services.pdu_metadata.is_event_accepted(event_id)?;
 		let is_rejected = self.services.pdu_metadata.is_event_rejected(event_id)?;
 		info!(

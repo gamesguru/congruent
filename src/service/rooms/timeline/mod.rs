@@ -431,12 +431,12 @@ impl Service {
 	}
 
 	/// Returns the json of a pdu.
-	pub async fn get_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
+	pub fn get_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
 		self.db.get_pdu_json(event_id)
 	}
 
 	#[inline]
-	pub async fn get_outlier_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
+	pub fn get_outlier_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
 		self.db.get_outlier_pdu_json(event_id)
 	}
 
@@ -585,8 +585,8 @@ impl Service {
 	}
 
 	#[inline]
-	pub async fn get_pdu_outlier(&self, event_id: &EventId) -> Result<PduEvent> {
-		self.services.outlier.get_pdu_outlier(event_id).await
+	pub fn get_pdu_outlier(&self, event_id: &EventId) -> Result<PduEvent> {
+		self.services.outlier.get_pdu_outlier(event_id)
 	}
 
 	#[inline]
@@ -669,7 +669,7 @@ impl Service {
 	///
 	/// Checks the `eventid_outlierpdu` Tree if not found in the timeline.
 	#[inline]
-	pub async fn get_pdu(&self, event_id: &EventId) -> Result<PduEvent> {
+	pub fn get_pdu(&self, event_id: &EventId) -> Result<PduEvent> {
 		self.db.get_pdu_in_room(None, event_id)
 	}
 
@@ -677,7 +677,7 @@ impl Service {
 	///
 	/// Checks the `eventid_outlierpdu` Tree if not found in the timeline.
 	#[inline]
-	pub async fn get_pdu_in_room(
+	pub fn get_pdu_in_room(
 		&self,
 		room_id: Option<&RoomId>,
 		event_id: &EventId,

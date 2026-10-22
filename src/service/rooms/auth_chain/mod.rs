@@ -328,8 +328,7 @@ async fn get_auth_chain_inner(
 					let pdu_result = self
 						.services
 						.timeline
-						.get_pdu_in_room(Some(room_id), &missing_event_id)
-						.await;
+						.get_pdu_in_room(Some(room_id), &missing_event_id);
 
 					Ok((missing_event_id, pdu_result))
 				})
@@ -431,7 +430,6 @@ async fn add_derived_create_event(
 		.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), &create_id)
-		.await
 		.is_err()
 	{
 		return false;

@@ -304,7 +304,6 @@ impl Service {
 				.services
 				.timeline
 				.get_pdu_in_room(Some(room_id), &event_id_obj)
-				.await
 			else {
 				continue;
 			};
@@ -337,7 +336,6 @@ impl Service {
 				.services
 				.timeline
 				.get_pdu_in_room(Some(room_id), &event_id_obj)
-				.await
 			else {
 				continue;
 			};
@@ -1253,7 +1251,6 @@ impl Service {
 				self.services
 					.timeline
 					.get_pdu(&event_id)
-					.await
 					.map(move |pdu| (((*ty).clone(), (*sk).clone()), pdu))
 					.inspect_err(|e| warn!("Failed to get auth event {event_id}: {e:?}"))
 					.ok()

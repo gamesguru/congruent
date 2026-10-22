@@ -183,7 +183,7 @@ pub async fn msc4500_redactions_through(
 		if nodes.len() >= CAUSAL_WALK_LIMIT {
 			return None;
 		}
-		let pdu = self.services.timeline.get_pdu(&id).await.ok()?;
+		let pdu = self.services.timeline.get_pdu(&id).ok()?;
 		let redaction_of = if *pdu.kind() == TimelineEventType::RoomRedaction {
 			pdu.redacts_id(&room_version)
 		} else {
@@ -352,7 +352,7 @@ pub async fn msc4500_point_digests(
 			self.msc4500_redaction_effective(pdu, target, &room_version)
 				.await?
 		} else {
-			let redaction = self.services.timeline.get_pdu(redaction_id).await.ok()?;
+			let redaction = self.services.timeline.get_pdu(redaction_id).ok()?;
 			self.msc4500_redaction_effective(&redaction, target, &room_version)
 				.await?
 		};
@@ -412,7 +412,7 @@ pub async fn msc4500_before_root(&self, pdu: &Pdu) -> Option<rezzy::hamt::RootHa
 /// `None` means the sender cannot assert this PDU and must mark it `limited`.
 #[implement(super::Service)]
 pub async fn msc4500_pdu_digests(&self, event_id: &EventId) -> Option<PduDigests> {
-	let pdu = self.services.timeline.get_pdu(event_id).await.ok()?;
+	let pdu = self.services.timeline.get_pdu(event_id).ok()?;
 	let after_root = self.pdu_roothandle_after_event(event_id).await.ok()?;
 	let before_root = self.msc4500_before_root(&pdu).await?;
 
@@ -461,18 +461,12 @@ pub async fn msc4500_resolution_inputs_digest(
 	let mut inputs = ResolutionInputs::default();
 	while let Some(id) = frontier.pop_front() {
 		if !cache.contains_key(&id) {
-			let node = self
-				.services
-				.timeline
-				.get_pdu(&id)
-				.await
-				.ok()
-				.map(|p| InputNode {
-					event_id: id.clone(),
-					kind: p.kind().to_string(),
-					state_key: p.state_key().unwrap_or_default().to_owned(),
-					auth_events: p.auth_events().map(ToOwned::to_owned).collect(),
-				});
+			let node = self.services.timeline.get_pdu(&id).ok().map(|p| InputNode {
+				event_id: id.clone(),
+				kind: p.kind().to_string(),
+				state_key: p.state_key().unwrap_or_default().to_owned(),
+				auth_events: p.auth_events().map(ToOwned::to_owned).collect(),
+			});
 			cache.insert(id.clone(), node);
 		}
 		let node = cache.get(&id)?.as_ref()?;

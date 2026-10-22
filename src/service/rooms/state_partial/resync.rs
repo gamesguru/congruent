@@ -1068,7 +1068,7 @@ impl Service {
 				covered_keys.push(key);
 				continue;
 			}
-			match self.services.timeline.get_pdu(event_id).await {
+			match self.services.timeline.get_pdu(event_id) {
 				| Ok(pdu) if anchor_depth.is_some_and(|depth| pdu.depth() <= depth) => {
 					// Already part of the anchor's state.
 					covered_keys.push(key);

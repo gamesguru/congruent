@@ -758,7 +758,7 @@ async fn join_room_by_id_helper_remote_process(
 			.boxed()
 			.await
 		{
-			if let Ok(pdu) = services.rooms.timeline.get_pdu(event_id).boxed().await {
+			if let Ok(pdu) = services.rooms.timeline.get_pdu(event_id) {
 				auth_events.insert((ty, sk), pdu);
 			}
 		}
@@ -768,7 +768,7 @@ async fn join_room_by_id_helper_remote_process(
 	// but the join event's own auth events (e.g. the authorising user's
 	// membership for a restricted join) arrive in the auth chain.
 	for auth_event_id in &parsed_join_pdu.auth_events {
-		if let Ok(pdu) = services.rooms.timeline.get_pdu(auth_event_id).await {
+		if let Ok(pdu) = services.rooms.timeline.get_pdu(auth_event_id) {
 			if let Some(sk) = pdu.state_key.clone() {
 				auth_events
 					.entry((StateEventType::from(pdu.kind.to_string()), sk))

@@ -2743,7 +2743,7 @@ async fn legacy_added_events_roothandles(
 			"Empty event group for shortstatehash {shortstatehash} during v20 backfill."
 		))))?;
 		let event_id: OwnedEventId = services.rooms.short.get_eventid_from_short(*first).await?;
-		let pdu = services.rooms.timeline.get_pdu(&event_id).await?;
+		let pdu = services.rooms.timeline.get_pdu(&event_id)?;
 		let room_id = pdu
 			.room_id_or_hash()
 			.expect("timeline PDU must have a room_id")

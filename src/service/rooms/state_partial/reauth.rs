@@ -113,7 +113,6 @@ impl Service {
 			.services
 			.timeline
 			.get_pdu(anchor)
-			.await
 			.map(|pdu| pdu.depth())
 			.ok();
 
@@ -130,7 +129,7 @@ impl Service {
 			if event_id == anchor || window.contains_key(&event_id) {
 				continue;
 			}
-			let Ok(pdu) = self.services.timeline.get_pdu(&event_id).await else {
+			let Ok(pdu) = self.services.timeline.get_pdu(&event_id) else {
 				warn!(target: "reauth_debug", %event_id, "window event not found");
 				continue;
 			};
@@ -188,7 +187,7 @@ impl Service {
 				} else {
 					// Outside the window: only acceptable if it is known to be at or
 					// below the anchor's depth, and then its own stored state is used.
-					let older = match (self.services.timeline.get_pdu(prev).await, anchor_depth) {
+					let older = match (self.services.timeline.get_pdu(prev), anchor_depth) {
 						| (Ok(pred), Some(depth)) => pred.depth() <= depth,
 						| _ => false,
 					};
@@ -251,7 +250,7 @@ impl Service {
 						.await
 						.ok()?;
 					let id = before_ref.get(&shortstatekey)?;
-					self.services.timeline.get_pdu(id).await.ok()
+					self.services.timeline.get_pdu(id).ok()
 				};
 				match state_res::event_auth::auth_check(
 					&room_version,
@@ -489,7 +488,7 @@ impl Service {
 		let Some(id) = state.get(&key) else {
 			return false;
 		};
-		self.services.timeline.get_pdu(id).await.is_ok_and(|pdu| {
+		self.services.timeline.get_pdu(id).is_ok_and(|pdu| {
 			pdu.get_content::<RoomMemberEventContent>()
 				.is_ok_and(|c| c.membership == MembershipState::Join)
 		})
@@ -521,7 +520,7 @@ impl Service {
 			if self.services.globals.user_is_local(&user_id) {
 				continue;
 			}
-			let Ok(pdu) = self.services.timeline.get_pdu(new_id).await else {
+			let Ok(pdu) = self.services.timeline.get_pdu(new_id) else {
 				continue;
 			};
 			let joined = pdu

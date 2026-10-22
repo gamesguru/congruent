@@ -121,7 +121,6 @@ async fn paginate_relations_with_filter(
 		.rooms
 		.timeline
 		.get_pdu(target)
-		.await
 		.map_err(|_| err!(Request(NotFound("Event not found."))))?;
 	// Return M_SENDER_IGNORED if the sender of base_event is ignored (MSC4406)
 	is_ignored_pdu(services, &target_pdu, sender_user).await?;

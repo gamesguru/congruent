@@ -38,7 +38,6 @@ pub(crate) async fn get_event_authorization_route(
 		.rooms
 		.timeline
 		.get_pdu(&body.event_id)
-		.await
 		.map_err(|_| Error::BadRequest(ErrorKind::NotFound, "Event not found."))?;
 
 	if event.room_id_or_hash().as_deref() != Some(body.room_id.as_ref()) {
@@ -51,7 +50,7 @@ pub(crate) async fn get_event_authorization_route(
 		.event_ids_iter(&body.room_id, once(body.event_id.borrow()))
 		.ready_filter_map(Result::ok)
 		.ready_filter(|id| id != &body.event_id)
-		.filter_map(|id| async move { services.rooms.timeline.get_pdu_json(&id).await.ok() })
+		.filter_map(|id| async move { services.rooms.timeline.get_pdu_json(&id).ok() })
 		.then(|pdu| services.sending.convert_to_outgoing_federation_event(pdu))
 		.collect()
 		.await;

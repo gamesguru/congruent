@@ -73,7 +73,7 @@ pub fn get_outlier_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonOb
 
 /// Returns the pdu from the outlier tree.
 #[implement(Service)]
-pub async fn get_pdu_outlier(&self, event_id: &EventId) -> Result<PduEvent> {
+pub fn get_pdu_outlier(&self, event_id: &EventId) -> Result<PduEvent> {
 	let json = self.get_outlier_pdu_json(event_id)?;
 	Ok(slipstream::codec::from_value(&slipstream::json::Value::Object(json))?)
 }
@@ -94,7 +94,7 @@ pub fn stream_keys(&self) -> impl Stream<Item = OwnedEventId> + Send + '_ {
 #[implement(Service)]
 pub fn stream(&self) -> impl Stream<Item = (OwnedEventId, PduEvent)> + Send + '_ {
 	self.stream_keys().broad_filter_map(move |eid| async move {
-		let pdu = self.get_pdu_outlier(&eid).await.ok()?;
+		let pdu = self.get_pdu_outlier(&eid).ok()?;
 		Some((eid, pdu))
 	})
 }
@@ -135,7 +135,7 @@ pub fn room_stream<'a>(
 		.broad_filter_map(move |(eid, meta_short_room_id)| {
 			let room_id = room_id_clone.clone();
 			async move {
-				let pdu = self.get_pdu_outlier(&eid).await.ok()?;
+				let pdu = self.get_pdu_outlier(&eid).ok()?;
 				// If metadata had a 0 short_room_id, we must check the actual PDU room_id
 				if meta_short_room_id == 0
 					&& pdu.room_id().map(OwnedRoomId::as_str) != Some(&*room_id)

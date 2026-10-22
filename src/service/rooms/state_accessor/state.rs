@@ -217,7 +217,6 @@ pub async fn state_get_in_room_hamt(
 	self.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), &event_id)
-		.await
 }
 
 /// Returns a single EventId at the given HAMT root with key
@@ -273,7 +272,6 @@ pub async fn room_state_get_hamt_legacy(
 	self.services
 		.timeline
 		.get_pdu(&event_id)
-		.await
 		.map(std::sync::Arc::new)
 }
 
@@ -319,7 +317,7 @@ pub fn state_full_pdus_hamt<'a>(
 		.multi_get_eventid_from_short(short_ids)
 		.ready_filter_map(Result::ok)
 		.map(move |event_id: OwnedEventId| async move {
-			self.services.timeline.get_pdu(&event_id).await.ok()
+			self.services.timeline.get_pdu(&event_id).ok()
 		})
 		.buffer_unordered(self.services.server.concurrency_scaled(32))
 		.filter_map(std::future::ready)
@@ -342,7 +340,7 @@ pub fn state_full_pdus_hamt_strict<'a>(
 				.short
 				.get_eventid_from_short::<OwnedEventId>(short_id)
 				.await?;
-			self.services.timeline.get_pdu(&event_id).await
+			self.services.timeline.get_pdu(&event_id)
 		})
 		.buffer_unordered(self.services.server.concurrency_scaled(32))
 }
@@ -545,7 +543,7 @@ pub async fn pdu_roothandle_before_event(
 	// State before an event is determined by its DAG predecessors, not by the
 	// event that happens to precede it in the repaired linear timeline. The
 	// latter can be a concurrent fork and therefore carry unrelated state.
-	let pdu = self.services.timeline.get_pdu(event_id).await?;
+	let pdu = self.services.timeline.get_pdu(event_id)?;
 
 	// A non-state event doesn't change state, so its stored root *is* the state
 	// before it. For a merge event this is the resolved state of all its
