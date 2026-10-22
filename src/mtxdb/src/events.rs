@@ -375,24 +375,28 @@ impl EventAdapter {
 		auth_events: &[&[u8]],
 	) -> Result<(), StorageError> {
 		// Short-id allocation makes the commit conditional on the room's auth
-		// collection being unchanged; a concurrent writer fails it and the
-		// whole write is redone against the new version.
+		// collection being unchanged; concurrent writers fail it and the whole
+		// write is redone against the new version. A read can also lose a race
+		// with the WAL boundary and return `WouldBlock`, so retry that as part
+		// of the same attempt loop.
 		let mut attempts = 0_u8;
 		loop {
 			let tx = self.store.begin_transaction();
-			self.put_event_with_edges(
-				&tx,
-				room_id,
-				event_id,
-				event_body,
-				prev_events,
-				auth_events,
-			)?;
-			match tx.commit() {
-				| Err(StorageError::StaleRead { .. }) if attempts < 3 => {
-					attempts = attempts
-						.checked_add(1)
-						.expect("attempts is less than three");
+			let result = self
+				.put_event_with_edges(
+					&tx,
+					room_id,
+					event_id,
+					event_body,
+					prev_events,
+					auth_events,
+				)
+				.and_then(|()| tx.commit());
+			match result {
+				| Err(
+					StorageError::StaleRead { .. } | StorageError::WouldBlock(_),
+				) if attempts < 15 => {
+					attempts += 1;
 				},
 				| result => return result,
 			}

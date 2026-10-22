@@ -257,9 +257,10 @@ pub fn add_pdu_outlier_batch_demote<'a>(
 /// `room_id` supplies room context; `demote` permits replacing timeline metadata.
 /// Otherwise, a known timeline event is left untouched.
 ///
-/// When the room has a persisted version, also write the event and edges to
-/// mtxdb separately from `batch`. Room-version lookup and mtxdb write failures
-/// do not prevent staging the outlier. Short-ID allocation failures panic.
+/// Write the event and edges to mtxdb separately from `batch`. Room versions may
+/// arrive after the events (concurrent send_join processing), so storage does
+/// not wait for one. Mtxdb write failures do not prevent staging the outlier;
+/// short-ID allocation failures panic.
 #[implement(Service)]
 fn add_pdu_outlier_batch_impl<'a>(
 	&'a self,
@@ -322,13 +323,11 @@ fn add_pdu_outlier_batch_impl<'a>(
 				},
 			}
 		}
-		if !matches!(
-			conduwuit_mtxdb::room_metadata::get_room_version(&self.db.mtxdb, room_id.as_bytes()),
-			Ok(Some(_))
-		) {
-			warn!(%room_id, %event_id, "Skipping outlier before room version is established; mtxdb is authoritative");
-			return;
-		}
+		// The room version may not be established yet: send_join state and auth
+		// chain events are validated concurrently and can arrive before the
+		// room-create event. Event storage does not depend on the version, so
+		// write the body and edges anyway; dropping them here leaves the joined
+		// state and auth chain incomplete.
 		for auth_event in parsed_pdu.auth_events() {
 			let _ = self
 				.services
