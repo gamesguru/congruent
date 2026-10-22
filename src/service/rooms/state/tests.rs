@@ -1177,6 +1177,11 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 	let rejected = event_id!("$rejected:test.conduwuit.local").to_owned();
 	let redacted = event_id!("$redacted:test.conduwuit.local").to_owned();
 	let redaction = event_id!("$redaction:test.conduwuit.local").to_owned();
+	services
+		.rooms
+		.short
+		.set_room_version(&room_id, &slipstream::RoomVersionId::V11)
+		.expect("room version must be persisted");
 
 	for (id, kind) in [
 		(&ok, "m.room.topic"),
@@ -1214,13 +1219,6 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 		.short
 		.get_or_create_shortroomid(&room_id)
 		.await;
-	// The room has no create event: seed the room version directly so
-	// `redact_pdu` can apply redaction rules.
-	services
-		.rooms
-		.short
-		.set_room_version(&room_id, &slipstream::RoomVersionId::V11)
-		.expect("room version must be persisted");
 	let reason = create_dummy_pdu(&room_id, &redaction, "m.room.redaction", "");
 	services
 		.rooms
@@ -1380,6 +1378,11 @@ async fn test_room_export_outliers_duplicates_and_end_count() {
 	let room_id = room_id!("!export-outlier:test.conduwuit.local").to_owned();
 	let timeline = event_id!("$timeline:test.conduwuit.local").to_owned();
 	let outlier = event_id!("$outlier:test.conduwuit.local").to_owned();
+	services
+		.rooms
+		.short
+		.set_room_version(&room_id, &slipstream::RoomVersionId::V11)
+		.expect("room version must be persisted");
 
 	persist_dummy_pdu(
 		&services,
@@ -1475,6 +1478,11 @@ async fn test_room_export_fails_when_writer_errors_mid_stream() {
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = room_id!("!export-writer-failure:test.conduwuit.local").to_owned();
 	let event_id = event_id!("$export-writer-failure:test.conduwuit.local").to_owned();
+	services
+		.rooms
+		.short
+		.set_room_version(&room_id, &slipstream::RoomVersionId::V11)
+		.expect("room version must be persisted");
 	persist_dummy_pdu(
 		&services,
 		&room_id,
