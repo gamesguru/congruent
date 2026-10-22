@@ -147,6 +147,8 @@ impl Data {
 
 	/// Returns the json of a pdu.
 	pub(super) async fn get_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
+		std::future::ready(()).await;
+
 		database::from_json_slice(&self.get_event_json_bytes(event_id.as_bytes())?)
 	}
 
@@ -185,6 +187,8 @@ impl Data {
 		&self,
 		event_id: &EventId,
 	) -> Result<(PduEvent, CanonicalJsonObject)> {
+		std::future::ready(()).await;
+
 		let bytes = self.get_event_json_bytes(event_id.as_bytes())?;
 		let pdu: PduEvent = database::from_json_slice(&bytes)?;
 		let json: CanonicalJsonObject = database::from_json_slice(&bytes)?;
@@ -196,6 +200,8 @@ impl Data {
 		&self,
 		event_id: &EventId,
 	) -> Result<(PduEvent, Vec<u8>)> {
+		std::future::ready(()).await;
+
 		let raw_bytes = self.get_event_json_bytes(event_id.as_bytes())?;
 		let pdu: PduEvent = database::from_json_slice(&raw_bytes)?;
 		Ok((pdu, raw_bytes))
@@ -957,6 +963,8 @@ impl Data {
 		room_id: Option<&RoomId>,
 		event_id: &EventId,
 	) -> Result<PduEvent> {
+		std::future::ready(()).await;
+
 		let pdu: PduEvent =
 			database::from_json_slice(&self.get_event_json_bytes(event_id.as_bytes())?)?;
 
@@ -1100,6 +1108,8 @@ impl Data {
 
 	/// Like get_pdu(), but without the expense of fetching and parsing the data
 	pub(super) async fn pdu_exists(&self, event_id: &EventId) -> Result {
+		std::future::ready(()).await;
+
 		match self
 			.mtxdb_events
 			.locate_event(event_id.as_bytes())
@@ -1689,8 +1699,8 @@ impl Data {
 	/// Resolve a (pdu_id, event_id_bytes) pair from `room_pducount_eventid`
 	/// into a full `PdusIterItem` by looking up the PDU JSON in mtxdb.
 	async fn resolve_pdu(&self, (pdu_id, event_id_bytes): KeyVal<'_>) -> Result<PdusIterItem> {
-		let json_bytes = self.get_event_json_bytes(&event_id_bytes)?;
-		Self::parse_json_slice(None, (pdu_id, &json_bytes))
+		let json_bytes = self.get_event_json_bytes(event_id_bytes)?;
+		std::future::ready(Self::parse_json_slice(None, (pdu_id, &json_bytes))).await
 	}
 
 	/// Resolve a batch of `pdu_id`s via the two-hop path:
