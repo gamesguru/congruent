@@ -4,7 +4,7 @@ use conduwuit::{
 	Err, PduCount, Result, debug, debug_info, debug_warn, err, error, info,
 	matrix::{
 		event::{gen_event_id, gen_event_id_canonical_json},
-		pdu::{PduBuilder, PduEvent},
+		pdu::{PduBuilder, PduEvent, RawJson},
 	},
 	trace,
 	utils::{self, shuffle, stream::ReadyExt, to_canonical_object},
@@ -576,6 +576,50 @@ async fn join_room_by_id_helper_remote(
 	.await
 }
 
+/// Persist the validated room-create event before any dependent outliers.
+///
+/// send_join room_state and auth_chain are validated concurrently, so the create
+/// event can be yielded after events whose outlier writes require the room
+/// version. Adding it first establishes the room version and lets the outlier
+/// write guard accept the rest of the response.
+async fn persist_send_join_create_event(
+	services: &Services,
+	room_id: &RoomId,
+	room_version_id: &RoomVersionId,
+	state: &[RawJson],
+	auth_chain: &[RawJson],
+) -> Result<()> {
+	for raw in state.iter().chain(auth_chain) {
+		let Ok(value) = slipstream::codec::from_str::<CanonicalJsonObject>(raw.get()) else {
+			continue;
+		};
+		if value.get("type").and_then(|value| value.as_str()) != Some("m.room.create") {
+			continue;
+		}
+
+		let (event_id, value) = services
+			.server_keys
+			.validate_and_add_event_id(raw, room_version_id)
+			.await?;
+
+		services
+			.rooms
+			.outlier
+			.add_pdu_outlier(&event_id, &value, Some(room_id))
+			.await;
+
+		return Ok(());
+	}
+
+	debug_warn!(
+		%room_id,
+		"send_join response has no m.room.create event; dependent outliers will wait for \
+		 the room version"
+	);
+
+	Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn join_room_by_id_helper_remote_process(
 	services: &Services,
@@ -604,6 +648,9 @@ async fn join_room_by_id_helper_remote_process(
 		.acquire_events_pubkeys(resp_auth.iter().chain(resp_state.iter()))
 		.boxed()
 		.await;
+
+	persist_send_join_create_event(services, room_id, &room_version_id, resp_state, resp_auth)
+		.await?;
 
 	info!("Going through send_join response room_state");
 	let cork = services.db.cork_and_flush();
