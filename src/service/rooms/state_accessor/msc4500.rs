@@ -163,7 +163,7 @@ pub(super) fn redaction_overlay_digest(
 /// Redactions in `past(event_id) ∪ {event_id}`, or `None` if the ancestry is not
 /// fully available or exceeds the walk limit.
 #[implement(super::Service)]
-pub async fn msc4500_redactions_through(
+pub fn msc4500_redactions_through(
 	&self,
 	event_id: &EventId,
 	room_version: &RoomVersionId,
@@ -333,7 +333,7 @@ pub async fn msc4500_point_digests(
 
 	let mut past: BTreeMap<OwnedEventId, OwnedEventId> = BTreeMap::new();
 	for prev in pdu.prev_events() {
-		let set = self.msc4500_redactions_through(prev, &room_version).await?;
+		let set = self.msc4500_redactions_through(prev, &room_version)?;
 		past.extend(set.iter().map(|(r, t)| (r.clone(), t.clone())));
 	}
 	if include_self && *pdu.kind() == TimelineEventType::RoomRedaction {

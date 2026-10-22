@@ -118,7 +118,7 @@ impl crate::Service for Service {
 }
 
 impl Service {
-	pub async fn get_thread_id<E>(&self, event: &E) -> Option<OwnedEventId>
+	pub fn get_thread_id<E>(&self, event: &E) -> Option<OwnedEventId>
 	where
 		E: Event + Sync,
 	{
@@ -145,16 +145,16 @@ impl Service {
 		None
 	}
 
-	pub async fn get_thread_id_for_event(&self, event_id: &EventId) -> Option<OwnedEventId> {
+	pub fn get_thread_id_for_event(&self, event_id: &EventId) -> Option<OwnedEventId> {
 		let pdu = self.services.timeline.get_pdu(event_id).ok()?;
-		self.get_thread_id(&pdu).await
+		self.get_thread_id(&pdu)
 	}
 
 	pub async fn thread_event_count(&self, event_id: &EventId) -> Result<PduCount> {
 		self.services.timeline.get_pdu_count(event_id).await
 	}
 
-	pub async fn thread_root_exists(&self, room_id: &RoomId, thread_id: &EventId) -> bool {
+	pub fn thread_root_exists(&self, room_id: &RoomId, thread_id: &EventId) -> bool {
 		self.services
 			.timeline
 			.get_pdu(thread_id)

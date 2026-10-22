@@ -1,6 +1,9 @@
 use std::{borrow::Borrow, iter::once};
 
-use conduwuit::{Result, info, utils::IterStream};
+use conduwuit::{
+	Result, info,
+	utils::{IterStream, stream::TryReadyExt},
+};
 use futures::{FutureExt, TryStreamExt};
 use slipstream::api::federation::event::get_room_state;
 
@@ -35,7 +38,7 @@ pub(crate) async fn get_room_state_route(
 	let pdus = state_ids
 		.iter()
 		.try_stream()
-		.and_then(|id| services.rooms.timeline.get_pdu_json(id))
+		.ready_and_then(|id| services.rooms.timeline.get_pdu_json(id))
 		.and_then(|pdu| {
 			services
 				.sending

@@ -129,7 +129,6 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 		.rooms
 		.threads
 		.thread_root_exists(&room_id, &thread_id)
-		.await
 	{
 		return Err!(Request(NotFound("Thread not found."))).map_err(Into::into);
 	}
@@ -139,7 +138,6 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 			.rooms
 			.threads
 			.get_thread_id_for_event(cause_event_id)
-			.await
 			.as_deref()
 			!= Some(&thread_id)
 		{
@@ -200,7 +198,6 @@ pub(crate) async fn get_thread_subscription_msc4306_route(
 		.rooms
 		.threads
 		.thread_root_exists(&room_id, &thread_id)
-		.await
 	{
 		return Err!(Request(NotFound("Thread not found."))).map_err(Into::into);
 	}
@@ -233,7 +230,6 @@ pub(crate) async fn delete_thread_subscription_msc4306_route(
 		.rooms
 		.threads
 		.thread_root_exists(&room_id, &thread_id)
-		.await
 	{
 		return Err!(Request(NotFound("Thread not found."))).map_err(Into::into);
 	}

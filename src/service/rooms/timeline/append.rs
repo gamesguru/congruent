@@ -478,7 +478,7 @@ where
 
 	let mut notifies = Vec::with_capacity(push_target.len().saturating_add(1));
 	let mut highlights = Vec::with_capacity(push_target.len().saturating_add(1));
-	let thread_root = self.services.threads.get_thread_id(pdu).await;
+	let thread_root = self.services.threads.get_thread_id(pdu);
 
 	if *pdu.kind() == TimelineEventType::RoomMember {
 		if let Some(state_key) = pdu.state_key() {

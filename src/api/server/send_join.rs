@@ -4,7 +4,7 @@ use std::{borrow::Borrow, time::Instant, vec};
 
 use conduwuit::{
 	Err, Event, Result, at, debug, err, info, trace,
-	utils::stream::{BroadbandExt, IterStream, TryBroadbandExt},
+	utils::stream::{BroadbandExt, IterStream, TryBroadbandExt, TryReadyExt},
 	warn,
 };
 use conduwuit_service::Services;
@@ -199,7 +199,7 @@ async fn create_join_event(
 	let state = retained_state_ids
 		.iter()
 		.try_stream()
-		.broad_and_then(|event_id| services.rooms.timeline.get_pdu_json(event_id))
+		.ready_and_then(|event_id| services.rooms.timeline.get_pdu_json(event_id))
 		.broad_and_then(|pdu| {
 			services
 				.sending

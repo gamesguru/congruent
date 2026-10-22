@@ -133,7 +133,7 @@ async fn recompute_scope(
 	let stream = self.pdus(room_id, Bound::Excluded(after));
 	pin_mut!(stream);
 	while let Some(Ok((_, pdu))) = stream.next().await {
-		let thread_root = self.services.threads.get_thread_id(&pdu).await;
+		let thread_root = self.services.threads.get_thread_id(&pdu);
 		let in_scope = match thread_filter {
 			| None => thread_root.is_none(),
 			| Some(root) => thread_root.as_deref() == Some(root),

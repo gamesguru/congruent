@@ -399,8 +399,9 @@ fn add_signing_keys_sync(
 	for issue in &merged.issues {
 		let key_id = String::from_utf8_lossy(&issue.key_id);
 		match issue.kind {
-			| conduwuit_mtxdb::server_keys::KeyIssueKind::Collision =>
-				conduwuit::warn!("MSC4499: rejected colliding key {key_id} for {origin}"),
+			| conduwuit_mtxdb::server_keys::KeyIssueKind::Collision => {
+				conduwuit::warn!("MSC4499: rejected colliding key {key_id} for {origin}");
+			},
 			| conduwuit_mtxdb::server_keys::KeyIssueKind::Displaced => conduwuit::warn!(
 				"MSC4499: direct fetch overrode provisional key {key_id} for {origin}"
 			),
@@ -414,12 +415,14 @@ fn add_signing_keys_sync(
 			| conduwuit_mtxdb::server_keys::KeyIssueKind::DigestCapReached => conduwuit::warn!(
 				"MSC4499: refused new key {key_id} for {origin}: digest cap reached"
 			),
-			| conduwuit_mtxdb::server_keys::KeyIssueKind::Evicted =>
-				conduwuit::debug!("MSC4499: evicted old_verify_key {key_id} for {origin}"),
-			| conduwuit_mtxdb::server_keys::KeyIssueKind::EvictedCorroborated =>
+			| conduwuit_mtxdb::server_keys::KeyIssueKind::Evicted => {
+				conduwuit::debug!("MSC4499: evicted old_verify_key {key_id} for {origin}");
+			},
+			| conduwuit_mtxdb::server_keys::KeyIssueKind::EvictedCorroborated => {
 				conduwuit::warn!(
 					"MSC4499: evicted corroborated old_verify_key {key_id} for {origin}"
-				),
+				);
+			},
 		}
 	}
 
