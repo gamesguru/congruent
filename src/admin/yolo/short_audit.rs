@@ -69,6 +69,7 @@ pub(super) struct DerivedIndexAudit {
 }
 
 impl DerivedIndexAudit {
+	/// Format the legacy-index audit, including its validity and sample findings.
 	pub(super) fn report(&self) -> String {
 		let mut out = String::new();
 		if self.unverifiable {
@@ -179,8 +180,9 @@ impl DerivedIndexAudit {
 	}
 }
 
-/// Runs every phase-1 check. Infallible: unreadable rows are counted, not
-/// propagated, so the audit always completes.
+/// Audit legacy short-ID mappings and derived indexes without writing data.
+/// Unreadable rows are skipped; malformed readable rows are counted. Counters
+/// at or above `MAX_SHORT` produce an unverifiable result without scanning.
 pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 	let counter = services.globals.current_count().unwrap_or(0);
 	if counter >= MAX_SHORT {
@@ -389,7 +391,8 @@ async fn scan_edges(
 }
 
 /// Builds the canonical short-ID bitmap from `eventid_pdu` via batched lookups
-/// in `eventid_shorteventid`. Returns the bitmap and the number resolved.
+/// in the legacy `eventid_shorteventid` map. Returns the bitmap and the number
+/// resolved, skipping unreadable or malformed mappings.
 async fn canonical_bits(services: &Services, words: usize) -> (Bits, u64) {
 	let pdu = services.db["eventid_pdu"].clone();
 	let lookup = services

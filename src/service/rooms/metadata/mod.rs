@@ -55,6 +55,8 @@ pub async fn exists(&self, room_id: &RoomId) -> bool {
 		.is_some()
 }
 
+/// Yield distinct room IDs from current and legacy short-ID mappings,
+/// skipping invalid IDs and read failures.
 #[implement(Service)]
 pub fn iter_ids(&self) -> impl Stream<Item = OwnedRoomId> + Send + '_ {
 	self.services.short.iter_room_ids()
@@ -97,6 +99,9 @@ pub async fn is_banned(&self, room_id: &RoomId) -> bool {
 	self.db.bannedroomids.get(room_id).await.is_ok()
 }
 
+/// Remove the room short-ID mappings and its disabled and banned flags.
+/// Event data is retained. An mtxdb mapping-removal error propagates before
+/// the flags are removed.
 #[implement(Service)]
 pub fn remove_room_raw(&self, room_id: &RoomId) -> Result {
 	self.services.short.remove_shortroomid(room_id)?;

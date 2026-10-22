@@ -250,6 +250,13 @@ pub fn add_pdu_outlier_batch_demote<'a>(
 	self.add_pdu_outlier_batch_impl(batch, event_id, pdu, room_id, true);
 }
 
+/// Stage an outlier body and, when it parses, metadata and legacy prev edges.
+/// `room_id` supplies room context; `demote` permits replacing timeline metadata.
+/// Otherwise, a known timeline event is left untouched.
+///
+/// When the room has a persisted version, also write the event and edges to
+/// mtxdb separately from `batch`. Room-version lookup and mtxdb write failures
+/// do not prevent staging the outlier. Short-ID allocation failures panic.
 #[implement(Service)]
 fn add_pdu_outlier_batch_impl<'a>(
 	&'a self,

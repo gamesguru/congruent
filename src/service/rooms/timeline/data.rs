@@ -1180,7 +1180,10 @@ impl Data {
 
 	/// Persist the event body and its prev/auth edges in mtxdb. Keyed by event
 	/// id and idempotent, so it needs no stream count and can run before one is
-	/// allocated. A failure is logged and leaves the event unrecorded there.
+	/// allocated. Establishes the room version and allocates auth-event short
+	/// IDs first. Skips the write if the room ID or version cannot be resolved.
+	/// Room-version and event-write errors are caught; earlier metadata and
+	/// short-ID writes may remain. Short-ID allocation failures panic.
 	pub(super) async fn write_event_to_mtxdb(&self, pdu: &PduEvent, json: &CanonicalJsonObject) {
 		let Some(room_id) = pdu.room_id_or_hash() else {
 			conduwuit::warn!(event_id = %pdu.event_id, "Skipping mtxdb event write without room ID");
@@ -1245,6 +1248,9 @@ impl Data {
 		self.eventid_pdu.apply_batch(batch);
 	}
 
+	/// Write the event and edges to mtxdb, then stage timeline rows in `batch`.
+	/// The mtxdb write is separate from the caller's batch and may be skipped or
+	/// fail without preventing timeline rows from being staged.
 	pub(super) async fn append_pdu_batch<'a>(
 		&'a self,
 		batch: &mut database::Batch<'a>,
@@ -2372,6 +2378,10 @@ impl Data {
 		Ok(prev_shorts)
 	}
 
+	/// Read direct auth edges from mtxdb and resolve or allocate their short IDs.
+	/// An existing empty edge row yields an empty vector; a missing event mapping,
+	/// locator, or edge row returns `NotFound`. Read and decoding errors propagate;
+	/// short-ID allocation failures panic.
 	pub(super) async fn get_shortauthevents(
 		&self,
 		shorteventid: rooms::short::ShortEventId,
@@ -2435,6 +2445,9 @@ impl Data {
 			})
 	}
 
+	/// Yield one direct-auth lookup result per input short ID, in input order.
+	/// Uses [`Self::get_shortauthevents`], including its allocation side effects
+	/// and errors; an error result does not end the stream.
 	pub(super) fn multi_get_shortauthevents<'a, I>(
 		&'a self,
 		shorteventids: I,

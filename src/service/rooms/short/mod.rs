@@ -44,6 +44,9 @@ struct Data {
 
 /// Import the legacy event and state-key mappings before any HAMT leaf or
 /// auth-chain entry can be resolved through the mtxdb-backed adapter.
+///
+/// Preserves assigned IDs. Read, decoding, and import errors propagate;
+/// mappings committed before an error remain imported for a retry.
 fn import_legacy_short_ids(shortids: &ShortIdAdapter, db: &Arc<database::Database>) -> Result {
 	let event_map = db
 		.deprecated("eventid_shorteventid")
@@ -186,6 +189,7 @@ fn short_error(what: &str, error: impl std::fmt::Display) -> conduwuit::Error {
 fn not_found(what: &str) -> conduwuit::Error { err!(Request(NotFound("{what} not found"))) }
 
 impl Service {
+	/// Write the room mapping to the legacy compatibility map used by exports.
 	fn mirror_room_shortid(&self, room_id: &RoomId, short: ShortRoomId) {
 		const BUFSIZE: usize = size_of::<ShortRoomId>();
 		self.db
@@ -518,6 +522,11 @@ where
 		.flatten()
 }
 
+/// Resolve a room short ID, importing a legacy mapping when needed and
+/// restoring a missing compatibility mirror.
+///
+/// Legacy read or decoding failures count as a miss and yield `NotFound` when
+/// mtxdb has no mapping. mtxdb lookup and migration errors return database errors.
 #[implement(Service)]
 pub async fn get_shortroomid(&self, room_id: &RoomId) -> Result<ShortRoomId> {
 	if let Some(short) = self
@@ -554,6 +563,13 @@ pub async fn get_shortroomid(&self, room_id: &RoomId) -> Result<ShortRoomId> {
 	Ok(short)
 }
 
+/// Resolve or allocate a room short ID and update its legacy mirror.
+/// A readable legacy mapping is preserved when mtxdb has none. Legacy read or
+/// decoding failures are ignored.
+///
+/// # Panics
+///
+/// Panics if mtxdb cannot resolve or allocate the mapping.
 #[implement(Service)]
 pub async fn get_or_create_shortroomid(&self, room_id: &RoomId) -> ShortRoomId {
 	let legacy = self
@@ -571,6 +587,8 @@ pub async fn get_or_create_shortroomid(&self, room_id: &RoomId) -> ShortRoomId {
 	short
 }
 
+/// Remove the mtxdb room mapping and then its legacy compatibility mirror.
+/// Returns a database error if the mtxdb removal fails.
 #[implement(Service)]
 pub fn remove_shortroomid(&self, room_id: &RoomId) -> Result {
 	self.shortids
@@ -580,6 +598,9 @@ pub fn remove_shortroomid(&self, room_id: &RoomId) -> Result {
 	Ok(())
 }
 
+/// Yield distinct room IDs from mtxdb and the legacy compatibility map.
+/// Invalid mtxdb room IDs and legacy read errors are skipped. If the mtxdb
+/// scan fails, only legacy rooms are yielded.
 #[implement(Service)]
 pub fn iter_room_ids(&self) -> impl Stream<Item = OwnedRoomId> + Send + '_ {
 	let ids = self.shortids.room_ids().unwrap_or_else(|error| {
@@ -597,6 +618,13 @@ pub fn iter_room_ids(&self) -> impl Stream<Item = OwnedRoomId> + Send + '_ {
 		.filter(move |room_id| std::future::ready(seen.insert((*room_id).clone())))
 }
 
+/// Synchronously resolve or allocate a room short ID and update its legacy
+/// mirror. A readable legacy mapping is preserved when mtxdb has none; legacy
+/// read or decoding failures are ignored.
+///
+/// # Panics
+///
+/// Panics if mtxdb cannot resolve or allocate the mapping.
 #[implement(Service)]
 #[must_use]
 pub fn get_or_create_shortroomid_blocking(&self, room_id: &RoomId) -> ShortRoomId {
@@ -634,6 +662,12 @@ where
 	})
 }
 
+/// Resolve the room version from cache or mtxdb, falling back to imported
+/// collection metadata and then the legacy map. Fallback values are persisted
+/// in mtxdb and cached.
+///
+/// Unparseable version strings in mtxdb are skipped. Storage, legacy decoding,
+/// and fallback persistence errors propagate.
 #[implement(Service)]
 pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> {
 	if let Some(version) = self.roomid_roomversion_cache.get(&room_id.to_owned()) {
@@ -675,6 +709,9 @@ pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> 
 	Ok(version)
 }
 
+/// Persist the immutable room version in mtxdb, then update the legacy map
+/// and cache. A conflicting version or mtxdb storage failure returns a database
+/// error before the legacy map or cache is updated.
 #[implement(Service)]
 
 pub fn set_room_version(&self, room_id: &RoomId, version: &RoomVersionId) -> Result<()> {

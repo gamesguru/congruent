@@ -173,7 +173,9 @@ impl ServerKeysAdapter {
 	/// Merge one observation batch through mtxdb's MSC4499 binding rules.
 	///
 	/// The write is native: one record per key id, plus the origin's Notary
-	/// payload, committed in one transaction by mtxdb.
+	/// payload, committed in one transaction by mtxdb. The export origin index
+	/// is updated afterward; an index error can be returned after the key merge
+	/// has committed. Storage errors from either write propagate.
 	pub fn update(&self, update: &KeyUpdate<'_>) -> Result<KeyMerge, StorageError> {
 		let merged = native::update_server_keys(self.store.database(), update)?;
 		self.record_origin(update.origin)?;
@@ -193,12 +195,14 @@ impl ServerKeysAdapter {
 		tx.commit()
 	}
 
-	/// Every origin with native key records, in no particular order.
+	/// Indexed origins and origins discovered from native key records, sorted
+	/// by origin bytes without duplicates. Indexed origins may have no keys.
 	///
 	/// The index covers writes made through this adapter. Origins written by
 	/// the mtxdb CLI importer, which only knows the native layout, are found by
 	/// scanning the server-info pool for collections whose first record decodes
-	/// as a key belonging to that same collection.
+	/// as a key belonging to that same collection. Undecodable first records
+	/// are skipped; storage scan errors propagate.
 	pub fn origins(&self) -> Result<Vec<Vec<u8>>, StorageError> {
 		let mut origins: BTreeSet<Vec<u8>> = self
 			.store

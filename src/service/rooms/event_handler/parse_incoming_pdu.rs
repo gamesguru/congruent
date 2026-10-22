@@ -158,6 +158,14 @@ async fn room_version_without_room_state(
 	}
 }
 
+/// Return the room ID, derived event ID, and canonical PDU after basic
+/// prev/auth-event validation. Create events select their own room version,
+/// defaulting to version 1 when `room_version` is absent or not a string. Other
+/// events use the stored version or a best-effort fallback if lookup fails.
+///
+/// If room-ID extraction fails, try at most ten auth events for a known room.
+/// Returns an error for invalid canonical JSON, unresolved room IDs, invalid
+/// create content or versions, and failed event-ID generation or basic validation.
 #[implement(super::Service)]
 pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
 	let value = slipstream::canonical_json::into_object(
