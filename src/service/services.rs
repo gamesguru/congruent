@@ -216,7 +216,13 @@ impl Services {
 			return Ok(());
 		}
 
-		let has_legacy_events = self.db["eventid_pdu"].raw_keys().next().await.is_some();
+		let has_legacy_events = self
+			.db
+			.deprecated("eventid_pdu")?
+			.raw_keys()
+			.next()
+			.await
+			.is_some();
 		let has_legacy_signing_keys = self
 			.db
 			.deprecated("server_signingkeys")?

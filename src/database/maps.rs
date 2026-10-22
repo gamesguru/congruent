@@ -20,7 +20,6 @@ const MAP_NAMES: &[&str] = &[
 	"disabledroomids",
 	"email_localpart",
 	"eventid_metadata",
-	"eventid_pdu",
 	"eventid_pduid",
 	"eventid_rejections",
 	"eventid_softfailed",

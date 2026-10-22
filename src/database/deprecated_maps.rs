@@ -11,6 +11,7 @@ use crate::{Engine, Map};
 pub(super) type Maps = BTreeMap<&'static str, Arc<Map>>;
 
 const MAP_NAMES: &[&str] = &[
+	"eventid_pdu",
 	"eventid_shorteventid",
 	"roomid_shortroomid",
 	"shorteventid_authchain",

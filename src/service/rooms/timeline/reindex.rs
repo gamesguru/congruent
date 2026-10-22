@@ -61,7 +61,7 @@ impl std::fmt::Display for ReindexStats {
 
 impl Service {
 	/// Sweep all events in a room and repopulate any missing derived data
-	/// from the `eventid_pdu` source of truth.
+	/// from the authoritative mtxdb event store.
 	///
 	/// This is safe to run at any time. It preserves canonical stream order and
 	/// existing local topo depths, while rebuilding the room topo index from
@@ -261,7 +261,7 @@ impl Service {
 			let auth_events_repaired = stored_auth_shorts.as_ref() != Some(&auth_shorts);
 			if auth_events_repaired {
 				if let Ok(json) = self.db.get_pdu_json(event_id).await {
-					self.db.write_event_to_mtxdb(&pdu, &json).await;
+					self.db.write_event_to_mtxdb(&pdu, &json).await?;
 				}
 				stats.repaired_auth_events = stats.repaired_auth_events.saturating_add(1);
 			}

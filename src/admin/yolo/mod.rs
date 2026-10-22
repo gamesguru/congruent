@@ -626,7 +626,7 @@ pub enum YoloCommand {
 		fix: bool,
 	},
 
-	/// Sweep `eventid_pdu` (source of truth) and repopulate any missing or
+	/// Sweep mtxdb events (the source of truth) and repopulate missing or
 	/// corrupt derived data:
 	///
 	/// - mtxdb short-ID mappings (allocated while the event is processed)

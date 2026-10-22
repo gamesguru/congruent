@@ -340,7 +340,7 @@ where
 	// before the sync barrier is taken. That keeps the span between allocating a
 	// count and making its row visible down to the RocksDB batch apply.
 	if existing_pdu.is_none() {
-		self.db.write_event_to_mtxdb(pdu, &pdu_json).await;
+		self.db.write_event_to_mtxdb(pdu, &pdu_json).await?;
 	}
 	// Held (for a new PDU) until the state association below has run, so sync
 	// cannot snapshot a count whose membership change is not yet applied.

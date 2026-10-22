@@ -9,7 +9,7 @@ use conduwuit::{
 	},
 	warn,
 };
-use database::{Deserialized, Json, Map};
+use database::Map;
 use futures::{FutureExt, Stream, StreamExt};
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, RoomId,
@@ -23,7 +23,6 @@ pub struct Service {
 }
 
 struct Data {
-	eventid_pdu: Arc<Map>,
 	eventid_metadata: Arc<Map>,
 	shorteventid_shortprevevents: Arc<Map>,
 	mtxdb_events: conduwuit_mtxdb::events::EventAdapter,
@@ -39,7 +38,6 @@ impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
 			db: Data {
-				eventid_pdu: args.db["eventid_pdu"].clone(),
 				eventid_metadata: args.db["eventid_metadata"].clone(),
 				shorteventid_shortprevevents: args.db["shorteventid_shortprevevents"].clone(),
 				mtxdb_events: conduwuit_mtxdb::events::EventAdapter::new(args.mtxdb.clone()),
@@ -58,21 +56,26 @@ impl crate::Service for Service {
 /// Returns the pdu from the outlier tree.
 #[implement(Service)]
 pub async fn get_outlier_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
-	self.db
-		.eventid_pdu
-		.get(event_id.as_bytes())
-		.await
-		.deserialized()
+	let room_id = self
+		.db
+		.mtxdb_events
+		.locate_event(event_id.as_bytes())
+		.map_err(|error| conduwuit::err!(Database("mtxdb event lookup failed: {error}")))?
+		.ok_or_else(|| conduwuit::err!(Request(NotFound("event not found in mtxdb"))))?;
+	let bytes = self
+		.db
+		.mtxdb_events
+		.get_event(&room_id, event_id.as_bytes())
+		.map_err(|error| conduwuit::err!(Database("mtxdb event lookup failed: {error}")))?
+		.ok_or_else(|| conduwuit::err!(Request(NotFound("event body not found in mtxdb"))))?;
+	database::from_json_slice(&bytes)
 }
 
 /// Returns the pdu from the outlier tree.
 #[implement(Service)]
 pub async fn get_pdu_outlier(&self, event_id: &EventId) -> Result<PduEvent> {
-	self.db
-		.eventid_pdu
-		.get_nocache(event_id.as_bytes())
-		.await
-		.deserialized()
+	let json = self.get_outlier_pdu_json(event_id).await?;
+	Ok(slipstream::codec::from_value(&slipstream::json::Value::Object(json))?)
 }
 
 #[implement(Service)]
@@ -197,7 +200,7 @@ fn add_pdu_outlier_inner(
 ) {
 	let mut batch = database::Batch::new();
 	self.add_pdu_outlier_batch(&mut batch, event_id, pdu, room_id);
-	self.db.eventid_pdu.apply_batch(batch);
+	self.db.eventid_metadata.apply_batch(batch);
 }
 
 /// Determine the room a PDU belongs to, mirroring the priority order used in
@@ -260,8 +263,8 @@ fn add_pdu_outlier_batch_impl<'a>(
 	demote: bool,
 ) {
 	// Guard: never overwrite an event that already has a timeline entry.
-	// The eventid_pdu and eventid_metadata tables are shared between timeline
-	// and outlier paths. Re-adding a timeline event as an outlier would set
+	// Event metadata is shared between timeline and outlier paths. Re-adding a
+	// timeline event as an outlier would set
 	// is_outlier=true and zero out deprecated_local_topo_depth, making the event
 	// invisible to /sync's timeline iterator (the "stuck state" bug).
 	if let Ok(existing_meta) = self.db.eventid_metadata.get_blocking(event_id.as_bytes()) {
@@ -280,50 +283,65 @@ fn add_pdu_outlier_batch_impl<'a>(
 	pdu.insert("event_id".to_owned(), CanonicalJsonValue::String(event_id.as_str().to_owned()));
 
 	let room_id_from_pdu = derive_room_id(&pdu, room_id, event_id);
+	let Some(room_id) = room_id_from_pdu.as_ref() else {
+		warn!(%event_id, "Skipping outlier without a room ID; mtxdb is authoritative");
+		return;
+	};
 
 	// --- Phase 1: Write ---
-	self.db
-		.eventid_pdu
-		.batch_raw_put(batch, event_id.as_bytes(), Json(&pdu));
-
 	if let Ok(parsed_pdu) =
 		slipstream::codec::from_value::<PduEvent>(&slipstream::json::Value::Object(pdu.clone()))
 	{
-		if let Some(room_id) = room_id_from_pdu.as_ref() {
-			let json = slipstream::codec::to_string(&pdu);
-			let prev: Vec<_> = parsed_pdu.prev_events().map(EventId::as_bytes).collect();
-			let auth: Vec<_> = parsed_pdu.auth_events().map(EventId::as_bytes).collect();
-			let room_version_ready = matches!(
-				conduwuit_mtxdb::room_metadata::get_room_version(
-					&self.db.mtxdb,
-					room_id.as_bytes()
-				),
-				Ok(Some(_))
-			);
-			if !room_version_ready {
-				warn!(%room_id, %event_id, "Skipping mtxdb outlier write before room version is established");
-			}
-			if room_version_ready {
-				for auth_event in parsed_pdu.auth_events() {
-					let _ = self
+		let json = slipstream::codec::to_string(&pdu);
+		let prev: Vec<_> = parsed_pdu.prev_events().map(EventId::as_bytes).collect();
+		let auth: Vec<_> = parsed_pdu.auth_events().map(EventId::as_bytes).collect();
+		if parsed_pdu.kind == slipstream::events::TimelineEventType::RoomCreate {
+			match parsed_pdu
+				.get_content::<slipstream::events::room::create::RoomCreateEventContent>()
+			{
+				| Ok(content) => {
+					if let Err(error) = self
 						.services
 						.short
-						.get_or_create_shorteventid_blocking(auth_event);
-				}
-				if let Err(error) = self.db.mtxdb_events.write_event_with_edges(
-					room_id.as_bytes(),
-					event_id.as_bytes(),
-					json.as_bytes(),
-					&prev,
-					&auth,
-				) {
-					warn!(?error, %event_id, "Failed to write outlier event and auth edges to mtxdb");
-				}
+						.set_room_version(room_id, &content.room_version)
+					{
+						warn!(?error, %room_id, %event_id, "Skipping outlier without mtxdb room-version metadata");
+						return;
+					}
+				},
+				| Err(error) => {
+					warn!(?error, %room_id, %event_id, "Skipping invalid room-create outlier");
+					return;
+				},
 			}
 		}
-		let short_room_id = room_id_from_pdu
-			.as_ref()
-			.map_or(0, |rid| self.services.short.get_or_create_shortroomid_blocking(rid));
+		if !matches!(
+			conduwuit_mtxdb::room_metadata::get_room_version(&self.db.mtxdb, room_id.as_bytes()),
+			Ok(Some(_))
+		) {
+			warn!(%room_id, %event_id, "Skipping outlier before room version is established; mtxdb is authoritative");
+			return;
+		}
+		for auth_event in parsed_pdu.auth_events() {
+			let _ = self
+				.services
+				.short
+				.get_or_create_shorteventid_blocking(auth_event);
+		}
+		if let Err(error) = self.db.mtxdb_events.write_event_with_edges(
+			room_id.as_bytes(),
+			event_id.as_bytes(),
+			json.as_bytes(),
+			&prev,
+			&auth,
+		) {
+			warn!(?error, %event_id, "Failed to write outlier event and auth edges to mtxdb; not storing the event");
+			return;
+		}
+		let short_room_id = self
+			.services
+			.short
+			.get_or_create_shortroomid_blocking(room_id);
 
 		// `PduEvent::rejected` is `#[serde(skip)]` (bookkeeping only, never on
 		// the wire), so a freshly-parsed `parsed_pdu` always reports
@@ -375,7 +393,7 @@ fn add_pdu_outlier_batch_impl<'a>(
 /// Apply a batch of outlier insertions
 #[implement(Service)]
 pub fn apply_outlier_batch(&self, batch: database::Batch<'_>) {
-	self.db.eventid_pdu.apply_batch(batch);
+	self.db.eventid_metadata.apply_batch(batch);
 }
 
 /// Remove the PDU from the outlier tree.
@@ -387,7 +405,6 @@ pub async fn remove_outlier(&self, event_id: &EventId) {
 		.non_outlier_pdu_exists(event_id)
 		.await
 	{
-		self.db.eventid_pdu.remove(event_id.as_bytes());
 		self.db.eventid_metadata.remove(event_id.as_bytes());
 	} else {
 		self.clear_outlier_flag(event_id);

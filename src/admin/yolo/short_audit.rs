@@ -391,7 +391,7 @@ async fn scan_edges(
 /// Builds the canonical short-ID bitmap from `eventid_pdu` via batched lookups
 /// in `eventid_shorteventid`. Returns the bitmap and the number resolved.
 async fn canonical_bits(services: &Services, words: usize) -> (Bits, u64) {
-	let pdu = services.db["eventid_pdu"].clone();
+	let pdu = services.db.deprecated("eventid_pdu").unwrap().clone();
 	let lookup = services
 		.db
 		.deprecated("eventid_shorteventid")

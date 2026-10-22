@@ -279,7 +279,7 @@ pub async fn backfill_if_required(
 		}
 		let mut known_ids: HashSet<OwnedEventId> = HashSet::with_capacity(all_prev_ids.len());
 		for prev_id in &all_prev_ids {
-			// Outliers exist in `eventid_pdu`, but they are still gaps in the
+			// Outliers exist in mtxdb, but they are still gaps in the
 			// timeline because `/messages` scans the non-outlier topo index. If
 			// we treat an outlier parent as "known" here, pagination can advance
 			// past its depth and only upgrade it later during a deeper backfill,
@@ -972,8 +972,8 @@ pub async fn backfill_pdu(
 
 	// Insert pdu
 	self.db
-		.prepend_backfill_pdu(&pdu_id, &event_id, &json_value, &pdu_event)
-		.await;
+		.append_pdu(&pdu_id, &pdu_event, &json_value, pdu_id.pdu_count())
+		.await?;
 	self.reconciliation_cache.invalidate(&room_id);
 	drop(reconciliation_lock);
 
@@ -1144,8 +1144,8 @@ pub async fn promote_outlier_batch<'a>(
 
 	self.associate_current_state(room_id, event_id).await?;
 	self.db
-		.prepend_backfill_pdu_batch(batch, &pdu_id, event_id, &value, &pdu)
-		.await;
+		.append_pdu_batch(batch, &pdu_id, &pdu, &value, pdu_id.pdu_count())
+		.await?;
 
 	drop(insert_lock);
 
@@ -1574,13 +1574,7 @@ pub async fn force_insert_pdu(
 	let (pdu_count, pdu_id, value) =
 		self.prepare_pdu_insert(shortroomid, event_id, value, backfill)?;
 
-	if backfill {
-		self.db
-			.prepend_backfill_pdu(&pdu_id, event_id, &value, pdu)
-			.await;
-	} else {
-		self.db.append_pdu(&pdu_id, pdu, &value, pdu_count).await;
-	}
+	self.db.append_pdu(&pdu_id, pdu, &value, pdu_count).await?;
 
 	drop(insert_lock);
 
@@ -1609,15 +1603,9 @@ pub async fn force_insert_pdu_batch<'a>(
 	let (pdu_count, pdu_id, value) =
 		self.prepare_pdu_insert(shortroomid, event_id, value, backfill)?;
 
-	if backfill {
-		self.db
-			.prepend_backfill_pdu_batch(batch, &pdu_id, event_id, &value, pdu)
-			.await;
-	} else {
-		self.db
-			.append_pdu_batch(batch, &pdu_id, pdu, &value, pdu_count)
-			.await;
-	}
+	self.db
+		.append_pdu_batch(batch, &pdu_id, pdu, &value, pdu_count)
+		.await?;
 
 	self.index_pdu_search(shortroomid, &pdu_id, pdu);
 
