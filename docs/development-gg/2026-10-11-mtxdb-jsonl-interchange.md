@@ -152,7 +152,14 @@ maps are in `deprecated_maps.rs` for migration and auditing.
 Room ID ↔ short room ID mappings now also live in mtxdb. Existing values are
 preserved when copied from the legacy map, and the legacy map remains a
 compatibility mirror so metadata exports retain IDs embedded in timeline keys.
-`roomid_roomversion` remains a legacy map and is outside this state contract.
+The server's authoritative room-version record is keyed by room ID in mtxdb's
+`ServerInfo` shard. It can be written during creation, import, or lazy backfill
+of an existing room. `get_room_version` checks this record first. The
+`matrix.room` event-collection genesis extension remains the CLI-facing copy;
+the importer writes the dedicated record in the first event batch and
+re-imports verify the immutable value. When the record is missing, the server
+imports the version from that header, then falls back to the legacy
+`roomid_roomversion` map for old rooms and lazily backfills the record.
 
 Hash-derived 64-bit ids are rejected: collisions become plausible at scale
 (about 2.7e-4 at 1e8 events) and a wider leaf would change the HAMT codec and

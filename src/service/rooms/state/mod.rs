@@ -832,7 +832,7 @@ impl Service {
 			.await
 		{
 			let version = content.room_version;
-			self.services.short.set_room_version(room_id, &version);
+			self.services.short.set_room_version(room_id, &version)?;
 			return Ok(version);
 		}
 
@@ -844,7 +844,7 @@ impl Service {
 			if pdu.kind == TimelineEventType::RoomCreate {
 				if let Ok(content) = pdu.get_content::<RoomCreateEventContent>() {
 					let version = content.room_version;
-					self.services.short.set_room_version(room_id, &version);
+					self.services.short.set_room_version(room_id, &version)?;
 					return Ok(version);
 				}
 			}

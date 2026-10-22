@@ -1219,7 +1219,8 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 	services
 		.rooms
 		.short
-		.set_room_version(&room_id, &slipstream::RoomVersionId::V11);
+		.set_room_version(&room_id, &slipstream::RoomVersionId::V11)
+		.expect("room version must be persisted");
 	let reason = create_dummy_pdu(&room_id, &redaction, "m.room.redaction", "");
 	services
 		.rooms

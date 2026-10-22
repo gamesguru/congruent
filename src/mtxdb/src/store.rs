@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use mtxdb::{Database, DatabaseTransaction, ShardType};
+use mtxdb::{Database, DatabaseTransaction, ShardType, storage::StorageEngine};
 
 use crate::StorageError;
 
@@ -34,6 +34,15 @@ impl MtxdbStore {
 	) -> Result<Option<Vec<u8>>, StorageError> {
 		self.get_many(shard, collection, std::slice::from_ref(&node))
 			.map(|mut values| values.pop().flatten())
+	}
+
+	/// Read the immutable genesis metadata for a collection, if it has one.
+	pub fn get_collection_metadata(
+		&self,
+		shard: ShardType,
+		collection: &CollectionId,
+	) -> Result<Option<mtxdb::template::CollectionMetadata>, StorageError> {
+		self.db.pool(shard).get_collection_metadata(collection)
 	}
 
 	/// Every live record of a collection, in no particular order. A removed

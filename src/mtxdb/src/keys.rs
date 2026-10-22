@@ -8,13 +8,26 @@ pub use mtxdb::interop::{
 	EVENT_LOCATOR_BUCKETS, derive_id, event_locator_collection_id, event_record_id,
 	event_state_root_node_id as event_root_node_id, event_verdict_collection_id,
 	room_auth_collection_id, room_event_collection_id, room_prev_collection_id,
-	room_state_root_node_id as room_root_node_id, server_key_record_id,
-	server_keys_collection_id,
+	room_state_root_node_id as room_root_node_id, server_keys_collection_id,
 };
 use mtxdb::{
 	MEMBER_NAMESPACE_STAT, MEMBER_NAMESPACE_STGP, derive_group_full_id,
 	derive_member_collection_id_from_group,
 };
+
+/// Derive a signing-key record id for a particular record kind and origin.
+/// The Notary id retains mtxdb's established derivation; the other records
+/// use disjoint domains in the shared server-keys collection.
+#[must_use]
+pub fn server_key_record_id(kind: crate::server_keys::KeyRecordKind, origin: &[u8]) -> [u8; 16] {
+	use crate::server_keys::KeyRecordKind;
+	match kind {
+		| KeyRecordKind::Notary => mtxdb::interop::notary_record_id(origin),
+		| KeyRecordKind::Historical => derive_id(b"server-key-historical", origin),
+		| KeyRecordKind::Provisional => derive_id(b"server-key-provisional", origin),
+		| KeyRecordKind::Corroborated => derive_id(b"server-key-corroborated", origin),
+	}
+}
 
 /// Derive the full 256-bit logical identity for a room's collection group.
 ///

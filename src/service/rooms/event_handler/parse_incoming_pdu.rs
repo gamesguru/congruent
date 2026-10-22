@@ -200,9 +200,25 @@ pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
 		},
 	};
 
-	let room_version_id = match self.services.state.get_room_version(&room_id).await {
-		| Ok(room_version_id) => room_version_id,
-		| Err(_) => self.room_version_without_room_state(&room_id, &value).await,
+	let room_version_id = if event_type == "m.room.create" {
+		let content = value
+			.get("content")
+			.and_then(CanonicalJsonValue::as_object)
+			.ok_or_else(|| err!(Request(BadJson("Missing or invalid create-event content"))))?;
+		RoomVersionId::from_str(
+			content
+				.get("room_version")
+				.and_then(CanonicalJsonValue::as_str)
+				.unwrap_or("1"),
+		)
+		.map_err(|error| {
+			err!(Request(BadJson("Invalid room_version in create event: {error}")))
+		})?
+	} else {
+		match self.services.state.get_room_version(&room_id).await {
+			| Ok(room_version_id) => room_version_id,
+			| Err(_) => self.room_version_without_room_state(&room_id, &value).await,
+		}
 	};
 	// The underlying error can quote peer-supplied content, so it is not kept.
 	let (event_id, value) = gen_event_id_canonical_json(pdu, &room_version_id).map_err(|_| {

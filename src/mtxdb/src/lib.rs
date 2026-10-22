@@ -13,6 +13,7 @@ use std::{
 pub mod events;
 pub mod keys;
 pub mod marker;
+pub mod room_metadata;
 pub mod server_keys;
 pub mod shortids;
 pub mod state;

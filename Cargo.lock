@@ -414,9 +414,9 @@ checksum = "7354288c522e7e980fafd2075d63d1285794c3a6a16cdd492f189ea406e5f18b"
 
 [[package]]
 name = "cc"
-version = "1.8.0"
+version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6651c9ed80effdc7db0ff72512157f901af5e3549e341e24b1dd4887d836d838"
+checksum = "877bf67ac8e52449eb2f9e98a344ea163beb70dd1f9eebe3cc5357dcfeaee4df"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -928,9 +928,9 @@ dependencies = [
 
 [[package]]
 name = "crc32fast"
-version = "1.5.2"
+version = "1.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
+checksum = "0ba106e844045ddc02c20768ac4b0b7cb45f2cc2ecbd833ac9f5dacb183c2055"
 dependencies = [
  "cfg-if",
 ]
@@ -1223,9 +1223,9 @@ checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.14"
+version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
+checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "flate2"
@@ -2038,9 +2038,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "memmap2"
-version = "0.9.11"
+version = "0.9.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
+checksum = "6b0ca1155a9ecc25aa12e8313a119f32edf0255fea2f44839c4ac0a12b2ac157"
 dependencies = [
  "libc",
 ]
@@ -2124,7 +2124,7 @@ dependencies = [
 [[package]]
 name = "mtx-slipstream"
 version = "0.1.0"
-source = "git+https://gitlab.com/Wombat-Foundation/mtx-slipstream.git?branch=dev#5af723a78c82f316c4bc6b109fb949e529a5d66c"
+source = "git+https://gitlab.com/wombat-foundation/mtx-slipstream.git?branch=dev#01939df52647113fbd37f04ed8aab2191b231513"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -2136,7 +2136,7 @@ dependencies = [
 [[package]]
 name = "mtxdb"
 version = "0.1.0-beta.2"
-source = "git+https://gitlab.com/Wombat-Foundation/mtxdb.git?branch=dev#81facf9a53e0baa071de6375b369fadc5ee32fa3"
+source = "git+https://gitlab.com/wombat-foundation/mtxdb.git?branch=dev#7e129774f85bf3a6c0af783e015ecbed8b43217f"
 dependencies = [
  "arc-swap",
  "blake3",
@@ -2497,7 +2497,7 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 [[package]]
 name = "rezzy"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=dev#1f241eb820bf5bd63eed973caf89090c12b8b251"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#87996819b463f94784069a96e4d35bddef5ada54"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -2511,7 +2511,7 @@ dependencies = [
 [[package]]
 name = "rezzy-json"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=dev#1f241eb820bf5bd63eed973caf89090c12b8b251"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#87996819b463f94784069a96e4d35bddef5ada54"
 dependencies = [
  "ryu",
 ]
@@ -2519,7 +2519,7 @@ dependencies = [
 [[package]]
 name = "rezzy-recon"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/Wombat-Foundation/rezzy.git?branch=dev#1f241eb820bf5bd63eed973caf89090c12b8b251"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#87996819b463f94784069a96e4d35bddef5ada54"
 dependencies = [
  "base64 0.23.1",
  "sha2",
@@ -2633,9 +2633,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -3051,9 +3051,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
-version = "1.53.3"
+version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
+checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
  "bytes",
  "libc",

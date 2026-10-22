@@ -8,12 +8,35 @@
 
 use std::sync::Arc;
 
-pub use mtxdb::interop::KeyRecordKind;
+use crate::keys::server_key_record_id;
+
+/// Logical class of a server's signing-key payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KeyRecordKind {
+	Historical,
+	Provisional,
+	Corroborated,
+	Notary,
+}
+
+impl KeyRecordKind {
+	const ALL: [Self; 4] =
+		[Self::Historical, Self::Provisional, Self::Corroborated, Self::Notary];
+
+	/// The kind tag written into export records.
+	#[must_use]
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			| Self::Historical => "historical",
+			| Self::Provisional => "provisional",
+			| Self::Corroborated => "corroborated",
+			| Self::Notary => "notary",
+		}
+	}
+}
 use mtxdb::{
 	ShardType,
-	interop::{
-		decode_server_key, encode_server_key, server_key_record_id, server_keys_collection_id,
-	},
+	interop::{decode_server_key, encode_server_key, server_keys_collection_id},
 };
 
 use crate::{StorageError, store::MtxdbStore};

@@ -27,6 +27,7 @@ struct Data {
 	eventid_metadata: Arc<Map>,
 	shorteventid_shortprevevents: Arc<Map>,
 	mtxdb_events: conduwuit_mtxdb::events::EventAdapter,
+	mtxdb: Arc<conduwuit_mtxdb::store::MtxdbStore>,
 }
 
 struct Services {
@@ -42,6 +43,7 @@ impl crate::Service for Service {
 				eventid_metadata: args.db["eventid_metadata"].clone(),
 				shorteventid_shortprevevents: args.db["shorteventid_shortprevevents"].clone(),
 				mtxdb_events: conduwuit_mtxdb::events::EventAdapter::new(args.mtxdb.clone()),
+				mtxdb: args.mtxdb.clone(),
 			},
 			services: Services {
 				short: args.depend::<rooms::short::Service>("rooms::short"),
@@ -291,20 +293,32 @@ fn add_pdu_outlier_batch_impl<'a>(
 			let json = slipstream::codec::to_string(&pdu);
 			let prev: Vec<_> = parsed_pdu.prev_events().map(EventId::as_bytes).collect();
 			let auth: Vec<_> = parsed_pdu.auth_events().map(EventId::as_bytes).collect();
-			for auth_event in parsed_pdu.auth_events() {
-				let _ = self
-					.services
-					.short
-					.get_or_create_shorteventid_blocking(auth_event);
+			let room_version_ready = matches!(
+				conduwuit_mtxdb::room_metadata::get_room_version(
+					&self.db.mtxdb,
+					room_id.as_bytes()
+				),
+				Ok(Some(_))
+			);
+			if !room_version_ready {
+				warn!(%room_id, %event_id, "Skipping mtxdb outlier write before room version is established");
 			}
-			if let Err(error) = self.db.mtxdb_events.write_event_with_edges(
-				room_id.as_bytes(),
-				event_id.as_bytes(),
-				json.as_bytes(),
-				&prev,
-				&auth,
-			) {
-				warn!(?error, %event_id, "Failed to write outlier event and auth edges to mtxdb");
+			if room_version_ready {
+				for auth_event in parsed_pdu.auth_events() {
+					let _ = self
+						.services
+						.short
+						.get_or_create_shorteventid_blocking(auth_event);
+				}
+				if let Err(error) = self.db.mtxdb_events.write_event_with_edges(
+					room_id.as_bytes(),
+					event_id.as_bytes(),
+					json.as_bytes(),
+					&prev,
+					&auth,
+				) {
+					warn!(?error, %event_id, "Failed to write outlier event and auth edges to mtxdb");
+				}
 			}
 		}
 		let short_room_id = room_id_from_pdu

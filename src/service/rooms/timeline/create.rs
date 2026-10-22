@@ -334,7 +334,6 @@ pub async fn create_event(
 			.ok_or_else(|| err!(Request(Forbidden("Event has no room_id"))))?;
 		pdu.room_id = Some(internal_room_id);
 	}
-
 	Ok((pdu, pdu_json))
 }
 

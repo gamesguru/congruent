@@ -261,7 +261,7 @@ impl Service {
 			let auth_events_repaired = stored_auth_shorts.as_ref() != Some(&auth_shorts);
 			if auth_events_repaired {
 				if let Ok(json) = self.db.get_pdu_json(event_id).await {
-					self.db.write_event_to_mtxdb(&pdu, &json);
+					self.db.write_event_to_mtxdb(&pdu, &json).await;
 				}
 				stats.repaired_auth_events = stats.repaired_auth_events.saturating_add(1);
 			}

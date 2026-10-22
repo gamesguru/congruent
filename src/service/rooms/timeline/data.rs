@@ -42,6 +42,7 @@ pub(super) struct Data {
 #[derive(Clone)]
 struct Services {
 	short: Dep<rooms::short::Service>,
+	state: Dep<rooms::state::Service>,
 }
 
 pub type PdusIterItem = (PduCount, PduEvent);
@@ -64,6 +65,7 @@ impl Data {
 			db: args.db.clone(),
 			services: Services {
 				short: args.depend::<rooms::short::Service>("rooms::short"),
+				state: args.depend::<rooms::state::Service>("rooms::state"),
 			},
 		}
 	}
@@ -1179,7 +1181,33 @@ impl Data {
 	/// Persist the event body and its prev/auth edges in mtxdb. Keyed by event
 	/// id and idempotent, so it needs no stream count and can run before one is
 	/// allocated. A failure is logged and leaves the event unrecorded there.
-	pub(super) fn write_event_to_mtxdb(&self, pdu: &PduEvent, json: &CanonicalJsonObject) {
+	pub(super) async fn write_event_to_mtxdb(&self, pdu: &PduEvent, json: &CanonicalJsonObject) {
+		let Some(room_id) = pdu.room_id.as_ref() else {
+			conduwuit::warn!(event_id = %pdu.event_id, "Skipping mtxdb event write without room ID");
+			return;
+		};
+		if pdu.kind == slipstream::events::TimelineEventType::RoomCreate {
+			match pdu.get_content::<slipstream::events::room::create::RoomCreateEventContent>() {
+				| Ok(content) => {
+					if let Err(error) = self
+						.services
+						.short
+						.set_room_version(room_id, &content.room_version)
+					{
+						conduwuit::warn!(?error, %room_id, "Skipping mtxdb create-event write without room-version record");
+						return;
+					}
+				},
+				| Err(error) => {
+					conduwuit::warn!(?error, %room_id, "Skipping mtxdb create-event write with invalid room version");
+					return;
+				},
+			}
+		} else if let Err(error) = self.services.state.get_room_version(room_id).await {
+			conduwuit::warn!(?error, %room_id, event_id = %pdu.event_id, "Skipping mtxdb event write before room version is established");
+			return;
+		}
+
 		for auth_event in pdu.auth_events() {
 			let _ = self
 				.services
@@ -1187,11 +1215,7 @@ impl Data {
 				.get_or_create_shorteventid_blocking(auth_event);
 		}
 		let event_id_bytes = pdu.event_id.as_bytes();
-		let room_id_bytes = pdu
-			.room_id
-			.as_ref()
-			.map(OwnedRoomId::as_bytes)
-			.expect("room_id present on PDU");
+		let room_id_bytes = room_id.as_bytes();
 		let event_json = slipstream::codec::to_string(json);
 		let prev_events = pdu.prev_events().map(EventId::as_bytes).collect::<Vec<_>>();
 		let auth_events = pdu.auth_events().map(EventId::as_bytes).collect::<Vec<_>>();
@@ -1229,7 +1253,7 @@ impl Data {
 		json: &CanonicalJsonObject,
 		count: PduCount,
 	) {
-		self.write_event_to_mtxdb(pdu, json);
+		self.write_event_to_mtxdb(pdu, json).await;
 		self.append_pdu_batch_rows(batch, pdu_id, pdu, json, count)
 			.await;
 	}

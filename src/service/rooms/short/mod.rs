@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, mem::size_of, sync::Arc};
+use std::{borrow::Borrow, mem::size_of, str::FromStr, sync::Arc};
 
 pub use conduwuit::matrix::pdu::{ShortEventId, ShortId, ShortRoomId, ShortStateKey};
 use conduwuit::{
@@ -32,12 +32,14 @@ pub struct Service {
 		moka::sync::Cache<(StateEventType, StateKey), ShortStateKey>,
 	pub shortstatekey_statekey_cache:
 		moka::sync::Cache<ShortStateKey, (StateEventType, StateKey)>,
+	pub roomid_roomversion_cache: moka::sync::Cache<OwnedRoomId, RoomVersionId>,
 	pub leanevent_cache: moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String>>>,
 }
 
 struct Data {
 	legacy_roomid_shortroomid: Arc<Map>,
 	roomid_roomversion: Arc<Map>,
+	mtxdb: Arc<conduwuit_mtxdb::store::MtxdbStore>,
 }
 
 impl crate::Service for Service {
@@ -88,6 +90,7 @@ impl crate::Service for Service {
 					.expect("room short-id migration map is registered")
 					.clone(),
 				roomid_roomversion: args.db["roomid_roomversion"].clone(),
+				mtxdb: args.mtxdb.clone(),
 			},
 			shortids,
 			eventid_shorteventid_cache: moka::sync::Cache::builder()
@@ -100,6 +103,9 @@ impl crate::Service for Service {
 				.max_capacity(statekeyshort_cap.into())
 				.build(),
 			shortstatekey_statekey_cache: moka::sync::Cache::builder()
+				.max_capacity(shortstatekey_cap.into())
+				.build(),
+			roomid_roomversion_cache: moka::sync::Cache::builder()
 				.max_capacity(shortstatekey_cap.into())
 				.build(),
 			leanevent_cache: moka::sync::Cache::builder()
@@ -568,12 +574,58 @@ where
 
 #[implement(Service)]
 pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> {
-	self.db.roomid_roomversion.get(room_id).await.deserialized()
+	if let Some(version) = self.roomid_roomversion_cache.get(&room_id.to_owned()) {
+		return Ok(version);
+	}
+
+	if let Some(version) =
+		conduwuit_mtxdb::room_metadata::get_room_version(&self.db.mtxdb, room_id.as_bytes())
+			.map_err(|error| err!(Database("mtxdb room-version lookup failed: {error}")))?
+			.and_then(|version| RoomVersionId::from_str(&version).ok())
+	{
+		self.roomid_roomversion_cache
+			.insert(room_id.to_owned(), version.clone());
+		return Ok(version);
+	}
+
+	if let Some(version) = conduwuit_mtxdb::room_metadata::room_version_from_collection(
+		&self.db.mtxdb,
+		room_id.as_bytes(),
+	)
+	.map_err(|error| err!(Database("mtxdb room-version metadata lookup failed: {error}")))?
+	.and_then(|version| RoomVersionId::from_str(&version).ok())
+	{
+		self.set_room_version(room_id, &version)?;
+		self.roomid_roomversion_cache
+			.insert(room_id.to_owned(), version.clone());
+		return Ok(version);
+	}
+
+	let version: RoomVersionId = self
+		.db
+		.roomid_roomversion
+		.get(room_id)
+		.await
+		.deserialized()?;
+	self.set_room_version(room_id, &version)?;
+	self.roomid_roomversion_cache
+		.insert(room_id.to_owned(), version.clone());
+	Ok(version)
 }
 
 #[implement(Service)]
-pub fn set_room_version(&self, room_id: &RoomId, version: &RoomVersionId) {
+
+pub fn set_room_version(&self, room_id: &RoomId, version: &RoomVersionId) -> Result<()> {
+	conduwuit_mtxdb::room_metadata::set_room_version(
+		&self.db.mtxdb,
+		room_id.as_bytes(),
+		version.as_str(),
+	)
+	.map_err(|error| err!(Database("Failed to persist room version in mtxdb: {error}")))?;
 	self.db.roomid_roomversion.insert(room_id, version);
+	self.roomid_roomversion_cache
+		.insert(room_id.to_owned(), version.clone());
+	Ok(())
 }
 
 #[cfg(test)]
