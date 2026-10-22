@@ -304,14 +304,14 @@ async fn knock_room_helper_local(
 				.any(|server| !services.globals.server_is_ours(server))
 			{
 				warn!(?error, %room_id, "Room version unavailable locally; trying remote knock");
-				return knock_room_helper_remote(
+				return Box::pin(knock_room_helper_remote(
 					services,
 					sender_user,
 					room_id,
 					reason,
 					servers,
 					state_lock,
-				)
+				))
 				.await;
 			}
 
