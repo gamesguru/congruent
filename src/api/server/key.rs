@@ -421,11 +421,12 @@ mod tests {
 		merged.valid_until_ts = MilliSecondsSinceUnixEpoch(1_700_000_000_000);
 
 		let raw = Raw::new(&raw_payload).unwrap();
-		let selected_raw = select_server_key_response(Some(raw), Some(merged.clone())).unwrap();
+		let expected_raw = Raw::new(&merged).unwrap();
+		let selected_raw = select_server_key_response(Some(raw), Some(merged)).unwrap();
 		let selected: ServerSigningKeys = selected_raw.deserialize().unwrap();
 
-		assert_eq!(selected.valid_until_ts, merged.valid_until_ts);
-		assert_eq!(selected_raw.get(), Raw::new(&merged).unwrap().get());
+		assert_eq!(selected.valid_until_ts, MilliSecondsSinceUnixEpoch(1_700_000_000_000));
+		assert_eq!(selected_raw.get(), expected_raw.get());
 	}
 
 	#[test]
