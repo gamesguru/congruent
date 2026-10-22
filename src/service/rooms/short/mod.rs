@@ -78,16 +78,15 @@ fn import_legacy_short_ids(shortids: &ShortIdAdapter, db: &Arc<database::Databas
 		.expect("legacy reverse state-key map is registered")
 		.clone();
 	let mut states = Vec::new();
-	for (short_bytes, _) in state_map.raw_entries()? {
+	for (short_bytes, value_bytes) in state_map.raw_entries()? {
 		let short = u64::from_be_bytes(
 			short_bytes
 				.as_slice()
 				.try_into()
 				.map_err(|_| err!(Database("Malformed legacy state-key short ID")))?,
 		);
-		let (event_type, state_key) = state_map
-			.get_blocking(&short_bytes)?
-			.deserialized::<(StateEventType, StateKey)>()?;
+		let (event_type, state_key): (StateEventType, StateKey) =
+			database::keyval::deserialize_val(&value_bytes)?;
 		states.push((event_type.to_string(), state_key.to_string(), short));
 	}
 	for chunk in states.chunks(512) {

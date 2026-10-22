@@ -276,12 +276,20 @@ fn write_keys(db: &DB, out_path: &Path) -> Result<usize, Box<dyn std::error::Err
 		let valid_until = stored
 			.get("valid_until_ts")
 			.and_then(Value::as_u64)
-			.unwrap_or(0);
+			.ok_or_else(|| {
+				format!(
+					"server_signingkeys entry for {origin} has a missing or invalid \
+					 valid_until_ts"
+				)
+			})?;
 		for field in ["verify_keys", "old_verify_keys"] {
 			let Some(keys) = stored.get(field).and_then(Value::as_object) else { continue };
 			for (key_id, key_value) in keys {
 				let Some(encoded_key) = key_value.get("key").and_then(Value::as_str) else {
-					continue;
+					return Err(format!(
+						"server_signingkeys entry for {origin}/{key_id} has no string key"
+					)
+					.into());
 				};
 				if !seen.insert((origin.to_owned(), key_id.to_owned())) {
 					continue;
@@ -403,10 +411,7 @@ pub fn export(
 					String::from_utf8_lossy(&event_id)
 				)
 			})?;
-		events
-			.entry(event.room.clone())
-			.or_default()
-			.insert(event.id.clone(), event);
+		add(event);
 	}
 	let exported_ids: HashSet<&str> = events
 		.values()

@@ -1241,8 +1241,8 @@ impl Data {
 	}
 
 	/// Write the event and edges to mtxdb, then stage timeline rows in `batch`.
-	/// The mtxdb write is separate from the caller's batch and may be skipped or
-	/// fail without preventing timeline rows from being staged.
+	/// The mtxdb write commits separately from the caller's batch; a write
+	/// failure is returned before any timeline rows are staged.
 	pub(super) async fn append_pdu_batch<'a>(
 		&'a self,
 		batch: &mut database::Batch<'a>,

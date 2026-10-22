@@ -470,11 +470,15 @@ impl Service {
 						);
 					},
 				}
-				if failed.saturating_mul(100) > attempted.saturating_mul(MAX_FAILED_PERCENT) {
-					return Outcome::Abandoned(format!(
-						"{failed} of {attempted} offered events could not be fetched"
-					));
-				}
+			}
+
+			// Judge the failure ratio only after the batch (including the sample)
+			// has finished, so a retryable failure cannot abort before the sample
+			// is complete.
+			if failed.saturating_mul(100) > attempted.saturating_mul(MAX_FAILED_PERCENT) {
+				return Outcome::Abandoned(format!(
+					"{failed} of {attempted} offered events could not be fetched"
+				));
 			}
 		}
 

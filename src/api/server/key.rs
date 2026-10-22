@@ -122,6 +122,7 @@ fn select_server_key_response(
 			let unchanged_from_raw = raw.deserialize().is_ok_and(|raw_keys| {
 				keys.verify_keys == raw_keys.verify_keys
 					&& keys.old_verify_keys == raw_keys.old_verify_keys
+					&& keys.valid_until_ts == raw_keys.valid_until_ts
 			});
 			if unchanged_from_raw {
 				return Ok(raw.clone());
@@ -146,7 +147,7 @@ async fn get_signing_keys_for(
 		return Raw::new(&get_our_signing_keys(services).await).map_err(Into::into);
 	}
 
-	let raw_server_key = match services.server_keys.raw_signing_keys_for(server_name).await {
+	let mut raw_server_key = match services.server_keys.raw_signing_keys_for(server_name).await {
 		| Ok(keys) => Some(keys),
 		| Err(ref e) if e.is_not_found() => None,
 		| Err(e) => return Err(e),
@@ -191,6 +192,13 @@ async fn get_signing_keys_for(
 				.await
 			{
 				| Ok(patched_keys) => {
+					// The fetch may have refreshed the stored payload (for example
+					// `valid_until_ts`) without changing the key maps. Re-read it so
+					// the selection below compares against what is actually stored.
+					if let Ok(raw) = services.server_keys.raw_signing_keys_for(server_name).await
+					{
+						raw_server_key = Some(raw);
+					}
 					merged_server_key = match services
 						.server_keys
 						.merged_signing_keys_for(server_name)
@@ -381,7 +389,7 @@ mod tests {
 
 		ServerSigningKeys {
 			server_name: "example.com".try_into().unwrap(),
-			valid_until_ts: MilliSecondsSinceUnixEpoch::now(),
+			valid_until_ts: MilliSecondsSinceUnixEpoch(1_700_000_000_000),
 			verify_keys,
 			old_verify_keys,
 			signatures: Signatures::new(),
@@ -403,6 +411,21 @@ mod tests {
 		let selected = select_server_key_response(Some(raw.clone()), Some(merged)).unwrap();
 
 		assert_eq!(selected.get(), raw.get());
+	}
+
+	#[test]
+	fn changed_validity_does_not_reuse_raw_notary_payload() {
+		let mut raw_payload = key_payload("ed25519:active", "AAA", None, None);
+		raw_payload.valid_until_ts = MilliSecondsSinceUnixEpoch(1_600_000_000_000);
+		let mut merged = key_payload("ed25519:active", "AAA", None, None);
+		merged.valid_until_ts = MilliSecondsSinceUnixEpoch(1_700_000_000_000);
+
+		let raw = Raw::new(&raw_payload).unwrap();
+		let selected_raw = select_server_key_response(Some(raw), Some(merged.clone())).unwrap();
+		let selected: ServerSigningKeys = selected_raw.deserialize().unwrap();
+
+		assert_eq!(selected.valid_until_ts, merged.valid_until_ts);
+		assert_eq!(selected_raw.get(), Raw::new(&merged).unwrap().get());
 	}
 
 	#[test]

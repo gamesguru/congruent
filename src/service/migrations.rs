@@ -310,13 +310,7 @@ async fn migrate(services: &Services) -> Result<()> {
 	let ssot_needs_run = db["global"]
 		.get(MIGRATE_EVENT_STORE_TO_SSOT_MARKER)
 		.await
-		.is_not_found()
-		|| db
-			.deprecated("eventid_pdu")?
-			.raw_keys()
-			.next()
-			.await
-			.is_none();
+		.is_not_found();
 
 	if ssot_needs_run {
 		info!("Running migration 'migrate_event_store_to_ssot'");

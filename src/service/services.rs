@@ -216,13 +216,24 @@ impl Services {
 			return Ok(());
 		}
 
-		let has_legacy_events = self
-			.db
-			.deprecated("eventid_pdu")?
-			.raw_keys()
-			.next()
-			.await
-			.is_some();
+		let has_legacy_events =
+			self.db
+				.deprecated("eventid_pdu")?
+				.raw_keys()
+				.next()
+				.await
+				.is_some() || (self.db.db.cf_exists("pduid_pdu")
+				&& database::Map::open(&self.db.db, "pduid_pdu")?
+					.raw_keys()
+					.next()
+					.await
+					.is_some_and(|key| key.is_ok()))
+				|| (self.db.db.cf_exists("eventid_outlierpdu")
+					&& database::Map::open(&self.db.db, "eventid_outlierpdu")?
+						.raw_keys()
+						.next()
+						.await
+						.is_some_and(|key| key.is_ok()));
 		let has_legacy_signing_keys = self
 			.db
 			.deprecated("server_signingkeys")?
@@ -266,6 +277,14 @@ impl Services {
 		if has_mtxdb_events || has_mtxdb_verdicts || has_mtxdb_signing_keys || has_mtxdb_short_ids
 		{
 			return Err(conduwuit::err!(Database(error!("{}", Self::INCOMPLETE_IMPORT_MESSAGE))));
+		}
+
+		if self.users.count().await > 0 {
+			return Err(conduwuit::err!(Database(error!(
+				"This database contains users but no mtxdb import marker and no event or \
+				 signing-key data. Refusing to mark it as a fresh import; restore the complete \
+				 export and run `mtxdb import`."
+			))));
 		}
 
 		let tx = self.mtxdb.begin_transaction();

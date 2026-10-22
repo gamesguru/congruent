@@ -4,7 +4,7 @@ use conduwuit::{
 	Err, PduCount, Result, debug, debug_info, debug_warn, err, error, info,
 	matrix::{
 		event::{gen_event_id, gen_event_id_canonical_json},
-		pdu::{PduBuilder, PduEvent, RawJson},
+		pdu::{PduBuilder, PduEvent},
 	},
 	trace,
 	utils::{self, shuffle, stream::ReadyExt, to_canonical_object},
@@ -585,39 +585,32 @@ async fn join_room_by_id_helper_remote(
 async fn persist_send_join_create_event(
 	services: &Services,
 	room_id: &RoomId,
-	room_version_id: &RoomVersionId,
-	state: &[RawJson],
-	auth_chain: &[RawJson],
-) -> Result<()> {
-	for raw in state.iter().chain(auth_chain) {
-		let Ok(value) = slipstream::codec::from_str::<CanonicalJsonObject>(raw.get()) else {
-			continue;
-		};
-		if value.get("type").and_then(|value| value.as_str()) != Some("m.room.create") {
-			continue;
+	state: &[(slipstream::OwnedEventId, CanonicalJsonObject)],
+	auth_chain: &[(slipstream::OwnedEventId, CanonicalJsonObject)],
+) -> Result<Option<slipstream::OwnedEventId>> {
+	let create_event = state.iter().chain(auth_chain).find(|(_, value)| {
+		value.get("type").and_then(|value| value.as_str()) == Some("m.room.create")
+	});
+
+	let Some((event_id, value)) = create_event else {
+		// Existing rooms may omit the create event from send_join. Confirm that
+		// their version is already available before processing dependent outliers.
+		if let Err(error) = services.rooms.short.get_room_version(room_id).await {
+			return Err!(BadServerResponse(
+				"send_join response has no m.room.create event and no existing room version is \
+				 available: {error}"
+			));
 		}
+		return Ok(None);
+	};
 
-		let (event_id, value) = services
-			.server_keys
-			.validate_and_add_event_id(raw, room_version_id)
-			.await?;
+	services
+		.rooms
+		.outlier
+		.add_pdu_outlier(event_id, value, Some(room_id))
+		.await;
 
-		services
-			.rooms
-			.outlier
-			.add_pdu_outlier(&event_id, &value, Some(room_id))
-			.await;
-
-		return Ok(());
-	}
-
-	debug_warn!(
-		%room_id,
-		"send_join response has no m.room.create event; dependent outliers will wait for \
-		 the room version"
-	);
-
-	Ok(())
+	Ok(Some(event_id.clone()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -640,22 +633,19 @@ async fn join_room_by_id_helper_remote_process(
 	);
 
 	info!("Acquiring server signing keys for response events");
-	let resp_events = &send_join_response.room_state;
-	let resp_state = &resp_events.state;
-	let resp_auth = &resp_events.auth_chain;
 	services
 		.server_keys
-		.acquire_events_pubkeys(resp_auth.iter().chain(resp_state.iter()))
+		.acquire_events_pubkeys(
+			send_join_response
+				.room_state
+				.auth_chain
+				.iter()
+				.chain(send_join_response.room_state.state.iter()),
+		)
 		.boxed()
 		.await;
 
-	persist_send_join_create_event(services, room_id, &room_version_id, resp_state, resp_auth)
-		.await?;
-
-	info!("Going through send_join response room_state");
-	let cork = services.db.cork_and_flush();
-	let mut outlier_event_ids: Vec<slipstream::OwnedEventId> = Vec::new();
-	let state = services
+	let validated_state: Vec<(slipstream::OwnedEventId, CanonicalJsonObject)> = services
 		.server_keys
 		.concurrent_validate_and_add_events(send_join_response.room_state.state, &room_version_id)
 		.filter_map(|res| async {
@@ -667,49 +657,76 @@ async fn join_room_by_id_helper_remote_process(
 				},
 			}
 		})
-		.fold(
-			(HashMap::new(), Vec::new()),
-			|(mut state, mut eids), (event_id, value)| async move {
-				let pdu = match PduEvent::from_id_val(&event_id, value.clone(), Some(room_id)) {
-					| Ok(pdu) => pdu,
-					| Err(e) => {
-						warn!(%room_id, "Invalid PDU in send_join response, dropped from joined state: {e:?}: {value:#?}");
-						return (state, eids);
-					},
-				};
-				if !pdu_fits(&mut value.clone()) {
-					warn!(
-						"dropping incoming PDU {event_id} in room {room_id} from room join \
-						 because it exceeds 65535 bytes or is otherwise too large."
-					);
-					return (state, eids);
-				}
-				services
-					.rooms
-					.outlier
-					.add_pdu_outlier(&event_id, &value, Some(room_id))
-					.await;
-				if let Err(error) = services.rooms.pdu_metadata.clear_pdu_markers(&event_id) {
-					warn!(%error, %event_id, "failed to clear pdu markers");
-				}
-				eids.push(event_id.clone());
-				if let Some(state_key) = &pdu.state_key {
-					let shortstatekey = services
-						.rooms
-						.short
-						.get_or_create_shortstatekey(&pdu.kind.to_string().into(), state_key)
-						.boxed()
-						.await;
-
-					state.insert(shortstatekey, pdu.event_id.clone());
-				}
-				(state, eids)
-			},
-		)
+		.collect()
 		.boxed()
 		.await;
 
-	let (state, mut state_eids) = state;
+	let validated_auth: Vec<(slipstream::OwnedEventId, CanonicalJsonObject)> = services
+		.server_keys
+		.concurrent_validate_and_add_events(
+			send_join_response.room_state.auth_chain,
+			&room_version_id,
+		)
+		.filter_map(|res| async {
+			match res {
+				| Ok(val) => Some(val),
+				| Err(e) => {
+					info!("Could not validate send_join response auth_chain event: {e:?}");
+					None
+				},
+			}
+		})
+		.collect()
+		.boxed()
+		.await;
+
+	let prewritten_create_event =
+		persist_send_join_create_event(services, room_id, &validated_state, &validated_auth)
+			.await?;
+	let prewritten_create_event = prewritten_create_event.as_ref();
+
+	info!("Going through send_join response room_state");
+	let cork = services.db.cork_and_flush();
+	let mut outlier_event_ids: Vec<slipstream::OwnedEventId> = Vec::new();
+	let mut state = HashMap::new();
+	let mut state_eids = Vec::new();
+	for (event_id, value) in validated_state {
+		let pdu = match PduEvent::from_id_val(&event_id, value.clone(), Some(room_id)) {
+			| Ok(pdu) => pdu,
+			| Err(e) => {
+				warn!(%room_id, "Invalid PDU in send_join response, dropped from joined state: {e:?}: {value:#?}");
+				continue;
+			},
+		};
+		if !pdu_fits(&mut value.clone()) {
+			warn!(
+				"dropping incoming PDU {event_id} in room {room_id} from room join because it \
+				 exceeds 65535 bytes or is otherwise too large."
+			);
+			continue;
+		}
+		if prewritten_create_event != Some(&event_id) {
+			services
+				.rooms
+				.outlier
+				.add_pdu_outlier(&event_id, &value, Some(room_id))
+				.await;
+		}
+		if let Err(error) = services.rooms.pdu_metadata.clear_pdu_markers(&event_id) {
+			warn!(%error, %event_id, "failed to clear pdu markers");
+		}
+		state_eids.push(event_id.clone());
+		if let Some(state_key) = &pdu.state_key {
+			let shortstatekey = services
+				.rooms
+				.short
+				.get_or_create_shortstatekey(&pdu.kind.to_string().into(), state_key)
+				.boxed()
+				.await;
+
+			state.insert(shortstatekey, pdu.event_id.clone());
+		}
+	}
 	outlier_event_ids.append(&mut state_eids);
 
 	let mut lattice = rezzy::incremental::LtHash::default();
@@ -744,47 +761,32 @@ async fn join_room_by_id_helper_remote_process(
 
 	info!("Going through send_join response auth_chain");
 	let cork = services.db.cork_and_flush();
-	let auth_eids: Vec<slipstream::OwnedEventId> = services
-		.server_keys
-		.concurrent_validate_and_add_events(
-			send_join_response.room_state.auth_chain,
-			&room_version_id,
-		)
-		.filter_map(|res| async {
-			match res {
-				| Ok(val) => Some(val),
-				| Err(e) => {
-					info!("Could not validate send_join response auth_chain event: {e:?}");
-					None
-				},
-			}
-		})
-		.fold(Vec::new(), |mut eids, (event_id, value)| async move {
-			if PduEvent::from_id_val(&event_id, value.clone(), Some(room_id)).is_err() {
-				info!("Invalid PDU in send_join auth_chain: {event_id}: {value:#?}");
-				return eids;
-			}
-			if !pdu_fits(&mut value.clone()) {
-				warn!(
-					"dropping incoming PDU {event_id} in room {room_id} from room join \
-					 auth_chain because it exceeds 65535 bytes or is otherwise too large."
-				);
-				return eids;
-			}
+	let mut auth_eids = Vec::new();
+	for (event_id, value) in validated_auth {
+		if PduEvent::from_id_val(&event_id, value.clone(), Some(room_id)).is_err() {
+			info!("Invalid PDU in send_join auth_chain: {event_id}: {value:#?}");
+			continue;
+		}
+		if !pdu_fits(&mut value.clone()) {
+			warn!(
+				"dropping incoming PDU {event_id} in room {room_id} from room join auth_chain \
+				 because it exceeds 65535 bytes or is otherwise too large."
+			);
+			continue;
+		}
+		if prewritten_create_event != Some(&event_id) {
 			trace!(%event_id, "Adding PDU as an outlier from send_join auth_chain");
 			services
 				.rooms
 				.outlier
 				.add_pdu_outlier(&event_id, &value, Some(room_id))
 				.await;
-			if let Err(error) = services.rooms.pdu_metadata.clear_pdu_markers(&event_id) {
-				warn!(%error, %event_id, "failed to clear pdu markers");
-			}
-			eids.push(event_id);
-			eids
-		})
-		.boxed()
-		.await;
+		}
+		if let Err(error) = services.rooms.pdu_metadata.clear_pdu_markers(&event_id) {
+			warn!(%error, %event_id, "failed to clear pdu markers");
+		}
+		auth_eids.push(event_id);
+	}
 
 	outlier_event_ids.extend(auth_eids);
 
