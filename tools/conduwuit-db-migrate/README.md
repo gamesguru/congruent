@@ -22,12 +22,14 @@ read-only snapshot; the tool opens it read-only and never writes to it.
 
 `export-mtxdb` writes one `room-<hex room id>.jsonl` per room plus
 `server-keys.jsonl`. It understands both the legacy `pduid_pdu` /
-`eventid_outlierpdu` layout and the newer `eventid_pdu` layout. Pass the
-homeserver name for the room export headers. If the source has
-`eventid_rejections` or `eventid_softfailed` maps, their one-byte verdict codes
-are carried into the export. If those maps are absent, both flags are false.
-Legacy cached keys are exported as permanent keys with `ts_added_ms=0`; no
-notary payload is synthesized.
+`eventid_outlierpdu` layout and the newer `eventid_pdu` layout. It infers the
+homeserver name from the server part of local IDs in `userid_password`, and
+requires those IDs to agree. An optional server-name argument overrides that
+inference for databases with no local users or a changed server name. If the
+source has `eventid_rejections` or `eventid_softfailed` maps, their one-byte
+verdict codes are carried into the export. If those maps are absent, both flags
+are false. Legacy cached keys are exported as permanent keys with
+`ts_added_ms=0`; no notary payload is synthesized.
 
 ```text
 cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
@@ -35,7 +37,7 @@ cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
 
 cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
   export-mtxdb /run/media/shane/shane4tb-ent/vps/wombatx/var/lib/conduwuit \
-  /tmp/wombatx-mtxdb-export example.org
+  /tmp/wombatx-mtxdb-export
 
 cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
   export /run/media/shane/shane4tb-ent/vps/wombatx/var/lib/conduwuit \

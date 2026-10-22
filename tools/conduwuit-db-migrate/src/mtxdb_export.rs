@@ -10,11 +10,13 @@ use std::{
 
 use rust_rocksdb::{DB, IteratorMode, Options};
 use slipstream::{
-	codec,
+	OwnedUserId, codec,
 	json::{Object, Value},
 };
 
 const FORMAT: &str = "mtxdb-export/v1";
+type ExportResult<T> = Result<T, Box<dyn std::error::Error>>;
+type DbRow = (Vec<u8>, Vec<u8>);
 
 #[derive(Clone)]
 struct Event {
@@ -30,7 +32,7 @@ struct Event {
 	auth: Value,
 }
 
-fn rows(db: &DB, name: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Box<dyn std::error::Error>> {
+fn rows(db: &DB, name: &str) -> ExportResult<Vec<DbRow>> {
 	let Some(cf) = db.cf_handle(name) else {
 		return Ok(Vec::new());
 	};
@@ -40,6 +42,35 @@ fn rows(db: &DB, name: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Box<dyn std::err
 			Ok((key.to_vec(), value.to_vec()))
 		})
 		.collect()
+}
+
+/// Local account map keys are full Matrix user IDs, whose server part is the
+/// homeserver name used when the database was created.
+fn infer_server_name(db: &DB) -> Result<String, Box<dyn std::error::Error>> {
+	let Some(cf) = db.cf_handle("userid_password") else {
+		return Err(
+			"cannot infer server name: userid_password map is missing; pass an override".into()
+		);
+	};
+	let mut names = std::collections::BTreeSet::new();
+	for row in db.iterator_cf(cf, IteratorMode::Start) {
+		let (key, _) = row?;
+		let raw_id = std::str::from_utf8(&key)?;
+		let user_id = OwnedUserId::parse(raw_id)
+			.map_err(|error| format!("invalid local user ID in userid_password: {error}"))?;
+		names.insert(user_id.server_name().to_string());
+	}
+	match names.len() {
+		| 1 => Ok(names.into_iter().next().expect("one inferred name")),
+		| 0 =>
+			Err("cannot infer server name: database has no local user IDs; pass an override"
+				.into()),
+		| _ => Err(format!(
+			"cannot infer one server name: local user IDs use {}; pass an override",
+			names.into_iter().collect::<Vec<_>>().join(", ")
+		)
+		.into()),
+	}
 }
 
 fn parse_pdu(
@@ -184,11 +215,12 @@ fn dependency_order(events: Vec<Event>) -> Vec<Event> {
 			let id = value
 				.as_str()
 				.or_else(|| value.get("event_id").and_then(Value::as_str));
-			if let Some(dependency) = id.and_then(|id| ids.get(id)).copied() {
-				if dependency != index && dependencies.insert(dependency) {
-					children[dependency].push(index);
-					indegree[index] += 1;
-				}
+			if let Some(dependency) = id.and_then(|id| ids.get(id)).copied()
+				&& dependency != index
+				&& dependencies.insert(dependency)
+			{
+				children[dependency].push(index);
+				indegree[index] += 1;
 			}
 		}
 	}
@@ -303,7 +335,7 @@ fn verdicts(db: &DB, map: &str) -> Result<HashMap<String, u8>, Box<dyn std::erro
 pub fn export(
 	rocks_path: &Path,
 	out_dir: &Path,
-	server: &str,
+	server_override: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
 	if out_dir.exists() {
 		return Err(
@@ -314,6 +346,14 @@ pub fn export(
 	options.create_if_missing(false);
 	let names = DB::list_cf(&options, rocks_path)?;
 	let db = DB::open_cf_for_read_only(&options, rocks_path, &names, false)?;
+	let inferred_server = if server_override.is_none() {
+		Some(infer_server_name(&db)?)
+	} else {
+		None
+	};
+	let server = server_override
+		.or(inferred_server.as_deref())
+		.expect("server name available");
 	let rejections = verdicts(&db, "eventid_rejections")?;
 	let soft_fails = verdicts(&db, "eventid_softfailed")?;
 	let mut timeline_ids: HashMap<Vec<u8>, String> = HashMap::new();
