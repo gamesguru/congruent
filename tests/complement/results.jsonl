@@ -348,8 +348,8 @@
 {"Action":"pass","Test":"TestLeftRoomFixture/Can_get_rooms/{roomId}/messages_for_a_departed_room"}
 {"Action":"pass","Test":"TestLeftRoomFixture/Can_get_rooms/{roomId}/state_for_a_departed_room"}
 {"Action":"pass","Test":"TestLeftRoomFixture/Getting_messages_going_forward_is_limited_for_a_departed_room"}
-{"Action":"fail","Test":"TestLinkProxy"}
-{"Action":"fail","Test":"TestLinkProxy/BlockedLinkFailsFastAndHealsOnRelease"}
+{"Action":"pass","Test":"TestLinkProxy"}
+{"Action":"pass","Test":"TestLinkProxy/BlockedLinkFailsFastAndHealsOnRelease"}
 {"Action":"pass","Test":"TestLinkProxy/TrafficFlowsThroughProxy"}
 {"Action":"pass","Test":"TestLocalJpegThumbnail"}
 {"Action":"pass","Test":"TestLocalJpegThumbnail/test_/_matrix/client/v1/media_endpoint"}
