@@ -116,7 +116,10 @@ async fn load_scheduled_events(service: &Service, queue: &mut SubmissionQueue) {
 	let mut loaded_events = Vec::new();
 
 	while let Some((delay_id, event)) = stream.next().await {
-		let submission_time = event.running_since + event.delay;
+		let submission_time = event
+			.running_since
+			.checked_add(event.delay)
+			.unwrap_or(SystemTime::UNIX_EPOCH);
 		queue
 			.queue
 			.push((Reverse(submission_time), delay_id.clone()));
