@@ -764,13 +764,11 @@ impl Service {
 				true,
 			))
 			.await;
-			let retryable = result
-				.as_ref()
-				.is_err_and(|error| is_retryable_event_write_error(error));
+			let retryable = result.as_ref().is_err_and(is_retryable_event_write_error);
 			// Copy the message out before any await: `conduwuit::Error` is not
 			// `Sync`, so a reference to it must not live across a suspension
 			// point in this `Send` future.
-			let error_message = result.as_ref().err().map(|error| error.to_string());
+			let error_message = result.as_ref().err().map(ToString::to_string);
 			drop(result);
 			if retryable {
 				let attempts = {
