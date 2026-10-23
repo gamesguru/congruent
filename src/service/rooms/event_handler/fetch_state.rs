@@ -408,7 +408,7 @@ where
 										.await;
 									return None;
 								}
-								prepared.ok().flatten().map(|pdu| (eid, (pdu, val)))
+								return prepared.ok().flatten().map(|pdu| (eid, (pdu, val)));
 							},
 							| _ => {
 								// Event sig failed; persist as rejected outlier so we don't
