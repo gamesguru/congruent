@@ -218,6 +218,10 @@ pub struct Service {
 	mem_usage: AtomicUsize,
 }
 
+impl Service {
+	pub async fn initialize(&self) { submission_queue::initialize(self).await; }
+}
+
 #[async_trait]
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
@@ -247,8 +251,6 @@ impl crate::Service for Service {
 	async fn worker(self: Arc<Self>) -> Result<()> {
 		Box::pin(submission_queue::worker(&self)).await
 	}
-
-	pub async fn initialize(&self) { submission_queue::initialize(self).await; }
 
 	fn interrupt(&self) { self.interrupt_requested.store(true, Ordering::Relaxed); }
 

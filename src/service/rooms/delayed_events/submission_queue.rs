@@ -35,6 +35,9 @@ pub(crate) async fn worker(service: &Service) -> Result<()> {
 		.try_lock()
 		.map_err(|_| err!(Err("Attempted to launch multiple instances of the worker")))?;
 	load_scheduled_events(service, &mut queue).await;
+	// A restarted worker must rescan in case it exited while an event was
+	// removed from the in-memory heap but still remains scheduled in the DB.
+	queue.initialized = false;
 	let receiver = queue.receiver.clone();
 
 	// work loop
