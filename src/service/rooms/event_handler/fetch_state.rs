@@ -351,34 +351,35 @@ where
 
 										if let Some(slipstream::CanonicalJsonValue::Object(
 											unsigned_obj,
-										)) = stashed_unsigned
-										&& !unsigned_obj.is_empty()
+										)) = stashed_unsigned && !unsigned_obj.is_empty()
 										{
-										val.insert(
-											"unsigned".to_owned(),
-											slipstream::CanonicalJsonValue::Object(unsigned_obj),
-										);
+											val.insert(
+												"unsigned".to_owned(),
+												slipstream::CanonicalJsonValue::Object(
+													unsigned_obj,
+												),
+											);
 										}
-									val.insert(
-										"event_id".to_owned(),
-										slipstream::CanonicalJsonValue::String(
-											event_id.as_str().to_owned(),
-										),
-									);
-									let pdu = PduEvent::from_id_val(
-										&event_id,
-										val.clone(),
-										Some(&worker_room_id),
-									)
-									.ok()
-									.filter(|pdu| {
-										crate::rooms::event_handler::check_room_id(
-											&worker_room_id,
-											pdu,
+										val.insert(
+											"event_id".to_owned(),
+											slipstream::CanonicalJsonValue::String(
+												event_id.as_str().to_owned(),
+											),
+										);
+										let pdu = PduEvent::from_id_val(
+											&event_id,
+											val.clone(),
+											Some(&worker_room_id),
 										)
-										.is_ok()
-									});
-									(Ok(pdu), val)
+										.ok()
+										.filter(|pdu| {
+											crate::rooms::event_handler::check_room_id(
+												&worker_room_id,
+												pdu,
+											)
+											.is_ok()
+										});
+										(Ok(pdu), val)
 									})
 									.await;
 								let (prepared, val) = match prepared {
@@ -399,18 +400,15 @@ where
 												.with_detail("redaction failed after hash mismatch"),
 										)
 									{
-									conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
+										conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
+									}
+									self.services
+										.outlier
+										.add_pdu_outlier(&eid, &val, Some(room_id))
+										.await;
+									return None;
 								}
-								self.services
-									.outlier
-									.add_pdu_outlier(&eid, &val, Some(room_id))
-									.await;
-								return None;
-								}
-								prepared
-									.ok()
-									.flatten()
-									.map(|pdu| (eid, (pdu, val)))
+								prepared.ok().flatten().map(|pdu| (eid, (pdu, val)))
 							},
 							| _ => {
 								// Event sig failed; persist as rejected outlier so we don't

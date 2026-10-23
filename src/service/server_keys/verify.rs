@@ -217,8 +217,16 @@ pub async fn verify_event_at(
 	let event = isolate_origin_signatures(event, room_version);
 
 	let keys = self.get_event_keys(&event, room_version).await?;
-
-	let result = slipstream::signatures::verify_event(&keys, &event, room_version);
+	let room_version = room_version.clone();
+	let (event, keys, result) = self
+		.services
+		.server
+		.runtime()
+		.spawn_blocking(move || {
+			let result = slipstream::signatures::verify_event(&keys, &event, &room_version);
+			(event, keys, result)
+		})
+		.await?;
 	if let Err(ref e) = result {
 		let event_id = event
 			.get("event_id")
