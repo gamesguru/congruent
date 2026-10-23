@@ -46,6 +46,11 @@ pub(crate) async fn worker(service: &Service) -> Result<()> {
 		loaded_events.push(delay_id);
 	}
 
+	// Release the startup scan before the work loop can submit overdue events.
+	// Keeping an exhausted mtxdb stream alive here leaves its read registration
+	// open, and the first event write after a restart can be transiently blocked.
+	drop(stream);
+
 	let mut scheduled_events = service.scheduled_events.lock().await;
 	scheduled_events.extend(loaded_events);
 	drop(scheduled_events);
