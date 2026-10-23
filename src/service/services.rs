@@ -182,6 +182,11 @@ impl Services {
 				)))
 			})?;
 
+		// Restore scheduled events before the listener can report ready. Otherwise
+		// a restarted server may serve requests before the delayed-event worker
+		// has loaded overdue sends from the database.
+		self.rooms.delayed_events.initialize().await;
+
 		info!("Starting service manager...");
 		let manager = {
 			let mut lock = self.manager.lock().await;
@@ -342,6 +347,10 @@ impl Services {
 	pub async fn stop(&self) {
 		info!("Shutting down services...");
 		info!(target: "mtxdb_stats", total = %conduwuit_mtxdb::stats::snapshot(), "mtxdb stats at shutdown");
+
+		// Signal workers before the shutdown path can stall, so timers that
+		// become due during teardown do not start new user-visible work.
+		self.interrupt();
 
 		// Report before anything can stall: the container may be killed mid-stop.
 		self.db.log_write_stats();

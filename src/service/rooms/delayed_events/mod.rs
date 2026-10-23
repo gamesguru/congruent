@@ -248,6 +248,8 @@ impl crate::Service for Service {
 		Box::pin(submission_queue::worker(&self)).await
 	}
 
+	pub async fn initialize(&self) { submission_queue::initialize(self).await; }
+
 	fn interrupt(&self) { self.interrupt_requested.store(true, Ordering::Relaxed); }
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
@@ -735,6 +737,13 @@ impl Service {
 	/// path that can return an error.
 	#[allow(clippy::arithmetic_side_effects)]
 	async fn send_event_if_ready(&self, delay_id: String) -> Option<(SystemTime, String)> {
+		// Leave overdue events in the schedule during graceful shutdown. The next
+		// process reloads them; sending here would fire after the server has
+		// already begun stopping and can race client-visible restart behavior.
+		if self.interrupt_requested.load(Ordering::Relaxed) {
+			return None;
+		}
+
 		let event = self
 			.db
 			.delayid_scheduleddelayedevent
