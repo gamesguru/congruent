@@ -22,16 +22,16 @@ use crate::rooms::short::ShortStateKey;
 /// Runs on a blocking worker: canonical-JSON redaction and `PduEvent` parsing
 /// are CPU-bound and would otherwise serialize inside one async task.
 fn prepare_verified_event(
-	event_id: OwnedEventId,
+	event_id: &OwnedEventId,
 	mut val: slipstream::CanonicalJsonObject,
 	stashed_unsigned: Option<slipstream::CanonicalJsonValue>,
 	needs_redaction: bool,
-	room_id: slipstream::OwnedRoomId,
-	room_version: slipstream::RoomVersionId,
+	room_id: &slipstream::OwnedRoomId,
+	room_version: &slipstream::RoomVersionId,
 ) -> (Result<Option<PduEvent>, String>, slipstream::CanonicalJsonObject) {
 	if needs_redaction {
 		if let Err(error) =
-			slipstream::canonical_json::redact_in_place(&mut val, &room_version, None)
+			slipstream::canonical_json::redact_in_place(&mut val, room_version, None)
 		{
 			val.insert(
 				"event_id".to_owned(),
@@ -52,9 +52,9 @@ fn prepare_verified_event(
 		slipstream::CanonicalJsonValue::String(event_id.as_str().to_owned()),
 	);
 
-	let pdu = PduEvent::from_id_val(&event_id, val.clone(), Some(&room_id))
+	let pdu = PduEvent::from_id_val(event_id, val.clone(), Some(room_id))
 		.ok()
-		.filter(|pdu| crate::rooms::event_handler::check_room_id(&room_id, pdu).is_ok());
+		.filter(|pdu| crate::rooms::event_handler::check_room_id(room_id, pdu).is_ok());
 
 	(Ok(pdu), val)
 }
@@ -381,12 +381,12 @@ where
 									.runtime()
 									.spawn_blocking(move || {
 										prepare_verified_event(
-											event_id,
+											&event_id,
 											val,
 											stashed_unsigned,
 											needs_redaction,
-											worker_room_id,
-											worker_room_version,
+											&worker_room_id,
+											&worker_room_version,
 										)
 									})
 									.await;
