@@ -16,7 +16,7 @@ use conduwuit_core::{
 		event::Event,
 		pdu::{PduCount, PduId, RawPduId},
 	},
-	utils::{IterStream, ReadyExt, stream::WidebandExt},
+	utils::{IterStream, ReadyExt, stream::WidebandExt, timed},
 	validated, warn,
 };
 use futures::{FutureExt, StreamExt};
@@ -252,20 +252,23 @@ pub async fn backfill_if_required(
 			.topo_pdus_rev(room_id, Some(from))
 			.take(scan_limit.saturating_add(1))
 			.boxed();
-		while let Some(Ok((topo_token, pdu))) = pdus.next().await {
-			if scanned == scan_limit {
-				saw_extra_timeline_pdu = true;
-				break;
+		timed(format!("backfill scan {room_id}"), async {
+			while let Some(Ok((topo_token, pdu))) = pdus.next().await {
+				if scanned == scan_limit {
+					saw_extra_timeline_pdu = true;
+					break;
+				}
+				scanned = scanned.saturating_add(1);
+				debug!(
+					?topo_token,
+					event_id = %pdu.event_id,
+					prev_events = ?pdu.prev_events,
+					"backfill: scanned timeline PDU"
+				);
+				event_map.insert(pdu.event_id.clone(), pdu);
 			}
-			scanned = scanned.saturating_add(1);
-			debug!(
-				?topo_token,
-				event_id = %pdu.event_id,
-				prev_events = ?pdu.prev_events,
-				"backfill: scanned timeline PDU"
-			);
-			event_map.insert(pdu.event_id.clone(), pdu);
-		}
+		})
+		.await;
 
 		// Phase 2: Pre-collect which prev_event IDs exist in the DB so the
 		// rezzy `exists` predicate is synchronous.
@@ -278,16 +281,19 @@ pub async fn backfill_if_required(
 			}
 		}
 		let mut known_ids: HashSet<OwnedEventId> = HashSet::with_capacity(all_prev_ids.len());
-		for prev_id in &all_prev_ids {
-			// Outliers exist in mtxdb, but they are still gaps in the
-			// timeline because `/messages` scans the non-outlier topo index. If
-			// we treat an outlier parent as "known" here, pagination can advance
-			// past its depth and only upgrade it later during a deeper backfill,
-			// permanently stranding that event behind the cursor.
-			if self.non_outlier_pdu_exists(prev_id).await {
-				known_ids.insert(prev_id.clone());
+		timed(format!("backfill existence checks {room_id}"), async {
+			for prev_id in &all_prev_ids {
+				// Outliers exist in mtxdb, but they are still gaps in the
+				// timeline because `/messages` scans the non-outlier topo index. If
+				// we treat an outlier parent as "known" here, pagination can advance
+				// past its depth and only upgrade it later during a deeper backfill,
+				// permanently stranding that event behind the cursor.
+				if self.non_outlier_pdu_exists(prev_id).await {
+					known_ids.insert(prev_id.clone());
+				}
 			}
-		}
+		})
+		.await;
 
 		// Phase 3: Call rezzy for correct backward extremity detection.
 		let gaps = rezzy::find_backward_extremities(&event_map, |id| known_ids.contains(id));
@@ -398,18 +404,18 @@ pub async fn backfill_if_required(
 				"Asking {backfill_server} for backfill in {room_id} (extremities: \
 				 {backwards_extremities:?})"
 			);
-			let response = self
-				.services
-				.sending
-				.send_federation_request(
+			let response = timed(
+				format!("backfill /backfill request {room_id} from {backfill_server}"),
+				self.services.sending.send_federation_request(
 					backfill_server,
 					federation::backfill::get_backfill::v1::Request {
 						room_id: room_id.to_owned(),
 						v: backwards_extremities.clone(),
 						limit: UInt::from(scan_limit_u32),
 					},
-				)
-				.await;
+				),
+			)
+			.await;
 			match response {
 				| Ok(response) => {
 					let pdus = response.pdus;
@@ -434,13 +440,18 @@ pub async fn backfill_if_required(
 					let pdus = topo_sort_backfill_batch(pdus);
 
 					// Handle timeline events newest-first (maintain timeline integrity)
-					for pdu in pdus {
-						if let Err(e) =
-							self.backfill_pdu(backfill_server, pdu, None).boxed().await
-						{
-							debug_warn!("Failed to add backfilled pdu in room {room_id}: {e}");
+					timed(format!("backfill pdu processing {room_id}"), async {
+						for pdu in pdus {
+							if let Err(e) =
+								self.backfill_pdu(backfill_server, pdu, None).boxed().await
+							{
+								debug_warn!(
+									"Failed to add backfilled pdu in room {room_id}: {e}"
+								);
+							}
 						}
-					}
+					})
+					.await;
 					got_events = true;
 					break; // Got events from this server, re-scan for new gaps
 				},

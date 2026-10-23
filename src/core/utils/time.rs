@@ -14,6 +14,21 @@ pub fn now_millis() -> u64 {
 		.as_millis() as u64
 }
 
+/// Await `fut` and log its wall-clock cost under the `timing` target.
+///
+/// One generic hook for finding which stage of a slow path dominates; filter
+/// the log on `timing` and read `elapsed_ms`.
+pub async fn timed<W, F, T>(what: W, fut: F) -> T
+where
+	W: std::fmt::Display,
+	F: Future<Output = T>,
+{
+	let started = std::time::Instant::now();
+	let out = fut.await;
+	crate::info!(target: "timing", elapsed_ms = started.elapsed().as_millis(), "{what}");
+	out
+}
+
 #[inline]
 pub fn parse_timepoint_ago(ago: &str) -> Result<SystemTime> {
 	timepoint_ago(parse_duration(ago)?)

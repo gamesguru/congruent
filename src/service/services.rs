@@ -153,6 +153,10 @@ impl Services {
 
 	pub async fn start(self: &Arc<Self>) -> Result<Arc<Self>> {
 		info!("Starting services...");
+		if std::env::var_os("CONDUWUIT_MTXDB_STATS").is_some() {
+			conduwuit_mtxdb::stats::EngineSnapshot::enable(self.mtxdb.database());
+			info!(target: "mtxdb_stats", "Detailed mtxdb statistics enabled");
+		}
 
 		self.admin.set_services(Some(Arc::clone(self)).as_ref());
 		self.check_import_marker().await?;
@@ -320,10 +324,14 @@ impl Services {
 	/// write and read cost is visible for every path, not just one caller.
 	fn spawn_mtxdb_stats_reporter(self: &Arc<Self>) {
 		const INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+		let engine_stats_enabled = std::env::var_os("CONDUWUIT_MTXDB_STATS").is_some();
 
 		let services = Arc::clone(self);
 		let _ = self.server.runtime().spawn(async move {
 			let mut last = conduwuit_mtxdb::stats::snapshot();
+			let mut last_engine = engine_stats_enabled.then(|| {
+				conduwuit_mtxdb::stats::EngineSnapshot::capture(services.mtxdb.database())
+			});
 			// The server runtime is smol-based; a tokio timer has no reactor here.
 			let mut ticker = async_io::Timer::interval(INTERVAL);
 			while services.server.running() {
@@ -338,6 +346,21 @@ impl Services {
 					);
 					last = now;
 				}
+
+				if let Some(previous_engine) = last_engine {
+					let now_engine = conduwuit_mtxdb::stats::EngineSnapshot::capture(
+						services.mtxdb.database(),
+					);
+					if now_engine != previous_engine {
+						info!(
+							target: "mtxdb_stats",
+							interval = %now_engine.since(previous_engine),
+							total = %now_engine,
+							"mtxdb engine stats"
+						);
+					}
+					last_engine = Some(now_engine);
+				}
 			}
 		});
 	}
@@ -345,6 +368,13 @@ impl Services {
 	pub async fn stop(&self) {
 		info!("Shutting down services...");
 		info!(target: "mtxdb_stats", total = %conduwuit_mtxdb::stats::snapshot(), "mtxdb stats at shutdown");
+		if std::env::var_os("CONDUWUIT_MTXDB_STATS").is_some() {
+			info!(
+				target: "mtxdb_stats",
+				total = %conduwuit_mtxdb::stats::EngineSnapshot::capture(self.mtxdb.database()),
+				"mtxdb engine stats at shutdown"
+			);
+		}
 
 		// Signal workers before the shutdown path can stall, so timers that
 		// become due during teardown do not start new user-visible work.

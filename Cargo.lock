@@ -585,6 +585,7 @@ dependencies = [
  "conduwuit_core",
  "conduwuit_database",
  "conduwuit_macros",
+ "conduwuit_mtxdb",
  "conduwuit_service",
  "conduwuit_slipstream",
  "const-str",

@@ -54,7 +54,7 @@ pub use self::{
 	sys::compute::available_parallelism,
 	time::{
 		exponential_backoff::{continue_exponential_backoff, continue_exponential_backoff_secs},
-		now_millis as millis_since_unix_epoch, timepoint_ago, timepoint_from_now,
+		now_millis as millis_since_unix_epoch, timed, timepoint_ago, timepoint_from_now,
 	},
 };
 

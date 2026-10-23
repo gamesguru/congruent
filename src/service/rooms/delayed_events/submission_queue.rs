@@ -5,7 +5,7 @@ use std::{
 	time::{Duration, SystemTime},
 };
 
-use conduwuit::{Result, err, info, utils::stream::TryIgnore};
+use conduwuit::{Result, err, info, utils::stream::TryIgnore, warn};
 use futures::{FutureExt, StreamExt, pin_mut};
 use loole::Receiver;
 
@@ -114,12 +114,14 @@ async fn load_scheduled_events(service: &Service, queue: &mut SubmissionQueue) {
 		.ignore_err();
 
 	let mut loaded_events = Vec::new();
+	let mut invalid_events = Vec::new();
 
 	while let Some((delay_id, event)) = stream.next().await {
-		let submission_time = event
-			.running_since
-			.checked_add(event.delay)
-			.unwrap_or(SystemTime::UNIX_EPOCH);
+		let Some(submission_time) = event.running_since.checked_add(event.delay) else {
+			warn!(%delay_id, "Removing delayed event with an unrepresentable due time");
+			invalid_events.push((delay_id, event.user_id, event.room_id));
+			continue;
+		};
 		queue
 			.queue
 			.push((Reverse(submission_time), delay_id.clone()));
@@ -130,6 +132,13 @@ async fn load_scheduled_events(service: &Service, queue: &mut SubmissionQueue) {
 	// Keeping an exhausted mtxdb stream alive here leaves its read registration
 	// open, and the first event write after a restart can be transiently blocked.
 	drop(stream);
+	for (delay_id, user_id, room_id) in invalid_events {
+		service.db.delayid_scheduleddelayedevent.remove(&delay_id);
+		service
+			.db
+			.userroomdelayid
+			.del(&(user_id, room_id, delay_id));
+	}
 
 	let now = SystemTime::now();
 	let overdue = queue

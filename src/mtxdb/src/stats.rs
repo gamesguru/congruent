@@ -293,8 +293,7 @@ impl EngineSnapshot {
 
 		let commits = db.commit_phase_stats();
 		let durability = db.coordinator().durability_stats();
-		let micros =
-			|value: Duration| u64::try_from(value.as_micros()).unwrap_or(u64::MAX);
+		let micros = |value: Duration| u64::try_from(value.as_micros()).unwrap_or(u64::MAX);
 		Self {
 			pools,
 			commit_calls: commits.publish.calls,

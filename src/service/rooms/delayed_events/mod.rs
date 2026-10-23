@@ -605,11 +605,13 @@ impl Service {
 
 	/// Add a delayed event to the queue
 	/// It will be submitted when it's timer runs out, unless modified before
-	#[allow(clippy::arithmetic_side_effects)]
 	pub async fn queue_delayed_event(&self, event: ScheduledDelayedEvent) -> Result<String> {
 		let delay_id = utils::random_string(DELAY_ID_SIZE);
 
-		let submission_time = event.running_since + event.delay;
+		let submission_time = event
+			.running_since
+			.checked_add(event.delay)
+			.ok_or_else(|| err!(Request(InvalidParam("delayed event due time is too large"))))?;
 		let relation = (event.user_id.clone(), event.room_id.clone(), delay_id.clone());
 
 		self.db
