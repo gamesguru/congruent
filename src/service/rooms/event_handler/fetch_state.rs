@@ -246,6 +246,19 @@ where
 	};
 
 	let room_version_id = self.services.state.get_room_version(room_id).await?;
+	let key_acquisition_started = Instant::now();
+	self.services
+		.server_keys
+		.acquire_events_pubkeys(fetched_unknown_events.iter().map(|(_, raw_json)| raw_json))
+		.await;
+	info!(
+		target: "state_ids_debug",
+		%room_id,
+		%event_id,
+		elapsed_ms = key_acquisition_started.elapsed().as_millis(),
+		fetched_event_count = fetched_unknown_events.len(),
+		"fetch_state: pre-acquired signing keys for fetched events"
+	);
 
 	// Reconstruct unknown_events
 	let mut unknown_events = Vec::new();
@@ -304,70 +317,100 @@ where
 								slipstream::signatures::Verified::All
 								| slipstream::signatures::Verified::Signatures,
 							) => {
-								if matches!(
+								let needs_redaction = matches!(
 									verification_result,
 									Ok(slipstream::signatures::Verified::Signatures)
-								) {
-									if let Err(e) = slipstream::canonical_json::redact_in_place(
-										&mut val,
-										&room_version_id,
-										None,
-									) {
-										conduwuit::warn!("Redaction failed for {eid}: {e:?}");
-										if let Err(error) = self
-											.services
-											.pdu_metadata
-											.mark_event_rejected(
-												&eid,
-												&crate::rooms::pdu_metadata::RejectionCode::InvalidPduFormat
-													.with_detail("redaction failed after hash mismatch"),
+								);
+								let event_id = eid.clone();
+								let worker_room_id = room_id.to_owned();
+								let worker_room_version = room_version_id.clone();
+								let prepared = self
+									.services
+									.server
+									.runtime()
+									.spawn_blocking(move || {
+										let redaction_error = if needs_redaction {
+											slipstream::canonical_json::redact_in_place(
+												&mut val,
+												&worker_room_version,
+												None,
 											)
-										{
-											conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
+											.err()
+										} else {
+											None
+										};
+										if let Some(error) = redaction_error {
+											val.insert(
+												"event_id".to_owned(),
+												slipstream::CanonicalJsonValue::String(
+													event_id.as_str().to_owned(),
+												),
+											);
+											return (Err(format!("{error:?}")), val);
 										}
-										val.insert(
-											"event_id".to_owned(),
-											slipstream::CanonicalJsonValue::String(
-												eid.as_str().to_owned(),
-											),
-										);
-										self.services
-											.outlier
-											.add_pdu_outlier(&eid, &val, Some(room_id))
-											.await;
-										return None;
-									}
-								}
 
-								// Re-attach unsigned for completeness
-								if let Some(slipstream::CanonicalJsonValue::Object(
-									unsigned_obj,
-								)) = stashed_unsigned
-								{
-									if !unsigned_obj.is_empty() {
+										if let Some(slipstream::CanonicalJsonValue::Object(
+											unsigned_obj,
+										)) = stashed_unsigned
+										&& !unsigned_obj.is_empty()
+										{
 										val.insert(
 											"unsigned".to_owned(),
 											slipstream::CanonicalJsonValue::Object(unsigned_obj),
 										);
-									}
-								}
-
-								val.insert(
-									"event_id".to_owned(),
-									slipstream::CanonicalJsonValue::String(
-										eid.as_str().to_owned(),
-									),
-								);
-
-								if let Ok(pdu) =
-									PduEvent::from_id_val(&eid, val.clone(), Some(room_id))
-								{
-									if crate::rooms::event_handler::check_room_id(room_id, &pdu)
+										}
+									val.insert(
+										"event_id".to_owned(),
+										slipstream::CanonicalJsonValue::String(
+											event_id.as_str().to_owned(),
+										),
+									);
+									let pdu = PduEvent::from_id_val(
+										&event_id,
+										val.clone(),
+										Some(&worker_room_id),
+									)
+									.ok()
+									.filter(|pdu| {
+										crate::rooms::event_handler::check_room_id(
+											&worker_room_id,
+											pdu,
+										)
 										.is_ok()
+									});
+									(Ok(pdu), val)
+									})
+									.await;
+								let (prepared, val) = match prepared {
+									| Ok(prepared) => prepared,
+									| Err(error) => {
+										conduwuit::warn!(%eid, "Failed to prepare verified event: {error}");
+										return None;
+									},
+								};
+								if let Err(error) = prepared {
+									conduwuit::warn!("Redaction failed for {eid}: {error}");
+									if let Err(error) = self
+										.services
+										.pdu_metadata
+										.mark_event_rejected(
+											&eid,
+											&crate::rooms::pdu_metadata::RejectionCode::InvalidPduFormat
+												.with_detail("redaction failed after hash mismatch"),
+										)
 									{
-										return Some((eid, (pdu, val)));
-									}
+									conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
 								}
+								self.services
+									.outlier
+									.add_pdu_outlier(&eid, &val, Some(room_id))
+									.await;
+								return None;
+								}
+								prepared
+									.ok()
+									.flatten()
+									.map(|pdu| (eid, (pdu, val)))
 							},
 							| _ => {
 								// Event sig failed; persist as rejected outlier so we don't
