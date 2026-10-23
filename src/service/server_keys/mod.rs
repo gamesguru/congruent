@@ -716,7 +716,7 @@ fn raw_signing_keys_for_sync(&self, origin: &ServerName) -> Result<Raw<ServerSig
 		.ok_or_else(|| err!(Request(NotFound("No signing-key record for {origin}"))))?;
 	let payload = std::str::from_utf8(&payload)
 		.map_err(|error| err!(Database("Invalid notary payload for {origin}: {error}")))?;
-	Raw::from_json_string(payload.to_owned())
+	Raw::<ServerSigningKeys>::from_json_string(payload.to_owned())
 		.map_err(|error| err!(Database("Invalid notary payload for {origin}: {error}")))
 }
 

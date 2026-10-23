@@ -89,4 +89,19 @@ dexec() { docker exec "$container_id" sh -c "$1" 2>&1 || true; }
 	[ -n "${pid:-}" ] && dexec "ls /proc/$pid/fd | wc -l"
 } >"$out" 2>&1
 
+# Server-side phase timers (fetch_state, signing-key metadata, verification,
+# fallback counts) live only in the container's application log, which
+# Complement removes with the container. Keep just those lines, one cheap
+# `docker logs` per container, so they can be compared test-to-test.
+phase_log="$stats_dir/phase_timers.log"
+{
+	echo "=== $(date -u +%FT%TZ) test=$test_name failed=$failed container=${container_id:0:12} ==="
+	docker logs "$container_id" 2>&1 | rg -a 'state_ids_debug|fetch_state:' || echo "(no phase timer lines)"
+} >>"$phase_log" 2>&1
+
+# Full application log, only when the test failed or a human asked for it.
+if [ "$failed" = "true" ] || [ -n "${COMPLEMENT_DEBUG:-}" ]; then
+	docker logs "$container_id" >"$stats_dir/container.${safe_name}-${container_id:0:12}.log" 2>&1 || true
+fi
+
 exit 0
