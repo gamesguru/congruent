@@ -1,7 +1,7 @@
 mod submission_queue;
 
 use std::{
-	collections::{BTreeMap, HashSet},
+	collections::{BTreeMap, HashMap, HashSet},
 	fmt::Write,
 	sync::{
 		Arc,
@@ -173,9 +173,17 @@ use crate::{Dep, rooms};
 
 const DELAY_ID_SIZE: usize = 32;
 
+/// How long to wait before retrying an automatic send whose storage write is
+/// transiently blocked.
+const TRANSIENT_SEND_RETRY_DELAY: Duration = Duration::from_millis(250);
+
+/// Bound the automatic retries so a permanently stuck storage boundary cannot
+/// keep one event in the schedule forever.
+const MAX_TRANSIENT_SEND_RETRIES: u32 = 120;
+
 fn is_retryable_event_write_error(error: &Error) -> bool {
 	matches!(error, Error::Database(message) if message.contains(
-		"Failed to write event to mtxdb: operation blocked:"
+		rooms::timeline::TRANSIENT_EVENT_WRITE_MARKER
 	))
 }
 
@@ -197,6 +205,10 @@ pub struct Service {
 	// Set of scheduled event to ensure each event is only finalized once
 	// Only the process which removes the delay_id from this set may finalize the event
 	scheduled_events: Mutex<HashSet<String>>,
+
+	// Automatic send attempts per delay_id that are waiting on a transient
+	// storage error, bounded by `MAX_TRANSIENT_SEND_RETRIES`.
+	transient_send_retries: Mutex<HashMap<String, u32>>,
 
 	// Queue of scheduled events to know what the next event to be submitted is
 	submission_queue: Mutex<SubmissionQueue>,
@@ -224,6 +236,7 @@ impl crate::Service for Service {
 			},
 
 			scheduled_events: Mutex::new(HashSet::new()),
+			transient_send_retries: Mutex::new(HashMap::new()),
 			submission_queue: Mutex::new(SubmissionQueue::new(receiver)),
 			submission_queue_sender: sender,
 			interrupt_requested: AtomicBool::new(false),
@@ -254,7 +267,7 @@ impl crate::Service for Service {
 	}
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ScheduledDelayedEvent {
 	pub event_type: TimelineEventType,
 	pub state_key: Option<String>,
@@ -634,10 +647,17 @@ impl Service {
 				self.db
 					.delayid_scheduleddelayedevent
 					.put(&delay_id, Json(event));
+				// A manual restart starts a fresh retry budget.
+				self.transient_send_retries.lock().await.remove(&delay_id);
 				Ok(())
 			},
-			| UpdateAction::Send | UpdateAction::Cancel =>
-				Box::pin(self.finalize_delayed_event(&delay_id, event, action, true, false)).await,
+			| UpdateAction::Send | UpdateAction::Cancel => {
+				let result =
+					Box::pin(self.finalize_delayed_event(&delay_id, event, action, true, false))
+						.await;
+				self.transient_send_retries.lock().await.remove(&delay_id);
+				result
+			},
 		}
 	}
 
@@ -735,6 +755,7 @@ impl Service {
 		let submission_time = event.running_since + event.delay;
 
 		if submission_time <= SystemTime::now() {
+			let retry_event = event.clone();
 			let result = Box::pin(self.finalize_delayed_event(
 				&delay_id,
 				event,
@@ -743,16 +764,48 @@ impl Service {
 				true,
 			))
 			.await;
-			match &result {
-				| Err(error) if is_retryable_event_write_error(error) => {
-					warn!(%delay_id, "Transient database error submitting delayed event; retrying");
-					Some((SystemTime::now() + Duration::from_millis(250), delay_id))
-				},
-				| Err(err) => {
-					error!(%delay_id, %err, "Error encountered submitting event.");
+			let retryable = result
+				.as_ref()
+				.is_err_and(|error| is_retryable_event_write_error(error));
+			// Copy the message out before any await: `conduwuit::Error` is not
+			// `Sync`, so a reference to it must not live across a suspension
+			// point in this `Send` future.
+			let error_message = result.as_ref().err().map(|error| error.to_string());
+			drop(result);
+			if retryable {
+				let attempts = {
+					let mut retries = self.transient_send_retries.lock().await;
+					let attempts = retries.entry(delay_id.clone()).or_insert(0);
+					*attempts = attempts.saturating_add(1);
+					*attempts
+				};
+				if attempts <= MAX_TRANSIENT_SEND_RETRIES {
+					warn!(%delay_id, attempts, "Transient database error submitting delayed event; retrying");
+					Some((SystemTime::now() + TRANSIENT_SEND_RETRY_DELAY, delay_id))
+				} else {
+					error!(
+						%delay_id,
+						"Giving up on delayed event after {MAX_TRANSIENT_SEND_RETRIES} \
+						 transient storage errors"
+					);
+					// Record the failure and leave the schedule.
+					let _ = Box::pin(self.finalize_delayed_event(
+						&delay_id,
+						retry_event,
+						UpdateAction::Send,
+						false,
+						false,
+					))
+					.await;
+					self.transient_send_retries.lock().await.remove(&delay_id);
 					None
-				},
-				| Ok(()) => None,
+				}
+			} else {
+				if let Some(message) = error_message {
+					error!(%delay_id, %message, "Error encountered submitting event.");
+				}
+				self.transient_send_retries.lock().await.remove(&delay_id);
+				None
 			}
 		} else {
 			Some((submission_time, delay_id))

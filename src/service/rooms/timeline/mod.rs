@@ -148,6 +148,12 @@ use crate::{
 /// Expiry makes a late `room_diff` fail and the initiator retry; it never makes
 /// a sketch wrong.
 const ADVERTISED_FRAME_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Prefix on an mtxdb event-write error that callers may safely reschedule.
+/// Kept as one constant so the producer and the delayed-event retry cannot
+/// drift apart.
+pub const TRANSIENT_EVENT_WRITE_MARKER: &str = "mtxdb transient event write:";
+
 /// Upper bound on remembered `(room, frame)` pairs.
 const ADVERTISED_FRAMES_MAX: u64 = 4096;
 /// Total events across cached reconciliation snapshots.

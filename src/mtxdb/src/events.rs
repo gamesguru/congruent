@@ -199,6 +199,9 @@ impl EventAdapter {
 	/// and a verified batch in `fetch_state`); callers use this to avoid
 	/// re-committing an identical event, while still repairing an interrupted
 	/// write or replacing a redacted body with a pristine copy.
+	///
+	/// The body, prev edges, and auth edges are staged in one transaction, so
+	/// an existing auth-edge row proves the prev-edge row was written too.
 	pub fn event_matches_with_edges(
 		&self,
 		room_id: &[u8],
@@ -487,7 +490,17 @@ impl EventAdapter {
 					}
 					std::thread::sleep(std::time::Duration::from_millis(2));
 				},
-				| result => return result,
+				| result => {
+					if result.is_err() {
+						// A commit that failed during or after publication can
+						// leave the group queued for materialization, which pins
+						// the read boundary for later versioned reads. Recover it
+						// before returning instead of waiting for an unrelated
+						// reader to discover the lag.
+						let _ = self.store.recover_pending_transactions();
+					}
+					return result;
+				},
 			}
 		}
 	}

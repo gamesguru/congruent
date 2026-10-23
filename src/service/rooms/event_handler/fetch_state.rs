@@ -94,10 +94,17 @@ where
 				})
 				.collect::<Vec<_>>();
 
-			let present = self
-				.services
-				.timeline
-				.event_ids_present(room_id, &all_ids)?;
+			// Room-scoped: an ID stored under another room is treated as missing
+			// here and rejected by `check_room_id` after the fetch. A batched
+			// read failure must not abort state recovery, so fall back to
+			// fetching every ID.
+			let present = match self.services.timeline.event_ids_present(room_id, &all_ids) {
+				| Ok(present) => present,
+				| Err(error) => {
+					debug_warn!("fetch_state: batched event existence check failed: {error}");
+					vec![false; all_ids.len()]
+				},
+			};
 			for (id, exists) in all_ids.into_iter().zip(present) {
 				if exists {
 					known_count = known_count.saturating_add(1);
@@ -367,28 +374,8 @@ where
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);
 
-	// Persist the whole verified batch in one mtxdb transaction before the
-	// per-event auth pass. Each outlier write would otherwise publish and
-	// materialize its own journal group; a large /state_ids response (hundreds
-	// of auth-chain events) exceeds the federation transaction deadline that
-	// way. The outlier path then finds these already stored and skips its own
-	// write.
-	let verified_batch = sorted_eids
-		.iter()
-		.filter_map(|eid| verified_events.get(eid))
-		.map(|(pdu, val)| (pdu, val))
-		.collect::<Vec<_>>();
-	if let Err(error) = self
-		.services
-		.timeline
-		.write_events_to_mtxdb(room_id, &verified_batch)
-		.await
-	{
-		debug_warn!("fetch_state: failed to pre-persist verified events to mtxdb: {error}");
-	}
-
-	// Sequentially auth_check them (roots first so auth checks succeed since
-	// handle_outlier_pdu queries the DB).
+	// Auth-check them sequentially, roots first, so only accepted predecessors
+	// are available when validating descendants.
 	for eid in sorted_eids {
 		if let Some((_, val)) = verified_events.remove(&eid) {
 			if let Err(e) = Box::pin(self.handle_outlier_pdu(

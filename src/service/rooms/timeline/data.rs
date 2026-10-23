@@ -956,13 +956,18 @@ impl Data {
 	) -> Result<PduEvent> {
 		// When the room is known, read the body straight from its event
 		// collection instead of paying for a locator lookup first. This is the
-		// hot path when auth-checking a large fetched auth chain.
+		// hot path when auth-checking a large fetched auth chain. A miss falls
+		// back to the locator so an event stored under another room still
+		// reports the room mismatch rather than a bare NotFound.
 		let bytes = match room_id {
-			| Some(room_id) => self
+			| Some(room_id) => match self
 				.mtxdb_events
 				.get_event(room_id.as_bytes(), event_id.as_bytes())
 				.map_err(|error| err!(Database("mtxdb event lookup failed: {error}")))?
-				.ok_or_else(|| err!(Request(NotFound("event body not found in mtxdb"))))?,
+			{
+				| Some(bytes) => bytes,
+				| None => self.get_event_json_bytes(event_id.as_bytes())?,
+			},
 			| None => self.get_event_json_bytes(event_id.as_bytes())?,
 		};
 		let pdu: PduEvent = database::from_json_slice(&bytes)?;
@@ -987,10 +992,7 @@ impl Data {
 		room_id: &RoomId,
 		event_ids: &[OwnedEventId],
 	) -> Result<Vec<bool>> {
-		let ids: Vec<&[u8]> = event_ids
-			.iter()
-			.map(slipstream::OwnedEventId::as_bytes)
-			.collect();
+		let ids: Vec<&[u8]> = event_ids.iter().map(OwnedEventId::as_bytes).collect();
 		self.mtxdb_events
 			.get_events(room_id.as_bytes(), &ids)
 			.map(|values| values.into_iter().map(|value| value.is_some()).collect())
@@ -1293,7 +1295,17 @@ impl Data {
 				&prev_events,
 				&auth_events,
 			)
-			.map_err(|error| err!(Database("Failed to write event to mtxdb: {error}")))?;
+			.map_err(|error| {
+				// Keep transient storage contention distinguishable for callers
+				// that reschedule work, without depending on mtxdb's Display
+				// wording.
+				if error.is_would_block() || error.is_stale_read() {
+					let marker = super::TRANSIENT_EVENT_WRITE_MARKER;
+					err!(Database("{marker} {error}"))
+				} else {
+					err!(Database("Failed to write event to mtxdb: {error}"))
+				}
+			})?;
 		Ok(())
 	}
 
@@ -1309,6 +1321,7 @@ impl Data {
 		room_id: &RoomId,
 		events: &[(&PduEvent, &CanonicalJsonObject)],
 	) -> Result {
+		const EVENTS_PER_TRANSACTION: usize = 64;
 		if events.is_empty() {
 			return Ok(());
 		}
@@ -1342,16 +1355,34 @@ impl Data {
 
 		// Chunk so a stale-read conflict only re-stages (and re-materializes) a
 		// bounded prefix, rather than the entire auth chain. `stage_put` already
-		// enforces mtxdb's transaction-size budget per put.
-		const EVENTS_PER_TRANSACTION: usize = 64;
+		// enforces mtxdb's transaction-size budget per put, but the limit is
+		// per-database, so a rejected chunk is split again.
 		for chunk in writes.chunks(EVENTS_PER_TRANSACTION) {
-			self.mtxdb_events
-				.write_events_with_edges(room_id.as_bytes(), chunk)
-				.map_err(|error| {
-					err!(Database("Failed to write event batch to mtxdb: {error}"))
-				})?;
+			self.write_event_chunk(room_id, chunk)?;
 		}
 		Ok(())
+	}
+
+	/// Write one mtxdb event batch, halving it if the database's transaction
+	/// staging budget rejects it. A single event that still does not fit is a
+	/// real error.
+	fn write_event_chunk(
+		&self,
+		room_id: &RoomId,
+		chunk: &[conduwuit_mtxdb::events::EventWrite<'_>],
+	) -> Result {
+		match self
+			.mtxdb_events
+			.write_events_with_edges(room_id.as_bytes(), chunk)
+		{
+			| Ok(()) => Ok(()),
+			| Err(error) if error.is_stage_too_large() && chunk.len() > 1 => {
+				let (head, tail) = chunk.split_at(chunk.len() / 2);
+				self.write_event_chunk(room_id, head)?;
+				self.write_event_chunk(room_id, tail)
+			},
+			| Err(error) => Err(err!(Database("Failed to write event batch to mtxdb: {error}"))),
+		}
 	}
 
 	/// Like [`Self::append_pdu`], for a caller that already ran
