@@ -377,6 +377,14 @@ impl Services {
 			manager.stop().await;
 		}
 
+		// Record the index coverage of everything written this session. Without
+		// this, a reopen can load an older checkpoint while the MtxdbStore
+		// keeps a newer durable coverage, leaving versioned reads pinned below
+		// the collection version with nothing left for recovery to drain.
+		if let Err(error) = self.mtxdb.checkpoint_all() {
+			warn!("Failed to checkpoint mtxdb during shutdown: {error}");
+		}
+
 		self.admin.set_services(None);
 
 		debug_info!("Services shutdown complete.");

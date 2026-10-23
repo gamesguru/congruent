@@ -143,6 +143,19 @@ impl MtxdbStore {
 	pub fn sync(&self, shard: ShardType) -> Result<(), StorageError> {
 		self.db.pool(shard).sync_all()
 	}
+
+	/// Persist a full index checkpoint for every pool.
+	///
+	/// The checkpoint records the journal coverage its index has materialized.
+	/// Without one, a reopen may see a newer durable journal coverage in the
+	/// delta metadata but load an older checkpoint, leaving versioned reads
+	/// waiting on a boundary that no pending group can lift.
+	pub fn checkpoint_all(&self) -> Result<(), StorageError> {
+		for shard in ShardType::ALL {
+			self.db.pool(shard).force_index_checkpoint()?;
+		}
+		Ok(())
+	}
 }
 
 pub struct MtxdbTransaction<'a> {
