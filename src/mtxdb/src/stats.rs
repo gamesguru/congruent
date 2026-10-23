@@ -383,6 +383,16 @@ pub fn snapshot() -> Snapshot {
 	}
 }
 
+/// Print the process totals to stderr when anything was recorded. Test
+/// binaries call this at exit so a whole run gets one summary line.
+#[allow(clippy::print_stderr)]
+pub fn eprint_totals(label: &str) {
+	let totals = snapshot();
+	if totals != Snapshot::default() {
+		eprintln!("mtxdb stats ({label}): {totals}");
+	}
+}
+
 impl Snapshot {
 	/// Counters accumulated since `earlier`.
 	#[must_use]

@@ -56,3 +56,8 @@ pub async fn fini(admin_service: &service::admin::Service) {
 	_ = admin_service.handle.write().await.take();
 	_ = admin_service.complete.write().take();
 }
+
+/// One mtxdb totals line per test binary, printed at process exit.
+#[cfg(test)]
+#[ctor::dtor]
+fn report_mtxdb_stats() { conduwuit_mtxdb::stats::eprint_totals(module_path!()); }

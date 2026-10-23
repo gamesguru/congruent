@@ -52,5 +52,10 @@ pub(crate) static DB_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::co
 
 pub use crate::services::Services;
 
+/// One mtxdb totals line per test binary, printed at process exit.
+#[cfg(test)]
+#[ctor::dtor]
+fn report_mtxdb_stats() { conduwuit_mtxdb::stats::eprint_totals(module_path!()); }
+
 conduwuit::mod_ctor! {}
 conduwuit::mod_dtor! {}
