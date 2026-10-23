@@ -28,10 +28,9 @@ impl GetAllDelayedEventsRequest {
 struct ScheduleDelayedEventRequest;
 
 impl ScheduleDelayedEventRequest {
-	const METADATA: Metadata = Metadata::new(
-		"PUT",
-		"/_matrix/client/unstable/org.matrix.msc4140/rooms/{}/delayed_event/{}/{}",
-	);
+	// The endpoint has the same user-token authentication policy as event sends.
+	const METADATA: Metadata =
+		slipstream::api::client::message::send_message_event::v3::Request::METADATA;
 }
 
 pub(crate) struct DelayedEventUser {
