@@ -208,6 +208,18 @@ pub async fn verify_event_at(
 	room_version: Option<&RoomVersionId>,
 	context: &'static str,
 ) -> Result<Verified> {
+	self.verify_event_at_with_metadata(event, room_version, context, None)
+		.await
+}
+
+#[implement(super::Service)]
+pub(crate) async fn verify_event_at_with_metadata(
+	&self,
+	event: &CanonicalJsonObject,
+	room_version: Option<&RoomVersionId>,
+	context: &'static str,
+	metadata: Option<&super::EventKeyMetadataCache>,
+) -> Result<Verified> {
 	let room_version = room_version.unwrap_or(&RoomVersionId::V12);
 
 	// Per spec, only the origin server's signature is required.
@@ -216,7 +228,12 @@ pub async fn verify_event_at(
 	// Strip non-origin signatures before verification.
 	let event = isolate_origin_signatures(event, room_version);
 
-	let keys = self.get_event_keys(&event, room_version).await?;
+	let keys = match metadata {
+		| Some(metadata) =>
+			self.get_event_keys_with_metadata(&event, room_version, metadata)
+				.await?,
+		| None => self.get_event_keys(&event, room_version).await?,
+	};
 	let room_version = room_version.clone();
 	let (event, keys, result) = self
 		.services

@@ -14,6 +14,7 @@ use conduwuit::{
 	utils::{IterStream, MutexMap, timepoint_from_now},
 };
 use futures::StreamExt;
+pub(crate) use get::EventKeyMetadataCache;
 use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedServerName, OwnedServerSigningKeyId,
 	RoomVersionId, ServerName, ServerSigningKeyId,
@@ -733,18 +734,23 @@ pub fn merged_signing_keys_for(
 /// validity metadata are restored from the verbatim Notary payload.
 #[implement(Service)]
 fn merged_signing_keys_for_sync(&self, origin: &ServerName) -> Result<ServerSigningKeys> {
-	let native = self
-		.db
-		.mtxdb_keys
-		.read_keys(origin.as_bytes())
-		.map_err(|error| {
-			err!(Database("Failed to read mtxdb signing keys for {origin}: {error}"))
-		})?;
+	merged_signing_keys_from_adapter(&self.db.mtxdb_keys, origin)
+}
+
+pub(super) fn merged_signing_keys_from_adapter(
+	adapter: &conduwuit_mtxdb::server_keys::ServerKeysAdapter,
+	origin: &ServerName,
+) -> Result<ServerSigningKeys> {
+	let native = adapter.read_keys(origin.as_bytes()).map_err(|error| {
+		err!(Database("Failed to read mtxdb signing keys for {origin}: {error}"))
+	})?;
 	if !native.iter().any(|key| !key.is_evicted()) {
 		return Err(err!(Request(NotFound("No signing-key record for {origin}"))));
 	}
 	let mut keys = signing_keys_from_native(origin, &native)?;
-	if let Ok(raw) = self.raw_signing_keys_for_sync(origin)
+	if let Ok(Some(payload)) = adapter.read_notary(origin.as_bytes())
+		&& let Ok(payload) = std::str::from_utf8(&payload)
+		&& let Ok(raw) = Raw::from_json_string(payload.to_owned())
 		&& let Ok(raw_keys) = raw.deserialize()
 	{
 		keys.signatures = raw_keys.signatures;

@@ -321,8 +321,23 @@ where
 		"fetch_state: {} newly missing events fetched successfully",
 		unknown_events.len(),
 	);
+	let key_metadata_started = Instant::now();
+	let key_metadata = self
+		.services
+		.server_keys
+		.event_key_metadata_for_events(&unknown_events, &room_version_id)
+		.await;
+	info!(
+		target: "state_ids_debug",
+		%room_id,
+		%event_id,
+		elapsed_ms = key_metadata_started.elapsed().as_millis(),
+		fetched_event_count = unknown_events.len(),
+		key_origin_count = key_metadata.origin_count(),
+		"fetch_state: loaded signing-key metadata for fetched events"
+	);
 
-	// Concurrently parse and verify signatures (Pure CPU and network keys fetch).
+	// Concurrently verify signatures and prepare fetched events for PDU parsing.
 	// Use an explicit width: the automatic stream width follows the database
 	// worker topology and can be as low as 2, which serializes this CPU-bound
 	// batch badly (MSC4297 state responses can carry hundreds of auth events).
@@ -338,8 +353,10 @@ where
 			.stream()
 			.broadn_filter_map(signature_verification_concurrency, {
 				let room_version_id = room_version_id.clone();
+				let key_metadata = key_metadata.clone();
 				move |(eid, mut val): (OwnedEventId, slipstream::CanonicalJsonObject)| {
 					let room_version_id = room_version_id.clone();
+					let key_metadata = key_metadata.clone();
 					async move {
 						let stashed_unsigned = val.remove("unsigned");
 
@@ -355,10 +372,11 @@ where
 						} else {
 							self.services
 								.server_keys
-								.verify_event_at(
+								.verify_event_at_with_metadata(
 									&val,
 									Some(&room_version_id),
 									"fetch_state::broad_filter_map",
+									Some(&key_metadata),
 								)
 								.await
 						};
