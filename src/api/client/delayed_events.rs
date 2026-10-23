@@ -1,6 +1,6 @@
 use conduwuit::{Err, Result};
 use hyper::body::Incoming;
-use slipstream::api::Metadata;
+use slipstream::{api::Metadata, endpoint::EndpointRequest};
 
 use crate::{
 	json_util::single_field,
