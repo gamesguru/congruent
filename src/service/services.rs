@@ -187,6 +187,8 @@ impl Services {
 		info!("Starting service workers...");
 		manager.start().await?;
 
+		self.spawn_mtxdb_stats_reporter();
+
 		info!("Services startup complete.");
 
 		Ok(Arc::clone(self))
@@ -300,8 +302,35 @@ impl Services {
 		Ok(())
 	}
 
+	/// Log process-wide mtxdb counters every 30 s while they are moving, so
+	/// write and read cost is visible for every path, not just one caller.
+	fn spawn_mtxdb_stats_reporter(self: &Arc<Self>) {
+		const INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+		let services = Arc::clone(self);
+		self.server.runtime().spawn(async move {
+			let mut last = conduwuit_mtxdb::stats::snapshot();
+			let mut ticker = tokio::time::interval(INTERVAL);
+			ticker.tick().await;
+			while services.server.running() {
+				ticker.tick().await;
+				let now = conduwuit_mtxdb::stats::snapshot();
+				if now != last {
+					info!(
+						target: "mtxdb_stats",
+						interval = %now.since(last),
+						total = %now,
+						"mtxdb stats"
+					);
+					last = now;
+				}
+			}
+		});
+	}
+
 	pub async fn stop(&self) {
 		info!("Shutting down services...");
+		info!(target: "mtxdb_stats", total = %conduwuit_mtxdb::stats::snapshot(), "mtxdb stats at shutdown");
 
 		// Report before anything can stall: the container may be killed mid-stop.
 		self.db.log_write_stats();

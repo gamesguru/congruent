@@ -68,7 +68,7 @@ pub(crate) async fn event_key_metadata_for_events(
 	let origins: BTreeSet<OwnedServerName> = events
 		.iter()
 		.filter_map(|(_, event)| required_keys(event, version).ok())
-		.flat_map(|required| required.into_keys())
+		.flat_map(std::collections::BTreeMap::into_keys)
 		.collect();
 	let adapter = self.db.mtxdb_keys.clone();
 	let metadata = self

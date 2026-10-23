@@ -106,15 +106,15 @@ impl MtxdbStore {
 		collection: &CollectionId,
 		nodes: &[NodeId],
 	) -> Result<Vec<Option<Vec<u8>>>, StorageError> {
-		self.db
-			.pool(shard)
-			.get_read_committed(collection, nodes)
-			.map(|values| {
-				values
-					.into_iter()
-					.map(|value| value.map(|node| node.bytes.to_vec()))
-					.collect()
-			})
+		let started = std::time::Instant::now();
+		let result = self.db.pool(shard).get_read_committed(collection, nodes);
+		crate::stats::record_read(nodes.len(), started.elapsed(), result.is_ok());
+		result.map(|values| {
+			values
+				.into_iter()
+				.map(|value| value.map(|node| node.bytes.to_vec()))
+				.collect()
+		})
 	}
 
 	/// Apply any transaction group that was published to the journal but whose
@@ -188,6 +188,7 @@ impl MtxdbTransaction<'_> {
 	) -> Result<(), StorageError> {
 		self.tx
 			.put(shard, collection, node, &mtxdb::storage::NodeData::from_slice(data))?;
+		crate::stats::record_put(data.len());
 		Ok(())
 	}
 
@@ -204,6 +205,7 @@ impl MtxdbTransaction<'_> {
 		node: NodeId,
 	) -> Result<(), StorageError> {
 		self.tx.remove(shard, collection, node)?;
+		crate::stats::record_removes(1);
 		Ok(())
 	}
 
@@ -218,6 +220,7 @@ impl MtxdbTransaction<'_> {
 		nodes: &[NodeId],
 	) -> Result<(), StorageError> {
 		self.tx.remove_many(shard, collection, nodes)?;
+		crate::stats::record_removes(nodes.len());
 		Ok(())
 	}
 
@@ -235,7 +238,12 @@ impl MtxdbTransaction<'_> {
 		Ok(())
 	}
 
-	pub fn commit(self) -> Result<(), StorageError> { self.tx.commit() }
+	pub fn commit(self) -> Result<(), StorageError> {
+		let started = std::time::Instant::now();
+		let result = self.tx.commit();
+		crate::stats::record_commit(started.elapsed(), result.is_ok());
+		result
+	}
 }
 
 #[cfg(test)]

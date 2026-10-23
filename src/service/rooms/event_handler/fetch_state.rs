@@ -74,6 +74,8 @@ pub(crate) async fn fetch_state<Pdu>(
 where
 	Pdu: Event + Send + Sync,
 {
+	let fetch_started = Instant::now();
+	let mtxdb_before = conduwuit_mtxdb::stats::snapshot();
 	let mut pool = self.build_server_pool(room_id, origin, 5).await;
 	let mut last_err = err!(Request(NotFound("No server could provide /state")));
 
@@ -651,6 +653,16 @@ where
 	if state.get(&create_shortstatekey).map(AsRef::as_ref) != Some(create_event.event_id()) {
 		return Err!(Database("Incoming event refers to wrong create event."));
 	}
+
+	info!(
+		target: "state_ids_debug",
+		%room_id,
+		%event_id,
+		elapsed_ms = fetch_started.elapsed().as_millis(),
+		mtxdb_during_fetch = %conduwuit_mtxdb::stats::snapshot().since(mtxdb_before),
+		mtxdb_total = %conduwuit_mtxdb::stats::snapshot(),
+		"fetch_state: completed"
+	);
 
 	Ok(Some(state))
 }

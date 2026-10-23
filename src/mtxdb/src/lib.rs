@@ -17,6 +17,7 @@ pub mod room_metadata;
 pub mod server_keys;
 pub mod shortids;
 pub mod state;
+pub mod stats;
 pub mod store;
 pub mod verdicts;
 
