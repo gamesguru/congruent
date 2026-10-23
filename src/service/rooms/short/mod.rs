@@ -708,6 +708,52 @@ pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> 
 	Ok(version)
 }
 
+/// Synchronously resolve the room version from cache or mtxdb, falling back to
+/// imported collection metadata and then the legacy map. Fallback values are
+/// persisted in mtxdb and cached.
+///
+/// Unparsable version strings in mtxdb are skipped. Storage and legacy decoding
+/// errors propagate.
+#[implement(Service)]
+pub fn get_room_version_blocking(&self, room_id: &RoomId) -> Result<RoomVersionId> {
+	if let Some(version) = self.roomid_roomversion_cache.get(&room_id.to_owned()) {
+		return Ok(version);
+	}
+
+	if let Some(version) =
+		conduwuit_mtxdb::room_metadata::get_room_version(&self.db.mtxdb, room_id.as_bytes())
+			.map_err(|error| err!(Database("mtxdb room-version lookup failed: {error}")))?
+			.and_then(|version| RoomVersionId::from_str(&version).ok())
+	{
+		self.roomid_roomversion_cache
+			.insert(room_id.to_owned(), version.clone());
+		return Ok(version);
+	}
+
+	if let Some(version) = conduwuit_mtxdb::room_metadata::room_version_from_collection(
+		&self.db.mtxdb,
+		room_id.as_bytes(),
+	)
+	.map_err(|error| err!(Database("mtxdb room-version metadata lookup failed: {error}")))?
+	.and_then(|version| RoomVersionId::from_str(&version).ok())
+	{
+		self.set_room_version(room_id, &version)?;
+		self.roomid_roomversion_cache
+			.insert(room_id.to_owned(), version.clone());
+		return Ok(version);
+	}
+
+	let version: RoomVersionId = self
+		.db
+		.roomid_roomversion
+		.get_blocking(room_id)
+		.deserialized()?;
+	self.set_room_version(room_id, &version)?;
+	self.roomid_roomversion_cache
+		.insert(room_id.to_owned(), version.clone());
+	Ok(version)
+}
+
 /// Persist the immutable room version in mtxdb, then update the legacy map
 /// and cache. A conflicting version or mtxdb storage failure returns a database
 /// error before the legacy map or cache is updated.

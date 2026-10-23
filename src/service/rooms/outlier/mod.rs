@@ -26,7 +26,6 @@ struct Data {
 	eventid_metadata: Arc<Map>,
 	shorteventid_shortprevevents: Arc<Map>,
 	mtxdb_events: conduwuit_mtxdb::events::EventAdapter,
-	mtxdb: Arc<conduwuit_mtxdb::store::MtxdbStore>,
 }
 
 struct Services {
@@ -41,7 +40,6 @@ impl crate::Service for Service {
 				eventid_metadata: args.db["eventid_metadata"].clone(),
 				shorteventid_shortprevevents: args.db["shorteventid_shortprevevents"].clone(),
 				mtxdb_events: conduwuit_mtxdb::events::EventAdapter::new(args.mtxdb.clone()),
-				mtxdb: args.mtxdb.clone(),
 			},
 			services: Services {
 				short: args.depend::<rooms::short::Service>("rooms::short"),
@@ -322,7 +320,7 @@ fn add_pdu_outlier_batch_impl<'a>(
 				},
 			}
 		}
-		if let Err(error) = self.services.short.get_room_version(room_id).await {
+		if let Err(error) = self.services.short.get_room_version_blocking(room_id) {
 			warn!(?error, %room_id, %event_id, "Skipping outlier before room version is established");
 			return;
 		}
