@@ -132,7 +132,10 @@ where
 				%room_id,
 				%event_id,
 				elapsed_ms = existence_check_started.elapsed().as_millis(),
-				total_ids = state_ids_res.auth_chain_ids.len() + state_ids_res.pdu_ids.len(),
+				total_ids = state_ids_res
+					.auth_chain_ids
+					.len()
+					.saturating_add(state_ids_res.pdu_ids.len()),
 				known_count,
 				missing_count = missing_ids.len(),
 				"fetch_state: checked local event bodies"
