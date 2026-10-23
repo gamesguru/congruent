@@ -28,10 +28,7 @@ fn prepare_verified_event(
 	needs_redaction: bool,
 	room_id: slipstream::OwnedRoomId,
 	room_version: slipstream::RoomVersionId,
-) -> (
-	Result<Option<PduEvent>, String>,
-	slipstream::CanonicalJsonObject,
-) {
+) -> (Result<Option<PduEvent>, String>, slipstream::CanonicalJsonObject) {
 	if needs_redaction {
 		if let Err(error) =
 			slipstream::canonical_json::redact_in_place(&mut val, &room_version, None)
@@ -47,10 +44,7 @@ fn prepare_verified_event(
 	if let Some(slipstream::CanonicalJsonValue::Object(unsigned)) = stashed_unsigned
 		&& !unsigned.is_empty()
 	{
-		val.insert(
-			"unsigned".to_owned(),
-			slipstream::CanonicalJsonValue::Object(unsigned),
-		);
+		val.insert("unsigned".to_owned(), slipstream::CanonicalJsonValue::Object(unsigned));
 	}
 
 	val.insert(
@@ -333,11 +327,16 @@ where
 	// worker topology and can be as low as 2, which serializes this CPU-bound
 	// batch badly (MSC4297 state responses can carry hundreds of auth events).
 	let signature_verification_started = Instant::now();
+	let signature_verification_concurrency = self
+		.services
+		.server
+		.config
+		.fetch_state_signature_verification_concurrency;
 	let mut verified_events: HashMap<OwnedEventId, (PduEvent, slipstream::CanonicalJsonObject)> =
 		unknown_events
 			.into_iter()
 			.stream()
-			.broadn_filter_map(256, {
+			.broadn_filter_map(signature_verification_concurrency, {
 				let room_version_id = room_version_id.clone();
 				move |(eid, mut val): (OwnedEventId, slipstream::CanonicalJsonObject)| {
 					let room_version_id = room_version_id.clone();

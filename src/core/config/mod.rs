@@ -255,6 +255,14 @@ pub struct Config {
 	/// default: varies by system
 	pub worker_threads: Option<usize>,
 
+	/// Maximum number of events to verify concurrently while fetching a remote
+	/// state response. This limit applies to each state fetch; higher values can
+	/// increase CPU and memory use when several fetches run at once.
+	///
+	/// default: 256
+	#[serde(default = "default_fetch_state_signature_verification_concurrency")]
+	pub fetch_state_signature_verification_concurrency: usize,
+
 	/// Set this to any float value in megabytes for continuwuity to tell the
 	/// database engine that this much memory is available for database read
 	/// caches.
@@ -3167,6 +3175,8 @@ fn default_unix_socket_perms() -> u32 { 660 }
 fn default_database_backups_to_keep() -> i16 { 1 }
 
 fn default_db_write_buffer_capacity_mb() -> f64 { 48.0 + parallelism_scaled_f64(4.0) }
+
+fn default_fetch_state_signature_verification_concurrency() -> usize { 256 }
 
 fn default_db_cache_capacity_mb() -> f64 { 128.0 + parallelism_scaled_f64(64.0) }
 

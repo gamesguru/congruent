@@ -39,6 +39,13 @@ pub fn check(config: &Config) -> Result {
 		));
 	}
 
+	if config.fetch_state_signature_verification_concurrency == 0 {
+		return Err!(Config(
+			"fetch_state_signature_verification_concurrency",
+			"fetch_state_signature_verification_concurrency must be greater than zero."
+		));
+	}
+
 	warn_deprecated(config);
 	warn_unknown_key(config);
 
