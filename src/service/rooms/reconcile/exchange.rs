@@ -492,22 +492,6 @@ impl Service {
 			| Err(e) => return Outcome::Failed(format!("room version: {e}")),
 		};
 
-		// Serialize with inbound /send and backfill for this room, as every other
-		// caller of the incoming-PDU pipeline does. Taken only after the
-		// federation fetches, so no lock is held across network I/O.
-		{
-			let _room_lock = self
-				.services
-				.event_handler
-				.mutex_federation
-				.lock(room_id)
-				.await;
-			// The lock wait may have outlasted our or the peer's membership.
-			if let Some(outcome) = self.admission_lapsed(room_id, peer).await {
-				return outcome;
-			}
-		}
-
 		let (mut applied, mut unusable) = (0_usize, 0_usize);
 		for (_, parsed_room, event_id, value) in fetched {
 			// Hold the room federation lock for one event at a time. The batch can
@@ -519,6 +503,11 @@ impl Service {
 				.mutex_federation
 				.lock(room_id)
 				.await;
+			// The lock wait, or a previous event in this batch, may have
+			// outlasted our or the peer's membership.
+			if let Some(outcome) = self.admission_lapsed(room_id, peer).await {
+				return outcome;
+			}
 			let handled = self
 				.services
 				.event_handler
