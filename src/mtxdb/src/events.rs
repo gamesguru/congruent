@@ -19,6 +19,8 @@ use crate::{
 	store::{CollectionId, MtxdbStore, MtxdbTransaction, NodeId},
 };
 
+const MAX_EVENT_WRITE_RETRIES: u16 = 256;
+
 #[derive(Clone)]
 pub struct EventAdapter {
 	store: Arc<MtxdbStore>,
@@ -246,25 +248,35 @@ impl EventAdapter {
 	/// commit is made conditional on the collection being unchanged and
 	/// concurrent writers to one room fail with [`StorageError::StaleRead`].
 	fn stage_closure(
-		&self,
 		tx: &MtxdbTransaction<'_>,
 		room_id: &[u8],
 		event_id: &[u8],
 		auth_events: &[&[u8]],
 	) -> Result<(), StorageError> {
 		let collection = Self::auth_collection(room_id);
-		let version = self
-			.store
-			.collection_version(ShardType::Edges, &collection)?;
-		let start = self
-			.store
-			.get(ShardType::Edges, &collection, counter_node())?
-			.map_or(Ok(0), |bytes| decode_u32(&bytes))?;
-		let mut next = start;
-
 		let mut ids: Vec<&[u8]> = vec![event_id];
 		ids.extend_from_slice(auth_events);
-		let committed = self.committed_short_ids(&collection, &ids)?;
+		let mut read_nodes = Vec::with_capacity(ids.len().saturating_add(1));
+		read_nodes.push(counter_node());
+		read_nodes.extend(ids.iter().map(|id| forward_node(id)));
+		let (values, version) =
+			tx.get_with_collection_version(ShardType::Edges, collection, &read_nodes)?;
+		let start = values
+			.first()
+			.and_then(Option::as_ref)
+			.map_or(Ok(0), |bytes| decode_u32(bytes))?;
+		let mut next = start;
+		let committed = values
+			.into_iter()
+			.skip(1)
+			.zip(ids.iter())
+			.map(|(value, event_id)| {
+				value.map_or(Ok(None), |bytes| {
+					let (short, stored) = decode_forward(&bytes)?;
+					Ok((stored == *event_id).then_some(short))
+				})
+			})
+			.collect::<Result<Vec<_>, StorageError>>()?;
 		let mut staged: HashMap<Vec<u8>, u32> = HashMap::new();
 		let mut shorts = Vec::with_capacity(ids.len());
 		for (id, found) in ids.iter().zip(committed) {
@@ -288,7 +300,7 @@ impl EventAdapter {
 			.iter()
 			.map(|short| closure_node(*short))
 			.collect();
-		let closures = self.store.get_many(ShardType::Edges, &collection, &nodes)?;
+		let closures = tx.get_many(ShardType::Edges, collection, &nodes)?;
 		let mut closure = Bitmap::new();
 		let mut complete = true;
 		for (short, stored) in auth_shorts.iter().zip(closures) {
@@ -314,8 +326,8 @@ impl EventAdapter {
 		}
 		if next != start {
 			tx.put(ShardType::Edges, collection, counter_node(), &next.to_be_bytes())?;
-			tx.expect_collection_version(ShardType::Edges, collection, version)?;
 		}
+		tx.expect_collection_version(ShardType::Edges, collection, version)?;
 		Ok(())
 	}
 
@@ -361,7 +373,7 @@ impl EventAdapter {
 		let auth = Self::serialize_edges(auth_events)?;
 		tx.put(ShardType::Edges, Self::prev_collection(room_id), node, &prev)?;
 		tx.put(ShardType::Edges, Self::auth_collection(room_id), node, &auth)?;
-		self.stage_closure(tx, room_id, event_id, auth_events)?;
+		Self::stage_closure(tx, room_id, event_id, auth_events)?;
 		Ok(())
 	}
 
@@ -379,7 +391,7 @@ impl EventAdapter {
 		// whole write is redone against the new version. Reads made while
 		// staging can also be blocked when the collection keeps advancing, so
 		// retry the complete transaction for those transient errors too.
-		let mut attempts = 0_u8;
+		let mut attempts = 0_u16;
 		loop {
 			let tx = self.store.begin_transaction();
 			let staged = self.put_event_with_edges(
@@ -396,12 +408,13 @@ impl EventAdapter {
 			};
 			match result {
 				| Err(error)
-					if (error.is_stale_read() || error.is_would_block()) && attempts < 32 =>
+					if (error.is_stale_read() || error.is_would_block())
+						&& attempts < MAX_EVENT_WRITE_RETRIES =>
 				{
 					attempts = attempts
 						.checked_add(1)
-						.expect("attempts is less than thirty-two");
-					std::thread::sleep(std::time::Duration::from_millis(1));
+						.expect("attempts is less than the retry limit");
+					std::thread::sleep(std::time::Duration::from_millis(2));
 				},
 				| result => return result,
 			}

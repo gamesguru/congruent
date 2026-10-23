@@ -218,7 +218,7 @@ where
 	) {
 		let starting_events: Vec<OwnedEventId> = lean_state_sets
 			.iter()
-			.flat_map(|state| state.values())
+			.flat_map(rezzy::PersistentOrdMap::values)
 			.filter_map(|event_id| OwnedEventId::parse(event_id.as_str()).ok())
 			.collect();
 		match timeline.get_mtxdb_auth_context(room_id, &starting_events) {
