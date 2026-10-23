@@ -377,10 +377,13 @@ impl Services {
 			manager.stop().await;
 		}
 
-		// Record the index coverage of everything written this session. Without
-		// this, a reopen can load an older checkpoint while the MtxdbStore
-		// keeps a newer durable coverage, leaving versioned reads pinned below
-		// the collection version with nothing left for recovery to drain.
+		// Finish anything a worker published but did not materialize before we
+		// record index coverage. A pending group clamps the checkpoint's coverage,
+		// which can leave the next process with a collection version above its
+		// read boundary and nothing left for recovery to drain.
+		if let Err(error) = self.mtxdb.recover_pending_transactions() {
+			warn!("Failed to recover mtxdb transactions during shutdown: {error}");
+		}
 		if let Err(error) = self.mtxdb.checkpoint_all() {
 			warn!("Failed to checkpoint mtxdb during shutdown: {error}");
 		}
