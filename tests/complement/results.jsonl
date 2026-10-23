@@ -91,7 +91,7 @@
 {"Action":"pass","Test":"TestDeactivateAccount/Can't_deactivate_account_with_wrong_password"}
 {"Action":"pass","Test":"TestDeactivateAccount/Can_deactivate_account"}
 {"Action":"pass","Test":"TestDeactivateAccount/Password_flow_is_available"}
-{"Action":"fail","Test":"TestDelayedEvents"}
+{"Action":"pass","Test":"TestDelayedEvents"}
 {"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay"}
 {"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay/missing_content"}
 {"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay/missing_delay_ms"}
@@ -108,7 +108,7 @@
 {"Action":"pass","Test":"TestDelayedEvents/delayed_message_events_are_sent_on_timeout/rerequesting_delayed_event_path_with_the_same_txnID_should_have_the_same_response"}
 {"Action":"pass","Test":"TestDelayedEvents/delayed_message_events_are_sent_on_timeout/rerequesting_delayed_event_path_with_the_same_txnID_should_have_the_same_response#01"}
 {"Action":"pass","Test":"TestDelayedEvents/delayed_message_events_are_sent_on_timeout/rerequesting_delayed_event_path_with_the_same_txnID_should_have_the_same_response#02"}
-{"Action":"fail","Test":"TestDelayedEvents/delayed_state_events_are_kept_on_server_restart"}
+{"Action":"pass","Test":"TestDelayedEvents/delayed_state_events_are_kept_on_server_restart"}
 {"Action":"pass","Test":"TestDelayedEvents/delayed_state_events_are_sent_on_timeout"}
 {"Action":"pass","Test":"TestDelayedEvents/delayed_state_events_can_be_cancelled"}
 {"Action":"pass","Test":"TestDelayedEvents/delayed_state_events_can_be_restarted"}

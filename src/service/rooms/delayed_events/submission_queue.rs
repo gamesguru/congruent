@@ -19,7 +19,11 @@ pub(crate) struct SubmissionQueue {
 
 impl SubmissionQueue {
 	pub(crate) fn new(receiver: Receiver<(SystemTime, String)>) -> Self {
-		Self { receiver, queue: BinaryHeap::new(), initialized: false }
+		Self {
+			receiver,
+			queue: BinaryHeap::new(),
+			initialized: false,
+		}
 	}
 }
 
@@ -69,7 +73,10 @@ pub(crate) async fn worker(service: &Service) -> Result<()> {
 		};
 		let next_submit = next_submit.fuse();
 		let next_receive = receiver.recv_async().fuse();
-		let stop_check = FutureExt::fuse(smol::Timer::after(Duration::from_secs(2)));
+		// Poll often enough that shutdown does not wait a whole timer tick after
+		// the service has been interrupted. This is an idle wakeup per interval,
+		// negligible next to the cost of a graceful restart.
+		let stop_check = FutureExt::fuse(smol::Timer::after(Duration::from_millis(100)));
 		pin_mut!(next_submit, next_receive, stop_check);
 
 		// RescvFuture is cancellation-safe
@@ -110,7 +117,9 @@ async fn load_scheduled_events(service: &Service, queue: &mut SubmissionQueue) {
 
 	while let Some((delay_id, event)) = stream.next().await {
 		let submission_time = event.running_since + event.delay;
-		queue.queue.push((Reverse(submission_time), delay_id.clone()));
+		queue
+			.queue
+			.push((Reverse(submission_time), delay_id.clone()));
 		loaded_events.push(delay_id);
 	}
 

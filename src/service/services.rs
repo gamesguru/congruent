@@ -174,13 +174,11 @@ impl Services {
 		// Startup migrations and first-run/admin setup publish writes. Materialize
 		// them before workers can hit a versioned read or write whose boundary is
 		// still pinned behind those groups.
-		self.mtxdb
-			.recover_pending_transactions()
-			.map_err(|error| {
-				conduwuit::err!(Database(error!(
-					"Recovering mtxdb journal after startup setup: {error}"
-				)))
-			})?;
+		self.mtxdb.recover_pending_transactions().map_err(|error| {
+			conduwuit::err!(Database(error!(
+				"Recovering mtxdb journal after startup setup: {error}"
+			)))
+		})?;
 
 		// Restore scheduled events before the listener can report ready. Otherwise
 		// a restarted server may serve requests before the delayed-event worker
