@@ -1,10 +1,7 @@
 use std::{
 	borrow::Borrow,
 	collections::{BTreeSet, HashMap},
-	sync::{
-		Arc,
-		atomic::{AtomicUsize, Ordering},
-	},
+	sync::Arc,
 };
 
 use conduwuit::{Err, Result, debug_error, debug_warn, err, implement, trace, warn};
@@ -43,18 +40,10 @@ fn missing_key_record_is_allowed(error: &conduwuit::Error) -> bool { error.is_no
 #[derive(Clone, Default)]
 pub(crate) struct EventKeyMetadataCache {
 	records: Arc<HashMap<OwnedServerName, ServerSigningKeys>>,
-	fallbacks: Arc<AtomicUsize>,
 }
 
 impl EventKeyMetadataCache {
 	fn get(&self, origin: &ServerName) -> Option<&ServerSigningKeys> { self.records.get(origin) }
-
-	fn record_fallback(&self) { self.fallbacks.fetch_add(1, Ordering::Relaxed); }
-
-	pub(crate) fn origin_count(&self) -> usize { self.records.len() }
-
-	/// Origin lookups that missed the snapshot and took the per-event path.
-	pub(crate) fn fallback_count(&self) -> usize { self.fallbacks.load(Ordering::Relaxed) }
 }
 
 #[implement(super::Service)]
@@ -92,10 +81,7 @@ pub(crate) async fn event_key_metadata_for_events(
 		.await
 		.unwrap_or_default();
 
-	EventKeyMetadataCache {
-		records: Arc::new(metadata),
-		fallbacks: Arc::default(),
-	}
+	EventKeyMetadataCache { records: Arc::new(metadata) }
 }
 
 #[implement(super::Service)]
@@ -172,16 +158,14 @@ pub(crate) async fn get_event_keys_with_metadata(
 		});
 		let pubkeys = match cached {
 			| Some(pubkeys) => pubkeys,
-			| None => {
-				metadata.record_fallback();
+			| None =>
 				self.get_pubkeys_for_event(
 					origin,
 					key_ids.iter().map(Borrow::borrow),
 					event_ts,
 					validity_policy,
 				)
-				.await
-			},
+				.await,
 		};
 		keys.insert(origin.to_owned(), pubkeys);
 	}

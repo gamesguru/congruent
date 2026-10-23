@@ -638,38 +638,5 @@ pub(super) async fn diagnostics(&self) -> Result {
 			.load(std::sync::atomic::Ordering::Relaxed)
 	)?;
 
-	writeln!(info, "\n## mtxdb")?;
-	writeln!(info, "**Adapter Totals:** {}", conduwuit_mtxdb::stats::snapshot())?;
-	if std::env::var_os("CONDUWUIT_MTXDB_STATS").is_some() {
-		let engine =
-			conduwuit_mtxdb::stats::EngineSnapshot::capture(self.services.mtxdb.database());
-		writeln!(
-			info,
-			"**Commit totals:** calls={}, publish={} µs, materialize={} µs",
-			engine.commit_calls, engine.commit_publish_micros, engine.commit_materialize_micros
-		)?;
-		writeln!(
-			info,
-			"**Journal totals:** durable requests={}, sync requests={}, waiters={}, \
-			 coalesced={}, fsyncs={}, records committed={}",
-			engine.journal_durable_requests,
-			engine.journal_sync_requests,
-			engine.journal_sync_waiters,
-			engine.journal_sync_coalesced,
-			engine.journal_fsyncs,
-			engine.journal_commit_records
-		)?;
-		writeln!(info, "**Pool totals** (times in µs; max is lifetime maximum):")?;
-		for pool in &engine.pools {
-			writeln!(info, "- {pool}")?;
-		}
-	} else {
-		writeln!(
-			info,
-			"Detailed per-pool read statistics are disabled; set CONDUWUIT_MTXDB_STATS=1 before \
-			 startup."
-		)?;
-	}
-
 	self.write_str(&info).await
 }

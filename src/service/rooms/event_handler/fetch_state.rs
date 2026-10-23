@@ -1,6 +1,6 @@
 use std::{
 	collections::{HashMap, hash_map},
-	time::{Duration, Instant},
+	time::Duration,
 };
 
 use conduwuit::{
@@ -16,17 +16,16 @@ use slipstream::{
 
 use crate::rooms::short::ShortStateKey;
 
+const SIGNATURE_VERIFICATION_CONCURRENCY: usize = 64;
+
 /// Redact (when verification only matched signatures), re-attach `unsigned`,
 /// and parse one verified event.
-///
-/// Runs on a blocking worker: canonical-JSON redaction and `PduEvent` parsing
-/// are CPU-bound and would otherwise serialize inside one async task.
 fn prepare_verified_event(
 	event_id: &OwnedEventId,
 	mut val: slipstream::CanonicalJsonObject,
 	stashed_unsigned: Option<slipstream::CanonicalJsonValue>,
 	needs_redaction: bool,
-	room_id: &slipstream::OwnedRoomId,
+	room_id: &RoomId,
 	room_version: &slipstream::RoomVersionId,
 ) -> (Result<Option<PduEvent>, String>, slipstream::CanonicalJsonObject) {
 	if needs_redaction {
@@ -74,8 +73,6 @@ pub(crate) async fn fetch_state<Pdu>(
 where
 	Pdu: Event + Send + Sync,
 {
-	let fetch_started = Instant::now();
-	let mtxdb_before = conduwuit_mtxdb::stats::snapshot();
 	let mut pool = self.build_server_pool(room_id, origin, 5).await;
 	let mut last_err = err!(Request(NotFound("No server could provide /state")));
 
@@ -93,8 +90,6 @@ where
 		Vec<(OwnedEventId, conduwuit::matrix::pdu::RawJson)>,
 	) = 'found: {
 		while let Some(server) = pool.next_scored(weights) {
-			info!(target: "state_ids_debug", %server, %origin, %room_id, %event_id, "fetch_state: sending /state_ids");
-			let state_ids_started = Instant::now();
 			let req = self.services.sending.send_federation_request(
 				&server,
 				get_room_state_ids::v1::Request::new(event_id.to_owned(), room_id.to_owned()),
@@ -121,16 +116,6 @@ where
 					continue;
 				},
 			};
-			info!(
-				target: "state_ids_debug",
-				%server,
-				%room_id,
-				%event_id,
-				elapsed_ms = state_ids_started.elapsed().as_millis(),
-				auth_chain_count = state_ids_res.auth_chain_ids.len(),
-				state_count = state_ids_res.pdu_ids.len(),
-				"fetch_state: received /state_ids"
-			);
 
 			let mut missing_ids = Vec::new();
 			let mut known_count: usize = 0;
@@ -154,7 +139,6 @@ where
 			// here and rejected by `check_room_id` after the fetch. A batched
 			// read failure must not abort state recovery, so fall back to
 			// fetching every ID.
-			let existence_check_started = Instant::now();
 			let present = match self.services.timeline.event_ids_present(room_id, &all_ids) {
 				| Ok(present) => present,
 				| Err(error) => {
@@ -172,19 +156,6 @@ where
 
 			missing_ids.sort_unstable();
 			missing_ids.dedup();
-			info!(
-				target: "state_ids_debug",
-				%room_id,
-				%event_id,
-				elapsed_ms = existence_check_started.elapsed().as_millis(),
-				total_ids = state_ids_res
-					.auth_chain_ids
-					.len()
-					.saturating_add(state_ids_res.pdu_ids.len()),
-				known_count,
-				missing_count = missing_ids.len(),
-				"fetch_state: checked local event bodies"
-			);
 
 			debug!(
 				auth_chain_count = state_ids_res.auth_chain_ids.len(),
@@ -194,7 +165,6 @@ where
 				"Processing /state_ids response from remote server"
 			);
 
-			let event_fetch_started = Instant::now();
 			let fetch_futures = missing_ids.into_iter().map(|eid| {
 				let server = server.clone();
 				async move {
@@ -249,16 +219,6 @@ where
 					},
 				}
 			}
-			info!(
-				target: "state_ids_debug",
-				%server,
-				%room_id,
-				%event_id,
-				elapsed_ms = event_fetch_started.elapsed().as_millis(),
-				fetched_count = fetched_events.len(),
-				failed_count = failed_ids.len(),
-				"fetch_state: completed /event fetches"
-			);
 
 			if !failed_ids.is_empty() {
 				// A large /state_ids response can make `failed_ids` huge; only log a
@@ -291,19 +251,10 @@ where
 	};
 
 	let room_version_id = self.services.state.get_room_version(room_id).await?;
-	let key_acquisition_started = Instant::now();
 	self.services
 		.server_keys
 		.acquire_events_pubkeys(fetched_unknown_events.iter().map(|(_, raw_json)| raw_json))
 		.await;
-	info!(
-		target: "state_ids_debug",
-		%room_id,
-		%event_id,
-		elapsed_ms = key_acquisition_started.elapsed().as_millis(),
-		fetched_event_count = fetched_unknown_events.len(),
-		"fetch_state: pre-acquired signing keys for fetched events"
-	);
 
 	// Reconstruct unknown_events
 	let mut unknown_events = Vec::new();
@@ -323,37 +274,21 @@ where
 		"fetch_state: {} newly missing events fetched successfully",
 		unknown_events.len(),
 	);
-	let key_metadata_started = Instant::now();
 	let key_metadata = self
 		.services
 		.server_keys
 		.event_key_metadata_for_events(&unknown_events, &room_version_id)
 		.await;
-	info!(
-		target: "state_ids_debug",
-		%room_id,
-		%event_id,
-		elapsed_ms = key_metadata_started.elapsed().as_millis(),
-		fetched_event_count = unknown_events.len(),
-		key_origin_count = key_metadata.origin_count(),
-		"fetch_state: loaded signing-key metadata for fetched events"
-	);
 
 	// Concurrently verify signatures and prepare fetched events for PDU parsing.
 	// Use an explicit width: the automatic stream width follows the database
 	// worker topology and can be as low as 2, which serializes this CPU-bound
 	// batch badly (MSC4297 state responses can carry hundreds of auth events).
-	let signature_verification_started = Instant::now();
-	let signature_verification_concurrency = self
-		.services
-		.server
-		.config
-		.fetch_state_signature_verification_concurrency;
 	let mut verified_events: HashMap<OwnedEventId, (PduEvent, slipstream::CanonicalJsonObject)> =
 		unknown_events
 			.into_iter()
 			.stream()
-			.broadn_filter_map(signature_verification_concurrency, {
+			.broadn_filter_map(SIGNATURE_VERIFICATION_CONCURRENCY, {
 				let room_version_id = room_version_id.clone();
 				let key_metadata = key_metadata.clone();
 				move |(eid, mut val): (OwnedEventId, slipstream::CanonicalJsonObject)| {
@@ -392,31 +327,14 @@ where
 									verification_result,
 									Ok(slipstream::signatures::Verified::Signatures)
 								);
-								let event_id = eid.clone();
-								let worker_room_id = room_id.to_owned();
-								let worker_room_version = room_version_id.clone();
-								let prepared = self
-									.services
-									.server
-									.runtime()
-									.spawn_blocking(move || {
-										prepare_verified_event(
-											&event_id,
-											val,
-											stashed_unsigned,
-											needs_redaction,
-											&worker_room_id,
-											&worker_room_version,
-										)
-									})
-									.await;
-								let (prepared, val) = match prepared {
-									| Ok(prepared) => prepared,
-									| Err(error) => {
-										conduwuit::warn!(%eid, "Failed to prepare verified event: {error}");
-										return None;
-									},
-								};
+								let (prepared, val) = prepare_verified_event(
+									&eid,
+									val,
+									stashed_unsigned,
+									needs_redaction,
+									room_id,
+									&room_version_id,
+								);
 								if let Err(error) = prepared {
 									conduwuit::warn!("Redaction failed for {eid}: {error}");
 									if let Err(error) = self
@@ -470,15 +388,6 @@ where
 			})
 			.collect()
 			.await;
-	info!(
-		target: "state_ids_debug",
-		%room_id,
-		%event_id,
-		elapsed_ms = signature_verification_started.elapsed().as_millis(),
-		verified_count = verified_events.len(),
-		key_metadata_fallbacks = key_metadata.fallback_count(),
-		"fetch_state: signature verification completed"
-	);
 
 	// Tologically sort the verified events based on auth_events
 	let mut graph = HashMap::new();
@@ -515,14 +424,9 @@ where
 
 	// Auth-check them sequentially, roots first, so only accepted predecessors
 	// are available when validating descendants.
-	let outlier_count = sorted_eids.len();
-	let outlier_processing_started = Instant::now();
-	let mut accepted_outliers = 0_usize;
-	let mut rejected_outliers = 0_usize;
 	for eid in sorted_eids {
 		if let Some((_, val)) = verified_events.remove(&eid) {
-			let outlier_started = Instant::now();
-			match Box::pin(self.handle_outlier_pdu(
+			if let Err(e) = Box::pin(self.handle_outlier_pdu(
 				origin,
 				Some(create_event),
 				&eid,
@@ -536,43 +440,10 @@ where
 			))
 			.await
 			{
-				| Ok(_) => {
-					accepted_outliers = accepted_outliers.saturating_add(1);
-					debug!(
-						target: "state_ids_debug",
-						%room_id,
-						%event_id,
-					%eid,
-						elapsed_ms = outlier_started.elapsed().as_millis(),
-						"fetch_state: accepted and persisted auth-chain outlier"
-					);
-				},
-				| Err(e) => {
-					rejected_outliers = rejected_outliers.saturating_add(1);
-					debug!(
-						target: "state_ids_debug",
-						%room_id,
-						%event_id,
-						%eid,
-					error = %e,
-						elapsed_ms = outlier_started.elapsed().as_millis(),
-						"fetch_state: failed to handle auth-chain outlier: {e}"
-					);
-					debug_warn!("fetch_state: failed to handle outlier {eid}: {e}");
-				},
+				debug_warn!("fetch_state: failed to handle outlier {eid}: {e}");
 			}
 		}
 	}
-	info!(
-		target: "state_ids_debug",
-		%room_id,
-		%event_id,
-		outlier_count,
-		accepted_outliers,
-		rejected_outliers,
-		elapsed_ms = outlier_processing_started.elapsed().as_millis(),
-		"fetch_state: completed ordered outlier auth and persistence"
-	);
 
 	// Construct the returned state map
 	let mut state: HashMap<ShortStateKey, OwnedEventId> =
@@ -653,16 +524,6 @@ where
 	if state.get(&create_shortstatekey).map(AsRef::as_ref) != Some(create_event.event_id()) {
 		return Err!(Database("Incoming event refers to wrong create event."));
 	}
-
-	info!(
-		target: "state_ids_debug",
-		%room_id,
-		%event_id,
-		elapsed_ms = fetch_started.elapsed().as_millis(),
-		mtxdb_during_fetch = %conduwuit_mtxdb::stats::snapshot().since(mtxdb_before),
-		mtxdb_total = %conduwuit_mtxdb::stats::snapshot(),
-		"fetch_state: completed"
-	);
 
 	Ok(Some(state))
 }

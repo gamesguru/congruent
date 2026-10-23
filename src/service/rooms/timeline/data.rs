@@ -1295,17 +1295,7 @@ impl Data {
 				&prev_events,
 				&auth_events,
 			)
-			.map_err(|error| {
-				// Keep transient storage contention distinguishable for callers
-				// that reschedule work, without depending on mtxdb's Display
-				// wording.
-				if error.is_would_block() || error.is_stale_read() {
-					let marker = super::TRANSIENT_EVENT_WRITE_MARKER;
-					err!(Database("{marker} {error}"))
-				} else {
-					err!(Database("Failed to write event to mtxdb: {error}"))
-				}
-			})?;
+			.map_err(|error| err!(Database("Failed to write event to mtxdb: {error}")))?;
 		Ok(())
 	}
 

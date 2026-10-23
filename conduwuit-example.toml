@@ -146,12 +146,6 @@
 #
 #worker_threads = varies by system
 
-# Maximum number of events to verify concurrently while fetching a remote
-# state response. This limit applies to each state fetch; higher values can
-# increase CPU and memory use when several fetches run at once.
-#
-#fetch_state_signature_verification_concurrency = 256
-
 # Set this to any float value in megabytes for continuwuity to tell the
 # database engine that this much memory is available for database read
 # caches.

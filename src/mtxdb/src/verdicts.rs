@@ -18,7 +18,7 @@ use crate::{
 	store::{CollectionId, MtxdbStore, NodeId},
 };
 
-const MAX_UPDATE_RETRIES: u16 = 256;
+const MAX_STALE_READ_RETRIES: usize = 8;
 
 #[derive(Clone)]
 pub struct VerdictAdapter {
@@ -104,7 +104,7 @@ impl VerdictAdapter {
 	{
 		let node = event_record_id(event_id);
 		let collection = event_verdict_collection_id(&node);
-		let mut attempts = 0_u16;
+		let mut attempts = 0_usize;
 		loop {
 			let tx = self.store.begin_transaction();
 			let result = (|| {
@@ -128,20 +128,8 @@ impl VerdictAdapter {
 				tx.commit()
 			})();
 			match result {
-				| Err(error)
-					if (error.is_stale_read() || error.is_would_block())
-						&& attempts < MAX_UPDATE_RETRIES =>
-				{
-					attempts = attempts
-						.checked_add(1)
-						.expect("attempts is less than the retry limit");
-					if error.is_would_block() {
-						// A published group still awaiting materialization pins the
-						// read boundary below the collection version; run recovery
-						// so the versioned read can be certified.
-						let _ = self.store.recover_pending_transactions();
-					}
-					std::thread::sleep(std::time::Duration::from_millis(2));
+				| Err(error) if error.is_stale_read() && attempts < MAX_STALE_READ_RETRIES => {
+					attempts = attempts.saturating_add(1);
 				},
 				| result => return result,
 			}

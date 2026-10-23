@@ -165,27 +165,17 @@ impl ServerKeysAdapter {
 		origin: &[u8],
 		key_id: &[u8],
 	) -> Result<Option<ServerKey>, StorageError> {
-		timed_read(1, || {
-			native::read_server_key(
-				self.store.database().pool(ShardType::ServerInfo),
-				origin,
-				key_id,
-			)
-		})
+		native::read_server_key(self.store.database().pool(ShardType::ServerInfo), origin, key_id)
 	}
 
 	/// Every key of `origin`, ordered by key id.
 	pub fn read_keys(&self, origin: &[u8]) -> Result<Vec<ServerKey>, StorageError> {
-		timed_read(1, || {
-			native::read_server_keys(self.store.database().pool(ShardType::ServerInfo), origin)
-		})
+		native::read_server_keys(self.store.database().pool(ShardType::ServerInfo), origin)
 	}
 
 	/// The verbatim Notary payload for `origin`.
 	pub fn read_notary(&self, origin: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
-		timed_read(1, || {
-			native::read_notary_payload(self.store.database().pool(ShardType::ServerInfo), origin)
-		})
+		native::read_notary_payload(self.store.database().pool(ShardType::ServerInfo), origin)
 	}
 
 	/// Merge one observation batch through mtxdb's MSC4499 binding rules.
@@ -260,16 +250,6 @@ impl ServerKeysAdapter {
 		}
 		Ok(false)
 	}
-}
-/// Count a native per-origin read, which bypasses `MtxdbStore::get_many`.
-fn timed_read<T>(
-	nodes: usize,
-	read: impl FnOnce() -> Result<T, StorageError>,
-) -> Result<T, StorageError> {
-	let started = std::time::Instant::now();
-	let result = read();
-	crate::stats::record_read(nodes, started.elapsed(), result.is_ok());
-	result
 }
 
 #[cfg(test)]

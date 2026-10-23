@@ -22,13 +22,6 @@ impl MtxdbStore {
 
 	pub fn open<P: Into<std::path::PathBuf>>(path: P) -> Result<Self, StorageError> {
 		let db = Database::open(path.into())?;
-
-		// Materialize any transaction groups a previous process published but
-		// did not finish. Until they are applied, the journal boundary is pinned
-		// and the first versioned read or write after startup returns
-		// `WouldBlock`, even though recovery itself is available.
-		db.recover_pending_transactions()?;
-
 		Ok(Self::new(Arc::new(db)))
 	}
 
@@ -90,22 +83,10 @@ impl MtxdbStore {
 		shard: ShardType,
 		collection: &CollectionId,
 	) -> Result<u64, StorageError> {
-		const RECOVERY_ATTEMPTS: u8 = 8;
-		let mut attempts = 0_u8;
-		loop {
-			match self
-				.db
-				.pool(shard)
-				.get_with_collection_version(collection, &[[0; 16]])
-			{
-				| Ok((_, version)) => return Ok(version),
-				| Err(error) if error.is_would_block() && attempts < RECOVERY_ATTEMPTS => {
-					attempts = attempts.saturating_add(1);
-					self.recover_pending_transactions()?;
-				},
-				| Err(error) => return Err(error),
-			}
-		}
+		self.db
+			.pool(shard)
+			.get_with_collection_version(collection, &[[0; 16]])
+			.map(|(_, version)| version)
 	}
 
 	pub fn get_many(
@@ -114,25 +95,13 @@ impl MtxdbStore {
 		collection: &CollectionId,
 		nodes: &[NodeId],
 	) -> Result<Vec<Option<Vec<u8>>>, StorageError> {
-		let started = std::time::Instant::now();
-		let result = self.db.pool(shard).get_read_committed(collection, nodes);
-		crate::stats::record_read(nodes.len(), started.elapsed(), result.is_ok());
-		result.map(|values| {
-			values
-				.into_iter()
-				.map(|value| value.map(|node| node.bytes.to_vec()))
-				.collect()
-		})
-	}
-
-	/// Apply any transaction group that was published to the journal but whose
-	/// packfile materialization has not finished. A versioned read samples the
-	/// collection version from the journal, but its read boundary is capped by
-	/// the earliest such pending group, so every retry keeps failing until the
-	/// group is materialized. This is the explicit recovery boundary mtxdb
-	/// exposes for exactly that case.
-	pub fn recover_pending_transactions(&self) -> Result<(), StorageError> {
-		self.db.recover_pending_transactions()
+		Ok(self
+			.db
+			.pool(shard)
+			.get_read_committed(collection, nodes)?
+			.into_iter()
+			.map(|value| value.map(|node| node.bytes.to_vec()))
+			.collect())
 	}
 
 	#[must_use]
@@ -142,19 +111,6 @@ impl MtxdbStore {
 
 	pub fn sync(&self, shard: ShardType) -> Result<(), StorageError> {
 		self.db.pool(shard).sync_all()
-	}
-
-	/// Persist a full index checkpoint for every pool.
-	///
-	/// The checkpoint records the journal coverage its index has materialized.
-	/// Without one, a reopen may see a newer durable journal coverage in the
-	/// delta metadata but load an older checkpoint, leaving versioned reads
-	/// waiting on a boundary that no pending group can lift.
-	pub fn checkpoint_all(&self) -> Result<(), StorageError> {
-		for shard in ShardType::ALL {
-			self.db.pool(shard).force_index_checkpoint()?;
-		}
-		Ok(())
 	}
 }
 
@@ -209,7 +165,6 @@ impl MtxdbTransaction<'_> {
 	) -> Result<(), StorageError> {
 		self.tx
 			.put(shard, collection, node, &mtxdb::storage::NodeData::from_slice(data))?;
-		crate::stats::record_put(data.len());
 		Ok(())
 	}
 
@@ -226,7 +181,6 @@ impl MtxdbTransaction<'_> {
 		node: NodeId,
 	) -> Result<(), StorageError> {
 		self.tx.remove(shard, collection, node)?;
-		crate::stats::record_removes(1);
 		Ok(())
 	}
 
@@ -241,7 +195,6 @@ impl MtxdbTransaction<'_> {
 		nodes: &[NodeId],
 	) -> Result<(), StorageError> {
 		self.tx.remove_many(shard, collection, nodes)?;
-		crate::stats::record_removes(nodes.len());
 		Ok(())
 	}
 
@@ -259,12 +212,7 @@ impl MtxdbTransaction<'_> {
 		Ok(())
 	}
 
-	pub fn commit(self) -> Result<(), StorageError> {
-		let started = std::time::Instant::now();
-		let result = self.tx.commit();
-		crate::stats::record_commit(started.elapsed(), result.is_ok());
-		result
-	}
+	pub fn commit(self) -> Result<(), StorageError> { self.tx.commit() }
 }
 
 #[cfg(test)]

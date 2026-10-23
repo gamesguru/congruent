@@ -179,14 +179,6 @@ where
 	while let Some((server, res, latency)) = active.next().await {
 		match res {
 			| Ok(Ok(response)) => {
-				info!(
-					target: "fetch_prev_debug",
-					%server,
-					%room_id,
-					elapsed_ms = latency.as_millis(),
-					event_count = response.events.len(),
-					"fetch_prev: received /get_missing_events"
-				);
 				self.update_peer_stats(&server, true, latency);
 				missing_events = response.events;
 				if missing_events.is_empty() {

@@ -70,7 +70,6 @@ conduwuit-build-metadata.workspace = true
 conduwuit-core.workspace = true
 conduwuit-database.workspace = true
 conduwuit-macros.workspace = true
-conduwuit-mtxdb.workspace = true
 conduwuit-service.workspace = true
 const-str.workspace = true
 ctor.workspace = true

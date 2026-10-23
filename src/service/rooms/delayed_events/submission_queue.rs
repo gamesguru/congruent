@@ -128,9 +128,8 @@ async fn load_scheduled_events(service: &Service, queue: &mut SubmissionQueue) {
 		loaded_events.push(delay_id);
 	}
 
-	// Release the startup scan before the work loop can submit overdue events.
-	// Keeping an exhausted mtxdb stream alive here leaves its read registration
-	// open, and the first event write after a restart can be transiently blocked.
+	// Drop the RocksDB table iterator before deleting invalid entries from
+	// `delayid_scheduleddelayedevent`.
 	drop(stream);
 	for (delay_id, user_id, room_id) in invalid_events {
 		service.db.delayid_scheduleddelayedevent.remove(&delay_id);

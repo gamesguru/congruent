@@ -1,7 +1,7 @@
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
 use conduwuit::{
-	Result, debug, implement, info,
+	Result, implement, info,
 	matrix::{Event, PduEvent},
 	utils::{
 		ReadyExt,
@@ -320,17 +320,7 @@ fn add_pdu_outlier_batch_impl<'a>(
 				},
 			}
 		}
-		let room_version_started = Instant::now();
-		let room_version_result = self.services.short.get_room_version_blocking(room_id);
-		let room_version_elapsed = room_version_started.elapsed();
-		debug!(
-			target: "state_ids_debug",
-			%room_id,
-			%event_id,
-			elapsed_ms = room_version_elapsed.as_millis(),
-			"outlier room-version lookup finished"
-		);
-		if let Err(error) = room_version_result {
+		if let Err(error) = self.services.short.get_room_version_blocking(room_id) {
 			warn!(?error, %room_id, %event_id, "Skipping outlier before room version is established");
 			return;
 		}
@@ -342,50 +332,26 @@ fn add_pdu_outlier_batch_impl<'a>(
 		}
 		// A matching body and auth-edge row means the event write already
 		// completed atomically. Repair a partial write instead of skipping it.
-		let existing_check_started = Instant::now();
 		let already_stored = self
 			.db
 			.mtxdb_events
 			.event_matches_with_edges(room_id.as_bytes(), event_id.as_bytes(), json.as_bytes())
 			.unwrap_or(false);
-		debug!(
-			target: "state_ids_debug",
-			%room_id,
-			%event_id,
-			elapsed_ms = existing_check_started.elapsed().as_millis(),
-			already_stored,
-			"outlier mtxdb existing-event check finished"
-		);
 		if !already_stored {
-			let write_started = Instant::now();
-			match self
-				.db
-				.mtxdb_events
-				.write_event_with_edges_with_retry_count(
-					room_id.as_bytes(),
-					event_id.as_bytes(),
-					json.as_bytes(),
-					&prev,
-					&auth,
-				) {
-				| Ok(retry_count) => debug!(
-					target: "state_ids_debug",
+			if let Err(error) = self.db.mtxdb_events.write_event_with_edges(
+				room_id.as_bytes(),
+				event_id.as_bytes(),
+				json.as_bytes(),
+				&prev,
+				&auth,
+			) {
+				warn!(
+					?error,
 					%room_id,
 					%event_id,
-					elapsed_ms = write_started.elapsed().as_millis(),
-					retry_count,
-					"outlier mtxdb event write finished"
-				),
-				| Err(error) => {
-					warn!(
-						?error,
-						%room_id,
-						%event_id,
-						elapsed_ms = write_started.elapsed().as_millis(),
-						"Failed to write outlier event and auth edges to mtxdb; not storing the event"
-					);
-					return;
-				},
+					"Failed to write outlier event and auth edges to mtxdb; not storing the event"
+				);
+				return;
 			}
 		}
 		let short_room_id = self

@@ -730,8 +730,7 @@ pub fn merged_signing_keys_for(
 
 /// Reconstruct active and retired keys from native records without signatures.
 /// Returns `NotFound` when there are no retained records. Storage and key-ID
-/// decoding failures return database errors. When available, signatures and
-/// validity metadata are restored from the verbatim Notary payload.
+/// decoding failures return database errors.
 #[implement(Service)]
 fn merged_signing_keys_for_sync(&self, origin: &ServerName) -> Result<ServerSigningKeys> {
 	merged_signing_keys_from_adapter(&self.db.mtxdb_keys, origin)
@@ -747,16 +746,7 @@ pub(super) fn merged_signing_keys_from_adapter(
 	if !native.iter().any(|key| !key.is_evicted()) {
 		return Err(err!(Request(NotFound("No signing-key record for {origin}"))));
 	}
-	let mut keys = signing_keys_from_native(origin, &native)?;
-	if let Ok(Some(payload)) = adapter.read_notary(origin.as_bytes())
-		&& let Ok(payload) = std::str::from_utf8(&payload)
-		&& let Ok(raw) = Raw::<ServerSigningKeys>::from_json_string(payload.to_owned())
-		&& let Ok(raw_keys) = raw.deserialize()
-	{
-		keys.signatures = raw_keys.signatures;
-		keys.valid_until_ts = raw_keys.valid_until_ts;
-	}
-	Ok(keys)
+	signing_keys_from_native(origin, &native)
 }
 
 #[implement(Service)]

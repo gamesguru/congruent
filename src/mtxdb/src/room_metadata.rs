@@ -14,7 +14,7 @@ const ROOM_VERSION_COLLECTION: &[u8] = b"matrix-room-version-record-v1";
 const ROOM_VERSION_NODE: &[u8] = b"room-version";
 const ROOM_VERSION_MAGIC: &[u8; 4] = b"MRV1";
 const ROOM_VERSION_HEADER_LEN: usize = 8;
-const MAX_ROOM_VERSION_RETRIES: u16 = 256;
+const MAX_STALE_READ_RETRIES: usize = 8;
 
 fn version_collection(room_id: &[u8]) -> [u8; 16] { derive_id(ROOM_VERSION_DOMAIN, room_id) }
 
@@ -92,7 +92,7 @@ pub fn get_room_version(
 /// validation rules.
 ///
 /// Returns `StorageError::Collision` for a conflicting version or room ID,
-/// `StorageError::WouldBlock` after repeated transient read or write contention,
+/// `StorageError::StaleRead` after repeated concurrent write contention,
 /// and propagates record encoding, decoding, and storage errors.
 pub fn set_room_version(
 	store: &MtxdbStore,
@@ -103,7 +103,7 @@ pub fn set_room_version(
 	let node = version_node();
 	let record = encode_record(room_id, version)?;
 
-	let mut attempts = 0_u16;
+	let mut attempts = 0_usize;
 	loop {
 		let tx = store.begin_transaction();
 		let result = (|| {
@@ -126,20 +126,8 @@ pub fn set_room_version(
 			tx.commit()
 		})();
 		match result {
-			| Err(error)
-				if (error.is_stale_read() || error.is_would_block())
-					&& attempts < MAX_ROOM_VERSION_RETRIES =>
-			{
-				attempts = attempts
-					.checked_add(1)
-					.expect("attempts is less than the retry limit");
-				if error.is_would_block() {
-					// A published group still awaiting materialization pins the
-					// read boundary below the collection version; run recovery so
-					// the versioned read can be certified.
-					let _ = store.recover_pending_transactions();
-				}
-				std::thread::sleep(std::time::Duration::from_millis(2));
+			| Err(error) if error.is_stale_read() && attempts < MAX_STALE_READ_RETRIES => {
+				attempts = attempts.saturating_add(1);
 			},
 			| result => return result,
 		}
