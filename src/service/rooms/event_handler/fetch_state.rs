@@ -1,6 +1,6 @@
 use std::{
 	collections::{HashMap, hash_map},
-	time::Duration,
+	time::{Duration, Instant},
 };
 
 use conduwuit::{
@@ -49,6 +49,7 @@ where
 	) = 'found: {
 		while let Some(server) = pool.next_scored(weights) {
 			info!(target: "state_ids_debug", %server, %origin, %room_id, %event_id, "fetch_state: sending /state_ids");
+			let state_ids_started = Instant::now();
 			let req = self.services.sending.send_federation_request(
 				&server,
 				get_room_state_ids::v1::Request::new(event_id.to_owned(), room_id.to_owned()),
@@ -75,6 +76,16 @@ where
 					continue;
 				},
 			};
+			info!(
+				target: "state_ids_debug",
+				%server,
+				%room_id,
+				%event_id,
+				elapsed_ms = state_ids_started.elapsed().as_millis(),
+				auth_chain_count = state_ids_res.auth_chain_ids.len(),
+				state_count = state_ids_res.pdu_ids.len(),
+				"fetch_state: received /state_ids"
+			);
 
 			let mut missing_ids = Vec::new();
 			let mut known_count: usize = 0;
@@ -98,6 +109,7 @@ where
 			// here and rejected by `check_room_id` after the fetch. A batched
 			// read failure must not abort state recovery, so fall back to
 			// fetching every ID.
+			let existence_check_started = Instant::now();
 			let present = match self.services.timeline.event_ids_present(room_id, &all_ids) {
 				| Ok(present) => present,
 				| Err(error) => {
@@ -115,6 +127,16 @@ where
 
 			missing_ids.sort_unstable();
 			missing_ids.dedup();
+			info!(
+				target: "state_ids_debug",
+				%room_id,
+				%event_id,
+				elapsed_ms = existence_check_started.elapsed().as_millis(),
+				total_ids = state_ids_res.auth_chain_ids.len() + state_ids_res.pdu_ids.len(),
+				known_count,
+				missing_count = missing_ids.len(),
+				"fetch_state: checked local event bodies"
+			);
 
 			debug!(
 				auth_chain_count = state_ids_res.auth_chain_ids.len(),
@@ -124,6 +146,7 @@ where
 				"Processing /state_ids response from remote server"
 			);
 
+			let event_fetch_started = Instant::now();
 			let fetch_futures = missing_ids.into_iter().map(|eid| {
 				let server = server.clone();
 				async move {
@@ -178,6 +201,16 @@ where
 					},
 				}
 			}
+			info!(
+				target: "state_ids_debug",
+				%server,
+				%room_id,
+				%event_id,
+				elapsed_ms = event_fetch_started.elapsed().as_millis(),
+				fetched_count = fetched_events.len(),
+				failed_count = failed_ids.len(),
+				"fetch_state: completed /event fetches"
+			);
 
 			if !failed_ids.is_empty() {
 				// A large /state_ids response can make `failed_ids` huge; only log a
@@ -231,6 +264,7 @@ where
 	);
 
 	// Concurrently parse and verify signatures (Pure CPU and network keys fetch)
+	let signature_verification_started = Instant::now();
 	let mut verified_events: HashMap<OwnedEventId, (PduEvent, slipstream::CanonicalJsonObject)> =
 		unknown_events
 			.into_iter()
@@ -364,6 +398,14 @@ where
 			})
 			.collect()
 			.await;
+	info!(
+		target: "state_ids_debug",
+		%room_id,
+		%event_id,
+		elapsed_ms = signature_verification_started.elapsed().as_millis(),
+		verified_count = verified_events.len(),
+		"fetch_state: signature verification completed"
+	);
 
 	// Tologically sort the verified events based on auth_events
 	let mut graph = HashMap::new();
@@ -374,11 +416,40 @@ where
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);
 
+	// Persist the whole verified batch in bounded mtxdb transactions. Each
+	// outlier write would otherwise publish and materialize its own journal
+	// group; a large /state_ids response (hundreds of auth-chain events)
+	// exceeds the federation transaction deadline that way.
+	//
+	// These events have passed signature verification but not the auth pass
+	// below. `force_auth_check` makes `handle_outlier_pdu` validate them
+	// instead of taking its "already known" early return; otherwise a
+	// corrupted chain (an event whose auth event could not be fetched) would
+	// be trusted just because its body was pre-persisted.
+	let verified_batch = sorted_eids
+		.iter()
+		.filter_map(|eid| verified_events.get(eid))
+		.map(|(pdu, val)| (pdu, val))
+		.collect::<Vec<_>>();
+	if let Err(error) = self
+		.services
+		.timeline
+		.write_events_to_mtxdb(room_id, &verified_batch)
+		.await
+	{
+		debug_warn!("fetch_state: failed to pre-persist verified events to mtxdb: {error}");
+	}
+
 	// Auth-check them sequentially, roots first, so only accepted predecessors
 	// are available when validating descendants.
+	let outlier_count = sorted_eids.len();
+	let outlier_processing_started = Instant::now();
+	let mut accepted_outliers = 0_usize;
+	let mut rejected_outliers = 0_usize;
 	for eid in sorted_eids {
 		if let Some((_, val)) = verified_events.remove(&eid) {
-			if let Err(e) = Box::pin(self.handle_outlier_pdu(
+			let outlier_started = Instant::now();
+			match Box::pin(self.handle_outlier_pdu(
 				origin,
 				Some(create_event),
 				&eid,
@@ -386,15 +457,49 @@ where
 				val,
 				true, // is_outlier
 				true, // skip_sig_verify (already done above)
+				true, // force_auth_check (pre-persisted batch)
 				&room_version_id,
 				super::AuthRecoveryStage::AfterStateIds,
 			))
 			.await
 			{
-				debug_warn!("fetch_state: failed to handle outlier {eid}: {e}");
+				| Ok(_) => {
+					accepted_outliers = accepted_outliers.saturating_add(1);
+					debug!(
+						target: "state_ids_debug",
+						%room_id,
+						%event_id,
+					%eid,
+						elapsed_ms = outlier_started.elapsed().as_millis(),
+						"fetch_state: accepted and persisted auth-chain outlier"
+					);
+				},
+				| Err(e) => {
+					rejected_outliers = rejected_outliers.saturating_add(1);
+					debug!(
+						target: "state_ids_debug",
+						%room_id,
+						%event_id,
+						%eid,
+					error = %e,
+						elapsed_ms = outlier_started.elapsed().as_millis(),
+						"fetch_state: failed to handle auth-chain outlier: {e}"
+					);
+					debug_warn!("fetch_state: failed to handle outlier {eid}: {e}");
+				},
 			}
 		}
 	}
+	info!(
+		target: "state_ids_debug",
+		%room_id,
+		%event_id,
+		outlier_count,
+		accepted_outliers,
+		rejected_outliers,
+		elapsed_ms = outlier_processing_started.elapsed().as_millis(),
+		"fetch_state: completed ordered outlier auth and persistence"
+	);
 
 	// Construct the returned state map
 	let mut state: HashMap<ShortStateKey, OwnedEventId> =

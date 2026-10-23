@@ -420,6 +420,26 @@ impl EventAdapter {
 		prev_events: &[&[u8]],
 		auth_events: &[&[u8]],
 	) -> Result<(), StorageError> {
+		self.write_event_with_edges_with_retry_count(
+			room_id,
+			event_id,
+			event_body,
+			prev_events,
+			auth_events,
+		)
+		.map(|_| ())
+	}
+
+	/// Atomically writes one event and reports how many transient retries were
+	/// needed before it committed.
+	pub fn write_event_with_edges_with_retry_count(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+		event_body: &[u8],
+		prev_events: &[&[u8]],
+		auth_events: &[&[u8]],
+	) -> Result<u16, StorageError> {
 		self.write_with_retries(|tx| {
 			self.put_event_with_edges(tx, room_id, event_id, event_body, prev_events, auth_events)
 		})
@@ -449,6 +469,7 @@ impl EventAdapter {
 				)
 			})
 		})
+		.map(|_| ())
 	}
 
 	/// Stage one write attempt and retry the complete transaction on transient
@@ -458,7 +479,7 @@ impl EventAdapter {
 	/// collection being unchanged; a concurrent writer fails it and the whole
 	/// write is redone against the new version. Reads made while staging can
 	/// also be blocked when the collection keeps advancing, so retry those too.
-	fn write_with_retries<F>(&self, mut stage: F) -> Result<(), StorageError>
+	fn write_with_retries<F>(&self, mut stage: F) -> Result<u16, StorageError>
 	where
 		F: FnMut(&MtxdbTransaction<'_>) -> Result<(), StorageError>,
 	{
@@ -499,7 +520,7 @@ impl EventAdapter {
 						// reader to discover the lag.
 						let _ = self.store.recover_pending_transactions();
 					}
-					return result;
+					return result.map(|()| attempts);
 				},
 			}
 		}

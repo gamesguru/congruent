@@ -26,6 +26,7 @@ pub async fn handle_outlier_pdu<'a, Pdu>(
 	mut value: CanonicalJsonObject,
 	_auth_events_known: bool,
 	skip_sig_verify: bool,
+	force_auth_check: bool,
 	room_version: &'a slipstream::RoomVersionId,
 	auth_recovery_stage: AuthRecoveryStage,
 ) -> Result<(PduEvent, BTreeMap<String, CanonicalJsonValue>)>
@@ -85,6 +86,15 @@ where
 					return Err!(Request(Forbidden(
 						"Event {event_id} is already known and rejected"
 					)));
+				} else if force_auth_check {
+					// The caller pre-persisted this event without validating
+					// it (a bounded batch write). Re-run the auth check instead
+					// of treating the stored body as trusted.
+					info!(
+						target: "state_res_debug",
+						%event_id,
+						"handle_outlier_pdu: validating pre-persisted event"
+					);
 				} else {
 					info!(
 						target: "state_res_debug",
@@ -844,6 +854,7 @@ where
 						room_id,
 						auth_val,
 						true,
+						false,
 						false,
 						room_version,
 						auth_recovery_stage,

@@ -207,6 +207,7 @@ async fn persist_federation_events(
 				value.clone(),
 				false,
 				false,
+				false,
 				&room_version,
 				AuthRecoveryStage::BeforeStateIds,
 			))

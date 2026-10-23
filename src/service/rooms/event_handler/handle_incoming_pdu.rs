@@ -447,6 +447,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 		value.clone(),
 		false,
 		false,
+		false,
 		room_version,
 		first_stage,
 	))
@@ -641,6 +642,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 						value,
 						false,
 						false,
+						false,
 						&room_version_id,
 						AuthRecoveryStage::AfterStateIds,
 					))
@@ -658,6 +660,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					event_id,
 					room_id,
 					value.clone(),
+					false,
 					false,
 					false,
 					room_version,
@@ -854,6 +857,7 @@ pub async fn process_timeline_upgrade(
 					prev_id,
 					room_id,
 					val,
+					false,
 					false,
 					false,
 					&room_version_id,

@@ -1338,7 +1338,15 @@ impl Data {
 					.short
 					.get_or_create_shorteventid_blocking(auth_event);
 			}
-			bodies.push(slipstream::codec::to_string(json));
+			// Match the body `add_pdu_outlier` writes, including the event ID,
+			// so the per-event auth pass can skip a redundant rewrite instead
+			// of re-committing every pre-persisted body.
+			let mut body = (*json).clone();
+			body.insert(
+				"event_id".to_owned(),
+				slipstream::CanonicalJsonValue::String(pdu.event_id.as_str().to_owned()),
+			);
+			bodies.push(slipstream::codec::to_string(&body));
 			event_ids.push(pdu.event_id.as_bytes());
 			prev_events.push(pdu.prev_events().map(EventId::as_bytes).collect::<Vec<_>>());
 			auth_events.push(pdu.auth_events().map(EventId::as_bytes).collect::<Vec<_>>());
