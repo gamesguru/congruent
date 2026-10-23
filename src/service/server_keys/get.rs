@@ -1,7 +1,10 @@
 use std::{
 	borrow::Borrow,
 	collections::{BTreeSet, HashMap},
-	sync::Arc,
+	sync::{
+		Arc,
+		atomic::{AtomicUsize, Ordering},
+	},
 };
 
 use conduwuit::{Err, Result, debug_error, debug_warn, err, implement, trace, warn};
@@ -38,12 +41,20 @@ fn missing_key_record_is_allowed(error: &conduwuit::Error) -> bool { error.is_no
 /// Signing-key metadata read once for every signing server in a fetched state
 /// batch. Per-event timestamp checks then run against this immutable snapshot.
 #[derive(Clone, Default)]
-pub(crate) struct EventKeyMetadataCache(Arc<HashMap<OwnedServerName, ServerSigningKeys>>);
+pub(crate) struct EventKeyMetadataCache {
+	records: Arc<HashMap<OwnedServerName, ServerSigningKeys>>,
+	fallbacks: Arc<AtomicUsize>,
+}
 
 impl EventKeyMetadataCache {
-	fn get(&self, origin: &ServerName) -> Option<&ServerSigningKeys> { self.0.get(origin) }
+	fn get(&self, origin: &ServerName) -> Option<&ServerSigningKeys> { self.records.get(origin) }
 
-	pub(crate) fn origin_count(&self) -> usize { self.0.len() }
+	fn record_fallback(&self) { self.fallbacks.fetch_add(1, Ordering::Relaxed); }
+
+	pub(crate) fn origin_count(&self) -> usize { self.records.len() }
+
+	/// Origin lookups that missed the snapshot and took the per-event path.
+	pub(crate) fn fallback_count(&self) -> usize { self.fallbacks.load(Ordering::Relaxed) }
 }
 
 #[implement(super::Service)]
@@ -81,7 +92,10 @@ pub(crate) async fn event_key_metadata_for_events(
 		.await
 		.unwrap_or_default();
 
-	EventKeyMetadataCache(Arc::new(metadata))
+	EventKeyMetadataCache {
+		records: Arc::new(metadata),
+		fallbacks: Arc::default(),
+	}
 }
 
 #[implement(super::Service)]
@@ -158,14 +172,16 @@ pub(crate) async fn get_event_keys_with_metadata(
 		});
 		let pubkeys = match cached {
 			| Some(pubkeys) => pubkeys,
-			| None =>
+			| None => {
+				metadata.record_fallback();
 				self.get_pubkeys_for_event(
 					origin,
 					key_ids.iter().map(Borrow::borrow),
 					event_ts,
 					validity_policy,
 				)
-				.await,
+				.await
+			},
 		};
 		keys.insert(origin.to_owned(), pubkeys);
 	}
@@ -183,7 +199,7 @@ fn pubkeys_from_metadata(
 	for key_id in key_ids {
 		if let Some(old_key) = server_keys.old_verify_keys.get(key_id) {
 			if old_key.expired_ts > event_ts {
-				keys.insert(key_id.as_str().to_owned(), old_key.key.clone());
+				keys.insert(key_id.clone(), old_key.key.clone());
 			}
 			continue;
 		}
@@ -194,7 +210,7 @@ fn pubkeys_from_metadata(
 			// does not cover this event timestamp.
 			return None;
 		}
-		keys.insert(key_id.as_str().to_owned(), verify_key.key.clone());
+		keys.insert(key_id.clone(), verify_key.key.clone());
 	}
 
 	Some(keys)

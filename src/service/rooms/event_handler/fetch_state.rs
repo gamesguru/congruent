@@ -474,6 +474,7 @@ where
 		%event_id,
 		elapsed_ms = signature_verification_started.elapsed().as_millis(),
 		verified_count = verified_events.len(),
+		key_metadata_fallbacks = key_metadata.fallback_count(),
 		"fetch_state: signature verification completed"
 	);
 

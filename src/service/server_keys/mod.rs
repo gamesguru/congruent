@@ -750,7 +750,7 @@ pub(super) fn merged_signing_keys_from_adapter(
 	let mut keys = signing_keys_from_native(origin, &native)?;
 	if let Ok(Some(payload)) = adapter.read_notary(origin.as_bytes())
 		&& let Ok(payload) = std::str::from_utf8(&payload)
-		&& let Ok(raw) = Raw::from_json_string(payload.to_owned())
+		&& let Ok(raw) = Raw::<ServerSigningKeys>::from_json_string(payload.to_owned())
 		&& let Ok(raw_keys) = raw.deserialize()
 	{
 		keys.signatures = raw_keys.signatures;
