@@ -24,7 +24,7 @@ fn nanos(elapsed: Duration) -> u64 { u64::try_from(elapsed.as_nanos()).unwrap_or
 
 pub(crate) fn record_read(nodes: usize, elapsed: Duration, ok: bool) {
 	READS.fetch_add(1, Relaxed);
-	READ_NODES.fetch_add(nodes as u64, Relaxed);
+	READ_NODES.fetch_add(u64::try_from(nodes).unwrap_or(u64::MAX), Relaxed);
 	READ_NANOS.fetch_add(nanos(elapsed), Relaxed);
 	if !ok {
 		READ_ERRORS.fetch_add(1, Relaxed);
@@ -33,10 +33,12 @@ pub(crate) fn record_read(nodes: usize, elapsed: Duration, ok: bool) {
 
 pub(crate) fn record_put(bytes: usize) {
 	PUTS.fetch_add(1, Relaxed);
-	PUT_BYTES.fetch_add(bytes as u64, Relaxed);
+	PUT_BYTES.fetch_add(u64::try_from(bytes).unwrap_or(u64::MAX), Relaxed);
 }
 
-pub(crate) fn record_removes(count: usize) { REMOVES.fetch_add(count as u64, Relaxed); }
+pub(crate) fn record_removes(count: usize) {
+	REMOVES.fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Relaxed);
+}
 
 pub(crate) fn record_commit(elapsed: Duration, ok: bool) {
 	COMMITS.fetch_add(1, Relaxed);

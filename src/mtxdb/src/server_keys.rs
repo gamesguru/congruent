@@ -261,6 +261,16 @@ impl ServerKeysAdapter {
 		Ok(false)
 	}
 }
+/// Count a native per-origin read, which bypasses `MtxdbStore::get_many`.
+fn timed_read<T>(
+	nodes: usize,
+	read: impl FnOnce() -> Result<T, StorageError>,
+) -> Result<T, StorageError> {
+	let started = std::time::Instant::now();
+	let result = read();
+	crate::stats::record_read(nodes, started.elapsed(), result.is_ok());
+	result
+}
 
 #[cfg(test)]
 mod tests {
@@ -385,15 +395,4 @@ mod tests {
 		);
 		fs::remove_dir_all(&path).unwrap();
 	}
-}
-
-/// Count a native per-origin read, which bypasses `MtxdbStore::get_many`.
-fn timed_read<T>(
-	nodes: usize,
-	read: impl FnOnce() -> Result<T, StorageError>,
-) -> Result<T, StorageError> {
-	let started = std::time::Instant::now();
-	let result = read();
-	crate::stats::record_read(nodes, started.elapsed(), result.is_ok());
-	result
 }
