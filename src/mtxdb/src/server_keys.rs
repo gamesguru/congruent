@@ -388,7 +388,10 @@ mod tests {
 }
 
 /// Count a native per-origin read, which bypasses `MtxdbStore::get_many`.
-fn timed_read<T>(nodes: usize, read: impl FnOnce() -> Result<T, StorageError>) -> Result<T, StorageError> {
+fn timed_read<T>(
+	nodes: usize,
+	read: impl FnOnce() -> Result<T, StorageError>,
+) -> Result<T, StorageError> {
 	let started = std::time::Instant::now();
 	let result = read();
 	crate::stats::record_read(nodes, started.elapsed(), result.is_ok());

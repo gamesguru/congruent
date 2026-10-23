@@ -25,6 +25,15 @@ impl GetAllDelayedEventsRequest {
 		Metadata::new("GET", "/_matrix/client/unstable/org.matrix.msc4140/delayed_events");
 }
 
+struct ScheduleDelayedEventRequest;
+
+impl ScheduleDelayedEventRequest {
+	const METADATA: Metadata = Metadata::new(
+		"PUT",
+		"/_matrix/client/unstable/org.matrix.msc4140/rooms/{}/delayed_event/{}/{}",
+	);
+}
+
 pub(crate) struct DelayedEventUser {
 	pub(crate) user_id: slipstream::OwnedUserId,
 }
@@ -46,6 +55,119 @@ impl FromRequest<crate::State, Incoming> for DelayedEventUser {
 
 pub(crate) struct AllDelayedEventsUser {
 	pub(crate) user_id: slipstream::OwnedUserId,
+}
+
+const DELAYED_EVENT_TXN_ID_PREFIX: &[u8] = b"\xFFdelay_id:";
+
+fn delayed_event_txn_response(data: &[u8]) -> Result<Response, ApiError> {
+	let Some(delay_id) = data.strip_prefix(DELAYED_EVENT_TXN_ID_PREFIX) else {
+		return Err!(Request(InvalidParam(
+			"Tried to use txn id already used for an incompatible endpoint."
+		)))
+		.map_err(Into::into);
+	};
+
+	let delay_id = std::str::from_utf8(delay_id).map_err(|error| {
+		conduwuit::err!(Database("Invalid delayed-event txn response: {error}"))
+	})?;
+	Ok(crate::json_util::json_response(single_field("delay_id", &delay_id)))
+}
+
+pub(crate) async fn schedule_delayed_event_route(
+	State(services): State<crate::State>,
+	Path((room_id, event_type, txn_id)): Path<(
+		slipstream::OwnedRoomId,
+		slipstream::events::TimelineEventType,
+		slipstream::OwnedTransactionId,
+	)>,
+	request: hyper::Request<Incoming>,
+) -> Result<Response, ApiError> {
+	let (sender_user, sender_device, body) =
+		crate::router::authenticate_user_with_body_and_device(
+			request,
+			&services,
+			&ScheduleDelayedEventRequest::METADATA,
+		)
+		.await?;
+	let body = std::str::from_utf8(&body)
+		.map_err(|_| conduwuit::err!(Request(NotJson("Request body is not valid UTF-8"))))?;
+	let body = slipstream::canonical_json::from_json_str(body)
+		.map_err(|_| conduwuit::err!(Request(BadJson("Invalid JSON body"))))?;
+	let body = body
+		.as_object()
+		.ok_or_else(|| conduwuit::err!(Request(BadJson("Request body must be an object"))))?;
+	let delay_ms = body
+		.get("delay_ms")
+		.and_then(slipstream::json::Value::as_i64)
+		.and_then(|delay| u64::try_from(delay).ok())
+		.filter(|delay| (1..=3_153_600_000_000).contains(delay))
+		.ok_or_else(|| {
+			conduwuit::err!(Request(InvalidParam(
+				"delay_ms must be a positive integer no greater than 100 years"
+			)))
+		})?;
+	let content = body
+		.get("content")
+		.filter(|content| content.as_object().is_some())
+		.ok_or_else(|| conduwuit::err!(Request(BadJson("content must be a JSON object"))))?;
+	let state_key = body
+		.get("state_key")
+		.map(|state_key| {
+			state_key.as_str().map(str::to_owned).ok_or_else(|| {
+				conduwuit::err!(Request(InvalidParam("state_key must be a string")))
+			})
+		})
+		.transpose()?;
+	let delay = std::time::Duration::from_millis(delay_ms);
+	if std::time::SystemTime::now().checked_add(delay).is_none() {
+		return Err!(Request(InvalidParam("delay_ms is too large"))).map_err(Into::into);
+	}
+
+	if let Ok(response) = services
+		.transactions
+		.get_room_txn(&sender_user, sender_device.as_ref(), &room_id, &txn_id)
+		.await
+	{
+		return delayed_event_txn_response(&response);
+	}
+
+	let _txn_lock = services
+		.transactions
+		.lock_room_txn(&sender_user, sender_device.as_ref(), &room_id, &txn_id)
+		.await;
+	if let Ok(response) = services
+		.transactions
+		.get_room_txn(&sender_user, sender_device.as_ref(), &room_id, &txn_id)
+		.await
+	{
+		return delayed_event_txn_response(&response);
+	}
+
+	let event = service::rooms::delayed_events::ScheduledDelayedEvent {
+		event_type,
+		state_key,
+		content: slipstream::sswire::Raw::from_json_text(&slipstream::codec::to_string(content))?,
+		user_id: sender_user.clone(),
+		room_id: room_id.clone(),
+		running_since: std::time::SystemTime::now(),
+		delay,
+	};
+	let delay_id = services
+		.rooms
+		.delayed_events
+		.queue_delayed_event(event)
+		.await?;
+	let mut txn_response = DELAYED_EVENT_TXN_ID_PREFIX.to_vec();
+	txn_response.extend_from_slice(delay_id.as_bytes());
+	services.transactions.add_room_txnid(
+		&sender_user,
+		sender_device.as_ref(),
+		&room_id,
+		&txn_id,
+		&txn_response,
+	);
+
+	Ok(crate::json_util::json_response(single_field("delay_id", &delay_id)))
 }
 
 impl FromRequest<crate::State, Incoming> for AllDelayedEventsUser {

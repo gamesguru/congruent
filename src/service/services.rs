@@ -308,12 +308,12 @@ impl Services {
 		const INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 		let services = Arc::clone(self);
-		self.server.runtime().spawn(async move {
+		let _ = self.server.runtime().spawn(async move {
 			let mut last = conduwuit_mtxdb::stats::snapshot();
-			let mut ticker = tokio::time::interval(INTERVAL);
-			ticker.tick().await;
+			// The server runtime is smol-based; a tokio timer has no reactor here.
+			let mut ticker = async_io::Timer::interval(INTERVAL);
 			while services.server.running() {
-				ticker.tick().await;
+				ticker.next().await;
 				let now = conduwuit_mtxdb::stats::snapshot();
 				if now != last {
 					info!(
