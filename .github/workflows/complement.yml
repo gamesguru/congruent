@@ -25,9 +25,6 @@ jobs:
       COMPLEMENT_PARALLEL: 4
       COMPLEMENT_TEST_PARALLEL: 1
       COMPLEMENT_ENABLE_DIRTY_RUNS: 1
-      # A 300-event federation backfill can take just over the client's 30s
-      # default on a loaded runner while still completing normally.
-      COMPLEMENT_CLIENT_TIMEOUT_SECS: 60
       FEATURES: "direct_tls,url_preview,console"
 
     strategy:
