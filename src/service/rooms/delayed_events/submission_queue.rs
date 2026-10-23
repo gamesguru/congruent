@@ -51,9 +51,15 @@ pub(crate) async fn worker(service: &Service) -> Result<()> {
 	// open, and the first event write after a restart can be transiently blocked.
 	drop(stream);
 
+	let now = SystemTime::now();
+	let overdue = queue
+		.queue
+		.iter()
+		.filter(|(Reverse(submission_time), _)| *submission_time <= now)
+		.count();
 	info!(
 		loaded = loaded_events.len(),
-		"Delayed event worker loaded scheduled events from the database"
+		overdue, "Delayed event worker restored scheduled events from the database"
 	);
 
 	let mut scheduled_events = service.scheduled_events.lock().await;

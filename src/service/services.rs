@@ -171,6 +171,17 @@ impl Services {
 		// Appservice tokens must resolve before the first request is served.
 		self.appservice.initialize().await?;
 
+		// Startup migrations and first-run/admin setup publish writes. Materialize
+		// them before workers can hit a versioned read or write whose boundary is
+		// still pinned behind those groups.
+		self.mtxdb
+			.recover_pending_transactions()
+			.map_err(|error| {
+				conduwuit::err!(Database(error!(
+					"Recovering mtxdb journal after startup setup: {error}"
+				)))
+			})?;
+
 		info!("Starting service manager...");
 		let manager = {
 			let mut lock = self.manager.lock().await;

@@ -12,7 +12,7 @@ use std::{
 
 use async_trait::async_trait;
 use conduwuit::{
-	Err, Error, Result, debug_warn, err, error,
+	Err, Error, Result, debug_warn, err, error, info,
 	utils::{self, stream::WidebandExt},
 	warn,
 };
@@ -755,6 +755,7 @@ impl Service {
 		let submission_time = event.running_since + event.delay;
 
 		if submission_time <= SystemTime::now() {
+			info!(%delay_id, "Sending due delayed event");
 			let retry_event = event.clone();
 			let result = Box::pin(self.finalize_delayed_event(
 				&delay_id,
@@ -764,6 +765,9 @@ impl Service {
 				true,
 			))
 			.await;
+			if result.is_ok() {
+				info!(%delay_id, "Delayed event sent");
+			}
 			let retryable = result.as_ref().is_err_and(is_retryable_event_write_error);
 			// Copy the message out before any await: `conduwuit::Error` is not
 			// `Sync`, so a reference to it must not live across a suspension
