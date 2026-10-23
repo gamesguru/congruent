@@ -5,7 +5,7 @@ use std::{
 	time::{Duration, SystemTime},
 };
 
-use conduwuit::{Result, err, utils::stream::TryIgnore};
+use conduwuit::{Result, err, info, utils::stream::TryIgnore};
 use futures::{FutureExt, StreamExt, pin_mut};
 use loole::Receiver;
 
@@ -50,6 +50,11 @@ pub(crate) async fn worker(service: &Service) -> Result<()> {
 	// Keeping an exhausted mtxdb stream alive here leaves its read registration
 	// open, and the first event write after a restart can be transiently blocked.
 	drop(stream);
+
+	info!(
+		loaded = loaded_events.len(),
+		"Delayed event worker loaded scheduled events from the database"
+	);
 
 	let mut scheduled_events = service.scheduled_events.lock().await;
 	scheduled_events.extend(loaded_events);

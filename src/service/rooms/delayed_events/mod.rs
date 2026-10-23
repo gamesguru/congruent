@@ -788,6 +788,7 @@ impl Service {
 				} else {
 					error!(
 						%delay_id,
+						error = error_message.as_deref().unwrap_or_default(),
 						"Giving up on delayed event after {MAX_TRANSIENT_SEND_RETRIES} \
 						 transient storage errors"
 					);
