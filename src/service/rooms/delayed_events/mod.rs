@@ -778,7 +778,12 @@ impl Service {
 					*attempts
 				};
 				if attempts <= MAX_TRANSIENT_SEND_RETRIES {
-					warn!(%delay_id, attempts, "Transient database error submitting delayed event; retrying");
+					warn!(
+						%delay_id,
+						attempts,
+						error = error_message.as_deref().unwrap_or("unknown"),
+						"Transient database error submitting delayed event; retrying"
+					);
 					Some((SystemTime::now() + TRANSIENT_SEND_RETRY_DELAY, delay_id))
 				} else {
 					error!(

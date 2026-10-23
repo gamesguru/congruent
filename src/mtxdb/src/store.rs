@@ -21,7 +21,15 @@ impl MtxdbStore {
 	pub fn new(db: Arc<Database>) -> Self { Self { db } }
 
 	pub fn open<P: Into<std::path::PathBuf>>(path: P) -> Result<Self, StorageError> {
-		Ok(Self::new(Arc::new(Database::open(path.into())?)))
+		let db = Database::open(path.into())?;
+
+		// Materialize any transaction groups a previous process published but
+		// did not finish. Until they are applied, the journal boundary is pinned
+		// and the first versioned read or write after startup returns
+		// `WouldBlock`, even though recovery itself is available.
+		db.recover_pending_transactions()?;
+
+		Ok(Self::new(Arc::new(db)))
 	}
 
 	#[must_use]
