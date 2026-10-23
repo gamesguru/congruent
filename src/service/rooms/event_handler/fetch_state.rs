@@ -16,6 +16,55 @@ use slipstream::{
 
 use crate::rooms::short::ShortStateKey;
 
+/// Redact (when verification only matched signatures), re-attach `unsigned`,
+/// and parse one verified event.
+///
+/// Runs on a blocking worker: canonical-JSON redaction and `PduEvent` parsing
+/// are CPU-bound and would otherwise serialize inside one async task.
+fn prepare_verified_event(
+	event_id: OwnedEventId,
+	mut val: slipstream::CanonicalJsonObject,
+	stashed_unsigned: Option<slipstream::CanonicalJsonValue>,
+	needs_redaction: bool,
+	room_id: slipstream::OwnedRoomId,
+	room_version: slipstream::RoomVersionId,
+) -> (
+	Result<Option<PduEvent>, String>,
+	slipstream::CanonicalJsonObject,
+) {
+	if needs_redaction {
+		if let Err(error) =
+			slipstream::canonical_json::redact_in_place(&mut val, &room_version, None)
+		{
+			val.insert(
+				"event_id".to_owned(),
+				slipstream::CanonicalJsonValue::String(event_id.as_str().to_owned()),
+			);
+			return (Err(format!("{error:?}")), val);
+		}
+	}
+
+	if let Some(slipstream::CanonicalJsonValue::Object(unsigned)) = stashed_unsigned
+		&& !unsigned.is_empty()
+	{
+		val.insert(
+			"unsigned".to_owned(),
+			slipstream::CanonicalJsonValue::Object(unsigned),
+		);
+	}
+
+	val.insert(
+		"event_id".to_owned(),
+		slipstream::CanonicalJsonValue::String(event_id.as_str().to_owned()),
+	);
+
+	let pdu = PduEvent::from_id_val(&event_id, val.clone(), Some(&room_id))
+		.ok()
+		.filter(|pdu| crate::rooms::event_handler::check_room_id(&room_id, pdu).is_ok());
+
+	(Ok(pdu), val)
+}
+
 /// Call /state to find out what the state at this pdu is. We trust the
 /// server's response to some extent, but we still do a lot of checks
 /// on the events.
@@ -329,57 +378,14 @@ where
 									.server
 									.runtime()
 									.spawn_blocking(move || {
-										let redaction_error = if needs_redaction {
-											slipstream::canonical_json::redact_in_place(
-												&mut val,
-												&worker_room_version,
-												None,
-											)
-											.err()
-										} else {
-											None
-										};
-										if let Some(error) = redaction_error {
-											val.insert(
-												"event_id".to_owned(),
-												slipstream::CanonicalJsonValue::String(
-													event_id.as_str().to_owned(),
-												),
-											);
-											return (Err(format!("{error:?}")), val);
-										}
-
-										if let Some(slipstream::CanonicalJsonValue::Object(
-											unsigned_obj,
-										)) = stashed_unsigned && !unsigned_obj.is_empty()
-										{
-											val.insert(
-												"unsigned".to_owned(),
-												slipstream::CanonicalJsonValue::Object(
-													unsigned_obj,
-												),
-											);
-										}
-										val.insert(
-											"event_id".to_owned(),
-											slipstream::CanonicalJsonValue::String(
-												event_id.as_str().to_owned(),
-											),
-										);
-										let pdu = PduEvent::from_id_val(
-											&event_id,
-											val.clone(),
-											Some(&worker_room_id),
+										prepare_verified_event(
+											event_id,
+											val,
+											stashed_unsigned,
+											needs_redaction,
+											worker_room_id,
+											worker_room_version,
 										)
-										.ok()
-										.filter(|pdu| {
-											crate::rooms::event_handler::check_room_id(
-												&worker_room_id,
-												pdu,
-											)
-											.is_ok()
-										});
-										(Ok(pdu), val)
 									})
 									.await;
 								let (prepared, val) = match prepared {
