@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use conduwuit::{
 	Err, Error, Result, debug_warn, err, error,
 	utils::{self, stream::WidebandExt},
+	warn,
 };
 use database::{Deserialized, Json, Map};
 use futures::{StreamExt, join};
@@ -171,6 +172,12 @@ use tokio::sync::Mutex;
 use crate::{Dep, rooms};
 
 const DELAY_ID_SIZE: usize = 32;
+
+fn is_retryable_event_write_error(error: &Error) -> bool {
+	matches!(error, Error::Database(message) if message.contains(
+		"Failed to write event to mtxdb: operation blocked:"
+	))
+}
 
 struct Data {
 	delayid_scheduleddelayedevent: Arc<Map>,
@@ -457,6 +464,7 @@ impl Service {
 		event: ScheduledDelayedEvent,
 		action: UpdateAction,
 		leave_scheduled_on_error: bool,
+		retry_database_errors: bool,
 	) -> Result<()> {
 		if !self.scheduled_events.lock().await.remove(delay_id.as_str()) {
 			// Someone else has already finalized this event
@@ -519,9 +527,12 @@ impl Service {
 						Ok(())
 					},
 					| Err(error) => {
-						if leave_scheduled_on_error {
-							// In case of error on a manual send, return the error and leave the
-							// event scheduled
+						if leave_scheduled_on_error
+							|| (retry_database_errors && is_retryable_event_write_error(&error))
+						{
+							// Keep manual sends scheduled on failure. Automatic sends also
+							// keep database failures scheduled so transient mtxdb contention
+							// cannot lose the event.
 							self.scheduled_events.lock().await.insert(delay_id.clone());
 							return Err(error);
 						}
@@ -626,7 +637,7 @@ impl Service {
 				Ok(())
 			},
 			| UpdateAction::Send | UpdateAction::Cancel =>
-				Box::pin(self.finalize_delayed_event(&delay_id, event, action, true)).await,
+				Box::pin(self.finalize_delayed_event(&delay_id, event, action, true, false)).await,
 		}
 	}
 
@@ -724,15 +735,25 @@ impl Service {
 		let submission_time = event.running_since + event.delay;
 
 		if submission_time <= SystemTime::now() {
-			let _ = Box::pin(self.finalize_delayed_event(
+			let result = Box::pin(self.finalize_delayed_event(
 				&delay_id,
 				event,
 				UpdateAction::Send,
 				false,
+				true,
 			))
-			.await
-			.inspect_err(|err| error!(%delay_id, %err, "Error encountered submitting event."));
-			None
+			.await;
+			match &result {
+				| Err(error) if is_retryable_event_write_error(error) => {
+					warn!(%delay_id, "Transient database error submitting delayed event; retrying");
+					Some((SystemTime::now() + Duration::from_millis(250), delay_id))
+				},
+				| Err(err) => {
+					error!(%delay_id, %err, "Error encountered submitting event.");
+					None
+				},
+				| Ok(()) => None,
+			}
 		} else {
 			Some((submission_time, delay_id))
 		}

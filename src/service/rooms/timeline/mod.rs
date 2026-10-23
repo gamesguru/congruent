@@ -944,6 +944,25 @@ impl Service {
 	{
 		self.db.multi_get_shortauthevents(shorteventids)
 	}
+
+	/// Persist a verified batch of a room's events and edges in one mtxdb
+	/// transaction.
+	pub async fn write_events_to_mtxdb(
+		&self,
+		room_id: &RoomId,
+		events: &[(&PduEvent, &CanonicalJsonObject)],
+	) -> Result {
+		self.db.write_events_to_mtxdb(room_id, events).await
+	}
+
+	/// Which of `event_ids` already have a stored body in this room.
+	pub fn event_ids_present(
+		&self,
+		room_id: &RoomId,
+		event_ids: &[OwnedEventId],
+	) -> Result<Vec<bool>> {
+		self.db.event_ids_present(room_id, event_ids)
+	}
 }
 
 #[cfg(test)]

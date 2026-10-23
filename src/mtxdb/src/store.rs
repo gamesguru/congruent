@@ -82,10 +82,22 @@ impl MtxdbStore {
 		shard: ShardType,
 		collection: &CollectionId,
 	) -> Result<u64, StorageError> {
-		self.db
-			.pool(shard)
-			.get_with_collection_version(collection, &[[0; 16]])
-			.map(|(_, version)| version)
+		const RECOVERY_ATTEMPTS: u8 = 8;
+		let mut attempts = 0_u8;
+		loop {
+			match self
+				.db
+				.pool(shard)
+				.get_with_collection_version(collection, &[[0; 16]])
+			{
+				| Ok((_, version)) => return Ok(version),
+				| Err(error) if error.is_would_block() && attempts < RECOVERY_ATTEMPTS => {
+					attempts = attempts.saturating_add(1);
+					self.recover_pending_transactions()?;
+				},
+				| Err(error) => return Err(error),
+			}
+		}
 	}
 
 	pub fn get_many(
@@ -103,6 +115,16 @@ impl MtxdbStore {
 					.map(|value| value.map(|node| node.bytes.to_vec()))
 					.collect()
 			})
+	}
+
+	/// Apply any transaction group that was published to the journal but whose
+	/// packfile materialization has not finished. A versioned read samples the
+	/// collection version from the journal, but its read boundary is capped by
+	/// the earliest such pending group, so every retry keeps failing until the
+	/// group is materialized. This is the explicit recovery boundary mtxdb
+	/// exposes for exactly that case.
+	pub fn recover_pending_transactions(&self) -> Result<(), StorageError> {
+		self.db.recover_pending_transactions()
 	}
 
 	#[must_use]

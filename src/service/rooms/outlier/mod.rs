@@ -330,15 +330,25 @@ fn add_pdu_outlier_batch_impl<'a>(
 				.short
 				.get_or_create_shorteventid_blocking(auth_event);
 		}
-		if let Err(error) = self.db.mtxdb_events.write_event_with_edges(
-			room_id.as_bytes(),
-			event_id.as_bytes(),
-			json.as_bytes(),
-			&prev,
-			&auth,
-		) {
-			warn!(?error, %event_id, "Failed to write outlier event and auth edges to mtxdb; not storing the event");
-			return;
+		// Federation state recovery pre-persists its verified auth chain in one
+		// transaction; don't re-commit every event here in that case. Repair a
+		// partial write (body without edges) instead of skipping it.
+		let already_stored = self
+			.db
+			.mtxdb_events
+			.event_matches_with_edges(room_id.as_bytes(), event_id.as_bytes(), json.as_bytes())
+			.unwrap_or(false);
+		if !already_stored {
+			if let Err(error) = self.db.mtxdb_events.write_event_with_edges(
+				room_id.as_bytes(),
+				event_id.as_bytes(),
+				json.as_bytes(),
+				&prev,
+				&auth,
+			) {
+				warn!(?error, %event_id, "Failed to write outlier event and auth edges to mtxdb; not storing the event");
+				return;
+			}
 		}
 		let short_room_id = self
 			.services

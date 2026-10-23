@@ -135,6 +135,12 @@ impl VerdictAdapter {
 					attempts = attempts
 						.checked_add(1)
 						.expect("attempts is less than the retry limit");
+					if error.is_would_block() {
+						// A published group still awaiting materialization pins the
+						// read boundary below the collection version; run recovery
+						// so the versioned read can be certified.
+						let _ = self.store.recover_pending_transactions();
+					}
 					std::thread::sleep(std::time::Duration::from_millis(2));
 				},
 				| result => return result,

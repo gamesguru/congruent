@@ -954,8 +954,18 @@ impl Data {
 		room_id: Option<&RoomId>,
 		event_id: &EventId,
 	) -> Result<PduEvent> {
-		let pdu: PduEvent =
-			database::from_json_slice(&self.get_event_json_bytes(event_id.as_bytes())?)?;
+		// When the room is known, read the body straight from its event
+		// collection instead of paying for a locator lookup first. This is the
+		// hot path when auth-checking a large fetched auth chain.
+		let bytes = match room_id {
+			| Some(room_id) => self
+				.mtxdb_events
+				.get_event(room_id.as_bytes(), event_id.as_bytes())
+				.map_err(|error| err!(Database("mtxdb event lookup failed: {error}")))?
+				.ok_or_else(|| err!(Request(NotFound("event body not found in mtxdb"))))?,
+			| None => self.get_event_json_bytes(event_id.as_bytes())?,
+		};
+		let pdu: PduEvent = database::from_json_slice(&bytes)?;
 
 		if let Some(expected_room) = room_id {
 			let actual_room = pdu.room_id_or_hash();
@@ -968,6 +978,23 @@ impl Data {
 		}
 
 		Ok(pdu)
+	}
+
+	/// Which of `event_ids` already have a stored event body in this room,
+	/// positionally. One batched mtxdb read instead of a locator lookup per ID.
+	pub(super) fn event_ids_present(
+		&self,
+		room_id: &RoomId,
+		event_ids: &[OwnedEventId],
+	) -> Result<Vec<bool>> {
+		let ids: Vec<&[u8]> = event_ids
+			.iter()
+			.map(slipstream::OwnedEventId::as_bytes)
+			.collect();
+		self.mtxdb_events
+			.get_events(room_id.as_bytes(), &ids)
+			.map(|values| values.into_iter().map(|value| value.is_some()).collect())
+			.map_err(|error| err!(Database("mtxdb event existence batch failed: {error}")))
 	}
 
 	/// Preload the full auth context for the given events from mtxdb's persisted
@@ -1267,6 +1294,63 @@ impl Data {
 				&auth_events,
 			)
 			.map_err(|error| err!(Database("Failed to write event to mtxdb: {error}")))?;
+		Ok(())
+	}
+
+	/// Persist a verified batch of a room's events and edges in one mtxdb
+	/// transaction.
+	///
+	/// Used by federation state recovery, where a single `/state_ids` response
+	/// can yield hundreds of events. The events arrive topologically sorted, so
+	/// each one's auth events are staged before it and the auth-chain closures
+	/// complete in order.
+	pub(super) async fn write_events_to_mtxdb(
+		&self,
+		room_id: &RoomId,
+		events: &[(&PduEvent, &CanonicalJsonObject)],
+	) -> Result {
+		if events.is_empty() {
+			return Ok(());
+		}
+		self.services.state.get_room_version(room_id).await?;
+
+		let mut bodies = Vec::with_capacity(events.len());
+		let mut event_ids = Vec::with_capacity(events.len());
+		let mut prev_events = Vec::with_capacity(events.len());
+		let mut auth_events = Vec::with_capacity(events.len());
+		for &(pdu, json) in events {
+			for auth_event in pdu.auth_events() {
+				let _ = self
+					.services
+					.short
+					.get_or_create_shorteventid_blocking(auth_event);
+			}
+			bodies.push(slipstream::codec::to_string(json));
+			event_ids.push(pdu.event_id.as_bytes());
+			prev_events.push(pdu.prev_events().map(EventId::as_bytes).collect::<Vec<_>>());
+			auth_events.push(pdu.auth_events().map(EventId::as_bytes).collect::<Vec<_>>());
+		}
+
+		let writes = (0..events.len())
+			.map(|index| conduwuit_mtxdb::events::EventWrite {
+				event_id: event_ids[index],
+				event_body: bodies[index].as_bytes(),
+				prev_events: &prev_events[index],
+				auth_events: &auth_events[index],
+			})
+			.collect::<Vec<_>>();
+
+		// Chunk so a stale-read conflict only re-stages (and re-materializes) a
+		// bounded prefix, rather than the entire auth chain. `stage_put` already
+		// enforces mtxdb's transaction-size budget per put.
+		const EVENTS_PER_TRANSACTION: usize = 64;
+		for chunk in writes.chunks(EVENTS_PER_TRANSACTION) {
+			self.mtxdb_events
+				.write_events_with_edges(room_id.as_bytes(), chunk)
+				.map_err(|error| {
+					err!(Database("Failed to write event batch to mtxdb: {error}"))
+				})?;
+		}
 		Ok(())
 	}
 
