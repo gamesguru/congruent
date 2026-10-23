@@ -328,13 +328,16 @@ where
 		unknown_events.len(),
 	);
 
-	// Concurrently parse and verify signatures (Pure CPU and network keys fetch)
+	// Concurrently parse and verify signatures (Pure CPU and network keys fetch).
+	// Use an explicit width: the automatic stream width follows the database
+	// worker topology and can be as low as 2, which serializes this CPU-bound
+	// batch badly (MSC4297 state responses can carry hundreds of auth events).
 	let signature_verification_started = Instant::now();
 	let mut verified_events: HashMap<OwnedEventId, (PduEvent, slipstream::CanonicalJsonObject)> =
 		unknown_events
 			.into_iter()
 			.stream()
-			.broad_filter_map({
+			.broadn_filter_map(64, {
 				let room_version_id = room_version_id.clone();
 				move |(eid, mut val): (OwnedEventId, slipstream::CanonicalJsonObject)| {
 					let room_version_id = room_version_id.clone();
