@@ -337,7 +337,7 @@ where
 		unknown_events
 			.into_iter()
 			.stream()
-			.broadn_filter_map(64, {
+			.broadn_filter_map(256, {
 				let room_version_id = room_version_id.clone();
 				move |(eid, mut val): (OwnedEventId, slipstream::CanonicalJsonObject)| {
 					let room_version_id = room_version_id.clone();
