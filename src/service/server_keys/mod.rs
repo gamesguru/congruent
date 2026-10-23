@@ -622,7 +622,7 @@ fn verify_key_exists_sync(&self, origin: &ServerName, key_id: &ServerSigningKeyI
 		.mtxdb_keys
 		.read_key(origin.as_bytes(), key_id.as_bytes())
 		.unwrap_or_else(|error| panic!("Failed to read mtxdb signing keys for {origin}: {error}"))
-		.is_some()
+		.is_some_and(|key| !key.is_evicted())
 }
 
 #[implement(Service)]
@@ -728,8 +728,9 @@ pub fn merged_signing_keys_for(
 }
 
 /// Reconstruct active and retired keys from native records without signatures.
-/// Returns `NotFound` when there are no records; an all-evicted set yields an
-/// empty view. Storage and key-ID decoding failures return database errors.
+/// Returns `NotFound` when there are no retained records. Storage and key-ID
+/// decoding failures return database errors. When available, signatures and
+/// validity metadata are restored from the verbatim Notary payload.
 #[implement(Service)]
 fn merged_signing_keys_for_sync(&self, origin: &ServerName) -> Result<ServerSigningKeys> {
 	let native = self
@@ -739,10 +740,17 @@ fn merged_signing_keys_for_sync(&self, origin: &ServerName) -> Result<ServerSign
 		.map_err(|error| {
 			err!(Database("Failed to read mtxdb signing keys for {origin}: {error}"))
 		})?;
-	if native.is_empty() {
+	if !native.iter().any(|key| !key.is_evicted()) {
 		return Err(err!(Request(NotFound("No signing-key record for {origin}"))));
 	}
-	signing_keys_from_native(origin, &native)
+	let mut keys = signing_keys_from_native(origin, &native)?;
+	if let Ok(raw) = self.raw_signing_keys_for_sync(origin)
+		&& let Ok(raw_keys) = raw.deserialize()
+	{
+		keys.signatures = raw_keys.signatures;
+		keys.valid_until_ts = raw_keys.valid_until_ts;
+	}
+	Ok(keys)
 }
 
 #[implement(Service)]

@@ -15,7 +15,7 @@ pub use mtxdb::server_keys::{
 	ServerKey,
 };
 
-use crate::keys::{derive_id, server_key_record_id};
+use crate::keys::{derive_id, legacy_server_key_record_id, server_key_record_id};
 
 const ORIGIN_INDEX_DOMAIN: &[u8] = b"server-key-origins-v1";
 const ORIGIN_INDEX_NODE_DOMAIN: &[u8] = b"server-key-origin-index-v1";
@@ -82,12 +82,19 @@ impl ServerKeysAdapter {
 		origin: &[u8],
 	) -> Result<Option<Vec<u8>>, StorageError> {
 		let node = server_key_record_id(kind, origin);
-		self.store
-			.get(ShardType::ServerInfo, &server_keys_collection_id(), node)?
-			.map_or(Ok(None), |bytes| {
-				let (stored_origin, payload) = decode_server_key(&bytes)?;
-				Ok((stored_origin == origin).then(|| payload.to_vec()))
-			})
+		let legacy_node = legacy_server_key_record_id(kind, origin);
+		let collection = server_keys_collection_id();
+		let bytes = match self.store.get(ShardType::ServerInfo, &collection, node)? {
+			| Some(bytes) => Some(bytes),
+			| None if legacy_node != node =>
+				self.store
+					.get(ShardType::ServerInfo, &collection, legacy_node)?,
+			| None => None,
+		};
+		bytes.map_or(Ok(None), |bytes| {
+			let (stored_origin, payload) = decode_server_key(&bytes)?;
+			Ok((stored_origin == origin).then(|| payload.to_vec()))
+		})
 	}
 
 	/// All live key records, with their original origins recovered from the
@@ -98,9 +105,10 @@ impl ServerKeysAdapter {
 		let mut out = Vec::with_capacity(records.len());
 		for (node, bytes) in records {
 			let (origin, payload) = decode_server_key(&bytes)?;
-			let kind = KeyRecordKind::ALL
-				.into_iter()
-				.find(|kind| server_key_record_id(*kind, origin) == node);
+			let kind = KeyRecordKind::ALL.into_iter().find(|kind| {
+				server_key_record_id(*kind, origin) == node
+					|| legacy_server_key_record_id(*kind, origin) == node
+			});
 			let Some(kind) = kind else {
 				return Err(StorageError::Corrupt(
 					"signing-key record id does not match origin".to_owned(),
@@ -335,6 +343,36 @@ mod tests {
 			.unwrap();
 		tx.commit().unwrap();
 		assert_eq!(get(KeyRecordKind::Historical, b"a.example").unwrap(), b"{\"h\":3}");
+		fs::remove_dir_all(&path).unwrap();
+	}
+
+	#[test]
+	fn legacy_server_key_ids_remain_readable_and_scannable() {
+		let path = std::env::temp_dir()
+			.join(format!("conduwuit-mtxdb-server-keys-legacy-{}", std::process::id()));
+		let _ = fs::remove_dir_all(&path);
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = ServerKeysAdapter::new(store.clone());
+		let kind = KeyRecordKind::Historical;
+		let origin = b"legacy.example";
+		let payload = b"legacy-payload";
+		let tx = store.begin_transaction();
+		tx.put(
+			ShardType::ServerInfo,
+			server_keys_collection_id(),
+			legacy_server_key_record_id(kind, origin),
+			&encode_server_key(origin, payload).unwrap(),
+		)
+		.unwrap();
+		tx.commit().unwrap();
+
+		assert_eq!(adapter.get(kind, origin).unwrap().as_deref(), Some(payload.as_slice()));
+		assert!(
+			adapter
+				.scan()
+				.unwrap()
+				.contains(&(kind, origin.to_vec(), payload.to_vec()))
+		);
 		fs::remove_dir_all(&path).unwrap();
 	}
 }

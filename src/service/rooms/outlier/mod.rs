@@ -322,11 +322,8 @@ fn add_pdu_outlier_batch_impl<'a>(
 				},
 			}
 		}
-		if !matches!(
-			conduwuit_mtxdb::room_metadata::get_room_version(&self.db.mtxdb, room_id.as_bytes()),
-			Ok(Some(_))
-		) {
-			warn!(%room_id, %event_id, "Skipping outlier before room version is established; mtxdb is authoritative");
+		if let Err(error) = self.services.short.get_room_version(room_id).await {
+			warn!(?error, %room_id, %event_id, "Skipping outlier before room version is established");
 			return;
 		}
 		for auth_event in parsed_pdu.auth_events() {

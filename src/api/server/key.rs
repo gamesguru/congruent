@@ -511,6 +511,14 @@ mod tests {
 			.unwrap();
 		assert_eq!(response.status(), StatusCode::OK);
 		let json: Value = slipstream::codec::from_slice(response.body()).unwrap();
+		let signatures = json
+			.get("server_keys")
+			.and_then(|keys| keys.as_array())
+			.and_then(|keys| keys.first())
+			.and_then(|key| key.get("signatures"))
+			.and_then(|signatures| signatures.as_object())
+			.expect("notary response should retain its signatures");
+		assert!(!signatures.is_empty());
 		let old_key = json
 			.get("server_keys")
 			.and_then(|keys| keys.as_array())
