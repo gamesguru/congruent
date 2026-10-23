@@ -433,10 +433,25 @@ pub async fn backfill_if_required(
 					// outside a `/messages` page boundary and looks like a dropped event.
 					let pdus = topo_sort_backfill_batch(pdus);
 
-					// Handle timeline events newest-first (maintain timeline integrity)
-					for pdu in pdus {
-						if let Err(e) =
-							self.backfill_pdu(backfill_server, pdu, None).boxed().await
+					// Reserve stream positions in newest-first order, then process
+					// oldest-first so each event's predecessors from this batch are
+					// already available during auth and state resolution. The assigned
+					// positions preserve the existing newest-first timeline ordering.
+					let batch_size = u64::try_from(pdus.len())?;
+					let mut count = self.services.globals.next_count_batch(batch_size)?;
+					let mut counts = Vec::with_capacity(pdus.len());
+					for _ in &pdus {
+						count = count
+							.checked_add(1)
+							.ok_or_else(|| err!(Arithmetic("Counter overflow")))?;
+						counts.push(count);
+					}
+
+					for (pdu, count) in pdus.into_iter().zip(counts).rev() {
+						if let Err(e) = self
+							.backfill_pdu(backfill_server, pdu, Some(count))
+							.boxed()
+							.await
 						{
 							debug_warn!("Failed to add backfilled pdu in room {room_id}: {e}");
 						}
