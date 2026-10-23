@@ -495,19 +495,30 @@ impl Service {
 		// Serialize with inbound /send and backfill for this room, as every other
 		// caller of the incoming-PDU pipeline does. Taken only after the
 		// federation fetches, so no lock is held across network I/O.
-		let _room_lock = self
-			.services
-			.event_handler
-			.mutex_federation
-			.lock(room_id)
-			.await;
-		// The lock wait may have outlasted our or the peer's membership.
-		if let Some(outcome) = self.admission_lapsed(room_id, peer).await {
-			return outcome;
+		{
+			let _room_lock = self
+				.services
+				.event_handler
+				.mutex_federation
+				.lock(room_id)
+				.await;
+			// The lock wait may have outlasted our or the peer's membership.
+			if let Some(outcome) = self.admission_lapsed(room_id, peer).await {
+				return outcome;
+			}
 		}
 
 		let (mut applied, mut unusable) = (0_usize, 0_usize);
 		for (_, parsed_room, event_id, value) in fetched {
+			// Hold the room federation lock for one event at a time. The batch can
+			// take tens of seconds on a slow peer, and holding the lock throughout
+			// blocks a concurrent /messages backfill behind the whole exchange.
+			let _room_lock = self
+				.services
+				.event_handler
+				.mutex_federation
+				.lock(room_id)
+				.await;
 			let handled = self
 				.services
 				.event_handler
