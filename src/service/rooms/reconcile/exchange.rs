@@ -37,7 +37,10 @@ use super::{DIGEST_FEATURE, Key, Service};
 /// Events fetched from one peer in one exchange.
 const MAX_FETCHES: usize = 100;
 /// Events fetched first, before the rest are trusted enough to fetch.
-const SAMPLE: usize = 16;
+///
+/// Large enough that a peer with a substantial fake share is detected reliably:
+/// at 50% fake, a 16-event sample misses the fakes about once in 65,000 rounds.
+const SAMPLE: usize = 32;
 /// Concurrent event fetches.
 const FETCH_CONCURRENCY: usize = 4;
 /// The share of failed fetches, out of 100, above which a peer's claim is
