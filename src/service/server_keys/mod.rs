@@ -110,6 +110,21 @@ fn signing_keys_from_native(
 	Ok(out)
 }
 
+/// Read and reconstruct the retained signing-key metadata for one origin.
+/// This adapter-only form is used by blocking batch preload work.
+fn merged_signing_keys_from_adapter(
+	adapter: &conduwuit_mtxdb::server_keys::ServerKeysAdapter,
+	origin: &ServerName,
+) -> Result<ServerSigningKeys> {
+	let native = adapter.read_keys(origin.as_bytes()).map_err(|error| {
+		err!(Database("Failed to read mtxdb signing keys for {origin}: {error}"))
+	})?;
+	if !native.iter().any(|key| !key.is_evicted()) {
+		return Err(err!(Request(NotFound("No signing-key record for {origin}"))));
+	}
+	signing_keys_from_native(origin, &native)
+}
+
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let minimum_valid = Duration::from_hours(1);
@@ -732,19 +747,8 @@ pub fn merged_signing_keys_for(
 /// Returns `NotFound` when there are no retained records. Storage and key-ID
 /// decoding failures return database errors.
 #[implement(Service)]
-#[implement(Service)]
 fn merged_signing_keys_for_sync(&self, origin: &ServerName) -> Result<ServerSigningKeys> {
-	let native = self
-		.db
-		.mtxdb_keys
-		.read_keys(origin.as_bytes())
-		.map_err(|error| {
-			err!(Database("Failed to read mtxdb signing keys for {origin}: {error}"))
-		})?;
-	if native.is_empty() {
-		return Err(err!(Request(NotFound("No signing-key record for {origin}"))));
-	}
-	let mut out = signing_keys_from_native(origin, &native)?;
+	let mut out = merged_signing_keys_from_adapter(&self.db.mtxdb_keys, origin)?;
 	if let Ok(raw) = self.raw_signing_keys_for_sync(origin) {
 		if let Ok(stored) = raw.deserialize() {
 			out.signatures = stored.signatures;
