@@ -261,7 +261,7 @@ fn write_keys(db: &DB, out_path: &Path) -> Result<usize, Box<dyn std::error::Err
 			.open(out_path)?,
 	);
 	let mut count = 0;
-	let mut seen = HashSet::new();
+	let mut records: BTreeMap<(String, String), Object> = BTreeMap::new();
 	for (key, raw) in rows(db, "server_signingkeys")? {
 		let key = std::str::from_utf8(&key)?;
 		let Some((origin, historical)) = key
@@ -291,7 +291,14 @@ fn write_keys(db: &DB, out_path: &Path) -> Result<usize, Box<dyn std::error::Err
 					)
 					.into());
 				};
-				if !seen.insert((origin.to_owned(), key_id.to_owned())) {
+				let retired = key_value.get("expired_ts").and_then(Value::as_u64);
+				// A key present in several maps or rows keeps its retired entry so
+				// the recorded retirement time is never lost; otherwise first wins.
+				let id = (origin.to_owned(), key_id.to_owned());
+				if records
+					.get(&id)
+					.is_some_and(|existing| existing.contains_key("expired_ts") || retired.is_none())
+				{
 					continue;
 				}
 				let mut record = Object::new();
@@ -311,11 +318,14 @@ fn write_keys(db: &DB, out_path: &Path) -> Result<usize, Box<dyn std::error::Err
 				if let Some(expired) = key_value.get("expired_ts").and_then(Value::as_u64) {
 					record.insert("expired_ts".into(), codec::to_value(&expired));
 				}
-				writer.write_all(codec::to_string(&Value::Object(record)).as_bytes())?;
-				writer.write_all(b"\n")?;
-				count += 1;
+				records.insert(id, record);
 			}
 		}
+	}
+	for record in records.into_values() {
+		writer.write_all(codec::to_string(&Value::Object(record)).as_bytes())?;
+		writer.write_all(b"\n")?;
+		count += 1;
 	}
 	writer.flush()?;
 	if count == 0 {
