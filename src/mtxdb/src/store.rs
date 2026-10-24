@@ -22,6 +22,9 @@ impl MtxdbStore {
 
 	pub fn open<P: Into<std::path::PathBuf>>(path: P) -> Result<Self, StorageError> {
 		let db = Database::open(path.into())?;
+		for shard in ShardType::ALL {
+			db.pool(shard).set_background_checkpoint(true);
+		}
 		Ok(Self::new(Arc::new(db)))
 	}
 
