@@ -2411,8 +2411,9 @@ impl Data {
 
 	/// Read direct auth edges from mtxdb and resolve or allocate their short IDs.
 	/// An existing empty edge row yields an empty vector; a missing event mapping,
-	/// locator, or edge row returns `NotFound`. Read and decoding errors propagate;
-	/// short-ID allocation failures panic.
+	/// locator, or edge row returns `NotFound`. There is no legacy-PDU fallback:
+	/// the offline import must write auth edges for every event. Read and decoding
+	/// errors propagate; short-ID allocation failures panic.
 	pub(super) async fn get_shortauthevents(
 		&self,
 		shorteventid: rooms::short::ShortEventId,

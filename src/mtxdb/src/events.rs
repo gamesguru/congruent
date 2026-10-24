@@ -129,7 +129,8 @@ impl EventAdapter {
 	}
 
 	/// Return auth edges when a row exists, distinguishing an empty edge list
-	/// from a missing row so callers can use their compatibility fallback.
+	/// from a missing row. A missing row is an incomplete import, not an event
+	/// without auth events.
 	pub fn get_auth_events_if_present(
 		&self,
 		room_id: &[u8],

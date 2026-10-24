@@ -461,3 +461,38 @@ pub fn export(
 	}
 	result
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn retired_key_keeps_expired_ts_over_stale_active_entry() {
+		let dir = std::env::temp_dir().join(format!("mtxdb-export-keys-{}", std::process::id()));
+		let _ = fs::remove_dir_all(&dir);
+		let mut options = Options::default();
+		options.create_if_missing(true);
+		options.create_missing_column_families(true);
+		let db = DB::open_cf(&options, &dir, ["server_signingkeys"]).unwrap();
+		let cf = db.cf_handle("server_signingkeys").unwrap();
+		// Legacy cumulative writer: same ID left in both maps after retirement.
+		let stale = br#"{"valid_until_ts":10,"verify_keys":{"ed25519:a":{"key":"AAAA"}},"old_verify_keys":{"ed25519:a":{"key":"AAAA","expired_ts":5}}}"#;
+		// Latest raw response no longer includes the key.
+		let latest = br#"{"valid_until_ts":20,"verify_keys":{"ed25519:b":{"key":"BBBB"}}}"#;
+		db.put_cf(cf, "example.org\0historical", stale).unwrap();
+		db.put_cf(cf, "example.org", latest).unwrap();
+
+		let out = dir.join("keys.jsonl");
+		let count = write_keys(&db, &out).unwrap();
+		let written = fs::read_to_string(&out).unwrap();
+		drop(db);
+		let _ = fs::remove_dir_all(&dir);
+
+		assert_eq!(count, 2);
+		let retired = written
+			.lines()
+			.find(|line| line.contains("ed25519:a"))
+			.unwrap();
+		assert!(retired.contains("\"expired_ts\":5"), "{retired}");
+	}
+}
