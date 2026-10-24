@@ -310,8 +310,7 @@ async fn migrate(services: &Services) -> Result<()> {
 	let ssot_needs_run = db["global"]
 		.get(MIGRATE_EVENT_STORE_TO_SSOT_MARKER)
 		.await
-		.is_not_found()
-		|| db["eventid_pdu"].raw_keys().next().await.is_none();
+		.is_not_found();
 
 	if ssot_needs_run {
 		info!("Running migration 'migrate_event_store_to_ssot'");
@@ -751,7 +750,7 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 	);
 
 	let db = &services.db;
-	let eventid_pdu = db["eventid_pdu"].clone();
+	let eventid_pdu = db.deprecated("eventid_pdu")?.clone();
 	let room_pducount_eventid = db["room_pducount_eventid"].clone();
 	let eventid_metadata = db["eventid_metadata"].clone();
 	let eventid_rejections = db["eventid_rejections"].clone();
@@ -987,7 +986,7 @@ async fn populate_shortprevevents(services: &Services) -> Result<()> {
 	info!("Starting migration to populate shorteventid_shortprevevents...");
 
 	let db = &services.db;
-	let eventid_pdu = db["eventid_pdu"].clone();
+	let eventid_pdu = db.deprecated("eventid_pdu")?.clone();
 	let shorteventid_shortprevevents = db["shorteventid_shortprevevents"].clone();
 	let cork = db.cork_and_sync();
 	let stream = eventid_pdu.raw_stream();
@@ -2738,7 +2737,7 @@ async fn legacy_added_events_roothandles(
 			"Empty event group for shortstatehash {shortstatehash} during v20 backfill."
 		))))?;
 		let event_id: OwnedEventId = services.rooms.short.get_eventid_from_short(*first).await?;
-		let pdu = services.rooms.timeline.get_pdu(&event_id).await?;
+		let pdu = services.rooms.timeline.get_pdu(&event_id)?;
 		let room_id = pdu
 			.room_id_or_hash()
 			.expect("timeline PDU must have a room_id")

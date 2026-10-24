@@ -26,6 +26,7 @@ pub async fn handle_outlier_pdu<'a, Pdu>(
 	mut value: CanonicalJsonObject,
 	_auth_events_known: bool,
 	skip_sig_verify: bool,
+	force_auth_check: bool,
 	room_version: &'a slipstream::RoomVersionId,
 	auth_recovery_stage: AuthRecoveryStage,
 ) -> Result<(PduEvent, BTreeMap<String, CanonicalJsonValue>)>
@@ -33,7 +34,7 @@ where
 	Pdu: Event + Send + Sync,
 {
 	// Skip the PDU if we already have it
-	if let Ok(json) = self.services.timeline.get_outlier_pdu_json(event_id).await {
+	if let Ok(json) = self.services.timeline.get_outlier_pdu_json(event_id) {
 		if let Ok(pdu) = PduEvent::from_id_val(event_id, json.clone(), Some(room_id)) {
 			if pdu.room_id_or_hash().as_deref() == Some(room_id) {
 				// If this event was previously rejected, propagate the
@@ -85,6 +86,15 @@ where
 					return Err!(Request(Forbidden(
 						"Event {event_id} is already known and rejected"
 					)));
+				} else if force_auth_check {
+					// The caller pre-persisted this event without validating
+					// it (a bounded batch write). Re-run the auth check instead
+					// of treating the stored body as trusted.
+					info!(
+						target: "state_res_debug",
+						%event_id,
+						"handle_outlier_pdu: validating pre-persisted event"
+					);
 				} else {
 					info!(
 						target: "state_res_debug",
@@ -165,7 +175,7 @@ where
 				// Content hash mismatch: content may have been tampered by a relay.
 				// If we already have this event locally, re-use our known-good content
 				// instead of redacting or re-fetching from the origin.
-				if let Ok(known_pdu) = self.services.timeline.get_pdu(event_id).await {
+				if let Ok(known_pdu) = self.services.timeline.get_pdu(event_id) {
 					info!(
 						%event_id,
 						"Received redacted copy, but we already have known-good content. Re-using."
@@ -417,12 +427,7 @@ where
 			continue;
 		}
 
-		if let Ok(auth_event) = self
-			.services
-			.timeline
-			.get_pdu_in_room(Some(room_id), aid)
-			.await
-		{
+		if let Ok(auth_event) = self.services.timeline.get_pdu_in_room(Some(room_id), aid) {
 			check_room_id(room_id, &auth_event)?;
 			if auth_event.state_key.is_none() {
 				self.services.pdu_metadata.mark_event_rejected(
@@ -849,6 +854,7 @@ where
 						room_id,
 						auth_val,
 						true,
+						false,
 						false,
 						room_version,
 						auth_recovery_stage,

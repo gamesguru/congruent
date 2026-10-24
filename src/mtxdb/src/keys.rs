@@ -8,13 +8,45 @@ pub use mtxdb::interop::{
 	EVENT_LOCATOR_BUCKETS, derive_id, event_locator_collection_id, event_record_id,
 	event_state_root_node_id as event_root_node_id, event_verdict_collection_id,
 	room_auth_collection_id, room_event_collection_id, room_prev_collection_id,
-	room_state_root_node_id as room_root_node_id, server_key_record_id,
-	server_keys_collection_id,
+	room_state_root_node_id as room_root_node_id, server_keys_collection_id,
 };
 use mtxdb::{
 	MEMBER_NAMESPACE_STAT, MEMBER_NAMESPACE_STGP, derive_group_full_id,
 	derive_member_collection_id_from_group,
 };
+
+/// Derive a signing-key record id for a particular record kind and origin.
+/// The Notary id retains mtxdb's established derivation; the other records
+/// use disjoint domains in the shared server-keys collection.
+#[must_use]
+pub fn server_key_record_id(kind: crate::server_keys::KeyRecordKind, origin: &[u8]) -> [u8; 16] {
+	use crate::server_keys::KeyRecordKind;
+	match kind {
+		| KeyRecordKind::Notary => mtxdb::interop::notary_record_id(origin),
+		| KeyRecordKind::Historical => derive_id(b"server-key-historical", origin),
+		| KeyRecordKind::Provisional => derive_id(b"server-key-provisional", origin),
+		| KeyRecordKind::Corroborated => derive_id(b"server-key-corroborated", origin),
+	}
+}
+
+/// Derive the pre-native-layout signing-key record ID. Legacy IDs used the
+/// shared `server-key` domain and `kind NUL origin` as their input.
+#[must_use]
+pub fn legacy_server_key_record_id(
+	kind: crate::server_keys::KeyRecordKind,
+	origin: &[u8],
+) -> [u8; 16] {
+	let mut input = Vec::with_capacity(
+		kind.as_str()
+			.len()
+			.saturating_add(1)
+			.saturating_add(origin.len()),
+	);
+	input.extend_from_slice(kind.as_str().as_bytes());
+	input.push(0);
+	input.extend_from_slice(origin);
+	derive_id(b"server-key", &input)
+}
 
 /// Derive the full 256-bit logical identity for a room's collection group.
 ///
@@ -148,6 +180,26 @@ mod tests {
 	fn derive_id_separates_domains() {
 		assert_ne!(derive_id(b"event", b"x"), derive_id(b"root", b"x"));
 		assert_eq!(derive_id(b"event", b"x"), derive_id(b"event", b"x"));
+	}
+
+	#[test]
+	fn legacy_server_key_ids_use_kind_null_origin() {
+		use crate::server_keys::KeyRecordKind;
+
+		for kind in [
+			KeyRecordKind::Historical,
+			KeyRecordKind::Provisional,
+			KeyRecordKind::Corroborated,
+			KeyRecordKind::Notary,
+		] {
+			let mut legacy_input = kind.as_str().as_bytes().to_vec();
+			legacy_input.push(0);
+			legacy_input.extend_from_slice(b"example.org");
+			assert_eq!(
+				legacy_server_key_record_id(kind, b"example.org"),
+				derive_id(b"server-key", &legacy_input)
+			);
+		}
 	}
 
 	#[test]

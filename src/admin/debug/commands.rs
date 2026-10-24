@@ -37,7 +37,7 @@ pub(super) async fn echo(&self, message: Vec<String>) -> Result {
 
 #[admin_command]
 pub(super) async fn get_auth_chain(&self, event_id: OwnedEventId) -> Result {
-	let Ok(event) = self.services.rooms.timeline.get_pdu(&event_id).await else {
+	let Ok(event) = self.services.rooms.timeline.get_pdu(&event_id) else {
 		return Err!("Event not found.");
 	};
 
@@ -112,13 +112,12 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 	}
 
 	let pdu_json = if in_timeline {
-		self.services.rooms.timeline.get_pdu_json(&event_id).await?
+		self.services.rooms.timeline.get_pdu_json(&event_id)?
 	} else if in_outlier || in_db {
 		self.services
 			.rooms
 			.outlier
-			.get_outlier_pdu_json(&event_id)
-			.await?
+			.get_outlier_pdu_json(&event_id)?
 	} else {
 		return Err!("PDU not found locally.");
 	};
@@ -525,8 +524,8 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 	use conduwuit::matrix::{Event, EventTypeExt, RoomVersion};
 	use slipstream::signatures::Verified;
 
-	let pdu = self.services.rooms.timeline.get_pdu(&event_id).await?;
-	let mut event = self.services.rooms.timeline.get_pdu_json(&event_id).await?;
+	let pdu = self.services.rooms.timeline.get_pdu(&event_id)?;
+	let mut event = self.services.rooms.timeline.get_pdu_json(&event_id)?;
 	utils::pdu_json_canonical_strip(&mut event);
 
 	// Status flags
@@ -593,7 +592,7 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 			// Gather auth events from the PDU's own declared auth_events
 			let mut auth_events = HashMap::new();
 			for auth_event_id in pdu.auth_events() {
-				if let Ok(auth_pdu) = self.services.rooms.timeline.get_pdu(auth_event_id).await {
+				if let Ok(auth_pdu) = self.services.rooms.timeline.get_pdu(auth_event_id) {
 					let key = auth_pdu
 						.kind()
 						.with_state_key(auth_pdu.state_key().unwrap_or(""));
@@ -837,13 +836,7 @@ pub(crate) async fn force_set_state(
 	// Federation /state returns state BEFORE the queried event. When the
 	// at_event is a state event, inject it into the state map so force-set
 	// includes its own state change (e.g. a join event for the local user).
-	if let Ok(at_pdu) = self
-		.services
-		.rooms
-		.timeline
-		.get_pdu(&at_event_id_clone)
-		.await
-	{
+	if let Ok(at_pdu) = self.services.rooms.timeline.get_pdu(&at_event_id_clone) {
 		if let Some(state_key) = &at_pdu.state_key {
 			let shortstatekey = self
 				.services
@@ -1203,7 +1196,6 @@ async fn validate_and_extract_state(
 			.rooms
 			.outlier
 			.get_outlier_pdu_json(&event_id)
-			.await
 			.is_ok();
 		let already_exists = has_timeline || has_outlier;
 
@@ -1335,12 +1327,7 @@ async fn validate_and_add_auth_chain(
 			.get_pdu_id(&event_id)
 			.await
 			.is_ok();
-		let outlier_json = self
-			.services
-			.rooms
-			.outlier
-			.get_outlier_pdu_json(&event_id)
-			.await;
+		let outlier_json = self.services.rooms.outlier.get_outlier_pdu_json(&event_id);
 		let has_outlier = outlier_json.is_ok();
 
 		if has_timeline || has_outlier {
@@ -1613,9 +1600,9 @@ async fn promote_sync_anchor(
 		if best.as_ref().is_none_or(|(best_ts, ..)| ts > *best_ts) {
 			// Check both timeline AND outlier tables — force-set imports
 			// state events into the outlier table, not timeline.
-			let json_result = match self.services.rooms.timeline.get_pdu_json(&eid).await {
+			let json_result = match self.services.rooms.timeline.get_pdu_json(&eid) {
 				| Ok(json) => Ok(json),
-				| Err(_) => self.services.rooms.outlier.get_outlier_pdu_json(&eid).await,
+				| Err(_) => self.services.rooms.outlier.get_outlier_pdu_json(&eid),
 			};
 			if let Ok(json) = json_result {
 				// Use from_id_val to inject the room_id into V3+ events

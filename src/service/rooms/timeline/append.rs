@@ -257,6 +257,12 @@ where
 		}
 	}
 
+	// mtxdb is the authoritative event store for recovered history. Write the
+	// event before publishing references or pending-state marks, so a failed
+	// write leaves those structures untouched. The write is idempotent when the
+	// event already has a timeline row.
+	self.db.write_event_to_mtxdb(pdu, &pdu_json).await?;
+
 	// We must keep track of all events that have been referenced.
 	// EXCEPT for soft-failed events, which are invisible to DAG tips.
 	if !soft_fail {
@@ -336,12 +342,6 @@ where
 		.user
 		.reset_notification_counts(pdu.sender(), room_id);
 
-	// The mtxdb event write is keyed by event id, not by stream count, so it runs
-	// before the sync barrier is taken. That keeps the span between allocating a
-	// count and making its row visible down to the RocksDB batch apply.
-	if existing_pdu.is_none() {
-		self.db.write_event_to_mtxdb(pdu, &pdu_json);
-	}
 	// Held (for a new PDU) until the state association below has run, so sync
 	// cannot snapshot a count whose membership change is not yet applied.
 	let mut sync_barrier = None;
@@ -478,7 +478,7 @@ where
 
 	let mut notifies = Vec::with_capacity(push_target.len().saturating_add(1));
 	let mut highlights = Vec::with_capacity(push_target.len().saturating_add(1));
-	let thread_root = self.services.threads.get_thread_id(pdu).await;
+	let thread_root = self.services.threads.get_thread_id(pdu);
 
 	if *pdu.kind() == TimelineEventType::RoomMember {
 		if let Some(state_key) = pdu.state_key() {

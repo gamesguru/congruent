@@ -2,9 +2,9 @@
 
 This migration utility is an isolated Cargo workspace, excluded from the
 production workspace so its RocksDB dependency is never resolved by normal
-server builds. It exports the legacy metadata maps that remain in redb after
-room DAGs and signing keys are imported through mtxdb's existing
-`mtxdb-export/v1` JSONL format.
+server builds. It exports legacy metadata maps for redb and converts legacy
+RocksDB room events and cached signing keys into the `mtxdb-export/v1` JSONL
+format consumed by `mtxdb import`.
 
 The metadata archive is UTF-8 JSONL (`conduwuit-metadata/v1`). Keys and values
 are hex encoded so arbitrary RocksDB bytes round-trip exactly. The final
@@ -20,9 +20,24 @@ existing redb destination and publishes the completed temporary database by
 rename. Stop the source homeserver before exporting so RocksDB is a stable
 read-only snapshot; the tool opens it read-only and never writes to it.
 
+`export-mtxdb` writes one `room-<hex room id>.jsonl` per room plus
+`server-keys.jsonl`. It understands both the legacy `pduid_pdu` /
+`eventid_outlierpdu` layout and the newer `eventid_pdu` layout. It infers the
+homeserver name from the server part of local IDs in `userid_password`, and
+requires those IDs to agree. An optional server-name argument overrides that
+inference for databases with no local users or a changed server name. If the
+source has `eventid_rejections` or `eventid_softfailed` maps, their one-byte
+verdict codes are carried into the export. If those maps are absent, both flags
+are false. Legacy cached keys are exported as permanent keys with
+`ts_added_ms=0`; no notary payload is synthesized.
+
 ```text
 cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
   list /run/media/shane/shane4tb-ent/vps/wombatx/var/lib/conduwuit
+
+cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
+  export-mtxdb /run/media/shane/shane4tb-ent/vps/wombatx/var/lib/conduwuit \
+  /tmp/wombatx-mtxdb-export
 
 cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
   export /run/media/shane/shane4tb-ent/vps/wombatx/var/lib/conduwuit \
@@ -31,9 +46,12 @@ cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
 cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
   import /tmp/wombatx-metadata.jsonl \
   /tmp/wombatx-redb/metadata.redb
+
+# Import every room file and the keys file in one invocation. The import
+# marker is only written when the complete set succeeds.
+mtxdb import --dir /path/to/new-database/mtxdb /tmp/wombatx-mtxdb-export/*.jsonl
 ```
 
-Room DAGs and remote signing keys are exported separately with Congruent's
-`!admin yolo export-mtxdb --all` and `!admin yolo export-mtxdb-keys`, then
-imported with `mtxdb import`. This tool does not mutate the RocksDB source or
-perform the mtxdb import.
+The exporter refuses an existing output directory and never writes to the
+RocksDB source. Do not start the new server until both the redb metadata import
+and the complete mtxdb import have succeeded.

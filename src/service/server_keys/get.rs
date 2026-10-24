@@ -1,9 +1,14 @@
-use std::borrow::Borrow;
+use std::{
+	borrow::Borrow,
+	collections::{BTreeSet, HashMap},
+	sync::Arc,
+};
 
 use conduwuit::{Err, Result, debug_error, debug_warn, err, implement, trace, warn};
 use slipstream::{
-	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, RoomVersionId, ServerName,
-	ServerSigningKeyId, api::federation::discovery::VerifyKey,
+	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedServerName, RoomVersionId, ServerName,
+	ServerSigningKeyId,
+	api::federation::discovery::{ServerSigningKeys, VerifyKey},
 };
 
 use super::{PubKeyMap, PubKeys, extract_key};
@@ -29,6 +34,55 @@ fn validity_policy_for_version(version: &RoomVersionId) -> ValidUntilPolicy {
 }
 
 fn missing_key_record_is_allowed(error: &conduwuit::Error) -> bool { error.is_not_found() }
+
+/// Signing-key metadata read once for every signing server in a fetched state
+/// batch. Per-event timestamp checks then run against this immutable snapshot.
+#[derive(Clone, Default)]
+pub(crate) struct EventKeyMetadataCache {
+	records: Arc<HashMap<OwnedServerName, ServerSigningKeys>>,
+}
+
+impl EventKeyMetadataCache {
+	fn get(&self, origin: &ServerName) -> Option<&ServerSigningKeys> { self.records.get(origin) }
+}
+
+#[implement(super::Service)]
+pub(crate) async fn event_key_metadata_for_events(
+	&self,
+	events: &[(slipstream::OwnedEventId, CanonicalJsonObject)],
+	version: &RoomVersionId,
+) -> EventKeyMetadataCache {
+	use slipstream::signatures::required_keys;
+
+	let origins: BTreeSet<OwnedServerName> = events
+		.iter()
+		.filter_map(|(_, event)| required_keys(event, version).ok())
+		.flat_map(std::collections::BTreeMap::into_keys)
+		.collect();
+	let adapter = self.db.mtxdb_keys.clone();
+	let metadata = self
+		.services
+		.server
+		.runtime()
+		.spawn_blocking(move || {
+			origins
+				.into_iter()
+				.filter_map(|origin| {
+					match super::merged_signing_keys_from_adapter(&adapter, &origin) {
+						| Ok(keys) => Some((origin, keys)),
+						| Err(error) => {
+							debug_warn!(%origin, "Failed to preload signing-key metadata: {error}");
+							None
+						},
+					}
+				})
+				.collect()
+		})
+		.await
+		.unwrap_or_default();
+
+	EventKeyMetadataCache { records: Arc::new(metadata) }
+}
 
 #[implement(super::Service)]
 pub async fn get_event_keys(
@@ -76,6 +130,74 @@ pub async fn get_event_keys(
 	}
 
 	Ok(keys)
+}
+
+#[implement(super::Service)]
+pub(crate) async fn get_event_keys_with_metadata(
+	&self,
+	object: &CanonicalJsonObject,
+	version: &RoomVersionId,
+	metadata: &EventKeyMetadataCache,
+) -> Result<PubKeyMap> {
+	use slipstream::signatures::required_keys;
+
+	let required = required_keys(object, version).map_err(|error| {
+		err!(BadServerResponse("Failed to determine keys required to verify: {error}"))
+	})?;
+	let event_ts = object
+		.get("origin_server_ts")
+		.and_then(slipstream::json::Value::as_i64)
+		.and_then(|ts| u64::try_from(ts).ok())
+		.map(MilliSecondsSinceUnixEpoch)
+		.ok_or_else(|| err!(BadServerResponse("Event missing or malformed origin_server_ts")))?;
+	let validity_policy = validity_policy_for_version(version);
+	let mut keys = PubKeyMap::new();
+	for (origin, key_ids) in &required {
+		let cached = metadata.get(origin).and_then(|server_keys| {
+			pubkeys_from_metadata(server_keys, key_ids, event_ts, validity_policy)
+		});
+		let pubkeys = match cached {
+			| Some(pubkeys) => pubkeys,
+			| None =>
+				self.get_pubkeys_for_event(
+					origin,
+					key_ids.iter().map(Borrow::borrow),
+					event_ts,
+					validity_policy,
+				)
+				.await,
+		};
+		keys.insert(origin.to_owned(), pubkeys);
+	}
+
+	Ok(keys)
+}
+
+fn pubkeys_from_metadata(
+	server_keys: &ServerSigningKeys,
+	key_ids: &[slipstream::OwnedServerSigningKeyId],
+	event_ts: MilliSecondsSinceUnixEpoch,
+	validity_policy: ValidUntilPolicy,
+) -> Option<PubKeys> {
+	let mut keys = PubKeys::new();
+	for key_id in key_ids {
+		if let Some(old_key) = server_keys.old_verify_keys.get(key_id) {
+			if old_key.expired_ts > event_ts {
+				keys.insert(key_id.clone(), old_key.key.clone());
+			}
+			continue;
+		}
+
+		let verify_key = server_keys.verify_keys.get(key_id)?;
+		if validity_policy == ValidUntilPolicy::Enforce && server_keys.valid_until_ts < event_ts {
+			// Preserve the normal path's one-time refresh when a cached key record
+			// does not cover this event timestamp.
+			return None;
+		}
+		keys.insert(key_id.clone(), verify_key.key.clone());
+	}
+
+	Some(keys)
 }
 
 #[implement(super::Service)]

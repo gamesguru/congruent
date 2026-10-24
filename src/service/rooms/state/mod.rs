@@ -304,7 +304,6 @@ impl Service {
 				.services
 				.timeline
 				.get_pdu_in_room(Some(room_id), &event_id_obj)
-				.await
 			else {
 				continue;
 			};
@@ -337,7 +336,6 @@ impl Service {
 				.services
 				.timeline
 				.get_pdu_in_room(Some(room_id), &event_id_obj)
-				.await
 			else {
 				continue;
 			};
@@ -813,7 +811,10 @@ impl Service {
 		root_handle_from_bytes(&data)
 	}
 
-	/// Returns the room's version.
+	/// Returns the room's version, falling back from direct lookup to the create
+	/// event in current state and then outliers. Fallback versions are persisted.
+	/// Lookup failures are ignored while searching; persistence errors propagate.
+	/// Returns `NotFound` if no usable version is found.
 	pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> {
 		if let Ok(version) = self.services.short.get_room_version(room_id).await {
 			return Ok(version);
@@ -832,7 +833,7 @@ impl Service {
 			.await
 		{
 			let version = content.room_version;
-			self.services.short.set_room_version(room_id, &version);
+			self.services.short.set_room_version(room_id, &version)?;
 			return Ok(version);
 		}
 
@@ -844,7 +845,7 @@ impl Service {
 			if pdu.kind == TimelineEventType::RoomCreate {
 				if let Ok(content) = pdu.get_content::<RoomCreateEventContent>() {
 					let version = content.room_version;
-					self.services.short.set_room_version(room_id, &version);
+					self.services.short.set_room_version(room_id, &version)?;
 					return Ok(version);
 				}
 			}
@@ -1253,7 +1254,6 @@ impl Service {
 				self.services
 					.timeline
 					.get_pdu(&event_id)
-					.await
 					.map(move |pdu| (((*ty).clone(), (*sk).clone()), pdu))
 					.inspect_err(|e| warn!("Failed to get auth event {event_id}: {e:?}"))
 					.ok()

@@ -1177,6 +1177,11 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 	let rejected = event_id!("$rejected:test.conduwuit.local").to_owned();
 	let redacted = event_id!("$redacted:test.conduwuit.local").to_owned();
 	let redaction = event_id!("$redaction:test.conduwuit.local").to_owned();
+	services
+		.rooms
+		.short
+		.set_room_version(&room_id, &slipstream::RoomVersionId::V11)
+		.expect("room version must be persisted");
 
 	for (id, kind) in [
 		(&ok, "m.room.topic"),
@@ -1214,12 +1219,6 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 		.short
 		.get_or_create_shortroomid(&room_id)
 		.await;
-	// The room has no create event: seed the room version directly so
-	// `redact_pdu` can apply redaction rules.
-	services
-		.rooms
-		.short
-		.set_room_version(&room_id, &slipstream::RoomVersionId::V11);
 	let reason = create_dummy_pdu(&room_id, &redaction, "m.room.redaction", "");
 	services
 		.rooms
@@ -1334,11 +1333,12 @@ async fn test_keys_export_carries_every_kind_and_payload() {
 		.unwrap();
 	assert_eq!(
 		(counts.historical, counts.provisional, counts.corroborated, counts.notary),
-		(1, 1, 1, 1)
+		(1, 1, 2, 1)
 	);
 	let text = String::from_utf8(out).unwrap();
 
-	let mut by_kind = std::collections::HashMap::new();
+	let mut keys = std::collections::HashMap::new();
+	let mut notary = None;
 	for line in text.lines() {
 		let slipstream::json::Value::Object(object) = slipstream::codec::from_str(line).unwrap()
 		else {
@@ -1346,54 +1346,27 @@ async fn test_keys_export_carries_every_kind_and_payload() {
 		};
 		assert_eq!(object["t"].as_str(), Some("server_keys"));
 		assert_eq!(object["origin"].as_str(), Some("keys.example.org"));
-		let bytes = STANDARD
-			.decode(object["payload"].as_str().unwrap())
-			.unwrap();
-		by_kind.insert(object["kind"].as_str().unwrap().to_owned(), bytes);
+		match object["kind"].as_str().unwrap() {
+			| "permanent" | "provisional" => {
+				keys.insert(object["key_id"].as_str().unwrap().to_owned(), object);
+			},
+			| "notary" => {
+				let payload = object["payload"].as_str().unwrap();
+				notary = Some(STANDARD.decode(payload).unwrap());
+			},
+			| other => panic!("unexpected key kind {other}"),
+		}
 	}
-	assert_eq!(by_kind.len(), 4, "one record per kind: {:?}", by_kind.keys());
 
-	let ids = |kind: &str| -> Vec<String> {
-		slipstream::codec::from_slice(&by_kind[kind]).expect("key id array")
-	};
-	assert_eq!(ids("provisional"), ["ed25519:B"]);
-	// Every key accepted as active in any response is corroborated, whatever
-	// its source, so the notary-learned B is here too.
-	assert_eq!(ids("corroborated"), ["ed25519:A", "ed25519:B"]);
-	let historical: ServerSigningKeys =
-		slipstream::codec::from_slice(&by_kind["historical"]).unwrap();
-	assert_eq!(historical.verify_keys.len(), 2, "A and B are both in the cumulative record");
-	assert_eq!(by_kind["notary"], notary_body.get().as_bytes(), "notary body is verbatim");
-
-	// A never-seen origin's historical record starts at `valid_until_ts = now`,
-	// the one field that differs between runs. Pin it, then compare the
-	// otherwise exact export with the fixture the CLI importer also reads.
-	let pinned: Vec<String> = text
-		.lines()
-		.map(|line| {
-			let slipstream::json::Value::Object(mut object) =
-				slipstream::codec::from_str(line).unwrap()
-			else {
-				unreachable!()
-			};
-			if object["kind"].as_str() == Some("historical") {
-				let mut keys: ServerSigningKeys =
-					slipstream::codec::from_slice(&by_kind["historical"]).unwrap();
-				keys.valid_until_ts = MilliSecondsSinceUnixEpoch(4_102_444_800_000);
-				object.insert(
-					"payload".to_owned(),
-					slipstream::json::Value::String(
-						STANDARD.encode(slipstream::codec::to_vec(&keys)),
-					),
-				);
-			}
-			slipstream::codec::to_string(&slipstream::json::Value::Object(object))
-		})
-		.collect();
-	assert_matches_fixture(
-		"tests/fixtures/mtxdb-export/server-keys-v1.jsonl",
-		&(pinned.join("\n") + "\n"),
-	);
+	assert_eq!(keys.len(), 2, "one record per key");
+	let a = &keys["ed25519:A"];
+	assert_eq!(a["kind"].as_str(), Some("permanent"));
+	assert_eq!(STANDARD.decode(a["key"].as_str().unwrap()).unwrap(), vec![0x11; 32]);
+	assert_eq!(a["corroborated"].as_bool(), Some(true));
+	let b = &keys["ed25519:B"];
+	assert_eq!(b["kind"].as_str(), Some("provisional"));
+	assert_eq!(STANDARD.decode(b["key"].as_str().unwrap()).unwrap(), vec![0x22; 32]);
+	assert_eq!(notary.unwrap(), notary_body.get().as_bytes(), "notary body is verbatim");
 }
 
 /// Outliers are exported with `outlier: true`, an event stored as both a
@@ -1405,6 +1378,11 @@ async fn test_room_export_outliers_duplicates_and_end_count() {
 	let room_id = room_id!("!export-outlier:test.conduwuit.local").to_owned();
 	let timeline = event_id!("$timeline:test.conduwuit.local").to_owned();
 	let outlier = event_id!("$outlier:test.conduwuit.local").to_owned();
+	services
+		.rooms
+		.short
+		.set_room_version(&room_id, &slipstream::RoomVersionId::V11)
+		.expect("room version must be persisted");
 
 	persist_dummy_pdu(
 		&services,
@@ -1500,6 +1478,11 @@ async fn test_room_export_fails_when_writer_errors_mid_stream() {
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = room_id!("!export-writer-failure:test.conduwuit.local").to_owned();
 	let event_id = event_id!("$export-writer-failure:test.conduwuit.local").to_owned();
+	services
+		.rooms
+		.short
+		.set_room_version(&room_id, &slipstream::RoomVersionId::V11)
+		.expect("room version must be persisted");
 	persist_dummy_pdu(
 		&services,
 		&room_id,

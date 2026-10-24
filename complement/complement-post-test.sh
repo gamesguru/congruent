@@ -89,4 +89,9 @@ dexec() { docker exec "$container_id" sh -c "$1" 2>&1 || true; }
 	[ -n "${pid:-}" ] && dexec "ls /proc/$pid/fd | wc -l"
 } >"$out" 2>&1
 
+# Full application log, only when the test failed or a human asked for it.
+if [ "$failed" = "true" ] || [ -n "${COMPLEMENT_DEBUG:-}" ]; then
+	docker logs "$container_id" >"$stats_dir/container.${safe_name}-${container_id:0:12}.log" 2>&1 || true
+fi
+
 exit 0

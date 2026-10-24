@@ -2,12 +2,13 @@
 
 use std::sync::Arc;
 
-use mtxdb::{Database, DatabaseTransaction, ShardType};
+use mtxdb::{Database, DatabaseTransaction, ShardType, storage::StorageEngine};
 
 use crate::StorageError;
 
 pub type CollectionId = [u8; 16];
 pub type NodeId = [u8; 16];
+pub type VersionedRead = (Vec<Option<Vec<u8>>>, u64);
 
 /// Physical mtxdb boundary shared by event, state, edge, and metadata
 /// adapters. Matrix codecs and key derivation do not belong here.
@@ -20,7 +21,8 @@ impl MtxdbStore {
 	pub fn new(db: Arc<Database>) -> Self { Self { db } }
 
 	pub fn open<P: Into<std::path::PathBuf>>(path: P) -> Result<Self, StorageError> {
-		Ok(Self::new(Arc::new(Database::open(path.into())?)))
+		let db = Database::open(path.into())?;
+		Ok(Self::new(Arc::new(db)))
 	}
 
 	#[must_use]
@@ -34,6 +36,15 @@ impl MtxdbStore {
 	) -> Result<Option<Vec<u8>>, StorageError> {
 		self.get_many(shard, collection, std::slice::from_ref(&node))
 			.map(|mut values| values.pop().flatten())
+	}
+
+	/// Read the immutable genesis metadata for a collection, if it has one.
+	pub fn get_collection_metadata(
+		&self,
+		shard: ShardType,
+		collection: &CollectionId,
+	) -> Result<Option<mtxdb::template::CollectionMetadata>, StorageError> {
+		self.db.pool(shard).get_collection_metadata(collection)
 	}
 
 	/// Every live record of a collection, in no particular order. A removed
@@ -84,15 +95,13 @@ impl MtxdbStore {
 		collection: &CollectionId,
 		nodes: &[NodeId],
 	) -> Result<Vec<Option<Vec<u8>>>, StorageError> {
-		self.db
+		Ok(self
+			.db
 			.pool(shard)
-			.get_read_committed(collection, nodes)
-			.map(|values| {
-				values
-					.into_iter()
-					.map(|value| value.map(|node| node.bytes.to_vec()))
-					.collect()
-			})
+			.get_read_committed(collection, nodes)?
+			.into_iter()
+			.map(|value| value.map(|node| node.bytes.to_vec()))
+			.collect())
 	}
 
 	#[must_use]
@@ -110,6 +119,43 @@ pub struct MtxdbTransaction<'a> {
 }
 
 impl MtxdbTransaction<'_> {
+	/// Read records through this transaction and capture the collection version
+	/// from the same read. Pass that version to [`Self::expect_collection_version`]
+	/// before committing any writes based on the result.
+	pub fn get_with_collection_version(
+		&self,
+		shard: ShardType,
+		collection: CollectionId,
+		nodes: &[NodeId],
+	) -> Result<VersionedRead, StorageError> {
+		let (values, version) = self
+			.tx
+			.get_with_collection_version(shard, &collection, nodes)?;
+		Ok((
+			values
+				.into_iter()
+				.map(|value| value.map(|node| node.bytes.to_vec()))
+				.collect(),
+			version,
+		))
+	}
+
+	/// Read records through this transaction's staged writes first, then the
+	/// live store.
+	pub fn get_many(
+		&self,
+		shard: ShardType,
+		collection: CollectionId,
+		nodes: &[NodeId],
+	) -> Result<Vec<Option<Vec<u8>>>, StorageError> {
+		Ok(self
+			.tx
+			.get(shard, &collection, nodes)?
+			.into_iter()
+			.map(|value| value.map(|node| node.bytes.to_vec()))
+			.collect())
+	}
+
 	pub fn put(
 		&self,
 		shard: ShardType,

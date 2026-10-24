@@ -101,7 +101,7 @@ pub(crate) async fn report_event_route(
 	delay_response().await;
 
 	// check if we know about the reported event ID or if it's invalid
-	let Ok(pdu) = services.rooms.timeline.get_pdu(&body.event_id).await else {
+	let Ok(pdu) = services.rooms.timeline.get_pdu(&body.event_id) else {
 		return Err!(Request(NotFound("Event ID is not known to us or Event ID is invalid")));
 	};
 

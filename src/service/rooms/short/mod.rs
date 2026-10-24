@@ -1,15 +1,11 @@
-use std::{
-	borrow::Borrow,
-	mem::{size_of, size_of_val},
-	sync::Arc,
-};
+use std::{borrow::Borrow, mem::size_of, str::FromStr, sync::Arc};
 
 pub use conduwuit::matrix::pdu::{ShortEventId, ShortId, ShortRoomId, ShortStateKey};
 use conduwuit::{
 	Result, err, implement,
 	matrix::StateKey,
 	pair_of,
-	utils::{self, IterStream, ReadyExt},
+	utils::{self, IterStream, ReadyExt, stream::TryIgnore},
 };
 use conduwuit_mtxdb::shortids::ShortIdAdapter;
 use database::{Deserialized, Map};
@@ -18,10 +14,11 @@ use futures::{
 	stream::{self},
 };
 use slipstream::{
-	EventId, OwnedEventId, RoomId, RoomVersionId, codec::Deserialize, events::StateEventType,
+	EventId, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, codec::Deserialize,
+	events::StateEventType,
 };
 
-use crate::{Dep, globals};
+use crate::globals;
 
 /// Short ids for events and state keys. They are allocated and stored by
 /// mtxdb, which is also where the HAMT leaves that carry them live; the
@@ -29,23 +26,76 @@ use crate::{Dep, globals};
 pub struct Service {
 	db: Data,
 	shortids: ShortIdAdapter,
-	services: Services,
 	pub eventid_shorteventid_cache: moka::sync::Cache<OwnedEventId, ShortEventId>,
 	pub shorteventid_eventid_cache: moka::sync::Cache<ShortEventId, OwnedEventId>,
 	pub statekey_shortstatekey_cache:
 		moka::sync::Cache<(StateEventType, StateKey), ShortStateKey>,
 	pub shortstatekey_statekey_cache:
 		moka::sync::Cache<ShortStateKey, (StateEventType, StateKey)>,
+	pub roomid_roomversion_cache: moka::sync::Cache<OwnedRoomId, RoomVersionId>,
 	pub leanevent_cache: moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String>>>,
 }
 
 struct Data {
-	roomid_shortroomid: Arc<Map>,
+	legacy_roomid_shortroomid: Arc<Map>,
 	roomid_roomversion: Arc<Map>,
+	mtxdb: Arc<conduwuit_mtxdb::store::MtxdbStore>,
 }
 
-struct Services {
-	globals: Dep<globals::Service>,
+/// Import the legacy event and state-key mappings before any HAMT leaf or
+/// auth-chain entry can be resolved through the mtxdb-backed adapter.
+///
+/// Preserves assigned IDs. Read, decoding, and import errors propagate;
+/// mappings committed before an error remain imported for a retry.
+fn import_legacy_short_ids(shortids: &ShortIdAdapter, db: &Arc<database::Database>) -> Result {
+	let event_map = db
+		.deprecated("eventid_shorteventid")
+		.expect("legacy event short-ID map is registered")
+		.clone();
+	let event_rows = event_map.raw_entries()?;
+	let mut events = Vec::with_capacity(event_rows.len());
+	for (event_id, short) in event_rows {
+		let short = u64::from_be_bytes(
+			short
+				.as_slice()
+				.try_into()
+				.map_err(|_| err!(Database("Malformed legacy event short ID")))?,
+		);
+		events.push((event_id, short));
+	}
+	for chunk in events.chunks(512) {
+		let mappings: Vec<_> = chunk
+			.iter()
+			.map(|(event_id, short)| (event_id.as_slice(), *short))
+			.collect();
+		shortids.import_event_mappings(&mappings).map_err(|error| {
+			err!(Database("Failed to import legacy event short IDs: {error}"))
+		})?;
+	}
+
+	let state_map = db
+		.deprecated("shortstatekey_statekey")
+		.expect("legacy reverse state-key map is registered")
+		.clone();
+	let mut states = Vec::new();
+	for (short_bytes, value_bytes) in state_map.raw_entries()? {
+		let short = u64::from_be_bytes(
+			short_bytes
+				.as_slice()
+				.try_into()
+				.map_err(|_| err!(Database("Malformed legacy state-key short ID")))?,
+		);
+		let (event_type, state_key): (StateEventType, StateKey) =
+			database::keyval::deserialize_val(&value_bytes)?;
+		states.push((event_type.to_string(), state_key.to_string(), short));
+	}
+	for chunk in states.chunks(512) {
+		shortids.import_state_key_mappings(chunk).map_err(|error| {
+			err!(Database("Failed to import legacy state-key short IDs: {error}"))
+		})?;
+	}
+
+	Ok(())
 }
 
 impl crate::Service for Service {
@@ -82,16 +132,32 @@ impl crate::Service for Service {
 		.try_into()
 		.unwrap_or(args.server.config.shortstatekey_cache_capacity);
 
+		let shortids = ShortIdAdapter::new(args.mtxdb.clone())
+			.map_err(|error| err!(Database("Failed to open mtxdb short ids: {error}")))?;
+		if !shortids
+			.legacy_import_complete()
+			.map_err(|error| err!(Database("Failed to check legacy short-ID import: {error}")))?
+		{
+			import_legacy_short_ids(&shortids, args.db)?;
+			shortids.mark_legacy_import_complete().map_err(|error| {
+				err!(Database("Failed to mark legacy short-ID import: {error}"))
+			})?;
+		}
+		let globals = args.depend::<globals::Service>("globals");
+		shortids
+			.advance_counter(globals.current_count().unwrap_or(0))
+			.map_err(|error| err!(Database("Failed to seed mtxdb short ID counter: {error}")))?;
 		Ok(Arc::new(Self {
 			db: Data {
-				roomid_shortroomid: args.db["roomid_shortroomid"].clone(),
+				legacy_roomid_shortroomid: args
+					.db
+					.deprecated("roomid_shortroomid")
+					.expect("room short-id migration map is registered")
+					.clone(),
 				roomid_roomversion: args.db["roomid_roomversion"].clone(),
+				mtxdb: args.mtxdb.clone(),
 			},
-			shortids: ShortIdAdapter::new(args.mtxdb.clone())
-				.map_err(|error| err!(Database("Failed to open mtxdb short ids: {error}")))?,
-			services: Services {
-				globals: args.depend::<globals::Service>("globals"),
-			},
+			shortids,
 			eventid_shorteventid_cache: moka::sync::Cache::builder()
 				.max_capacity(eventidshort_cap.into())
 				.build(),
@@ -102,6 +168,9 @@ impl crate::Service for Service {
 				.max_capacity(statekeyshort_cap.into())
 				.build(),
 			shortstatekey_statekey_cache: moka::sync::Cache::builder()
+				.max_capacity(shortstatekey_cap.into())
+				.build(),
+			roomid_roomversion_cache: moka::sync::Cache::builder()
 				.max_capacity(shortstatekey_cap.into())
 				.build(),
 			leanevent_cache: moka::sync::Cache::builder()
@@ -119,6 +188,14 @@ fn short_error(what: &str, error: impl std::fmt::Display) -> conduwuit::Error {
 fn not_found(what: &str) -> conduwuit::Error { err!(Request(NotFound("{what} not found"))) }
 
 impl Service {
+	/// Write the room mapping to the legacy compatibility map used by exports.
+	fn mirror_room_shortid(&self, room_id: &RoomId, short: ShortRoomId) {
+		const BUFSIZE: usize = size_of::<ShortRoomId>();
+		self.db
+			.legacy_roomid_shortroomid
+			.raw_aput::<BUFSIZE, _, _>(room_id, short);
+	}
+
 	fn cache_event(&self, event_id: &EventId, short: ShortEventId) {
 		self.eventid_shorteventid_cache
 			.insert(event_id.to_owned(), short);
@@ -152,6 +229,7 @@ pub fn get_or_create_shorteventid(
 }
 
 #[implement(Service)]
+#[must_use]
 pub fn get_or_create_shorteventid_blocking(&self, event_id: &EventId) -> ShortEventId {
 	if let Some(short) = self.eventid_shorteventid_cache.get(&event_id.to_owned()) {
 		return short;
@@ -243,6 +321,7 @@ pub fn get_or_create_shortstatekey(
 }
 
 #[implement(Service)]
+#[must_use]
 pub fn get_or_create_shortstatekey_blocking(
 	&self,
 	event_type: &StateEventType,
@@ -442,48 +521,124 @@ where
 		.flatten()
 }
 
+/// Resolve a room short ID, importing a legacy mapping when needed and
+/// restoring a missing compatibility mirror.
+///
+/// Legacy read or decoding failures count as a miss and yield `NotFound` when
+/// mtxdb has no mapping. mtxdb lookup and migration errors return database errors.
 #[implement(Service)]
 pub async fn get_shortroomid(&self, room_id: &RoomId) -> Result<ShortRoomId> {
-	self.db.roomid_shortroomid.get(room_id).await.deserialized()
-}
-
-#[implement(Service)]
-pub async fn get_or_create_shortroomid(&self, room_id: &RoomId) -> ShortRoomId {
-	self.db
-		.roomid_shortroomid
+	if let Some(short) = self
+		.shortids
+		.get_room(room_id.as_bytes())
+		.map_err(|e| short_error("room lookup", e))?
+	{
+		if self
+			.db
+			.legacy_roomid_shortroomid
+			.get(room_id)
+			.await
+			.is_err()
+		{
+			self.mirror_room_shortid(room_id, short);
+		}
+		return Ok(short);
+	}
+	let legacy = self
+		.db
+		.legacy_roomid_shortroomid
 		.get(room_id)
 		.await
-		.deserialized()
-		.unwrap_or_else(|_| {
-			const BUFSIZE: usize = size_of::<ShortRoomId>();
-
-			let short = self.services.globals.next_count().unwrap();
-			debug_assert!(size_of_val(&short) == BUFSIZE, "buffer requirement changed");
-
-			self.db
-				.roomid_shortroomid
-				.raw_aput::<BUFSIZE, _, _>(room_id, short);
-
-			short
-		})
+		.ok()
+		.and_then(|v| v.deserialized().ok());
+	let Some(legacy) = legacy else {
+		return Err(not_found("short room id"));
+	};
+	let short = self
+		.shortids
+		.allocate_room(room_id.as_bytes(), Some(legacy))
+		.map_err(|e| short_error("room migration", e))?;
+	self.mirror_room_shortid(room_id, short);
+	Ok(short)
 }
 
+/// Resolve or allocate a room short ID and update its legacy mirror.
+/// A readable legacy mapping is preserved when mtxdb has none. Legacy read or
+/// decoding failures are ignored.
+///
+/// # Panics
+///
+/// Panics if mtxdb cannot resolve or allocate the mapping.
 #[implement(Service)]
+pub async fn get_or_create_shortroomid(&self, room_id: &RoomId) -> ShortRoomId {
+	let legacy = self
+		.db
+		.legacy_roomid_shortroomid
+		.get(room_id)
+		.await
+		.ok()
+		.and_then(|v| v.deserialized().ok());
+	let short = self
+		.shortids
+		.allocate_room(room_id.as_bytes(), legacy)
+		.expect("mtxdb short room id allocation");
+	self.mirror_room_shortid(room_id, short);
+	short
+}
+
+/// Remove the mtxdb room mapping and then its legacy compatibility mirror.
+/// Returns a database error if the mtxdb removal fails.
+#[implement(Service)]
+pub fn remove_shortroomid(&self, room_id: &RoomId) -> Result {
+	self.shortids
+		.remove_room(room_id.as_bytes())
+		.map_err(|error| short_error("room removal", error))?;
+	self.db.legacy_roomid_shortroomid.remove(room_id);
+	Ok(())
+}
+
+/// Yield distinct room IDs from mtxdb and the legacy compatibility map.
+/// Invalid mtxdb room IDs and legacy read errors are skipped. If the mtxdb
+/// scan fails, only legacy rooms are yielded.
+#[implement(Service)]
+pub fn iter_room_ids(&self) -> impl Stream<Item = OwnedRoomId> + Send + '_ {
+	let ids = self.shortids.room_ids().unwrap_or_else(|error| {
+		conduwuit::warn!(?error, "Failed to scan mtxdb room short IDs");
+		Vec::new()
+	});
+	let current = stream::iter(ids.into_iter().filter_map(|bytes| {
+		let text = String::from_utf8(bytes).ok()?;
+		OwnedRoomId::parse(text).ok()
+	}));
+	let legacy = self.db.legacy_roomid_shortroomid.keys().ignore_err();
+	let mut seen = std::collections::HashSet::new();
+	current
+		.chain(legacy)
+		.filter(move |room_id| std::future::ready(seen.insert((*room_id).clone())))
+}
+
+/// Synchronously resolve or allocate a room short ID and update its legacy
+/// mirror. A readable legacy mapping is preserved when mtxdb has none; legacy
+/// read or decoding failures are ignored.
+///
+/// # Panics
+///
+/// Panics if mtxdb cannot resolve or allocate the mapping.
+#[implement(Service)]
+#[must_use]
 pub fn get_or_create_shortroomid_blocking(&self, room_id: &RoomId) -> ShortRoomId {
-	if let Ok(handle) = self.db.roomid_shortroomid.get_blocking(room_id.as_bytes()) {
-		utils::u64_from_u8(&handle)
-	} else {
-		const BUFSIZE: usize = size_of::<ShortRoomId>();
-
-		let short = self.services.globals.next_count().unwrap();
-		debug_assert!(size_of_val(&short) == BUFSIZE, "buffer requirement changed");
-
-		self.db
-			.roomid_shortroomid
-			.raw_aput::<BUFSIZE, _, _>(room_id, short);
-
-		short
-	}
+	let legacy = self
+		.db
+		.legacy_roomid_shortroomid
+		.get_blocking(room_id.as_bytes())
+		.ok()
+		.and_then(|v| v.deserialized().ok());
+	let short = self
+		.shortids
+		.allocate_room(room_id.as_bytes(), legacy)
+		.expect("mtxdb short room id allocation");
+	self.mirror_room_shortid(room_id, short);
+	short
 }
 
 #[implement(Service)]
@@ -506,14 +661,115 @@ where
 	})
 }
 
+/// Resolve the room version from cache or mtxdb, falling back to imported
+/// collection metadata and then the legacy map. Fallback values are persisted
+/// in mtxdb and cached.
+///
+/// Unparsable version strings in mtxdb are skipped. Storage, legacy decoding,
+/// and fallback persistence errors propagate.
 #[implement(Service)]
 pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> {
-	self.db.roomid_roomversion.get(room_id).await.deserialized()
+	if let Some(version) = self.roomid_roomversion_cache.get(&room_id.to_owned()) {
+		return Ok(version);
+	}
+
+	if let Some(version) =
+		conduwuit_mtxdb::room_metadata::get_room_version(&self.db.mtxdb, room_id.as_bytes())
+			.map_err(|error| err!(Database("mtxdb room-version lookup failed: {error}")))?
+			.and_then(|version| RoomVersionId::from_str(&version).ok())
+	{
+		self.roomid_roomversion_cache
+			.insert(room_id.to_owned(), version.clone());
+		return Ok(version);
+	}
+
+	if let Some(version) = conduwuit_mtxdb::room_metadata::room_version_from_collection(
+		&self.db.mtxdb,
+		room_id.as_bytes(),
+	)
+	.map_err(|error| err!(Database("mtxdb room-version metadata lookup failed: {error}")))?
+	.and_then(|version| RoomVersionId::from_str(&version).ok())
+	{
+		self.set_room_version(room_id, &version)?;
+		self.roomid_roomversion_cache
+			.insert(room_id.to_owned(), version.clone());
+		return Ok(version);
+	}
+
+	let version: RoomVersionId = self
+		.db
+		.roomid_roomversion
+		.get(room_id)
+		.await
+		.deserialized()?;
+	self.set_room_version(room_id, &version)?;
+	self.roomid_roomversion_cache
+		.insert(room_id.to_owned(), version.clone());
+	Ok(version)
 }
 
+/// Synchronously resolve the room version from cache or mtxdb, falling back to
+/// imported collection metadata and then the legacy map. Fallback values are
+/// persisted in mtxdb and cached.
+///
+/// Unparsable version strings in mtxdb are skipped. Storage and legacy decoding
+/// errors propagate.
 #[implement(Service)]
-pub fn set_room_version(&self, room_id: &RoomId, version: &RoomVersionId) {
+pub fn get_room_version_blocking(&self, room_id: &RoomId) -> Result<RoomVersionId> {
+	if let Some(version) = self.roomid_roomversion_cache.get(&room_id.to_owned()) {
+		return Ok(version);
+	}
+
+	if let Some(version) =
+		conduwuit_mtxdb::room_metadata::get_room_version(&self.db.mtxdb, room_id.as_bytes())
+			.map_err(|error| err!(Database("mtxdb room-version lookup failed: {error}")))?
+			.and_then(|version| RoomVersionId::from_str(&version).ok())
+	{
+		self.roomid_roomversion_cache
+			.insert(room_id.to_owned(), version.clone());
+		return Ok(version);
+	}
+
+	if let Some(version) = conduwuit_mtxdb::room_metadata::room_version_from_collection(
+		&self.db.mtxdb,
+		room_id.as_bytes(),
+	)
+	.map_err(|error| err!(Database("mtxdb room-version metadata lookup failed: {error}")))?
+	.and_then(|version| RoomVersionId::from_str(&version).ok())
+	{
+		self.set_room_version(room_id, &version)?;
+		self.roomid_roomversion_cache
+			.insert(room_id.to_owned(), version.clone());
+		return Ok(version);
+	}
+
+	let version: RoomVersionId = self
+		.db
+		.roomid_roomversion
+		.get_blocking(room_id)
+		.deserialized()?;
+	self.set_room_version(room_id, &version)?;
+	self.roomid_roomversion_cache
+		.insert(room_id.to_owned(), version.clone());
+	Ok(version)
+}
+
+/// Persist the immutable room version in mtxdb, then update the legacy map
+/// and cache. A conflicting version or mtxdb storage failure returns a database
+/// error before the legacy map or cache is updated.
+#[implement(Service)]
+
+pub fn set_room_version(&self, room_id: &RoomId, version: &RoomVersionId) -> Result<()> {
+	conduwuit_mtxdb::room_metadata::set_room_version(
+		&self.db.mtxdb,
+		room_id.as_bytes(),
+		version.as_str(),
+	)
+	.map_err(|error| err!(Database("Failed to persist room version in mtxdb: {error}")))?;
 	self.db.roomid_roomversion.insert(room_id, version);
+	self.roomid_roomversion_cache
+		.insert(room_id.to_owned(), version.clone());
+	Ok(())
 }
 
 #[cfg(test)]

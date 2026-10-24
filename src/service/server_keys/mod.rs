@@ -10,10 +10,11 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use async_lock::RwLock;
 use conduwuit::{
-	Result, Server, debug_error, debug_warn, err, implement, trace,
+	Result, Server, debug_error, err, implement, trace,
 	utils::{IterStream, MutexMap, timepoint_from_now},
 };
 use futures::StreamExt;
+pub(crate) use get::EventKeyMetadataCache;
 use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedServerName, OwnedServerSigningKeyId,
 	RoomVersionId, ServerName, ServerSigningKeyId,
@@ -41,6 +42,11 @@ const MAX_FETCH_BACKOFF_ENTRIES: usize = 4096;
 /// shot.
 pub(super) const MSC4499_RETIRED_KEY_CEILING: usize = 3000;
 
+/// How long a notary-learned binding stays open to a direct-fetch override.
+/// MSC4499 leaves the exact window to the implementation; seven days matches
+/// the key cache's normal refresh horizon.
+const MSC4499_PROMOTION_WINDOW_MS: u64 = 604_800_000;
+
 pub struct Service {
 	keypair: Box<Ed25519KeyPair>,
 	verify_keys: VerifyKeys,
@@ -63,7 +69,6 @@ struct Services {
 }
 
 struct Data {
-	mtxdb: Arc<conduwuit_mtxdb::store::MtxdbStore>,
 	mtxdb_keys: conduwuit_mtxdb::server_keys::ServerKeysAdapter,
 }
 
@@ -71,22 +76,53 @@ pub type VerifyKeys = BTreeMap<OwnedServerSigningKeyId, VerifyKey>;
 pub type PubKeyMap = PublicKeyMap;
 pub type PubKeys = PublicKeySet;
 
-fn read_key_record<T: slipstream::codec::Deserialize>(
-	adapter: &conduwuit_mtxdb::server_keys::ServerKeysAdapter,
-	kind: conduwuit_mtxdb::server_keys::KeyRecordKind,
+/// Build the active and retired key view, excluding evicted records.
+/// Uses the greatest retained validity timestamp, or zero for no retained keys;
+/// signatures are not reconstructed. Invalid key IDs return database errors.
+fn signing_keys_from_native(
 	origin: &ServerName,
-) -> Result<Option<T>> {
-	let Some(bytes) = adapter.get(kind, origin.as_bytes()).map_err(|error| {
+	keys: &[conduwuit_mtxdb::server_keys::ServerKey],
+) -> Result<ServerSigningKeys> {
+	let mut out = ServerSigningKeys::new(origin.to_owned(), MilliSecondsSinceUnixEpoch(0));
+	for key in keys {
+		if key.is_evicted() {
+			continue;
+		}
+		let key_id = std::str::from_utf8(&key.key_id)
+			.map_err(|error| err!(Database("Invalid signing-key id in mtxdb: {error}")))?;
+		let key_id = OwnedServerSigningKeyId::parse(key_id)
+			.map_err(|error| err!(Database("Invalid signing-key id in mtxdb: {error}")))?;
+		out.valid_until_ts =
+			MilliSecondsSinceUnixEpoch(out.valid_until_ts.0.max(key.valid_until_ts));
+		if let Some(expired_ts) = key.retirement_ts() {
+			out.old_verify_keys.insert(
+				key_id,
+				OldVerifyKey::new(
+					MilliSecondsSinceUnixEpoch(expired_ts),
+					slipstream::sswire::Base64::new(key.key.clone()),
+				),
+			);
+		} else {
+			out.verify_keys
+				.insert(key_id, VerifyKey::new(slipstream::sswire::Base64::new(key.key.clone())));
+		}
+	}
+	Ok(out)
+}
+
+/// Read and reconstruct the retained signing-key metadata for one origin.
+/// This adapter-only form is used by blocking batch preload work.
+fn merged_signing_keys_from_adapter(
+	adapter: &conduwuit_mtxdb::server_keys::ServerKeysAdapter,
+	origin: &ServerName,
+) -> Result<ServerSigningKeys> {
+	let native = adapter.read_keys(origin.as_bytes()).map_err(|error| {
 		err!(Database("Failed to read mtxdb signing keys for {origin}: {error}"))
-	})?
-	else {
-		return Ok(None);
-	};
-	slipstream::codec::from_slice(&bytes)
-		.map(Some)
-		.map_err(|error| {
-			err!(Database("Failed to decode mtxdb signing keys for {origin}: {error}"))
-		})
+	})?;
+	if !native.iter().any(|key| !key.is_evicted()) {
+		return Err(err!(Request(NotFound("No signing-key record for {origin}"))));
+	}
+	signing_keys_from_native(origin, &native)
 }
 
 impl crate::Service for Service {
@@ -108,7 +144,6 @@ impl crate::Service for Service {
 				server: args.server.clone(),
 			},
 			db: Data {
-				mtxdb: args.mtxdb.clone(),
 				mtxdb_keys: conduwuit_mtxdb::server_keys::ServerKeysAdapter::new(
 					args.mtxdb.clone(),
 				),
@@ -235,6 +270,7 @@ pub async fn server_request_coalesced(
 /// arrival order.
 ///
 /// A no-op (empty result) if `old_verify_keys.len() <= cap`.
+#[cfg(test)]
 fn select_old_verify_keys_to_evict(
 	old_verify_keys: &BTreeMap<OwnedServerSigningKeyId, OldVerifyKey>,
 	corroborated: &std::collections::BTreeSet<OwnedServerSigningKeyId>,
@@ -309,40 +345,25 @@ pub fn add_signing_keys(
 	std::future::ready(self.add_signing_keys_sync(raw_new_keys, source))
 }
 
+/// Merge a signing-key observation into mtxdb and retain its raw payload.
+/// `source` selects direct-snapshot or notary observation semantics. Returns
+/// the merged key view with the incoming signatures and validity timestamp.
+///
+/// Malformed payloads return `BadServerResponse`; conflicting active and retired
+/// key bytes for one ID return `InvalidParam`. Storage and key-ID decoding
+/// errors return database errors, possibly after key updates have committed.
 #[implement(Service)]
 fn add_signing_keys_sync(
 	&self,
 	raw_new_keys: &Raw<ServerSigningKeys>,
 	source: FetchSource,
 ) -> Result<ServerSigningKeys> {
-	let mut new_keys: ServerSigningKeys = raw_new_keys
+	let new_keys: ServerSigningKeys = raw_new_keys
 		.deserialize()
 		.map_err(|e| err!(BadServerResponse("{e}")))?;
 	let origin = &new_keys.server_name;
 
-	// MSC4499: "A future expired_ts (beyond a 5-minute clock-skew allowance) MUST
-	// be treated as malformed for that specific key entry, but MUST NOT poison
-	// the rest of the response payload."
-	let now_plus_skew_tp =
-		timepoint_from_now(Duration::from_mins(5)).expect("SystemTime should not overflow");
-	let now_plus_skew = MilliSecondsSinceUnixEpoch::from_system_time(now_plus_skew_tp)
-		.expect("UInt should not overflow");
-
-	let mut old_keys_filtered = false;
-	new_keys.old_verify_keys.retain(|key_id, ok| {
-		if ok.expired_ts > now_plus_skew {
-			conduwuit::warn!(
-				"Ignoring malformed old_verify_key {key_id} for {origin}: expired_ts {:?} is in \
-				 the future",
-				ok.expired_ts
-			);
-			old_keys_filtered = true;
-			return false;
-		}
-		true
-	});
-
-	// Intra-payload collision verification (MSC 4499)
+	// MSC4499: a single payload must not carry two bodies for one key id.
 	for (key_id, verify_key) in &new_keys.verify_keys {
 		if let Some(old_verify_key) = new_keys.old_verify_keys.get(key_id) {
 			if verify_key.key != old_verify_key.key {
@@ -353,397 +374,91 @@ fn add_signing_keys_sync(
 		}
 	}
 
-	// The full mtxdb import seeds this cumulative record before the service
-	// starts. A never-seen origin has no record and starts with an empty set.
-	let mut historical_keys = read_key_record::<ServerSigningKeys>(
-		&self.db.mtxdb_keys,
-		conduwuit_mtxdb::server_keys::KeyRecordKind::Historical,
-		origin,
-	)?
-	.unwrap_or_else(|| {
-		ServerSigningKeys::new(origin.to_owned(), MilliSecondsSinceUnixEpoch::now())
-	});
-
-	// MSC4499 "Notary fallback (two-tier binding)": key IDs whose binding is
-	// still provisional (learned only via a notary). Only a direct fetch that
-	// still finds the binding live in verify_keys (i.e. not yet retired to
-	// old_verify_keys) may promote it to permanent; this dual condition is
-	// this schema's stand-in for "not expired and not retired", since
-	// per-key valid_until_ts isn't tracked separately from retirement here.
-	let mut provisional = read_key_record::<std::collections::BTreeSet<OwnedServerSigningKeyId>>(
-		&self.db.mtxdb_keys,
-		conduwuit_mtxdb::server_keys::KeyRecordKind::Provisional,
-		origin,
-	)?
-	.unwrap_or_default();
-
-	// MSC4499 "Corroboration tier": key IDs we have ourselves independently
-	// observed as currently-active at some point, tracked so a later eviction
-	// pass can retain them ahead of retired-key claims that arrived
-	// already-retired. This only ever grows.
-	let mut corroborated =
-		read_key_record::<std::collections::BTreeSet<OwnedServerSigningKeyId>>(
-			&self.db.mtxdb_keys,
-			conduwuit_mtxdb::server_keys::KeyRecordKind::Corroborated,
-			origin,
-		)?
-		.unwrap_or_default();
-	let originally_known_key_ids: std::collections::BTreeSet<OwnedServerSigningKeyId> =
-		historical_keys
+	let mut observed = Vec::with_capacity(
+		new_keys
 			.verify_keys
-			.keys()
-			.chain(historical_keys.old_verify_keys.keys())
-			.cloned()
-			.collect();
+			.len()
+			.saturating_add(new_keys.old_verify_keys.len()),
+	);
+	for (key_id, verify_key) in &new_keys.verify_keys {
+		observed.push(conduwuit_mtxdb::server_keys::ObservedKey {
+			key_id: key_id.as_str().as_bytes().to_vec(),
+			key: verify_key.key.as_bytes().to_vec(),
+			valid_until_ts: new_keys.valid_until_ts.0,
+			expired_ts: None,
+		});
+	}
+	for (key_id, old_verify_key) in &new_keys.old_verify_keys {
+		observed.push(conduwuit_mtxdb::server_keys::ObservedKey {
+			key_id: key_id.as_str().as_bytes().to_vec(),
+			key: old_verify_key.key.as_bytes().to_vec(),
+			valid_until_ts: new_keys.valid_until_ts.0,
+			expired_ts: Some(old_verify_key.expired_ts.0),
+		});
+	}
 
-	// Helper to compute sha256 hex string for fingerprint logging
-	let get_fingerprint = |base64_key: &slipstream::sswire::Base64| -> String {
-		use sha2::{Digest, Sha256};
-		let digest = Sha256::digest(base64_key.as_bytes());
-		let mut s = String::with_capacity(digest.len().saturating_mul(2));
-		for b in digest {
-			use std::fmt::Write as _;
-			let _ = write!(s, "{b:02x}");
-		}
-		s
+	let sighting = match source {
+		| FetchSource::Direct => conduwuit_mtxdb::server_keys::KeySighting::Direct,
+		| FetchSource::Notary => conduwuit_mtxdb::server_keys::KeySighting::Notary,
+	};
+	let update = conduwuit_mtxdb::server_keys::KeyUpdate {
+		origin: origin.as_bytes(),
+		sighting,
+		source: match source {
+			| FetchSource::Direct => b"direct",
+			| FetchSource::Notary => b"notary",
+		},
+		observed: &observed,
+		now_ms: MilliSecondsSinceUnixEpoch::now().0,
+		notary: Some(raw_new_keys.get().as_bytes()),
+		promotion_window_ms: MSC4499_PROMOTION_WINDOW_MS,
+		snapshot: source == FetchSource::Direct,
+		limits: conduwuit_mtxdb::server_keys::KeyLimits {
+			retired_retained: MSC4499_RETIRED_KEY_CEILING,
+			..Default::default()
+		},
 	};
 
-	let enforce_fsw = self.services.server.config.msc4499_strict_caching;
-	let mut rejected_collision = false;
-
-	// Merging with Collision Detection (First Seen Wins)
-	let mut filtered_verify_keys = new_keys.verify_keys.clone();
-	let mut filtered_old_verify_keys = new_keys.old_verify_keys.clone();
-	let collision_action = if enforce_fsw {
-		"Retaining cached key."
-	} else {
-		"Not enforcing because msc4499_strict_caching is disabled."
-	};
-
-	for (key_id, new_key) in &new_keys.verify_keys {
-		if let Some(existing_key) = historical_keys.verify_keys.get(key_id) {
-			if existing_key.key != new_key.key {
-				if source == FetchSource::Direct && provisional.contains(key_id) {
-					// MSC4499 "Notary fallback (two-tier binding)": a direct fetch
-					// overriding a still-live provisional (notary-learned) binding is
-					// promotion, not a collision. Leave filtered_verify_keys untouched
-					// so the new (direct) body wins the merge below.
-					conduwuit::warn!(
-						"MSC4499: direct fetch overrides provisional notary-learned key \
-						 {key_id} for {origin} (two-tier binding promotion); this becomes the \
-						 permanent binding"
-					);
-					provisional.remove(key_id);
-				} else {
-					let existing_fp = get_fingerprint(&existing_key.key);
-					let new_fp = get_fingerprint(&new_key.key);
-					conduwuit::warn!(
-						"Key ID collision detected for server {origin} on active key {key_id}! \
-						 Cached fingerprint: {existing_fp}, conflicting fingerprint: {new_fp}. \
-						 {collision_action}"
-					);
-					if enforce_fsw {
-						rejected_collision = true;
-						filtered_verify_keys.remove(key_id);
-					}
-				}
-			}
-		} else if let Some(existing_old_key) = historical_keys.old_verify_keys.get(key_id) {
-			if existing_old_key.key != new_key.key {
-				let existing_fp = get_fingerprint(&existing_old_key.key);
-				let new_fp = get_fingerprint(&new_key.key);
+	let merged = self.db.mtxdb_keys.update(&update).map_err(|error| {
+		err!(Database("Failed to update mtxdb signing keys for {origin}: {error}"))
+	})?;
+	for issue in &merged.issues {
+		let key_id = String::from_utf8_lossy(&issue.key_id);
+		match issue.kind {
+			| conduwuit_mtxdb::server_keys::KeyIssueKind::Collision => {
+				conduwuit::warn!("MSC4499: rejected colliding key {key_id} for {origin}");
+			},
+			| conduwuit_mtxdb::server_keys::KeyIssueKind::Displaced => conduwuit::warn!(
+				"MSC4499: direct fetch overrode provisional key {key_id} for {origin}"
+			),
+			| conduwuit_mtxdb::server_keys::KeyIssueKind::ExpiredTsConflict => conduwuit::warn!(
+				"MSC4499: ignored a conflicting expired_ts for {key_id} of {origin}"
+			),
+			| conduwuit_mtxdb::server_keys::KeyIssueKind::FutureExpiredTs => conduwuit::warn!(
+				"Ignoring malformed old_verify_key {key_id} for {origin}: expired_ts is in the \
+				 future"
+			),
+			| conduwuit_mtxdb::server_keys::KeyIssueKind::DigestCapReached => conduwuit::warn!(
+				"MSC4499: refused new key {key_id} for {origin}: digest cap reached"
+			),
+			| conduwuit_mtxdb::server_keys::KeyIssueKind::Evicted => {
+				conduwuit::debug!("MSC4499: evicted old_verify_key {key_id} for {origin}");
+			},
+			| conduwuit_mtxdb::server_keys::KeyIssueKind::EvictedCorroborated => {
 				conduwuit::warn!(
-					"Key ID collision detected for server {origin} on active/old key {key_id}! \
-					 Cached fingerprint: {existing_fp}, conflicting fingerprint: {new_fp}. \
-					 {collision_action}"
+					"MSC4499: evicted corroborated old_verify_key {key_id} for {origin}"
 				);
-				if enforce_fsw {
-					rejected_collision = true;
-					filtered_verify_keys.remove(key_id);
-				}
-			}
+			},
 		}
 	}
 
-	for (key_id, new_old_key) in &new_keys.old_verify_keys {
-		if let Some(existing_key) = historical_keys.verify_keys.get(key_id) {
-			if existing_key.key != new_old_key.key {
-				let existing_fp = get_fingerprint(&existing_key.key);
-				let new_fp = get_fingerprint(&new_old_key.key);
-				conduwuit::warn!(
-					"Key ID collision detected for server {origin} on old/active key {key_id}! \
-					 Cached fingerprint: {existing_fp}, conflicting fingerprint: {new_fp}. \
-					 {collision_action}"
-				);
-				if enforce_fsw {
-					rejected_collision = true;
-					filtered_old_verify_keys.remove(key_id);
-				}
-			}
-		} else if let Some(existing_old_key) = historical_keys.old_verify_keys.get(key_id) {
-			if existing_old_key.key != new_old_key.key {
-				let existing_fp = get_fingerprint(&existing_old_key.key);
-				let new_fp = get_fingerprint(&new_old_key.key);
-				conduwuit::warn!(
-					"Key ID collision detected for server {origin} on old key {key_id}! Cached \
-					 fingerprint: {existing_fp}, conflicting fingerprint: {new_fp}. \
-					 {collision_action}"
-				);
-				if enforce_fsw {
-					rejected_collision = true;
-					filtered_old_verify_keys.remove(key_id);
-				}
-			}
-		}
-	}
-
-	// Merge and clean up: if a key exists in both, the new verify_keys takes
-	// precedence and we remove it from historical_keys.old_verify_keys.
-	// Conversely, if a key is in old_verify_keys, we ensure it's not in
-	// verify_keys.
-	for key_id in filtered_verify_keys.keys() {
-		historical_keys.old_verify_keys.remove(key_id);
-	}
-	for key_id in filtered_old_verify_keys.keys() {
-		historical_keys.verify_keys.remove(key_id);
-	}
-
-	let now = MilliSecondsSinceUnixEpoch::now();
-
-	// Any key in historical_keys.verify_keys that is genuinely absent from the
-	// origin's new payload has been retired. We must move it to
-	// old_verify_keys with a fixed expired_ts.
-	//
-	// This must check `new_keys.verify_keys`, not `filtered_verify_keys`: a
-	// rejected collision (MSC4499 First-Seen-Wins) also removes the key ID
-	// from `filtered_verify_keys` even though the origin's payload still
-	// includes it (just with different, rejected key material). Treating
-	// that as a retirement would move the still-valid first-seen key into
-	// old_verify_keys with a fresh expired_ts, corrupting the historical
-	// record the notary later serves.
-	//
-	// The whole pass is additionally gated on `!rejected_collision`: a payload
-	// that lied about one key ID isn't a trustworthy source for *other* keys'
-	// implicit retirement-by-omission either. Without this, a hostile or
-	// compromised origin could pair a doomed-to-be-rejected collision on key Y
-	// with a quiet omission of an unrelated, legitimate key X in the same
-	// response, and still get X's permanent `expired_ts` stamped from the
-	// omission alone. Skipping retirement for the whole payload just delays
-	// it to the next clean response instead.
-	let mut retired_keys = Vec::new();
-	if !rejected_collision {
-		for (key_id, key) in &historical_keys.verify_keys {
-			if !new_keys.verify_keys.contains_key(key_id) {
-				retired_keys.push((key_id.clone(), key.clone()));
-			}
-		}
-	}
-	for (key_id, key) in retired_keys {
-		historical_keys.verify_keys.remove(&key_id);
-		historical_keys
-			.old_verify_keys
-			.entry(key_id)
-			.or_insert_with(|| OldVerifyKey { key: key.key, expired_ts: now });
-	}
-
-	// MSC4499 "Corroboration tier": every key ID accepted as currently active
-	// in this response is now something we've independently observed active,
-	// regardless of source -- record it before it's ever retired. Corroboration
-	// is local observation history and is never revoked once granted.
-	for key_id in filtered_verify_keys.keys() {
-		corroborated.insert(key_id.clone());
-	}
-
-	// Store the filtered/merged historical keys
-	historical_keys.verify_keys.extend(filtered_verify_keys);
-	for (key_id, old_key) in filtered_old_verify_keys {
-		if enforce_fsw {
-			historical_keys
-				.old_verify_keys
-				.entry(key_id)
-				.or_insert(old_key);
-		} else {
-			historical_keys.old_verify_keys.insert(key_id, old_key);
-		}
-	}
-
-	// MSC4499: retain at most 3,000 retired keys in old_verify_keys.
-	// Keys in verify_keys are exempt from this quota (verify_keys itself is
-	// capped).
-	//
-	// Per MSC4499's storage considerations, this is a two-tier ordering, not a
-	// flat recency sort: corroborated bindings (key IDs we ourselves saw active
-	// before this retirement claim arrived) are retained ahead of uncorroborated
-	// ones regardless of raw effective-retirement-timestamp recency, since an
-	// uncorroborated old_verify_keys entry is just a self-signed claim with
-	// nothing else backing it up -- cheaper to fabricate in bulk than a
-	// corroborated one. Within each tier, retain the most-recently-retired
-	// first. Recomputing the full retained set on every call (rather than only
-	// comparing the newly learned candidates against the existing tail) keeps
-	// this deterministic regardless of arrival order.
-	let old_keys = historical_keys.old_verify_keys.len();
-	if old_keys > MSC4499_RETIRED_KEY_CEILING {
-		let to_evict_ids = select_old_verify_keys_to_evict(
-			&historical_keys.old_verify_keys,
-			&corroborated,
-			MSC4499_RETIRED_KEY_CEILING,
-		);
-		conduwuit::debug!(
-			"MSC4499: Evicting {} old_verify_keys for {origin} to respect the 3,000-key \
-			 retired-key quota",
-			to_evict_ids.len()
-		);
-
-		for id in to_evict_ids {
-			let was_corroborated = corroborated.remove(&id);
-			if was_corroborated {
-				// MSC4499: eviction of a corroborated binding is itself an anomaly
-				// signal -- reaching the ceiling deeply enough to displace one means
-				// something is flooding this origin's retired-key set.
-				conduwuit::warn!(
-					"MSC4499: evicted corroborated old_verify_key {id} for {origin} due to \
-					 3,000-key quota"
-				);
-			} else {
-				conduwuit::debug!(
-					"MSC4499: evicted uncorroborated old_verify_key {id} for {origin} due to \
-					 3,000-key quota"
-				);
-			}
-			historical_keys.old_verify_keys.remove(&id);
-			new_keys.old_verify_keys.remove(&id);
-			provisional.remove(&id);
-		}
-	}
-
-	// MSC4499 "Notary fallback (two-tier binding)": a key ID observed for the
-	// very first time via a notary starts provisional; one observed directly
-	// starts (and stays) permanent, so it's never added here.
-	if source == FetchSource::Notary {
-		for key_id in new_keys
-			.verify_keys
-			.keys()
-			.chain(new_keys.old_verify_keys.keys())
-		{
-			if !originally_known_key_ids.contains(key_id) {
-				provisional.insert(key_id.clone());
-			}
-		}
-	}
-
-	// MSC4499 First-Seen-Wins enforcement on the origin record.
-	// When enabled, replace any colliding keys in new_keys with their first-seen
-	// values before storing. This ensures the notary never serves replaced keys.
-	// Collisions are always logged above regardless of this setting.
-	// Note: historical_keys now contains the complete merged state after extend().
-	if enforce_fsw {
-		for (key_id, vk) in &mut new_keys.verify_keys {
-			let first_seen = historical_keys
-				.verify_keys
-				.get(key_id)
-				.map(|k| &k.key)
-				.or_else(|| historical_keys.old_verify_keys.get(key_id).map(|k| &k.key));
-
-			if let Some(first_seen) = first_seen {
-				if vk.key != *first_seen {
-					vk.key = first_seen.clone();
-				}
-			}
-		}
-		for (key_id, ok) in &mut new_keys.old_verify_keys {
-			let first_seen = historical_keys
-				.verify_keys
-				.get(key_id)
-				.map(|k| &k.key)
-				.or_else(|| historical_keys.old_verify_keys.get(key_id).map(|k| &k.key));
-
-			if let Some(first_seen) = first_seen {
-				if ok.key != *first_seen {
-					ok.key = first_seen.clone();
-				}
-			}
-		}
-	}
-
-	// Preserve the last raw payload that matched the accepted first-seen bindings.
-	// A rejected collision must not replace the per-origin record, since that raw
-	// blob is later re-signed and served by our notary endpoints, and downstream
-	// consumers of /_matrix/key/v2/query verify the origin's own signature on
-	// each server_keys entry in addition to ours -- re-serving anything other
-	// than the verbatim bytes the origin signed breaks that verification for
-	// every entry in the document, not just the one at fault. A payload with a
-	// malformed (future expired_ts) old_verify_keys entry is the same shape of
-	// problem: MSC4499 requires the malformed entry be rejected locally, but
-	// re-serving a hand-edited document is patching a response, which the MSC
-	// explicitly forbids a notary from doing. The remedy in both cases is the
-	// same: decline to update the served cache entry and keep serving the last
-	// known-good self-signed payload rather than a mutated one.
-	let write_notary = !rejected_collision && !old_keys_filtered;
-	self.write_key_records(
-		origin,
-		&historical_keys,
-		&provisional,
-		&corroborated,
-		write_notary.then_some(raw_new_keys),
-	)?;
-
-	Ok(new_keys)
+	let mut out = signing_keys_from_native(origin, &merged.keys)?;
+	out.signatures = new_keys.signatures;
+	out.valid_until_ts = new_keys.valid_until_ts;
+	Ok(out)
 }
 
-/// Persist one `add_signing_keys` outcome in mtxdb as a single transaction.
-#[implement(Service)]
-fn write_key_records(
-	&self,
-	origin: &ServerName,
-	historical: &ServerSigningKeys,
-	provisional: &std::collections::BTreeSet<OwnedServerSigningKeyId>,
-	corroborated: &std::collections::BTreeSet<OwnedServerSigningKeyId>,
-	notary: Option<&Raw<ServerSigningKeys>>,
-) -> Result {
-	use conduwuit_mtxdb::server_keys::KeyRecordKind;
-
-	let origin = origin.as_bytes();
-	let tx = self.db.mtxdb.begin_transaction();
-	let keys = &self.db.mtxdb_keys;
-	keys.put(&tx, KeyRecordKind::Historical, origin, &slipstream::codec::to_vec(historical))
-		.map_err(|error| err!(Database("Failed to persist mtxdb historical keys: {error}")))?;
-	if provisional.is_empty() {
-		keys.remove(&tx, KeyRecordKind::Provisional, origin)
-			.map_err(|error| {
-				err!(Database("Failed to remove mtxdb provisional keys: {error}"))
-			})?;
-	} else {
-		keys.put(
-			&tx,
-			KeyRecordKind::Provisional,
-			origin,
-			&slipstream::codec::to_vec(&provisional),
-		)
-		.map_err(|error| err!(Database("Failed to persist mtxdb provisional keys: {error}")))?;
-	}
-	if corroborated.is_empty() {
-		keys.remove(&tx, KeyRecordKind::Corroborated, origin)
-			.map_err(|error| {
-				err!(Database("Failed to remove mtxdb corroborated keys: {error}"))
-			})?;
-	} else {
-		keys.put(
-			&tx,
-			KeyRecordKind::Corroborated,
-			origin,
-			&slipstream::codec::to_vec(&corroborated),
-		)
-		.map_err(|error| err!(Database("Failed to persist mtxdb corroborated keys: {error}")))?;
-	}
-	if let Some(notary) = notary {
-		keys.put(&tx, KeyRecordKind::Notary, origin, &slipstream::codec::to_vec(notary))
-			.map_err(|error| err!(Database("Failed to persist mtxdb notary keys: {error}")))?;
-	}
-	tx.commit()
-		.map_err(|error| err!(Database("Failed to commit mtxdb signing keys: {error}")))
-}
-
-/// What a keys export wrote.
+/// What a keys export wrote. `historical` counts permanent-tier records.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct KeysExportCounts {
 	pub historical: u64,
@@ -753,8 +468,9 @@ pub struct KeysExportCounts {
 }
 
 /// Exports all signing key records as JSONL. Each line is a `server_keys`
-/// object with `origin` and one of the four record kinds. The importer owns
-/// the on-disk format; this export just provides the raw payloads.
+/// object: one native per-key record (provisional or permanent), or the
+/// origin's verbatim Notary payload. The mtxdb CLI importer reads this layout
+/// directly.
 #[implement(Service)]
 pub fn export_keys_jsonl<W: std::io::Write + Send>(
 	&self,
@@ -763,16 +479,17 @@ pub fn export_keys_jsonl<W: std::io::Write + Send>(
 	std::future::ready(self.export_keys_jsonl_sync(out))
 }
 
+/// Write native key records and available raw notary payloads as JSONL, then
+/// flush `out` and return record counts.
+/// Storage, invalid origin UTF-8, write, and flush failures return database
+/// errors; output already written is retained.
 #[implement(Service)]
 fn export_keys_jsonl_sync<W: std::io::Write + Send>(
 	&self,
 	out: &mut W,
 ) -> Result<KeysExportCounts> {
 	use base64::{Engine as _, engine::general_purpose::STANDARD};
-	use conduwuit_mtxdb::{
-		export_schema::{field, tag},
-		server_keys::KeyRecordKind,
-	};
+	use conduwuit_mtxdb::export_schema::{field, key_kind, tag};
 	use slipstream::json::{Object, Value};
 
 	fn line<W: std::io::Write>(out: &mut W, record: Object) -> Result<()> {
@@ -789,69 +506,81 @@ fn export_keys_jsonl_sync<W: std::io::Write + Send>(
 	}
 
 	let mut counts = KeysExportCounts::default();
-	let records = self
-		.db
-		.mtxdb_keys
-		.scan()
-		.map_err(|error| err!(Database("Failed to scan mtxdb signing keys: {error}")))?;
+	let origins =
+		self.db.mtxdb_keys.origins().map_err(|error| {
+			err!(Database("Failed to list mtxdb signing-key origins: {error}"))
+		})?;
 
-	for (record_kind, origin_bytes, payload) in records {
+	for origin_bytes in origins {
 		let origin = std::str::from_utf8(&origin_bytes)
 			.map_err(|error| err!(Database("Invalid signing-key origin in mtxdb: {error}")))?;
-		let kind = record_kind.as_str();
+		let keys = self
+			.db
+			.mtxdb_keys
+			.read_keys(&origin_bytes)
+			.map_err(|error| {
+				err!(Database("Failed to read mtxdb signing keys for {origin}: {error}"))
+			})?;
 
-		let mut obj = record(tag::SERVER_KEYS);
-		obj.insert(field::ORIGIN.to_owned(), Value::String(origin.to_owned()));
-		obj.insert(field::KIND.to_owned(), Value::String(kind.to_owned()));
+		for key in keys {
+			let mut obj = record(tag::SERVER_KEYS);
+			obj.insert(field::ORIGIN.to_owned(), Value::String(origin.to_owned()));
+			let kind = match key.tier {
+				| conduwuit_mtxdb::server_keys::KeyTier::Provisional => key_kind::PROVISIONAL,
+				| conduwuit_mtxdb::server_keys::KeyTier::Permanent => key_kind::PERMANENT,
+			};
+			obj.insert(field::KIND.to_owned(), Value::String(kind.to_owned()));
+			obj.insert(
+				field::KEY_ID.to_owned(),
+				Value::String(String::from_utf8_lossy(&key.key_id).into_owned()),
+			);
+			if !key.key.is_empty() {
+				obj.insert(field::KEY.to_owned(), Value::String(STANDARD.encode(&key.key)));
+			}
+			obj.insert(field::DIGEST.to_owned(), Value::String(STANDARD.encode(key.digest)));
+			obj.insert(field::VALID_UNTIL_TS.to_owned(), Value::from(key.valid_until_ts));
+			obj.insert(
+				field::SOURCE.to_owned(),
+				Value::String(String::from_utf8_lossy(&key.source).into_owned()),
+			);
+			obj.insert(field::TS_ADDED_MS.to_owned(), Value::from(key.ts_added_ms));
+			obj.insert(field::FIRST_SEEN_MS.to_owned(), Value::from(key.first_seen_ms));
+			obj.insert(field::LAST_ACTIVE_MS.to_owned(), Value::from(key.last_active_ms));
+			obj.insert(field::PROMOTE_BY_MS.to_owned(), Value::from(key.promote_by_ms));
+			obj.insert(field::CORROBORATED.to_owned(), Value::Bool(key.corroborated));
+			obj.insert(field::INFERRED_RETIRED.to_owned(), Value::Bool(key.inferred_retired));
+			if let Some(expired_ts) = key.expired_ts {
+				obj.insert(field::EXPIRED_TS.to_owned(), Value::from(expired_ts));
+			}
 
-		match record_kind {
-			| KeyRecordKind::Historical => {
-				let keys: ServerSigningKeys =
-					slipstream::codec::from_slice(&payload).map_err(|error| {
-						err!(Database("Invalid historical signing-key record: {error}"))
-					})?;
-				obj.insert(
-					field::PAYLOAD.to_owned(),
-					Value::String(STANDARD.encode(slipstream::codec::to_vec(&keys))),
-				);
-				counts.historical = counts.historical.saturating_add(1);
-			},
-			| KeyRecordKind::Provisional => {
-				let ids: std::collections::BTreeSet<OwnedServerSigningKeyId> =
-					slipstream::codec::from_slice(&payload).map_err(|error| {
-						err!(Database("Invalid provisional signing-key record: {error}"))
-					})?;
-				obj.insert(
-					field::PAYLOAD.to_owned(),
-					Value::String(STANDARD.encode(slipstream::codec::to_vec(&ids))),
-				);
-				counts.provisional = counts.provisional.saturating_add(1);
-			},
-			| KeyRecordKind::Corroborated => {
-				let ids: std::collections::BTreeSet<OwnedServerSigningKeyId> =
-					slipstream::codec::from_slice(&payload).map_err(|error| {
-						err!(Database("Invalid corroborated signing-key record: {error}"))
-					})?;
-				obj.insert(
-					field::PAYLOAD.to_owned(),
-					Value::String(STANDARD.encode(slipstream::codec::to_vec(&ids))),
-				);
+			match key.tier {
+				| conduwuit_mtxdb::server_keys::KeyTier::Provisional => {
+					counts.provisional = counts.provisional.saturating_add(1);
+				},
+				| conduwuit_mtxdb::server_keys::KeyTier::Permanent => {
+					counts.historical = counts.historical.saturating_add(1);
+				},
+			}
+			if key.corroborated {
 				counts.corroborated = counts.corroborated.saturating_add(1);
-			},
-			| KeyRecordKind::Notary => {
-				let raw: Raw<ServerSigningKeys> = slipstream::codec::from_slice(&payload)
-					.map_err(|error| {
-						err!(Database("Invalid notary signing-key record: {error}"))
-					})?;
-				obj.insert(
-					field::PAYLOAD.to_owned(),
-					Value::String(STANDARD.encode(raw.get().as_bytes())),
-				);
-				counts.notary = counts.notary.saturating_add(1);
-			},
+			}
+			line(out, obj)?;
 		}
 
-		line(out, obj)?;
+		if let Some(payload) = self
+			.db
+			.mtxdb_keys
+			.read_notary(&origin_bytes)
+			.map_err(|error| {
+				err!(Database("Failed to read mtxdb notary keys for {origin}: {error}"))
+			})? {
+			let mut obj = record(tag::SERVER_KEYS);
+			obj.insert(field::ORIGIN.to_owned(), Value::String(origin.to_owned()));
+			obj.insert(field::KIND.to_owned(), Value::String(key_kind::NOTARY.to_owned()));
+			obj.insert(field::PAYLOAD.to_owned(), Value::String(STANDARD.encode(payload)));
+			counts.notary = counts.notary.saturating_add(1);
+			line(out, obj)?;
+		}
 	}
 
 	out.flush()
@@ -896,6 +625,8 @@ pub fn verify_key_exists(
 	std::future::ready(self.verify_key_exists_sync(origin, key_id))
 }
 
+/// Check for the local active key or any native record for this origin and ID.
+/// Storage read errors panic.
 #[implement(Service)]
 fn verify_key_exists_sync(&self, origin: &ServerName, key_id: &ServerSigningKeyId) -> bool {
 	// Our own active signing key is held in memory, not necessarily in the DB
@@ -903,36 +634,11 @@ fn verify_key_exists_sync(&self, origin: &ServerName, key_id: &ServerSigningKeyI
 		return true;
 	}
 
-	// Whether `keys` lists `key_id` under `verify_keys` or `old_verify_keys`.
-	let contains_key = |keys: &ServerSigningKeys| {
-		keys.verify_keys.contains_key(key_id) || keys.old_verify_keys.contains_key(key_id)
-	};
-	let historical = read_key_record::<ServerSigningKeys>(
-		&self.db.mtxdb_keys,
-		conduwuit_mtxdb::server_keys::KeyRecordKind::Historical,
-		origin,
-	)
-	.unwrap_or_else(|error| panic!("Failed to read mtxdb signing keys for {origin}: {error}"));
-	if historical.as_ref().is_some_and(contains_key) {
-		return true;
-	}
-	let notary = read_key_record::<Raw<ServerSigningKeys>>(
-		&self.db.mtxdb_keys,
-		conduwuit_mtxdb::server_keys::KeyRecordKind::Notary,
-		origin,
-	)
-	.unwrap_or_else(|error| panic!("Failed to read mtxdb notary keys for {origin}: {error}"));
-	let notary = notary.map(|raw| {
-		raw.deserialize().unwrap_or_else(|error| {
-			panic!("Failed to decode mtxdb notary keys for {origin}: {error}")
-		})
-	});
-	if notary.as_ref().is_some_and(contains_key) {
-		return true;
-	}
-
-	debug_warn!("Key {key_id} not found for {origin}");
-	false
+	self.db
+		.mtxdb_keys
+		.read_key(origin.as_bytes(), key_id.as_bytes())
+		.unwrap_or_else(|error| panic!("Failed to read mtxdb signing keys for {origin}: {error}"))
+		.is_some_and(|key| !key.is_evicted())
 }
 
 #[implement(Service)]
@@ -940,36 +646,23 @@ pub fn verify_keys_for(&self, origin: &ServerName) -> std::future::Ready<VerifyK
 	std::future::ready(self.verify_keys_for_sync(origin))
 }
 
+/// Return retained active and retired keys, adding this server's in-memory
+/// active keys for a local origin. Storage or key-ID decoding errors panic.
 #[implement(Service)]
 fn verify_keys_for_sync(&self, origin: &ServerName) -> VerifyKeys {
-	let mut keys = BTreeMap::new();
-	let historical_keys = read_key_record::<ServerSigningKeys>(
-		&self.db.mtxdb_keys,
-		conduwuit_mtxdb::server_keys::KeyRecordKind::Historical,
-		origin,
-	)
-	.unwrap_or_else(|error| panic!("Failed to read mtxdb signing keys for {origin}: {error}"));
-	if let Some(historical_keys) = historical_keys {
-		keys.extend(merge_old_keys(historical_keys).verify_keys);
-	}
-
-	let origin_keys = read_key_record::<Raw<ServerSigningKeys>>(
-		&self.db.mtxdb_keys,
-		conduwuit_mtxdb::server_keys::KeyRecordKind::Notary,
-		origin,
-	)
-	.unwrap_or_else(|error| panic!("Failed to read mtxdb notary keys for {origin}: {error}"))
-	.map(|raw| {
-		raw.deserialize().unwrap_or_else(|error| {
-			panic!("Failed to decode mtxdb notary keys for {origin}: {error}")
-		})
-	});
-	if let Some(origin_keys) = origin_keys {
-		for (key_id, verify_key) in merge_old_keys(origin_keys).verify_keys {
-			keys.entry(key_id).or_insert(verify_key);
-		}
-	}
-
+	let native = self
+		.db
+		.mtxdb_keys
+		.read_keys(origin.as_bytes())
+		.unwrap_or_else(|error| {
+			panic!("Failed to read mtxdb signing keys for {origin}: {error}")
+		});
+	let mut keys = signing_keys_from_native(origin, &native)
+		.map_or_else(
+			|error| panic!("Failed to decode mtxdb signing keys for {origin}: {error}"),
+			merge_old_keys,
+		)
+		.verify_keys;
 	if self.services.globals.server_is_ours(origin) {
 		keys.extend(self.verify_keys.clone());
 	}
@@ -984,38 +677,22 @@ pub fn active_verify_keys_for(&self, origin: &ServerName) -> std::future::Ready<
 	std::future::ready(self.active_verify_keys_for_sync(origin))
 }
 
+/// Return retained non-retired keys, adding this server's in-memory active
+/// keys for a local origin. Storage or key-ID decoding errors panic.
 #[implement(Service)]
 fn active_verify_keys_for_sync(&self, origin: &ServerName) -> VerifyKeys {
-	let mut keys = BTreeMap::new();
-
-	let origin_keys = read_key_record::<Raw<ServerSigningKeys>>(
-		&self.db.mtxdb_keys,
-		conduwuit_mtxdb::server_keys::KeyRecordKind::Notary,
-		origin,
-	)
-	.unwrap_or_else(|error| panic!("Failed to read mtxdb notary keys for {origin}: {error}"))
-	.map(|raw| {
-		raw.deserialize().unwrap_or_else(|error| {
-			panic!("Failed to decode mtxdb notary keys for {origin}: {error}")
+	let native = self
+		.db
+		.mtxdb_keys
+		.read_keys(origin.as_bytes())
+		.unwrap_or_else(|error| {
+			panic!("Failed to read mtxdb signing keys for {origin}: {error}")
+		});
+	let mut keys = signing_keys_from_native(origin, &native)
+		.unwrap_or_else(|error| {
+			panic!("Failed to decode mtxdb signing keys for {origin}: {error}")
 		})
-	});
-	if let Some(origin_keys) = origin_keys {
-		keys.extend(origin_keys.verify_keys);
-	}
-
-	// The cumulative accepted record is authoritative: it reflects retirements
-	// that the raw origin payload may not (e.g. malformed retired-key metadata).
-	let historical = read_key_record::<ServerSigningKeys>(
-		&self.db.mtxdb_keys,
-		conduwuit_mtxdb::server_keys::KeyRecordKind::Historical,
-		origin,
-	)
-	.unwrap_or_else(|error| panic!("Failed to read mtxdb signing keys for {origin}: {error}"));
-	if let Some(historical) = historical {
-		keys = historical.verify_keys;
-		keys.retain(|key_id, _| !historical.old_verify_keys.contains_key(key_id));
-	}
-
+		.verify_keys;
 	if self.services.globals.server_is_ours(origin) {
 		keys.extend(self.verify_keys.clone());
 	}
@@ -1039,45 +716,46 @@ pub fn raw_signing_keys_for(
 	std::future::ready(self.raw_signing_keys_for_sync(origin))
 }
 
+/// Read the stored raw signing-key payload without reconstructing native keys.
+/// Returns `NotFound` if absent, or a database error for storage failures,
+/// invalid UTF-8, or invalid JSON.
 #[implement(Service)]
 fn raw_signing_keys_for_sync(&self, origin: &ServerName) -> Result<Raw<ServerSigningKeys>> {
-	read_key_record::<Raw<ServerSigningKeys>>(
-		&self.db.mtxdb_keys,
-		conduwuit_mtxdb::server_keys::KeyRecordKind::Notary,
-		origin,
-	)?
-	.ok_or_else(|| err!(Request(NotFound("No signing-key record for {origin}"))))
+	let payload = self
+		.db
+		.mtxdb_keys
+		.read_notary(origin.as_bytes())
+		.map_err(|error| {
+			err!(Database("Failed to read mtxdb notary keys for {origin}: {error}"))
+		})?
+		.ok_or_else(|| err!(Request(NotFound("No signing-key record for {origin}"))))?;
+	let payload = std::str::from_utf8(&payload)
+		.map_err(|error| err!(Database("Invalid notary payload for {origin}: {error}")))?;
+	Raw::<ServerSigningKeys>::from_json_string(payload.to_owned())
+		.map_err(|error| err!(Database("Invalid notary payload for {origin}: {error}")))
 }
 
 #[implement(Service)]
-pub async fn merged_signing_keys_for(&self, origin: &ServerName) -> Result<ServerSigningKeys> {
-	let mut keys: ServerSigningKeys = self
-		.raw_signing_keys_for(origin)
-		.await?
-		.deserialize()
-		.map_err(|e| err!(BadServerResponse("{e}")))?;
+pub fn merged_signing_keys_for(
+	&self,
+	origin: &ServerName,
+) -> std::future::Ready<Result<ServerSigningKeys>> {
+	std::future::ready(self.merged_signing_keys_for_sync(origin))
+}
 
-	// Augment with historical keys if they exist. We prioritize the latest keys.
-	let historical_keys = read_key_record::<ServerSigningKeys>(
-		&self.db.mtxdb_keys,
-		conduwuit_mtxdb::server_keys::KeyRecordKind::Historical,
-		origin,
-	)?;
-	if let Some(historical_keys) = historical_keys {
-		// Augment with historical keys if they exist. We prioritize the latest keys.
-		// We merge historical old_verify_keys into the latest payload so historical
-		// key material remains available for verification and notary responses.
-		// Preserve the first-seen record for each key ID instead of letting a
-		// later payload overwrite an earlier expired_ts.
-		let mut merged_ovks = historical_keys.old_verify_keys;
-		for (key_id, old_key) in keys.old_verify_keys {
-			merged_ovks.entry(key_id).or_insert(old_key);
+/// Reconstruct active and retired keys from native records without signatures.
+/// Returns `NotFound` when there are no retained records. Storage and key-ID
+/// decoding failures return database errors.
+#[implement(Service)]
+fn merged_signing_keys_for_sync(&self, origin: &ServerName) -> Result<ServerSigningKeys> {
+	let mut out = merged_signing_keys_from_adapter(&self.db.mtxdb_keys, origin)?;
+	if let Ok(raw) = self.raw_signing_keys_for_sync(origin) {
+		if let Ok(stored) = raw.deserialize() {
+			out.signatures = stored.signatures;
+			out.valid_until_ts = stored.valid_until_ts;
 		}
-
-		keys.old_verify_keys = merged_ovks;
 	}
-
-	Ok(keys)
+	Ok(out)
 }
 
 #[implement(Service)]

@@ -158,6 +158,14 @@ async fn room_version_without_room_state(
 	}
 }
 
+/// Return the room ID, derived event ID, and canonical PDU after basic
+/// prev/auth-event validation. Create events select their own room version,
+/// defaulting to version 1 when `room_version` is absent or not a string. Other
+/// events use the stored version or a best-effort fallback if lookup fails.
+///
+/// If room-ID extraction fails, try at most ten auth events for a known room.
+/// Returns an error for invalid canonical JSON, unresolved room IDs, invalid
+/// create content or versions, and failed event-ID generation or basic validation.
 #[implement(super::Service)]
 pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
 	let value = slipstream::canonical_json::into_object(
@@ -186,7 +194,7 @@ pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
 			for auth_event_id in auth_events.iter().take(MAX_AUTH_EVENTS_ROOM_ID_FALLBACK) {
 				if let Some(auth_event_id) = auth_event_id.as_str() {
 					if let Ok(auth_event_id) = OwnedEventId::parse(auth_event_id) {
-						if let Ok(pdu) = self.services.timeline.get_pdu(&auth_event_id).await {
+						if let Ok(pdu) = self.services.timeline.get_pdu(&auth_event_id) {
 							if let Some(room_id) = pdu.room_id_or_hash() {
 								found_room_id = Some(room_id);
 								break;
@@ -200,9 +208,25 @@ pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
 		},
 	};
 
-	let room_version_id = match self.services.state.get_room_version(&room_id).await {
-		| Ok(room_version_id) => room_version_id,
-		| Err(_) => self.room_version_without_room_state(&room_id, &value).await,
+	let room_version_id = if event_type == "m.room.create" {
+		let content = value
+			.get("content")
+			.and_then(CanonicalJsonValue::as_object)
+			.ok_or_else(|| err!(Request(BadJson("Missing or invalid create-event content"))))?;
+		RoomVersionId::from_str(
+			content
+				.get("room_version")
+				.and_then(CanonicalJsonValue::as_str)
+				.unwrap_or("1"),
+		)
+		.map_err(|error| {
+			err!(Request(BadJson("Invalid room_version in create event: {error}")))
+		})?
+	} else {
+		match self.services.state.get_room_version(&room_id).await {
+			| Ok(room_version_id) => room_version_id,
+			| Err(_) => self.room_version_without_room_state(&room_id, &value).await,
+		}
 	};
 	// The underlying error can quote peer-supplied content, so it is not kept.
 	let (event_id, value) = gen_event_id_canonical_json(pdu, &room_version_id).map_err(|_| {

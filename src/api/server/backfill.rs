@@ -99,12 +99,7 @@ pub(crate) async fn get_backfill_route(
 					pdu
 				})
 				.try_filter_map(|pdu| async move {
-					Ok(services
-						.rooms
-						.timeline
-						.get_pdu_json(&pdu.event_id)
-						.await
-						.ok())
+					Ok(services.rooms.timeline.get_pdu_json(&pdu.event_id).ok())
 				})
 				.and_then(|pdu| {
 					services

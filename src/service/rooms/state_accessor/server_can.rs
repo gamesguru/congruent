@@ -21,7 +21,7 @@ pub async fn server_can_see_event(
 		return true;
 	}
 
-	if let Ok(pdu) = self.services.timeline.get_pdu(&event_id).await {
+	if let Ok(pdu) = self.services.timeline.get_pdu(&event_id) {
 		if pdu.sender.server_name() == origin
 			|| pdu.origin.as_deref() == Some(&origin)
 			|| pdu.kind == TimelineEventType::RoomCreate

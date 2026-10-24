@@ -32,7 +32,6 @@ where
 		.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), prev_event)
-		.await
 	else {
 		debug!("prev_event {prev_event} not found locally; falling back to fetch_state");
 		return Ok(None);
@@ -76,7 +75,6 @@ where
 			.services
 			.timeline
 			.get_pdu_in_room(Some(room_id), &parent)
-			.await
 		else {
 			return Ok(None);
 		};
@@ -124,16 +122,15 @@ where
 	let Ok(extremity_roothandles) = incoming_pdu
 		.prev_events()
 		.try_stream()
-		.broad_and_then(|prev_eventid| {
-			self.services
+		.broad_and_then(|prev_eventid| async move {
+			let prev_event = self
+				.services
 				.timeline
-				.get_pdu_in_room(Some(room_id), prev_eventid)
-				.and_then(move |prev_event| async move {
-					if prev_event.room_id() != Some(room_id) {
-						return Err(err!(Database("prev_event is not in the same room")));
-					}
-					Ok((prev_eventid, prev_event))
-				})
+				.get_pdu_in_room(Some(room_id), prev_eventid)?;
+			if prev_event.room_id() != Some(room_id) {
+				return Err(err!(Database("prev_event is not in the same room")));
+			}
+			Ok((prev_eventid, prev_event))
 		})
 		.broad_and_then(|(prev_eventid, prev_event)| {
 			self.services
@@ -300,16 +297,15 @@ where
 {
 	let Ok(extremity_roothandles) = prev_events
 		.try_stream()
-		.broad_and_then(|prev_eventid| {
-			self.services
+		.broad_and_then(|prev_eventid| async move {
+			let prev_event = self
+				.services
 				.timeline
-				.get_pdu_in_room(Some(room_id), prev_eventid)
-				.and_then(move |prev_event| async move {
-					if prev_event.room_id() != Some(room_id) {
-						return Err(err!(Database("prev_event is not in the same room")));
-					}
-					Ok((prev_eventid, prev_event))
-				})
+				.get_pdu_in_room(Some(room_id), prev_eventid)?;
+			if prev_event.room_id() != Some(room_id) {
+				return Err(err!(Database("prev_event is not in the same room")));
+			}
+			Ok((prev_eventid, prev_event))
 		})
 		.broad_and_then(|(prev_eventid, prev_event)| {
 			self.services
@@ -408,12 +404,7 @@ where
 			continue;
 		}
 
-		let Ok(prev_event) = self
-			.services
-			.timeline
-			.get_pdu_in_room(Some(room_id), prev)
-			.await
-		else {
+		let Ok(prev_event) = self.services.timeline.get_pdu_in_room(Some(room_id), prev) else {
 			return Ok(None);
 		};
 		let Ok(root_handle) = self

@@ -16,6 +16,48 @@ use slipstream::{
 
 use crate::rooms::short::ShortStateKey;
 
+const SIGNATURE_VERIFICATION_CONCURRENCY: usize = 64;
+
+/// Redact (when verification only matched signatures), re-attach `unsigned`,
+/// and parse one verified event.
+fn prepare_verified_event(
+	event_id: &OwnedEventId,
+	mut val: slipstream::CanonicalJsonObject,
+	stashed_unsigned: Option<slipstream::CanonicalJsonValue>,
+	needs_redaction: bool,
+	room_id: &RoomId,
+	room_version: &slipstream::RoomVersionId,
+) -> (Result<Option<PduEvent>, String>, slipstream::CanonicalJsonObject) {
+	if needs_redaction {
+		if let Err(error) =
+			slipstream::canonical_json::redact_in_place(&mut val, room_version, None)
+		{
+			val.insert(
+				"event_id".to_owned(),
+				slipstream::CanonicalJsonValue::String(event_id.as_str().to_owned()),
+			);
+			return (Err(format!("{error:?}")), val);
+		}
+	}
+
+	if let Some(slipstream::CanonicalJsonValue::Object(unsigned)) = stashed_unsigned
+		&& !unsigned.is_empty()
+	{
+		val.insert("unsigned".to_owned(), slipstream::CanonicalJsonValue::Object(unsigned));
+	}
+
+	val.insert(
+		"event_id".to_owned(),
+		slipstream::CanonicalJsonValue::String(event_id.as_str().to_owned()),
+	);
+
+	let pdu = PduEvent::from_id_val(event_id, val.clone(), Some(room_id))
+		.ok()
+		.filter(|pdu| crate::rooms::event_handler::check_room_id(room_id, pdu).is_ok());
+
+	(Ok(pdu), val)
+}
+
 /// Call /state to find out what the state at this pdu is. We trust the
 /// server's response to some extent, but we still do a lot of checks
 /// on the events.
@@ -48,7 +90,6 @@ where
 		Vec<(OwnedEventId, conduwuit::matrix::pdu::RawJson)>,
 	) = 'found: {
 		while let Some(server) = pool.next_scored(weights) {
-			info!(target: "state_ids_debug", %server, %origin, %room_id, %event_id, "fetch_state: sending /state_ids");
 			let req = self.services.sending.send_federation_request(
 				&server,
 				get_room_state_ids::v1::Request::new(event_id.to_owned(), room_id.to_owned()),
@@ -82,17 +123,34 @@ where
 			let all_ids = state_ids_res
 				.auth_chain_ids
 				.iter()
-				.chain(state_ids_res.pdu_ids.iter());
+				.chain(state_ids_res.pdu_ids.iter())
+				.filter_map(|id| match OwnedEventId::parse(id.as_str()) {
+					| Ok(id) => Some(id),
+					| Err(_) => {
+						conduwuit::debug_warn!(
+							"Skipping invalid event ID in remote state response"
+						);
+						None
+					},
+				})
+				.collect::<Vec<_>>();
 
-			for id in all_ids {
-				let Ok(id) = OwnedEventId::parse(id.as_str()) else {
-					conduwuit::debug_warn!("Skipping invalid event ID in remote state response");
-					continue;
-				};
-				if !self.services.timeline.pdu_exists(&id).await {
-					missing_ids.push(id);
-				} else {
+			// Room-scoped: an ID stored under another room is treated as missing
+			// here and rejected by `check_room_id` after the fetch. A batched
+			// read failure must not abort state recovery, so fall back to
+			// fetching every ID.
+			let present = match self.services.timeline.event_ids_present(room_id, &all_ids) {
+				| Ok(present) => present,
+				| Err(error) => {
+					debug_warn!("fetch_state: batched event existence check failed: {error}");
+					vec![false; all_ids.len()]
+				},
+			};
+			for (id, exists) in all_ids.into_iter().zip(present) {
+				if exists {
 					known_count = known_count.saturating_add(1);
+				} else {
+					missing_ids.push(id);
 				}
 			}
 
@@ -193,6 +251,10 @@ where
 	};
 
 	let room_version_id = self.services.state.get_room_version(room_id).await?;
+	self.services
+		.server_keys
+		.acquire_events_pubkeys(fetched_unknown_events.iter().map(|(_, raw_json)| raw_json))
+		.await;
 
 	// Reconstruct unknown_events
 	let mut unknown_events = Vec::new();
@@ -212,16 +274,26 @@ where
 		"fetch_state: {} newly missing events fetched successfully",
 		unknown_events.len(),
 	);
+	let key_metadata = self
+		.services
+		.server_keys
+		.event_key_metadata_for_events(&unknown_events, &room_version_id)
+		.await;
 
-	// Concurrently parse and verify signatures (Pure CPU and network keys fetch)
+	// Concurrently verify signatures and prepare fetched events for PDU parsing.
+	// Use an explicit width: the automatic stream width follows the database
+	// worker topology and can be as low as 2, which serializes this CPU-bound
+	// batch badly (MSC4297 state responses can carry hundreds of auth events).
 	let mut verified_events: HashMap<OwnedEventId, (PduEvent, slipstream::CanonicalJsonObject)> =
 		unknown_events
 			.into_iter()
 			.stream()
-			.broad_filter_map({
+			.broadn_filter_map(SIGNATURE_VERIFICATION_CONCURRENCY, {
 				let room_version_id = room_version_id.clone();
+				let key_metadata = key_metadata.clone();
 				move |(eid, mut val): (OwnedEventId, slipstream::CanonicalJsonObject)| {
 					let room_version_id = room_version_id.clone();
+					let key_metadata = key_metadata.clone();
 					async move {
 						let stashed_unsigned = val.remove("unsigned");
 
@@ -237,10 +309,11 @@ where
 						} else {
 							self.services
 								.server_keys
-								.verify_event_at(
+								.verify_event_at_with_metadata(
 									&val,
 									Some(&room_version_id),
 									"fetch_state::broad_filter_map",
+									Some(&key_metadata),
 								)
 								.await
 						};
@@ -250,70 +323,38 @@ where
 								slipstream::signatures::Verified::All
 								| slipstream::signatures::Verified::Signatures,
 							) => {
-								if matches!(
+								let needs_redaction = matches!(
 									verification_result,
 									Ok(slipstream::signatures::Verified::Signatures)
-								) {
-									if let Err(e) = slipstream::canonical_json::redact_in_place(
-										&mut val,
-										&room_version_id,
-										None,
-									) {
-										conduwuit::warn!("Redaction failed for {eid}: {e:?}");
-										if let Err(error) = self
-											.services
-											.pdu_metadata
-											.mark_event_rejected(
-												&eid,
-												&crate::rooms::pdu_metadata::RejectionCode::InvalidPduFormat
-													.with_detail("redaction failed after hash mismatch"),
-											)
-										{
-											conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
-										}
-										val.insert(
-											"event_id".to_owned(),
-											slipstream::CanonicalJsonValue::String(
-												eid.as_str().to_owned(),
-											),
-										);
-										self.services
-											.outlier
-											.add_pdu_outlier(&eid, &val, Some(room_id))
-											.await;
-										return None;
-									}
-								}
-
-								// Re-attach unsigned for completeness
-								if let Some(slipstream::CanonicalJsonValue::Object(
-									unsigned_obj,
-								)) = stashed_unsigned
-								{
-									if !unsigned_obj.is_empty() {
-										val.insert(
-											"unsigned".to_owned(),
-											slipstream::CanonicalJsonValue::Object(unsigned_obj),
-										);
-									}
-								}
-
-								val.insert(
-									"event_id".to_owned(),
-									slipstream::CanonicalJsonValue::String(
-										eid.as_str().to_owned(),
-									),
 								);
-
-								if let Ok(pdu) =
-									PduEvent::from_id_val(&eid, val.clone(), Some(room_id))
-								{
-									if crate::rooms::event_handler::check_room_id(room_id, &pdu)
-										.is_ok()
+								let (prepared, val) = prepare_verified_event(
+									&eid,
+									val,
+									stashed_unsigned,
+									needs_redaction,
+									room_id,
+									&room_version_id,
+								);
+								if let Err(error) = prepared {
+									conduwuit::warn!("Redaction failed for {eid}: {error}");
+									if let Err(error) = self
+										.services
+										.pdu_metadata
+										.mark_event_rejected(
+											&eid,
+											&crate::rooms::pdu_metadata::RejectionCode::InvalidPduFormat
+												.with_detail("redaction failed after hash mismatch"),
+										)
 									{
-										return Some((eid, (pdu, val)));
+										conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
 									}
+									self.services
+										.outlier
+										.add_pdu_outlier(&eid, &val, Some(room_id))
+										.await;
+									return None;
 								}
+								return prepared.ok().flatten().map(|pdu| (eid, (pdu, val)));
 							},
 							| _ => {
 								// Event sig failed; persist as rejected outlier so we don't
@@ -357,8 +398,32 @@ where
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);
 
-	// Sequentially auth_check them (roots first so auth checks succeed since
-	// handle_outlier_pdu queries the DB).
+	// Persist the whole verified batch in bounded mtxdb transactions. Each
+	// outlier write would otherwise publish and materialize its own journal
+	// group; a large /state_ids response (hundreds of auth-chain events)
+	// exceeds the federation transaction deadline that way.
+	//
+	// These events have passed signature verification but not the auth pass
+	// below. `force_auth_check` makes `handle_outlier_pdu` validate them
+	// instead of taking its "already known" early return; otherwise a
+	// corrupted chain (an event whose auth event could not be fetched) would
+	// be trusted just because its body was pre-persisted.
+	let verified_batch = sorted_eids
+		.iter()
+		.filter_map(|eid| verified_events.get(eid))
+		.map(|(pdu, val)| (pdu, val))
+		.collect::<Vec<_>>();
+	if let Err(error) = self
+		.services
+		.timeline
+		.write_events_to_mtxdb(room_id, &verified_batch)
+		.await
+	{
+		debug_warn!("fetch_state: failed to pre-persist verified events to mtxdb: {error}");
+	}
+
+	// Auth-check them sequentially, roots first, so only accepted predecessors
+	// are available when validating descendants.
 	for eid in sorted_eids {
 		if let Some((_, val)) = verified_events.remove(&eid) {
 			if let Err(e) = Box::pin(self.handle_outlier_pdu(
@@ -369,6 +434,7 @@ where
 				val,
 				true, // is_outlier
 				true, // skip_sig_verify (already done above)
+				true, // force_auth_check (pre-persisted batch)
 				&room_version_id,
 				super::AuthRecoveryStage::AfterStateIds,
 			))
@@ -384,7 +450,7 @@ where
 		HashMap::with_capacity(state_pdu_ids.len());
 	for eid in state_pdu_ids {
 		// Read from our outlier store or timeline
-		let Ok(pdu) = self.services.timeline.get_pdu(&eid).await else {
+		let Ok(pdu) = self.services.timeline.get_pdu(&eid) else {
 			continue;
 		};
 		let Some(state_key) = pdu.state_key() else {

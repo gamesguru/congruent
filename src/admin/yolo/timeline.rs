@@ -106,7 +106,7 @@ pub(super) async fn purge_timeline_pdu(&self, event_id: OwnedEventId) -> Result 
 
 	let mut room_id_opt = None;
 	if in_timeline {
-		if let Ok(pdu) = self.services.rooms.timeline.get_pdu(&event_id).await {
+		if let Ok(pdu) = self.services.rooms.timeline.get_pdu(&event_id) {
 			room_id_opt = pdu.room_id().map(ToOwned::to_owned);
 		}
 	}

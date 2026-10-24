@@ -19,9 +19,20 @@ use crate::{
 	store::{CollectionId, MtxdbStore, MtxdbTransaction, NodeId},
 };
 
+const MAX_STALE_READ_RETRIES: usize = 8;
+
 #[derive(Clone)]
 pub struct EventAdapter {
 	store: Arc<MtxdbStore>,
+}
+
+/// One event in a batch written by
+/// [`EventAdapter::write_events_with_edges`].
+pub struct EventWrite<'a> {
+	pub event_id: &'a [u8],
+	pub event_body: &'a [u8],
+	pub prev_events: &'a [&'a [u8]],
+	pub auth_events: &'a [&'a [u8]],
 }
 
 impl EventAdapter {
@@ -117,6 +128,20 @@ impl EventAdapter {
 		self.get_edges(Self::auth_collection(room_id), event_id)
 	}
 
+	/// Return auth edges when a row exists, distinguishing an empty edge list
+	/// from a missing row. A missing row is an incomplete import, not an event
+	/// without auth events.
+	pub fn get_auth_events_if_present(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+	) -> Result<Option<Vec<Vec<u8>>>, StorageError> {
+		self.store
+			.get(ShardType::Edges, &Self::auth_collection(room_id), event_record_id(event_id))?
+			.map(|bytes| Self::deserialize_edges(&bytes))
+			.transpose()
+	}
+
 	/// The full auth chain of `event_id`: every event reachable through auth
 	/// edges, excluding `event_id` itself, each exactly once. Order is
 	/// unspecified.
@@ -166,6 +191,31 @@ impl EventAdapter {
 			frontier = next;
 		}
 		Ok(chain)
+	}
+
+	/// Whether the stored event body and auth-edge row already match this
+	/// write.
+	///
+	/// Outliers are written to mtxdb by more than one path (the outlier store
+	/// and a verified batch in `fetch_state`); callers use this to avoid
+	/// re-committing an identical event, while still repairing an interrupted
+	/// write or replacing a redacted body with a pristine copy.
+	///
+	/// The body, prev edges, and auth edges are staged in one transaction, so
+	/// an existing auth-edge row proves the prev-edge row was written too.
+	pub fn event_matches_with_edges(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+		event_body: &[u8],
+	) -> Result<bool, StorageError> {
+		let Some(stored) = self.get_event(room_id, event_id)? else {
+			return Ok(false);
+		};
+		Ok(stored.as_slice() == event_body
+			&& self
+				.get_auth_events_if_present(room_id, event_id)?
+				.is_some())
 	}
 
 	/// The persisted closure for `event_id`, or `None` if it was never written.
@@ -233,25 +283,35 @@ impl EventAdapter {
 	/// commit is made conditional on the collection being unchanged and
 	/// concurrent writers to one room fail with [`StorageError::StaleRead`].
 	fn stage_closure(
-		&self,
 		tx: &MtxdbTransaction<'_>,
 		room_id: &[u8],
 		event_id: &[u8],
 		auth_events: &[&[u8]],
 	) -> Result<(), StorageError> {
 		let collection = Self::auth_collection(room_id);
-		let version = self
-			.store
-			.collection_version(ShardType::Edges, &collection)?;
-		let start = self
-			.store
-			.get(ShardType::Edges, &collection, counter_node())?
-			.map_or(Ok(0), |bytes| decode_u32(&bytes))?;
-		let mut next = start;
-
 		let mut ids: Vec<&[u8]> = vec![event_id];
 		ids.extend_from_slice(auth_events);
-		let committed = self.committed_short_ids(&collection, &ids)?;
+		let mut read_nodes = Vec::with_capacity(ids.len().saturating_add(1));
+		read_nodes.push(counter_node());
+		read_nodes.extend(ids.iter().map(|id| forward_node(id)));
+		let (values, version) =
+			tx.get_with_collection_version(ShardType::Edges, collection, &read_nodes)?;
+		let start = values
+			.first()
+			.and_then(Option::as_ref)
+			.map_or(Ok(0), |bytes| decode_u32(bytes))?;
+		let mut next = start;
+		let committed = values
+			.into_iter()
+			.skip(1)
+			.zip(ids.iter())
+			.map(|(value, event_id)| {
+				value.map_or(Ok(None), |bytes| {
+					let (short, stored) = decode_forward(&bytes)?;
+					Ok((stored == *event_id).then_some(short))
+				})
+			})
+			.collect::<Result<Vec<_>, StorageError>>()?;
 		let mut staged: HashMap<Vec<u8>, u32> = HashMap::new();
 		let mut shorts = Vec::with_capacity(ids.len());
 		for (id, found) in ids.iter().zip(committed) {
@@ -275,7 +335,7 @@ impl EventAdapter {
 			.iter()
 			.map(|short| closure_node(*short))
 			.collect();
-		let closures = self.store.get_many(ShardType::Edges, &collection, &nodes)?;
+		let closures = tx.get_many(ShardType::Edges, collection, &nodes)?;
 		let mut closure = Bitmap::new();
 		let mut complete = true;
 		for (short, stored) in auth_shorts.iter().zip(closures) {
@@ -293,11 +353,16 @@ impl EventAdapter {
 			// An encoded bitmap is never empty (it carries a header), so a
 			// leaf event's empty closure is not mistaken for a removed record.
 			tx.put(ShardType::Edges, collection, closure_node(own_short), &closure.encode())?;
+		} else {
+			// Replacing the event's auth edges can invalidate an existing
+			// closure. Remove it rather than leaving readers a stale answer;
+			// they fall back to walking the new edges.
+			tx.remove(ShardType::Edges, collection, closure_node(own_short))?;
 		}
 		if next != start {
 			tx.put(ShardType::Edges, collection, counter_node(), &next.to_be_bytes())?;
-			tx.expect_collection_version(ShardType::Edges, collection, version)?;
 		}
+		tx.expect_collection_version(ShardType::Edges, collection, version)?;
 		Ok(())
 	}
 
@@ -343,7 +408,7 @@ impl EventAdapter {
 		let auth = Self::serialize_edges(auth_events)?;
 		tx.put(ShardType::Edges, Self::prev_collection(room_id), node, &prev)?;
 		tx.put(ShardType::Edges, Self::auth_collection(room_id), node, &auth)?;
-		self.stage_closure(tx, room_id, event_id, auth_events)?;
+		Self::stage_closure(tx, room_id, event_id, auth_events)?;
 		Ok(())
 	}
 
@@ -356,25 +421,61 @@ impl EventAdapter {
 		prev_events: &[&[u8]],
 		auth_events: &[&[u8]],
 	) -> Result<(), StorageError> {
-		// Short-id allocation makes the commit conditional on the room's auth
-		// collection being unchanged; a concurrent writer fails it and the
-		// whole write is redone against the new version.
-		let mut attempts = 0_u8;
+		self.write_with_retries(|tx| {
+			self.put_event_with_edges(tx, room_id, event_id, event_body, prev_events, auth_events)
+		})
+	}
+
+	/// Atomically write a batch of one room's events and edges in a single
+	/// transaction.
+	///
+	/// Events are staged in the given order, so an auth event that also appears
+	/// earlier in the batch has its closure available to its dependents. A
+	/// caller that already verified a whole auth chain pays one journal
+	/// publication and one materialization instead of one per event.
+	pub fn write_events_with_edges(
+		&self,
+		room_id: &[u8],
+		events: &[EventWrite<'_>],
+	) -> Result<(), StorageError> {
+		self.write_with_retries(|tx| {
+			events.iter().try_for_each(|event| {
+				self.put_event_with_edges(
+					tx,
+					room_id,
+					event.event_id,
+					event.event_body,
+					event.prev_events,
+					event.auth_events,
+				)
+			})
+		})
+	}
+
+	/// Stage one write attempt and retry the complete transaction on a
+	/// concurrent `StaleRead`.
+	///
+	/// Short-id allocation makes the commit conditional on the room's auth
+	/// collection being unchanged; a concurrent writer fails it and the whole
+	/// write is redone against the new version.
+	fn write_with_retries<F>(&self, mut stage: F) -> Result<(), StorageError>
+	where
+		F: FnMut(&MtxdbTransaction<'_>) -> Result<(), StorageError>,
+	{
+		let mut attempts = 0_usize;
 		loop {
 			let tx = self.store.begin_transaction();
-			self.put_event_with_edges(
-				&tx,
-				room_id,
-				event_id,
-				event_body,
-				prev_events,
-				auth_events,
-			)?;
-			match tx.commit() {
-				| Err(StorageError::StaleRead { .. }) if attempts < 3 => {
-					attempts = attempts
-						.checked_add(1)
-						.expect("attempts is less than three");
+			let staged = stage(&tx);
+			let result = match staged {
+				| Ok(()) => tx.commit(),
+				| Err(error) => {
+					drop(tx);
+					Err(error)
+				},
+			};
+			match result {
+				| Err(error) if error.is_stale_read() && attempts < MAX_STALE_READ_RETRIES => {
+					attempts = attempts.saturating_add(1);
 				},
 				| result => return result,
 			}

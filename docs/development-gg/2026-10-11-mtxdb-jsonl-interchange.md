@@ -124,54 +124,49 @@ room without startup derivation or a background repair pass.
 | HAMT nodes                     | `rooms::state_hamt::Store::get_node` / `read_node_verified`                                                        | mtxdb `State` shard                                                                                 | Every node reachable from each imported root, encoded with the server's rezzy HAMT codec and structural key.                                                                                                 |
 | Current room root              | `rooms::state::get_room_state_hamt`                                                                                | RocksDB `roomid_roothandle` (although writes also publish to mtxdb)                                 | The final current-state `RootHandle` for the room in mtxdb's room-roots collection.                                                                                                                          |
 | Per-event state root           | `rooms::state::get_roothandle`, after resolving short event ID in `rooms::short`                                   | RocksDB `shorteventid_roothandle` (although writes also publish to mtxdb)                           | A `RootHandle` for every imported event whose state snapshot the server may query, keyed so the server can find it from the event ID.                                                                        |
-| Short IDs used by state leaves | `rooms::short::get_shorteventid`, `get_shortstatekey`, and their reverse lookups                                   | RocksDB short-ID maps; allocation uses the single shared `globals::next_count()` counter in RocksDB | Stable event and state-key IDs plus both reverse mappings required to resolve every HAMT leaf.                                                                                                               |
-| Direct auth edges              | `rooms::auth_chain::get_auth_chain_inner` via `timeline::multi_get_shortauthevents`; also state-event auth lookups | RocksDB `shorteventid_shortauthevents`; mtxdb has shadow-written full event-ID edges                | Auth-event IDs for every imported event, in the mtxdb edge layout.                                                                                                                                           |
-| Transitive auth closure        | `rooms::auth_chain::Data::get_cached_eventid_authchain`                                                            | RocksDB `shorteventid_authchain`, with an in-memory cache                                           | The complete closure bitmap for every event in the representation used by the server, or a server change to read the imported mtxdb closure directly. A cache miss must not trigger a rebuild after startup. |
+| Short IDs used by state leaves | `rooms::short` forward/reverse lookups for events, state keys, and rooms                                             | mtxdb `ServerInfo` shard; deprecated redb maps remain as migration/compatibility records             | Stable event and state-key IDs plus both reverse mappings required to resolve every HAMT leaf. Preserve existing room short IDs used in legacy timeline keys.                                               |
+| Direct auth edges              | `rooms::auth_chain::get_auth_chain_inner` via `timeline::multi_get_shortauthevents`                                 | mtxdb `EventAdapter::get_auth_events`; legacy `shorteventid_shortauthevents` is deprecated           | Auth-event IDs for every imported event, in the mtxdb edge layout.                                                                                                                                           |
+| Transitive auth closure        | `rooms::auth_chain::Data::get_cached_eventid_authchain`                                                            | mtxdb `EventAdapter::get_auth_chain`; only the RAM cache remains server-local                        | The complete closure for every imported event. A cache miss uses the persisted mtxdb closure, with an edge walk as fallback for older or incomplete records.                                                  |
 
-`mtxdb::events::EventAdapter` already has persisted-closure reads, but the live
-`rooms::auth_chain` service does not call them. Its `get_auth_chain` path walks
-the RocksDB short-auth edge table on a cache miss. Therefore writing mtxdb
-closures alone does not currently make the server consume them; the server-side
-cutover must precede the importer work that targets those records.
+`mtxdb::events::EventAdapter` is now the source for both immediate auth events
+and transitive auth chains. The direct-edge lookup returns only the event's
+immediate `auth_events`; `get_auth_chain` returns the transitive closure. The
+legacy auth-edge and auth-chain maps are retained only for migration/audit and
+are no longer read or written on the live path.
 
-#### Prerequisite: short IDs must live in mtxdb
+#### Short IDs in mtxdb
 
-HAMT leaves are `(ShortStateKey, ShortEventId)` pairs of `u64`s allocated from
-counters in RocksDB (`eventid_shorteventid`, `shorteventid_eventid`,
-`statekey_shortstatekey`, `shortstatekey_statekey`). An mtxdb-only importer
-cannot allocate those ids, and a server that still resolves them from RocksDB
-cannot read a leaf the importer wrote. The importer must not write RocksDB, so
-this is a server change that precedes every state write:
+HAMT leaves are `(ShortStateKey, ShortEventId)` pairs of `u64`s. Event and
+state-key forward/reverse mappings and their allocation counter now live in
+mtxdb. The server resolves them through the adapter, and allocations commit
+both directions and the counter in one transaction. The corresponding redb
+maps are in `deprecated_maps.rs` for migration and auditing.
 
-1. Back the four event/state-key maps in `rooms::short` with an mtxdb adapter:
-   `eventid_shorteventid`, `shorteventid_eventid`, `statekey_shortstatekey`, and
-   `shortstatekey_statekey`. Keep the server's existing API and caches in front
-   of the adapter. Replace the shared global counter for these allocations with
-   mtxdb counter records; today there is one RocksDB counter shared by event,
-   state-key, and room short IDs, not separate event and state-key counters.
-2. Allocation is atomic with the mapping write (one batch), so a crash cannot
-   leave an event/state-key counter ahead of or behind its mappings. Reverse
-   mappings and forward mappings must commit in the same transaction.
-3. The importer allocates through the same adapter and layouts (shared via
+1. The importer allocates through the same adapter and layouts (shared via
    `mtxdb::interop`), in a deterministic order (events sorted by event ID, state
    keys by first use in that order), so a repeated import yields identical ids
    and therefore identical roots.
-4. The marker records the final event and state-key counter values; startup
+2. The marker records the final event and state-key counter values; startup
    refuses a store whose counters are behind the highest mapped id.
 
-`roomid_shortroomid` and `roomid_roomversion` are separate RocksDB maps. The
-room short ID is still used by legacy timeline indexes and the current auth
-chain cache key. The root/closure cutover must either remove those uses or
-include the room mapping in the mtxdb adapter; it must not make the importer
-write the legacy RocksDB store. Room-version storage is outside this state
-contract and remains a separate migration decision.
+Room ID ↔ short room ID mappings now also live in mtxdb. Existing values are
+preserved when copied from the legacy map, and the legacy map remains a
+compatibility mirror so metadata exports retain IDs embedded in timeline keys.
+The server's authoritative room-version record is keyed by room ID in mtxdb's
+`ServerInfo` shard. It can be written during creation, import, or lazy backfill
+of an existing room. `get_room_version` checks this record first. The
+`matrix.room` event-collection genesis extension remains the CLI-facing copy;
+the importer writes the dedicated record in the first event batch and
+re-imports verify the immutable value. When the record is missing, the server
+imports the version from that header, then falls back to the legacy
+`roomid_roomversion` map for old rooms and lazily backfills the record.
 
 Hash-derived 64-bit ids are rejected: collisions become plausible at scale
 (about 2.7e-4 at 1e8 events) and a wider leaf would change the HAMT codec and
 every root hash.
 
-Order of work: short IDs, then roots and the auth-closure read path, then the
-importer writes, then round-trip validation.
+Remaining work: move root-pointer reads to mtxdb, complete importer writes for
+roots/nodes/closures, then validate imported rooms against their source.
 
 The root and closure rows above are derived from the complete event DAG and
 verdicts during the offline import. The marker is written only after they and
@@ -239,12 +234,18 @@ not individually checksummed.
 ## Global signing-key export
 
 Signing keys are global, so they use a separate JSONL file produced by
-`!admin yolo export-mtxdb-keys`. Each line has `t: "server_keys"`, an `origin`,
-a `kind`, and a base64 `payload`. The supported kinds are `historical`,
-`provisional`, `corroborated`, and `notary`. The first three payloads are the
-serialized record values; the notary payload is the original self-signed JSON
-document. Importers decode each payload and store it in the matching global
-mtxdb key record.
+`!admin yolo export-mtxdb-keys`. The format is mtxdb's native per-key layout.
+Each line has `t: "server_keys"` and an `origin`; `kind` is `permanent`,
+`provisional`, or `notary`. A key line carries `key_id`, the base64 key body
+(or only `digest` when the body was evicted), `valid_until_ts`, `source`,
+`ts_added_ms`, and the optional observation fields. A notary line carries the
+origin's original self-signed JSON document as base64 `payload`.
+
+The mtxdb CLI importer reads this layout directly: key lines become one record
+per key id in the origin's native collection, and notary lines become the
+origin's verbatim notary record. The server reads the same layout through
+`conduwuit_mtxdb::server_keys`, so an export/import cycle does not change the
+storage shape.
 
 The room exports are produced by `!admin yolo export-mtxdb --all`. Import all
 room files and the global key file before starting the server. Importing only

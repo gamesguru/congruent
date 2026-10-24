@@ -63,7 +63,7 @@ pub(super) async fn import_pdus(
 
 	let room_version = match room_version {
 		| Some(v) => {
-			self.services.rooms.short.set_room_version(&room_id, &v);
+			self.services.rooms.short.set_room_version(&room_id, &v)?;
 			v
 		},
 		| None => match self.services.rooms.state.get_room_version(&room_id).await {
@@ -251,6 +251,7 @@ pub(super) async fn import_pdus(
 						pdu_val,
 						true,
 						skip_sig_verify,
+						false,
 						&room_version,
 						AuthRecoveryStage::BeforeStateIds,
 					))

@@ -244,7 +244,7 @@ where
 	let partial_auth_events: Vec<PduEvent> = if partial_room {
 		let mut v = Vec::new();
 		for id in incoming_pdu.auth_events() {
-			if let Ok(pdu) = self.services.timeline.get_pdu(id).await {
+			if let Ok(pdu) = self.services.timeline.get_pdu(id) {
 				v.push(pdu);
 			}
 		}
@@ -274,7 +274,7 @@ where
 		let from_state = async {
 			let shortstatekey = self.services.short.get_shortstatekey(&k, &s).await.ok()?;
 			let event_id = state_fetch_state.get(&shortstatekey)?;
-			self.services.timeline.get_pdu(event_id).await.ok()
+			self.services.timeline.get_pdu(event_id).ok()
 		}
 		.await;
 		from_state.or_else(|| {
@@ -403,7 +403,7 @@ where
 				// TODO: If pending-redaction tracking is added, bound its per-room
 				// entries and age. The current path stores no additional pending index;
 				// the bound is needed for the future target-to-redaction lookup.
-				self.services.timeline.get_pdu(&redact_id).await.is_ok()
+				self.services.timeline.get_pdu(&redact_id).is_ok()
 					&& !self
 						.services
 						.state_accessor
@@ -741,7 +741,6 @@ async fn reusable_predecessor_root_handle(
 		.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), prev_event)
-		.await
 	{
 		| Ok(pdu) => pdu,
 		| Err(e) if e.is_not_found() => return Ok(None),

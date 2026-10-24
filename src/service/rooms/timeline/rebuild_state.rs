@@ -161,7 +161,7 @@ impl super::Service {
 			.unwrap_or(RoomVersionId::V1);
 
 		for eid in sorted {
-			let (pdu, _json) = self.db.get_from_eventid_pdu(&eid).await.map_err(|e| {
+			let (pdu, _json) = self.db.get_from_eventid_pdu(&eid).map_err(|e| {
 				conduwuit::err!(Database("rebuild_state: missing PDU {eid}: {e}"))
 			})?;
 			let prev: Vec<OwnedEventId> = pdu.prev_events().map(ToOwned::to_owned).collect();

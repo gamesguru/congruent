@@ -298,20 +298,20 @@ version = "2.0.2"
 
 [workspace.dependencies.mtx-slipstream]
 package = "mtx-slipstream"
-git = "https://gitlab.com/Wombat-Foundation/mtx-slipstream.git"
+git = "https://gitlab.com/wombat-foundation/mtx-slipstream.git"
 branch = "dev"
 
 [workspace.dependencies.mtxdb]
-git = "https://gitlab.com/Wombat-Foundation/mtxdb.git"
+git = "https://gitlab.com/wombat-foundation/mtxdb.git"
 branch = "dev"
 features = ["reconcile"]
 
 [workspace.dependencies.rezzy]
-git = "https://gitlab.com/Wombat-Foundation/rezzy.git"
+git = "https://gitlab.com/wombat-foundation/rezzy.git"
 branch = "dev"
 
 [workspace.dependencies.rezzy-recon]
-git = "https://gitlab.com/Wombat-Foundation/rezzy.git"
+git = "https://gitlab.com/wombat-foundation/rezzy.git"
 branch = "dev"
 
 [workspace.dependencies.sha2]

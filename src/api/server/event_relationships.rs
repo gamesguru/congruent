@@ -67,7 +67,7 @@ pub(crate) async fn get_event_relationships_route(
 
 	let mut auth_chain = Vec::with_capacity(auth_chain_ids.len());
 	for event_id in auth_chain_ids {
-		if let Ok(pdu) = services.rooms.timeline.get_pdu(&event_id).await {
+		if let Ok(pdu) = services.rooms.timeline.get_pdu(&event_id) {
 			auth_chain.push(
 				services
 					.sending
