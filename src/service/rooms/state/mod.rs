@@ -667,6 +667,14 @@ impl Service {
 		lattice: &rezzy::incremental::LtHash,
 	) {
 		let encoded = lattice.to_bytes();
+		if let Err(error) = self
+			.services
+			.state_hamt
+			.store
+			.put_root_lattice(&root_handle.structural_hash, &encoded)
+		{
+			warn!("Failed to persist root lattice in mtxdb: {error}");
+		}
 		self.db
 			.state_hamt_root_lattices
 			.insert(&root_handle.structural_hash, &encoded);
@@ -676,13 +684,29 @@ impl Service {
 	}
 
 	/// Returns the lattice persisted for a root, if any. Served from the
-	/// bounded cache, falling back to the database on a miss.
+	/// bounded cache, falling back to mtxdb, then the legacy redb mirror.
 	pub async fn get_root_lattice(
 		&self,
 		root_handle: &rezzy::hamt::RootHandle,
 	) -> Option<rezzy::incremental::LtHash> {
 		if let Some(raw) = self.db.lattice_cache.get(&root_handle.structural_hash) {
 			return rezzy::incremental::LtHash::from_bytes(&raw);
+		}
+
+		if let Ok(Some(raw)) = self
+			.services
+			.state_hamt
+			.store
+			.root_lattice(&root_handle.structural_hash)
+		{
+			if raw.len() == LATTICE_LEN {
+				if let Some(lattice) = rezzy::incremental::LtHash::from_bytes(&raw) {
+					self.db
+						.lattice_cache
+						.insert(root_handle.structural_hash, Arc::from(&*raw));
+					return Some(lattice);
+				}
+			}
 		}
 
 		let raw = self
@@ -807,6 +831,15 @@ impl Service {
 
 	/// Returns the room's current HAMT RootHandle.
 	pub async fn get_room_state_hamt(&self, room_id: &RoomId) -> Result<rezzy::hamt::RootHandle> {
+		if let Ok(Some(data)) = self
+			.services
+			.state_hamt
+			.store
+			.root_for_room(room_id.as_bytes())
+		{
+			return root_handle_from_bytes(&data);
+		}
+
 		let data = self.db.roomid_roothandle.get(room_id).await?;
 		root_handle_from_bytes(&data)
 	}
@@ -860,6 +893,22 @@ impl Service {
 		&self,
 		shorteventid: ShortEventId,
 	) -> Result<rezzy::hamt::RootHandle> {
+		if let Ok(event_id) = self
+			.services
+			.short
+			.get_eventid_from_short::<OwnedEventId>(shorteventid)
+			.await
+		{
+			if let Ok(Some(data)) = self
+				.services
+				.state_hamt
+				.store
+				.root_for_event(event_id.as_bytes())
+			{
+				return root_handle_from_bytes(&data);
+			}
+		}
+
 		let data = self.db.shorteventid_roothandle.qry(&shorteventid).await?;
 		root_handle_from_bytes(&data)
 	}

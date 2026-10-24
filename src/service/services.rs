@@ -164,6 +164,16 @@ impl Services {
 			.await
 			.inspect_err(|e| error!("Migrations failed: {e}"))?;
 
+		// Bound the crash-loss window and keep the shared WAL reclaiming. The
+		// engine's background committer flushes within milliseconds; this
+		// thread adds the pack/index checkpoint and segment reclaim barrier.
+		if let Err(error) = self
+			.mtxdb
+			.start_maintenance(std::time::Duration::from_secs(30))
+		{
+			error!("Failed to start mtxdb maintenance: {error}");
+		}
+
 		// Initialize first-run state before listeners start accepting requests so
 		// registration and banner checks cannot race the firstrun worker.
 		self.firstrun.initialize_first_run_marker().await?;
@@ -335,6 +345,28 @@ impl Services {
 		self.interrupt();
 		if let Some(manager) = self.manager.lock().await.as_ref() {
 			manager.stop().await;
+		}
+
+		// Stop the periodic barrier before the final one, then record the index
+		// coverage of everything written this session.
+		self.mtxdb.stop_maintenance();
+		if let Err(error) = self.mtxdb.checkpoint_all() {
+			warn!("Failed to checkpoint mtxdb during shutdown: {error}");
+		}
+		for shard in conduwuit_mtxdb::ShardType::ALL {
+			let pool = self.mtxdb.database().pool(shard);
+			let stats = pool.stats();
+			let checkpoint = pool.checkpoint_breakdown();
+			info!(
+				"mtxdb pool={} checkpoint_writes={} background_tails={} tail_waits={} \
+				 delta_appends={} index_rebuilds={} last_checkpoint={checkpoint:?}",
+				shard.as_str(),
+				stats.checkpoint_writes,
+				stats.checkpoint_tails_started,
+				stats.syncs_waited_for_tail,
+				stats.delta_appends,
+				stats.index_rebuild_count,
+			);
 		}
 
 		self.admin.set_services(None);

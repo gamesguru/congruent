@@ -18,6 +18,7 @@ pub mod server_keys;
 pub mod shortids;
 pub mod state;
 pub mod store;
+pub mod timeline;
 pub mod verdicts;
 
 /// Database shard type.

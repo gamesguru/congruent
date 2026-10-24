@@ -305,6 +305,36 @@ impl Store {
 		self.publish_roots(room_id, nodes, &event_roots, is_state_event.then_some(root_bytes))
 	}
 
+	/// Read the room's current-state root from mtxdb.
+	pub fn root_for_room(&self, room_id: &[u8]) -> Result<Option<Vec<u8>>> {
+		self.mtxdb.root_for_room(room_id).map_err(|error| {
+			err!(Database(error!("Failed to read room state root from mtxdb: {error}")))
+		})
+	}
+
+	/// Read an event's state root from the global event-root index.
+	pub fn root_for_event(&self, event_id: &[u8]) -> Result<Option<Vec<u8>>> {
+		self.mtxdb.root_for_event_global(event_id).map_err(|error| {
+			err!(Database(error!("Failed to read event state root from mtxdb: {error}")))
+		})
+	}
+
+	/// Read a content-addressed root lattice, if mtxdb has it.
+	pub fn root_lattice(&self, structural_hash: &[u8; 32]) -> Result<Option<Vec<u8>>> {
+		self.mtxdb.get_lattice(structural_hash).map_err(|error| {
+			err!(Database(error!("Failed to read root lattice from mtxdb: {error}")))
+		})
+	}
+
+	/// Persist a content-addressed root lattice. Idempotent for the same hash.
+	pub fn put_root_lattice(&self, structural_hash: &[u8; 32], bytes: &[u8]) -> Result<()> {
+		self.mtxdb
+			.put_lattice(structural_hash, bytes)
+			.map_err(|error| {
+				err!(Database(error!("Failed to write root lattice to mtxdb: {error}")))
+			})
+	}
+
 	/// Publishes nodes with one or more event roots and an optional current room
 	/// root in one mtxdb transaction.
 	pub fn publish_roots(

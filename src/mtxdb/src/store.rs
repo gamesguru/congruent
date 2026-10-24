@@ -1,8 +1,17 @@
 //! Generic, Matrix-independent access to the mtxdb shard pools.
 
-use std::sync::Arc;
+use std::{
+	sync::{
+		Arc, Mutex,
+		atomic::{AtomicBool, Ordering},
+	},
+	thread::JoinHandle,
+	time::Duration,
+};
 
-use mtxdb::{Database, DatabaseTransaction, ShardType, storage::StorageEngine};
+use mtxdb::{
+	Database, DatabaseTransaction, GroupCommitConfig, ShardType, storage::StorageEngine,
+};
 
 use crate::StorageError;
 
@@ -10,22 +19,54 @@ pub type CollectionId = [u8; 16];
 pub type NodeId = [u8; 16];
 pub type VersionedRead = (Vec<Option<Vec<u8>>>, u64);
 
+/// How often the maintenance thread forces a WAL barrier and index checkpoint.
+///
+/// This is the upper bound on how long a published-but-unflushed journal group
+/// can wait before it is durable, and it also keeps the shared WAL reclaiming.
+/// The background committer below flushes much more frequently; this barrier is
+/// what advances pack coverage and reclaims the segment.
+const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
+/// Group-commit window for the shared WAL. A published event is durable within
+/// this window, and bursty writes coalesce into a single fsync.
+const GROUP_COMMIT_INTERVAL: Duration = Duration::from_millis(10);
+/// Fsync dirty pack bytes in slices instead of one burst at checkpoint time.
+const PACK_FSYNC_BUDGET: u64 = 8 << 20;
+/// Fsync the index delta log in slices instead of at the coverage barrier.
+const DELTA_FSYNC_BUDGET: u64 = 2 << 20;
+
 /// Physical mtxdb boundary shared by event, state, edge, and metadata
 /// adapters. Matrix codecs and key derivation do not belong here.
 pub struct MtxdbStore {
 	db: Arc<Database>,
+	maintenance: Mutex<Option<Maintenance>>,
+}
+
+struct Maintenance {
+	stop: Arc<AtomicBool>,
+	handle: Option<JoinHandle<()>>,
 }
 
 impl MtxdbStore {
 	#[must_use]
-	pub fn new(db: Arc<Database>) -> Self { Self { db } }
+	pub fn new(db: Arc<Database>) -> Self { Self { db, maintenance: Mutex::new(None) } }
 
 	pub fn open<P: Into<std::path::PathBuf>>(path: P) -> Result<Self, StorageError> {
-		let db = Database::open(path.into())?;
+		let db = Database::open_with_policies(path.into(), mtxdb::matrix_pool_policies())?;
 		for shard in ShardType::ALL {
-			db.pool(shard).set_background_checkpoint(true);
+			let pool = db.pool(shard);
+			// Hand checkpoint write/fsync tails to a worker instead of making the
+			// syncing thread pay the whole burst inline.
+			pool.set_background_checkpoint(true);
+			pool.set_pack_fsync_budget(PACK_FSYNC_BUDGET);
+			pool.set_delta_fsync_budget(DELTA_FSYNC_BUDGET);
 		}
-		Ok(Self::new(Arc::new(db)))
+		// One shared journal across every pool; the first call starts the
+		// committer and the rest are idempotent.
+		db.pool(ShardType::EventDag)
+			.start_background_commit(GroupCommitConfig::with_interval(GROUP_COMMIT_INTERVAL))?;
+		let store = Self::new(Arc::new(db));
+		store.start_maintenance(MAINTENANCE_INTERVAL)?;
+		Ok(store)
 	}
 
 	#[must_use]
@@ -115,13 +156,87 @@ impl MtxdbStore {
 	pub fn sync(&self, shard: ShardType) -> Result<(), StorageError> {
 		self.db.pool(shard).sync_all()
 	}
+
+	/// Force one WAL barrier and index checkpoint for every pool.
+	///
+	/// This is the explicit durability and reclaim boundary. The periodic
+	/// maintenance thread calls it, and shutdown calls it once more after the
+	/// thread is stopped.
+	pub fn checkpoint_all(&self) -> Result<(), StorageError> {
+		for shard in ShardType::ALL {
+			self.db.pool(shard).sync_all()?;
+		}
+		Ok(())
+	}
+
+	/// Start the periodic WAL/checkpoint maintenance thread.
+	///
+	/// Idempotent: a second call while the thread is running is a no-op. The
+	/// thread holds the database (not this adapter), so it keeps working across
+	/// clones of the `Arc<MtxdbStore>`.
+	pub fn start_maintenance(&self, interval: Duration) -> Result<(), StorageError> {
+		let mut guard = self
+			.maintenance
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner);
+		if guard.is_some() {
+			return Ok(());
+		}
+		let db = Arc::clone(&self.db);
+		let stop = Arc::new(AtomicBool::new(false));
+		let thread_stop = Arc::clone(&stop);
+		let handle = std::thread::Builder::new()
+			.name("mtxdb-maintenance".to_owned())
+			.spawn(move || {
+				while !thread_stop.load(Ordering::Acquire) {
+					std::thread::park_timeout(interval);
+					if thread_stop.load(Ordering::Acquire) {
+						break;
+					}
+					for shard in ShardType::ALL {
+						if let Err(error) = db.pool(shard).sync_all() {
+							eprintln!("mtxdb: periodic {shard:?} checkpoint failed: {error}");
+							break;
+						}
+					}
+				}
+			})
+			.map_err(StorageError::Io)?;
+		*guard = Some(Maintenance { stop, handle: Some(handle) });
+		Ok(())
+	}
+
+	/// Stop the periodic maintenance thread. Safe to call more than once.
+	pub fn stop_maintenance(&self) {
+		let mut guard = self
+			.maintenance
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner);
+		let Some(mut maintenance) = guard.take() else {
+			return;
+		};
+		maintenance.stop.store(true, Ordering::Release);
+		if let Some(handle) = maintenance.handle.take() {
+			handle.thread().unpark();
+			let _ = handle.join();
+		}
+	}
+}
+
+impl Drop for MtxdbStore {
+	fn drop(&mut self) {
+		self.stop_maintenance();
+		for shard in ShardType::ALL {
+			let _ = self.db.pool(shard).stop_background_commit();
+		}
+	}
 }
 
 pub struct MtxdbTransaction<'a> {
 	tx: DatabaseTransaction<'a>,
 }
 
-impl MtxdbTransaction<'_> {
+impl<'a> MtxdbTransaction<'a> {
 	/// Read records through this transaction and capture the collection version
 	/// from the same read. Pass that version to [`Self::expect_collection_version`]
 	/// before committing any writes based on the result.
@@ -214,6 +329,8 @@ impl MtxdbTransaction<'_> {
 			.expect_collection_version(shard, collection, version)?;
 		Ok(())
 	}
+
+	pub fn as_database_transaction(&self) -> &DatabaseTransaction<'a> { &self.tx }
 
 	pub fn commit(self) -> Result<(), StorageError> { self.tx.commit() }
 }

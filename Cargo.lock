@@ -2136,7 +2136,7 @@ dependencies = [
 [[package]]
 name = "mtxdb"
 version = "0.1.0-beta.2"
-source = "git+https://gitlab.com/wombat-foundation/mtxdb.git?branch=dev#735cb3289bf223a04c960fe0a12f828f108a9981"
+source = "git+https://gitlab.com/wombat-foundation/mtxdb.git?branch=dev#38cc2b5a11d59a39cc7eafe70b842020f56b5461"
 dependencies = [
  "arc-swap",
  "blake3",
@@ -2145,20 +2145,11 @@ dependencies = [
  "fs2",
  "memchr",
  "memmap2",
- "mtxdb-log",
  "parking_lot",
  "rezzy-recon",
  "sha2",
  "zstd",
  "zstd-sys",
-]
-
-[[package]]
-name = "mtxdb-log"
-version = "0.1.0-beta.2"
-source = "git+https://gitlab.com/wombat-foundation/mtxdb.git?branch=dev#735cb3289bf223a04c960fe0a12f828f108a9981"
-dependencies = [
- "tracing",
 ]
 
 [[package]]
@@ -2870,9 +2861,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.16.3"
+version = "1.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b3dc8af474f516a851ff4bd12db780f948b9250ad37211e4eec0bccea54e01b"
+checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 dependencies = [
  "serde",
 ]
