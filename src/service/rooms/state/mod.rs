@@ -415,6 +415,7 @@ impl Service {
 		// One mtxdb transaction for the new nodes and both roots, committed
 		// before the RocksDB index batch below, so a failure leaves at worst
 		// unreferenced nodes and never an index entry pointing at nothing.
+		let lattice = self.db.lattice_cache.get(&root_handle.structural_hash);
 		self.services.state_hamt.store.publish_roots_with_short(
 			room_id.as_bytes(),
 			&deferred_nodes,
@@ -422,6 +423,9 @@ impl Service {
 			shorteventid,
 			&serialized,
 			is_state.then_some(serialized.as_slice()),
+			lattice
+				.as_ref()
+				.map(|bytes| (&root_handle.structural_hash, bytes.as_ref())),
 		)?;
 
 		let mut batch = Batch::new();
@@ -668,14 +672,6 @@ impl Service {
 		lattice: &rezzy::incremental::LtHash,
 	) {
 		let encoded = lattice.to_bytes();
-		if let Err(error) = self
-			.services
-			.state_hamt
-			.store
-			.put_root_lattice(&root_handle.structural_hash, &encoded)
-		{
-			warn!("Failed to persist root lattice in mtxdb: {error}");
-		}
 		self.db
 			.state_hamt_root_lattices
 			.insert(&root_handle.structural_hash, &encoded);
@@ -818,11 +814,15 @@ impl Service {
 		nodes: &[rooms::state_hamt::store::PendingNode],
 	) -> Result<()> {
 		let data = root_handle_to_bytes(root_handle);
-		self.services.state_hamt.store.publish_roots(
+		let lattice = self.db.lattice_cache.get(&root_handle.structural_hash);
+		self.services.state_hamt.store.publish_roots_with_lattice(
 			room_id.as_bytes(),
 			nodes,
 			&[],
 			Some(&data),
+			lattice
+				.as_ref()
+				.map(|bytes| (&root_handle.structural_hash, bytes.as_ref())),
 		)?;
 		self.db
 			.roomid_roothandle
@@ -961,6 +961,7 @@ impl Service {
 			.get_or_create_shorteventid(event_id)
 			.await;
 		let data = root_handle_to_bytes(root_handle);
+		let lattice = self.db.lattice_cache.get(&root_handle.structural_hash);
 		self.services.state_hamt.store.publish_roots_with_short(
 			room_id.as_bytes(),
 			nodes,
@@ -968,6 +969,9 @@ impl Service {
 			shorteventid,
 			&data,
 			None,
+			lattice
+				.as_ref()
+				.map(|bytes| (&root_handle.structural_hash, bytes.as_ref())),
 		)?;
 		self.db
 			.shorteventid_roothandle
@@ -990,6 +994,7 @@ impl Service {
 			.get_or_create_shorteventid(event_id)
 			.await;
 		let data = root_handle_to_bytes(root_handle);
+		let lattice = self.db.lattice_cache.get(&root_handle.structural_hash);
 		self.services.state_hamt.store.publish_roots_with_short(
 			room_id.as_bytes(),
 			nodes,
@@ -997,6 +1002,9 @@ impl Service {
 			shorteventid,
 			&data,
 			Some(&data),
+			lattice
+				.as_ref()
+				.map(|bytes| (&root_handle.structural_hash, bytes.as_ref())),
 		)?;
 		let mut batch = Batch::new();
 		self.db

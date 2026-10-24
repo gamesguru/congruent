@@ -366,7 +366,28 @@ impl Store {
 			})
 	}
 
+	/// Publish nodes and roots with an optional lattice in one transaction.
+	pub fn publish_roots_with_lattice(
+		&self,
+		room_id: &[u8],
+		nodes: &[PendingNode],
+		event_roots: &[(&[u8], &[u8])],
+		room_root: Option<&[u8]>,
+		lattice: Option<(&[u8; 32], &[u8])>,
+	) -> Result<()> {
+		let nodes: Vec<([u8; 32], Vec<u8>)> = nodes
+			.iter()
+			.map(|(hash, bytes)| (*hash, bytes.clone()))
+			.collect();
+		self.mtxdb
+			.publish_roots_with_lattice(room_id, &nodes, event_roots, room_root, lattice)
+			.map_err(|error| {
+				err!(Database(error!("Failed to publish HAMT state to mtxdb: {error}")))
+			})
+	}
+
 	/// Publish an event root and its short-ID lookup with the same HAMT nodes.
+	#[allow(clippy::too_many_arguments)]
 	pub fn publish_roots_with_short(
 		&self,
 		room_id: &[u8],
@@ -375,6 +396,7 @@ impl Store {
 		short_event_id: u64,
 		root_bytes: &[u8],
 		room_root: Option<&[u8]>,
+		lattice: Option<(&[u8; 32], &[u8])>,
 	) -> Result<()> {
 		let nodes: Vec<([u8; 32], Vec<u8>)> = nodes
 			.iter()
@@ -388,6 +410,7 @@ impl Store {
 				short_event_id,
 				root_bytes,
 				room_root,
+				lattice,
 			)
 			.map_err(|error| {
 				err!(Database(error!("Failed to publish HAMT state to mtxdb: {error}")))

@@ -280,16 +280,36 @@ impl StateAdapter {
 		event_roots: &[(&[u8], &[u8])],
 		room_root: Option<&[u8]>,
 	) -> Result<(), StorageError> {
+		self.publish_roots_with_lattice(room_id, new_nodes, event_roots, room_root, None)
+	}
+
+	/// Publish roots and an optional content-addressed lattice together.
+	pub fn publish_roots_with_lattice(
+		&self,
+		room_id: &[u8],
+		new_nodes: &[([u8; 32], Vec<u8>)],
+		event_roots: &[(&[u8], &[u8])],
+		room_root: Option<&[u8]>,
+		lattice: Option<(&[u8; 32], &[u8])>,
+	) -> Result<(), StorageError> {
 		let refs: Vec<([u8; 32], &[u8])> = new_nodes
 			.iter()
 			.map(|(hash, bytes)| (*hash, bytes.as_slice()))
 			.collect();
 		let tx = self.store.begin_transaction();
-		self.publish_roots_update(&tx, room_id, &refs, event_roots, room_root)?;
+		self.publish_roots_update_with_lattice(
+			&tx,
+			room_id,
+			&refs,
+			event_roots,
+			room_root,
+			lattice,
+		)?;
 		tx.commit()
 	}
 
 	/// Publish roots and the short-ID lookup in one transaction.
+	#[allow(clippy::too_many_arguments)]
 	pub fn publish_roots_with_short(
 		&self,
 		room_id: &[u8],
@@ -298,13 +318,21 @@ impl StateAdapter {
 		short_event_id: u64,
 		root_bytes: &[u8],
 		room_root: Option<&[u8]>,
+		lattice: Option<(&[u8; 32], &[u8])>,
 	) -> Result<(), StorageError> {
 		let refs: Vec<([u8; 32], &[u8])> = new_nodes
 			.iter()
 			.map(|(hash, bytes)| (*hash, bytes.as_slice()))
 			.collect();
 		let tx = self.store.begin_transaction();
-		self.publish_roots_update(&tx, room_id, &refs, &[(event_id, root_bytes)], room_root)?;
+		self.publish_roots_update_with_lattice(
+			&tx,
+			room_id,
+			&refs,
+			&[(event_id, root_bytes)],
+			room_root,
+			lattice,
+		)?;
 		tx.put(
 			self.shard,
 			Self::short_event_roots_collection(),
@@ -323,6 +351,26 @@ impl StateAdapter {
 		event_roots: &[(&[u8], &[u8])],
 		room_root: Option<&[u8]>,
 	) -> Result<(), StorageError> {
+		self.publish_roots_update_with_lattice(
+			tx,
+			room_id,
+			new_nodes,
+			event_roots,
+			room_root,
+			None,
+		)
+	}
+
+	/// Stage nodes, roots, and an optional lattice in a caller-owned transaction.
+	pub fn publish_roots_update_with_lattice(
+		&self,
+		tx: &MtxdbTransaction<'_>,
+		room_id: &[u8],
+		new_nodes: &[([u8; 32], &[u8])],
+		event_roots: &[(&[u8], &[u8])],
+		room_root: Option<&[u8]>,
+		lattice: Option<(&[u8; 32], &[u8])>,
+	) -> Result<(), StorageError> {
 		let stat_coll = Self::stat_collection(room_id);
 		let roots_coll = Self::roots_collection(room_id);
 		for (full_hash, data) in new_nodes {
@@ -333,6 +381,9 @@ impl StateAdapter {
 		}
 		if let Some(root_bytes) = room_root {
 			tx.put(self.shard, roots_coll, room_root_node_id(), root_bytes)?;
+		}
+		if let Some((hash, bytes)) = lattice {
+			tx.put(self.shard, Self::lattice_collection(), hamt_node_id(hash), bytes)?;
 		}
 		Ok(())
 	}
@@ -367,6 +418,7 @@ mod tests {
 				42,
 				&root,
 				Some(&root),
+				None,
 			)
 			.unwrap();
 		assert_eq!(adapter.root_for_short_event(42).unwrap(), Some(root.clone()));
@@ -749,10 +801,8 @@ mod tests {
 				42,
 				&root_of(&[hash(1)]),
 				Some(&root_of(&[hash(1)])),
+				Some((&lattice_hash, b"lattice-bytes")),
 			)
-			.unwrap();
-		adapter
-			.put_lattice(&lattice_hash, b"lattice-bytes")
 			.unwrap();
 
 		assert_eq!(
