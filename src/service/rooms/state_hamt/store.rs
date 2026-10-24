@@ -312,11 +312,22 @@ impl Store {
 		})
 	}
 
-	/// Read an event's state root from the global event-root index.
+	/// Read a legacy global event root. New writes populate only the room roots
+	/// and the short-ID index; this serves imported events that predate both.
 	pub fn root_for_event(&self, event_id: &[u8]) -> Result<Option<Vec<u8>>> {
 		self.mtxdb.root_for_event_global(event_id).map_err(|error| {
-			err!(Database(error!("Failed to read event state root from mtxdb: {error}")))
+			err!(Database(error!("Failed to read legacy event state root from mtxdb: {error}")))
 		})
+	}
+
+	pub fn root_for_short_event(&self, short_event_id: u64) -> Result<Option<Vec<u8>>> {
+		self.mtxdb
+			.root_for_short_event(short_event_id)
+			.map_err(|error| {
+				err!(Database(error!(
+					"Failed to read short event state root from mtxdb: {error}"
+				)))
+			})
 	}
 
 	/// Read a content-addressed root lattice, if mtxdb has it.
@@ -350,6 +361,34 @@ impl Store {
 			.collect();
 		self.mtxdb
 			.publish_roots(room_id, &nodes, event_roots, room_root)
+			.map_err(|error| {
+				err!(Database(error!("Failed to publish HAMT state to mtxdb: {error}")))
+			})
+	}
+
+	/// Publish an event root and its short-ID lookup with the same HAMT nodes.
+	pub fn publish_roots_with_short(
+		&self,
+		room_id: &[u8],
+		nodes: &[PendingNode],
+		event_id: &[u8],
+		short_event_id: u64,
+		root_bytes: &[u8],
+		room_root: Option<&[u8]>,
+	) -> Result<()> {
+		let nodes: Vec<([u8; 32], Vec<u8>)> = nodes
+			.iter()
+			.map(|(hash, bytes)| (*hash, bytes.clone()))
+			.collect();
+		self.mtxdb
+			.publish_roots_with_short(
+				room_id,
+				&nodes,
+				event_id,
+				short_event_id,
+				root_bytes,
+				room_root,
+			)
 			.map_err(|error| {
 				err!(Database(error!("Failed to publish HAMT state to mtxdb: {error}")))
 			})

@@ -19,12 +19,11 @@ pub type CollectionId = [u8; 16];
 pub type NodeId = [u8; 16];
 pub type VersionedRead = (Vec<Option<Vec<u8>>>, u64);
 
-/// How often the maintenance thread forces a WAL barrier and index checkpoint.
+/// How often the maintenance thread syncs the pools.
 ///
 /// This is the upper bound on how long a published-but-unflushed journal group
-/// can wait before it is durable, and it also keeps the shared WAL reclaiming.
-/// The background committer below flushes much more frequently; this barrier is
-/// what advances pack coverage and reclaims the segment.
+/// can wait before it is durable, and it gives the shared WAL opportunities to
+/// reclaim. The background committer below flushes much more frequently.
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
 /// Group-commit window for the shared WAL. A published event is durable within
 /// this window, and bursty writes coalesce into a single fsync.
@@ -157,16 +156,21 @@ impl MtxdbStore {
 		self.db.pool(shard).sync_all()
 	}
 
-	/// Force one WAL barrier and index checkpoint for every pool.
+	/// Sync every pool and drain any background checkpoint tail.
 	///
-	/// This is the explicit durability and reclaim boundary. The periodic
-	/// maintenance thread calls it, and shutdown calls it once more after the
-	/// thread is stopped.
+	/// The periodic maintenance thread syncs pools individually; shutdown calls
+	/// this after the thread is stopped so the final telemetry sees completed tails.
 	pub fn checkpoint_all(&self) -> Result<(), StorageError> {
+		let mut first_error = None;
 		for shard in ShardType::ALL {
-			self.db.pool(shard).sync_all()?;
+			if let Err(error) = self.db.pool(shard).sync_all() {
+				first_error.get_or_insert(error);
+			}
 		}
-		Ok(())
+		for shard in ShardType::ALL {
+			self.db.pool(shard).wait_for_checkpoint();
+		}
+		first_error.map_or(Ok(()), Err)
 	}
 
 	/// Start the periodic WAL/checkpoint maintenance thread.
@@ -174,6 +178,10 @@ impl MtxdbStore {
 	/// Idempotent: a second call while the thread is running is a no-op. The
 	/// thread holds the database (not this adapter), so it keeps working across
 	/// clones of the `Arc<MtxdbStore>`.
+	#[allow(
+		clippy::disallowed_macros,
+		reason = "conduwuit_core::warn expands through the log crate"
+	)]
 	pub fn start_maintenance(&self, interval: Duration) -> Result<(), StorageError> {
 		let mut guard = self
 			.maintenance
@@ -195,8 +203,9 @@ impl MtxdbStore {
 					}
 					for shard in ShardType::ALL {
 						if let Err(error) = db.pool(shard).sync_all() {
-							eprintln!("mtxdb: periodic {shard:?} checkpoint failed: {error}");
-							break;
+							conduwuit_core::warn!(
+								"mtxdb: periodic {shard:?} checkpoint failed: {error}"
+							);
 						}
 					}
 				}

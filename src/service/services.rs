@@ -164,16 +164,6 @@ impl Services {
 			.await
 			.inspect_err(|e| error!("Migrations failed: {e}"))?;
 
-		// Bound the crash-loss window and keep the shared WAL reclaiming. The
-		// engine's background committer flushes within milliseconds; this
-		// thread adds the pack/index checkpoint and segment reclaim barrier.
-		if let Err(error) = self
-			.mtxdb
-			.start_maintenance(std::time::Duration::from_secs(30))
-		{
-			error!("Failed to start mtxdb maintenance: {error}");
-		}
-
 		// Initialize first-run state before listeners start accepting requests so
 		// registration and banner checks cannot race the firstrun worker.
 		self.firstrun.initialize_first_run_marker().await?;
@@ -347,8 +337,8 @@ impl Services {
 			manager.stop().await;
 		}
 
-		// Stop the periodic barrier before the final one, then record the index
-		// coverage of everything written this session.
+		// Stop periodic syncing before the final sync and drain checkpoint tails
+		// before recording the storage counters.
 		self.mtxdb.stop_maintenance();
 		if let Err(error) = self.mtxdb.checkpoint_all() {
 			warn!("Failed to checkpoint mtxdb during shutdown: {error}");

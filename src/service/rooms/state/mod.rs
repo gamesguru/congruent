@@ -415,12 +415,13 @@ impl Service {
 		// One mtxdb transaction for the new nodes and both roots, committed
 		// before the RocksDB index batch below, so a failure leaves at worst
 		// unreferenced nodes and never an index entry pointing at nothing.
-		self.services.state_hamt.store.publish(
+		self.services.state_hamt.store.publish_roots_with_short(
 			room_id.as_bytes(),
-			new_pdu.event_id().as_bytes(),
 			&deferred_nodes,
+			new_pdu.event_id().as_bytes(),
+			shorteventid,
 			&serialized,
-			is_state,
+			is_state.then_some(serialized.as_slice()),
 		)?;
 
 		let mut batch = Batch::new();
@@ -893,23 +894,39 @@ impl Service {
 		&self,
 		shorteventid: ShortEventId,
 	) -> Result<rezzy::hamt::RootHandle> {
+		if let Some(data) = self
+			.services
+			.state_hamt
+			.store
+			.root_for_short_event(shorteventid)?
+		{
+			return root_handle_from_bytes(&data);
+		}
+
+		let legacy = self.db.shorteventid_roothandle.qry(&shorteventid).await;
+		if let Ok(data) = &legacy {
+			return root_handle_from_bytes(data);
+		}
+
+		// Imported event roots can predate the short-ID index and lack the redb
+		// mirror. Preserve that migration read path until they are backfilled.
 		if let Ok(event_id) = self
 			.services
 			.short
 			.get_eventid_from_short::<OwnedEventId>(shorteventid)
 			.await
 		{
-			if let Ok(Some(data)) = self
+			if let Some(data) = self
 				.services
 				.state_hamt
 				.store
-				.root_for_event(event_id.as_bytes())
+				.root_for_event(event_id.as_bytes())?
 			{
 				return root_handle_from_bytes(&data);
 			}
 		}
 
-		let data = self.db.shorteventid_roothandle.qry(&shorteventid).await?;
+		let data = legacy?;
 		root_handle_from_bytes(&data)
 	}
 
@@ -944,10 +961,12 @@ impl Service {
 			.get_or_create_shorteventid(event_id)
 			.await;
 		let data = root_handle_to_bytes(root_handle);
-		self.services.state_hamt.store.publish_roots(
+		self.services.state_hamt.store.publish_roots_with_short(
 			room_id.as_bytes(),
 			nodes,
-			&[(event_id.as_bytes(), data.as_slice())],
+			event_id.as_bytes(),
+			shorteventid,
+			&data,
 			None,
 		)?;
 		self.db
@@ -971,10 +990,12 @@ impl Service {
 			.get_or_create_shorteventid(event_id)
 			.await;
 		let data = root_handle_to_bytes(root_handle);
-		self.services.state_hamt.store.publish_roots(
+		self.services.state_hamt.store.publish_roots_with_short(
 			room_id.as_bytes(),
 			nodes,
-			&[(event_id.as_bytes(), data.as_slice())],
+			event_id.as_bytes(),
+			shorteventid,
+			&data,
 			Some(&data),
 		)?;
 		let mut batch = Batch::new();
