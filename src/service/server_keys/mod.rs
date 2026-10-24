@@ -732,21 +732,26 @@ pub fn merged_signing_keys_for(
 /// Returns `NotFound` when there are no retained records. Storage and key-ID
 /// decoding failures return database errors.
 #[implement(Service)]
+#[implement(Service)]
 fn merged_signing_keys_for_sync(&self, origin: &ServerName) -> Result<ServerSigningKeys> {
-	merged_signing_keys_from_adapter(&self.db.mtxdb_keys, origin)
-}
-
-pub(super) fn merged_signing_keys_from_adapter(
-	adapter: &conduwuit_mtxdb::server_keys::ServerKeysAdapter,
-	origin: &ServerName,
-) -> Result<ServerSigningKeys> {
-	let native = adapter.read_keys(origin.as_bytes()).map_err(|error| {
-		err!(Database("Failed to read mtxdb signing keys for {origin}: {error}"))
-	})?;
-	if !native.iter().any(|key| !key.is_evicted()) {
+	let native = self
+		.db
+		.mtxdb_keys
+		.read_keys(origin.as_bytes())
+		.map_err(|error| {
+			err!(Database("Failed to read mtxdb signing keys for {origin}: {error}"))
+		})?;
+	if native.is_empty() {
 		return Err(err!(Request(NotFound("No signing-key record for {origin}"))));
 	}
-	signing_keys_from_native(origin, &native)
+	let mut out = signing_keys_from_native(origin, &native)?;
+	if let Ok(raw) = self.raw_signing_keys_for_sync(origin) {
+		if let Ok(stored) = raw.deserialize() {
+			out.signatures = stored.signatures;
+			out.valid_until_ts = stored.valid_until_ts;
+		}
+	}
+	Ok(out)
 }
 
 #[implement(Service)]
