@@ -38,28 +38,43 @@ pub fn room_scope_id(room_id: &[u8]) -> [u8; 16] {
 pub struct TimelineAdapter {
 	store: Arc<MtxdbStore>,
 	shard: ShardType,
-	name: String,
+	name: Arc<str>,
+	collection_id: NodeId,
 }
 
 impl TimelineAdapter {
 	/// Open or initialize a timeline adapter using the default `ShardType::EventDag`.
 	#[must_use]
 	pub fn new(store: Arc<MtxdbStore>) -> Self {
-		Self {
-			store,
-			shard: ShardType::EventDag,
-			name: DEFAULT_TIMELINE_NAME.to_owned(),
-		}
+		Self::with_shard_and_name(store, ShardType::EventDag, DEFAULT_TIMELINE_NAME)
 	}
 
 	/// Custom shard or index name.
 	#[must_use]
 	pub fn with_shard_and_name(store: Arc<MtxdbStore>, shard: ShardType, name: &str) -> Self {
-		Self { store, shard, name: name.to_owned() }
+		let collection_id = mtxdb::timeline::timeline_collection_id(name);
+		Self {
+			store,
+			shard,
+			name: Arc::from(name),
+			collection_id,
+		}
 	}
 
+	/// The pre-computed collection ID for this timeline index.
+	#[must_use]
+	pub const fn collection_id(&self) -> NodeId { self.collection_id }
+
+	/// The timeline index name.
+	#[must_use]
+	pub fn name(&self) -> &str { &self.name }
+
 	fn index(&self) -> TimelineIndex<'_, mtxdb::packfile::storage::PackfileStorage> {
-		TimelineIndex::open(self.store.database().pool(self.shard).as_ref(), &self.name)
+		TimelineIndex::with_collection_id(
+			self.store.database().pool(self.shard).as_ref(),
+			&self.name[..],
+			self.collection_id,
+		)
 	}
 
 	/// Ensure index collection metadata is registered.
