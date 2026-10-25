@@ -368,11 +368,24 @@ impl super::Service {
 	/// the `shorteventid_roothandle` map. Used by rebuild-state to bound the
 	/// number of pending writes; the caller holds a database cork, so these
 	/// land in the same in-memory batch.
-	fn write_roothandle_entries(&self, entries: &[(u64, Vec<u8>)]) {
+	fn write_roothandle_entries(&self, entries: &[(u64, Vec<u8>)]) -> Result<()> {
+		// mtxdb is authoritative for short-ID event roots; the redb map is the
+		// legacy mirror. Write mtxdb first so a failure leaves both stores on
+		// the old roots instead of shadowing a partially repaired mirror.
+		let roots: Vec<(u64, &[u8])> = entries
+			.iter()
+			.map(|(shorteventid, bytes)| (*shorteventid, bytes.as_slice()))
+			.collect();
+		self.services
+			.state_hamt
+			.store
+			.put_short_event_roots(&roots)?;
+
 		let map = self.db.db["shorteventid_roothandle"].clone();
 		for (shorteventid, bytes) in entries {
 			map.insert(&shorteventid.to_be_bytes(), bytes);
 		}
+		Ok(())
 	}
 }
 
@@ -662,7 +675,7 @@ impl super::Service {
 			if shorteventid != 0 {
 				pdu_root_entries.push((shorteventid, rooms::state::root_handle_to_bytes(&root)));
 				if pdu_root_entries.len() >= 4096 {
-					self.write_roothandle_entries(&pdu_root_entries);
+					self.write_roothandle_entries(&pdu_root_entries)?;
 					pdu_root_entries.clear();
 				}
 			}
@@ -679,7 +692,7 @@ impl super::Service {
 		}
 
 		if !pdu_root_entries.is_empty() {
-			self.write_roothandle_entries(&pdu_root_entries);
+			self.write_roothandle_entries(&pdu_root_entries)?;
 		}
 
 		drop(cork.take());

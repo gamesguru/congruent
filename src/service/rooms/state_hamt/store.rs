@@ -330,6 +330,16 @@ impl Store {
 			})
 	}
 
+	/// Publish rebuilt event roots for many short event IDs in one mtxdb
+	/// transaction. Used by bulk repair paths such as `yolo reorder-timeline`.
+	pub fn put_short_event_roots(&self, roots: &[(u64, &[u8])]) -> Result<()> {
+		self.mtxdb.put_short_event_roots(roots).map_err(|error| {
+			err!(Database(error!(
+				"Failed to write short event state roots to mtxdb: {error}"
+			)))
+		})
+	}
+
 	/// Read a content-addressed root lattice, if mtxdb has it.
 	pub fn root_lattice(&self, structural_hash: &[u8; 32]) -> Result<Option<Vec<u8>>> {
 		self.mtxdb.get_lattice(structural_hash).map_err(|error| {

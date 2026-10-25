@@ -112,6 +112,30 @@ impl StateAdapter {
 		tx.commit()
 	}
 
+	/// Write rebuilt event roots for many short event IDs in one transaction.
+	///
+	/// Repairs (for example `yolo reorder-timeline`) rewrite roots outside the
+	/// normal append path, so they must update the mtxdb short-ID index too;
+	/// otherwise the repaired redb mirror is shadowed by the stale mtxdb root.
+	pub fn put_short_event_roots(
+		&self,
+		roots: &[(u64, &[u8])],
+	) -> Result<(), StorageError> {
+		if roots.is_empty() {
+			return Ok(());
+		}
+		let tx = self.store.begin_transaction();
+		for (short_event_id, bytes) in roots {
+			tx.put(
+				self.shard,
+				Self::short_event_roots_collection(),
+				Self::short_event_root_node_id(*short_event_id),
+				bytes,
+			)?;
+		}
+		tx.commit()
+	}
+
 	/// Read HAMT nodes by their full 32-byte structural hashes.
 	///
 	/// Internally truncates to 16-byte node IDs. Callers should verify the
