@@ -398,23 +398,30 @@ impl Service {
 			return states.first().cloned();
 		}
 
+		let mut key_cache: HashMap<ShortStateKey, (StateEventType, String)> = HashMap::new();
 		let mut full_states = Vec::with_capacity(states.len());
 		for state in states {
 			let mut full_state = state_res::StateMap::new();
 			for (short_key, event_id) in state {
-				let (event_type, state_key) = match self
-					.services
-					.short
-					.get_statekey_from_short(*short_key)
-					.await
-				{
-					| Ok(key) => key,
-					| Err(e) => {
-						warn!(target: "reauth_debug", %room_id, "unknown shortstatekey {short_key:?} in state to resolve: {e}");
-						return None;
-					},
+				let key = if let Some(key) = key_cache.get(short_key) {
+					key.clone()
+				} else {
+					let key = match self
+						.services
+						.short
+						.get_statekey_from_short(*short_key)
+						.await
+					{
+						| Ok(key) => key,
+						| Err(e) => {
+							warn!(target: "reauth_debug", %room_id, "unknown shortstatekey {short_key:?} in state to resolve: {e}");
+							return None;
+						},
+					};
+					key_cache.insert(*short_key, key.clone());
+					key
 				};
-				full_state.insert((event_type, state_key), event_id.clone());
+				full_state.insert(key, event_id.clone());
 			}
 			full_states.push(full_state);
 		}
@@ -431,13 +438,23 @@ impl Service {
 				return None;
 			},
 		};
+
+		let mut rev_cache: HashMap<(&StateEventType, &str), ShortStateKey> =
+			HashMap::with_capacity(key_cache.len());
+		for (k, (ty, sk)) in &key_cache {
+			rev_cache.insert((ty, sk.as_str()), *k);
+		}
+
 		let mut short_state = HashMap::with_capacity(resolved.len());
 		for ((event_type, state_key), event_id) in resolved {
-			let short_key = self
-				.services
-				.short
-				.get_or_create_shortstatekey(&event_type, state_key.as_str())
-				.await;
+			let short_key = if let Some(&k) = rev_cache.get(&(&event_type, state_key.as_str())) {
+				k
+			} else {
+				self.services
+					.short
+					.get_or_create_shortstatekey(&event_type, state_key.as_str())
+					.await
+			};
 			short_state.insert(short_key, event_id);
 		}
 		Some(short_state)

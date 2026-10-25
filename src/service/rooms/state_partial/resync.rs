@@ -325,7 +325,14 @@ impl Service {
 	/// Retry the resync with exponential backoff until it succeeds or the
 	/// room is no longer partial.
 	async fn resync_with_backoff(self: Arc<Self>, room_id: &RoomId) {
-		let mut delay = Duration::from_secs(1);
+		let initial_delay = Duration::from_millis(
+			self.services
+				.server
+				.config
+				.partial_state_resync_initial_delay_ms
+				.max(1),
+		);
+		let mut delay = initial_delay;
 		// When the failures to get usable state from any server began.
 		let mut failing_since: Option<Instant> = None;
 		let mut servers_before: Option<HashSet<OwnedServerName>> = None;
@@ -353,7 +360,7 @@ impl Service {
 						info!("Successfully resynced partial state for room {}", room_id);
 						found.extend(users);
 						resynced = Some(installed);
-						delay = Duration::from_secs(1);
+						delay = initial_delay;
 					},
 					| Err(e) => {
 						warn!("Failed to resync partial state for room {}: {}", room_id, e);
@@ -914,8 +921,7 @@ impl Service {
 		use conduwuit::matrix::event::gen_event_id_canonical_json;
 
 		let expected: HashSet<_> = expected_ids.iter().cloned().collect();
-		let mut loaded = HashSet::with_capacity(expected.len());
-		let mut state = BTreeMap::new();
+		let mut parsed = Vec::with_capacity(pdus.len());
 		for pdu_json in pdus {
 			let (event_id, value) = gen_event_id_canonical_json(&pdu_json, room_version)
 				.map_err(|e| {
@@ -929,64 +935,88 @@ impl Service {
 				)));
 			}
 
-			if let Err(error) = self
-				.services
-				.event_handler
-				.handle_incoming_pdu(
-					remote_server,
-					room_id,
-					&event_id,
-					value.clone(),
-					false,
-					room_version,
-				)
-				.await
-			{
-				// Auth rejection and other client-classified validation failures mean
-				// this server supplied unusable state. Missing auth events are also a
-				// response completeness problem; storage/key-fetch failures remain
-				// transient and use the normal retry backoff.
-				if error.status_code().is_client_error()
-					|| matches!(&error, conduwuit::Error::MissingAuthEvents(_))
-				{
-					return Err(StateEventLoadError::InvalidResponse(format!(
-						"state event {event_id} failed validation: {error}"
-					)));
-				}
-				return Err(StateEventLoadError::Transient(error));
-			}
-
-			let rejected = self
-				.services
-				.pdu_metadata
-				.is_event_rejected(&event_id)
-				.map_err(StateEventLoadError::Transient)?;
-			let pending_auth = self
-				.services
-				.pdu_metadata
-				.is_event_pending_auth_resolution(&event_id)
-				.map_err(StateEventLoadError::Transient)?;
-			if rejected || pending_auth {
-				return Err(StateEventLoadError::InvalidResponse(format!(
-					"state event {event_id} was not accepted during ingestion"
-				)));
-			}
-
-			let pdu = PduEvent::from_id_val(&event_id, value, Some(room_id)).map_err(|e| {
+			let pdu = PduEvent::from_id_val(&event_id, value.clone(), Some(room_id)).map_err(|e| {
 				StateEventLoadError::InvalidResponse(format!(
 					"could not decode state event {event_id}: {e}"
 				))
 			})?;
-			let state_key = pdu.state_key.as_ref().ok_or_else(|| {
+			let state_key = pdu.state_key.ok_or_else(|| {
 				StateEventLoadError::InvalidResponse(format!(
 					"state response contained non-state event {event_id}"
 				))
 			})?;
-			let shortstatekey = self
-				.services
-				.short
-				.get_or_create_shortstatekey(&pdu.kind.to_string().into(), state_key)
+			parsed.push((event_id, value, pdu.kind.to_string(), state_key));
+		}
+
+		let results: Vec<std::result::Result<(ShortStateKey, OwnedEventId), StateEventLoadError>> =
+			parsed
+				.into_iter()
+				.stream()
+				.broad_then(move |(event_id, value, kind_str, state_key)| {
+					let room_version = room_version.clone();
+					let remote_server = remote_server.to_owned();
+					let room_id = room_id.to_owned();
+					let self_copy = self.clone();
+					async move {
+						if let Err(error) = self_copy
+							.services
+							.event_handler
+							.handle_incoming_pdu(
+								&remote_server,
+								&room_id,
+								&event_id,
+								value,
+								false,
+								&room_version,
+							)
+							.await
+						{
+							// Auth rejection and other client-classified validation failures mean
+							// this server supplied unusable state. Missing auth events are also a
+							// response completeness problem; storage/key-fetch failures remain
+							// transient and use the normal retry backoff.
+							if error.status_code().is_client_error()
+								|| matches!(&error, conduwuit::Error::MissingAuthEvents(_))
+							{
+								return Err(StateEventLoadError::InvalidResponse(format!(
+									"state event {event_id} failed validation: {error}"
+								)));
+							}
+							return Err(StateEventLoadError::Transient(error));
+						}
+
+						let rejected = self_copy
+							.services
+							.pdu_metadata
+							.is_event_rejected(&event_id)
+							.map_err(StateEventLoadError::Transient)?;
+						let pending_auth = self_copy
+							.services
+							.pdu_metadata
+							.is_event_pending_auth_resolution(&event_id)
+							.map_err(StateEventLoadError::Transient)?;
+						if rejected || pending_auth {
+							return Err(StateEventLoadError::InvalidResponse(format!(
+								"state event {event_id} was not accepted during ingestion"
+							)));
+						}
+
+						let shortstatekey = self_copy
+							.services
+							.short
+							.get_or_create_shortstatekey(&kind_str.into(), &state_key)
+							.await;
+
+						Ok((shortstatekey, event_id))
+					}
+				})
+				.collect()
 				.await;
+
+		let mut loaded = HashSet::with_capacity(results.len());
+		let mut state = BTreeMap::new();
+		for item in results {
+			let (shortstatekey, event_id) = item?;
 			state.insert(shortstatekey, event_id.clone());
 			loaded.insert(event_id);
 		}
