@@ -946,65 +946,119 @@ impl Service {
 					"state response contained non-state event {event_id}"
 				))
 			})?;
-			parsed.push((event_id, value, pdu.kind.to_string(), state_key));
+			parsed.push((event_id, value, pdu.kind.to_string(), state_key, pdu.auth_events));
 		}
 
-		// Keep state-event ingestion in the supplied order: later events can
-		// depend on earlier state events being available during auth checks.
-		let mut loaded = HashSet::with_capacity(parsed.len());
+		// Later state events can depend on their auth events being present, so
+		// ingest in waves: an event's wave is one past the deepest of its
+		// `auth_events` that are also in this response. Events within a wave
+		// are independent and run concurrently.
+		let order = conduwuit::utils::kahns_sort::kahn_sort(parsed.iter().map(|item| {
+			let auth: Vec<OwnedEventId> = item
+				.4
+				.iter()
+				.filter(|auth_id| expected.contains(*auth_id))
+				.cloned()
+				.collect();
+			(item.0.clone(), auth, item.0.clone())
+		}));
+		let mut by_id: HashMap<OwnedEventId, _> = parsed
+			.into_iter()
+			.map(|item| (item.0.clone(), item))
+			.collect();
+		let mut level_of: HashMap<OwnedEventId, usize> = HashMap::with_capacity(by_id.len());
+		let mut waves: Vec<Vec<_>> = Vec::new();
+		for event_id in order {
+			let Some(item) = by_id.remove(&event_id) else { continue };
+			let level = item
+				.4
+				.iter()
+				.filter_map(|auth_id| level_of.get(auth_id))
+				.max()
+				.map_or(0, |level| level.saturating_add(1));
+			level_of.insert(event_id, level);
+			if waves.len() <= level {
+				waves.resize_with(level.saturating_add(1), Vec::new);
+			}
+			waves[level].push(item);
+		}
+
+		let mut loaded = HashSet::with_capacity(expected.len());
 		let mut state = BTreeMap::new();
-		for (event_id, value, kind_str, state_key) in parsed {
-			if let Err(error) = self
-				.services
-				.event_handler
-				.handle_incoming_pdu(
-					remote_server,
-					room_id,
-					&event_id,
-					value,
-					false,
-					room_version,
-				)
-				.await
-			{
-				// Auth rejection and other client-classified validation failures mean
-				// this server supplied unusable state. Missing auth events are also a
-				// response completeness problem; storage/key-fetch failures remain
-				// transient and use the normal retry backoff.
-				if error.status_code().is_client_error()
-					|| matches!(&error, conduwuit::Error::MissingAuthEvents(_))
-				{
-					return Err(StateEventLoadError::InvalidResponse(format!(
-						"state event {event_id} failed validation: {error}"
-					)));
-				}
-				return Err(StateEventLoadError::Transient(error));
-			}
+		for wave in waves {
+			let wave_self = self.clone();
+			let results: Vec<
+				std::result::Result<(ShortStateKey, OwnedEventId), StateEventLoadError>,
+			> = wave
+				.into_iter()
+				.stream()
+				.broad_then(move |(event_id, value, kind_str, state_key, _)| {
+					let room_version = room_version.clone();
+					let remote_server = remote_server.to_owned();
+					let room_id = room_id.to_owned();
+					let self_copy = wave_self.clone();
+					async move {
+						if let Err(error) = self_copy
+							.services
+							.event_handler
+							.handle_incoming_pdu(
+								&remote_server,
+								&room_id,
+								&event_id,
+								value,
+								false,
+								&room_version,
+							)
+							.await
+						{
+							// Auth rejection and other client-classified validation
+							// failures mean this server supplied unusable state. Missing
+							// auth events are also a response completeness problem;
+							// storage/key-fetch failures remain transient and use the
+							// normal retry backoff.
+							if error.status_code().is_client_error()
+								|| matches!(&error, conduwuit::Error::MissingAuthEvents(_))
+							{
+								return Err(StateEventLoadError::InvalidResponse(format!(
+									"state event {event_id} failed validation: {error}"
+								)));
+							}
+							return Err(StateEventLoadError::Transient(error));
+						}
 
-			let rejected = self
-				.services
-				.pdu_metadata
-				.is_event_rejected(&event_id)
-				.map_err(StateEventLoadError::Transient)?;
-			let pending_auth = self
-				.services
-				.pdu_metadata
-				.is_event_pending_auth_resolution(&event_id)
-				.map_err(StateEventLoadError::Transient)?;
-			if rejected || pending_auth {
-				return Err(StateEventLoadError::InvalidResponse(format!(
-					"state event {event_id} was not accepted during ingestion"
-				)));
-			}
+						let rejected = self_copy
+							.services
+							.pdu_metadata
+							.is_event_rejected(&event_id)
+							.map_err(StateEventLoadError::Transient)?;
+						let pending_auth = self_copy
+							.services
+							.pdu_metadata
+							.is_event_pending_auth_resolution(&event_id)
+							.map_err(StateEventLoadError::Transient)?;
+						if rejected || pending_auth {
+							return Err(StateEventLoadError::InvalidResponse(format!(
+								"state event {event_id} was not accepted during ingestion"
+							)));
+						}
 
-			let event_type = kind_str.into();
-			let shortstatekey = self
-				.services
-				.short
-				.get_or_create_shortstatekey(&event_type, &state_key)
+						let shortstatekey = self_copy
+							.services
+							.short
+							.get_or_create_shortstatekey(&kind_str.into(), &state_key)
+							.await;
+
+						Ok((shortstatekey, event_id))
+					}
+				})
+				.collect()
 				.await;
-			state.insert(shortstatekey, event_id.clone());
-			loaded.insert(event_id);
+
+			for item in results {
+				let (shortstatekey, event_id) = item?;
+				state.insert(shortstatekey, event_id.clone());
+				loaded.insert(event_id);
+			}
 		}
 
 		if loaded != expected {
