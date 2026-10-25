@@ -398,7 +398,7 @@ impl Service {
 			return states.first().cloned();
 		}
 
-		let mut key_cache: HashMap<ShortStateKey, (StateEventType, String)> = HashMap::new();
+		let mut key_cache: HashMap<ShortStateKey, (StateEventType, StateKey)> = HashMap::new();
 		let mut full_states = Vec::with_capacity(states.len());
 		for state in states {
 			let mut full_state = state_res::StateMap::new();
