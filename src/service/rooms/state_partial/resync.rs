@@ -949,76 +949,60 @@ impl Service {
 			parsed.push((event_id, value, pdu.kind.to_string(), state_key));
 		}
 
-		let results: Vec<
-			std::result::Result<(ShortStateKey, OwnedEventId), StateEventLoadError>,
-		> = parsed
-			.into_iter()
-			.stream()
-			.broad_then(move |(event_id, value, kind_str, state_key)| {
-				let room_version = room_version.clone();
-				let remote_server = remote_server.to_owned();
-				let room_id = room_id.to_owned();
-				let self_copy = self.clone();
-				async move {
-					if let Err(error) = self_copy
-						.services
-						.event_handler
-						.handle_incoming_pdu(
-							&remote_server,
-							&room_id,
-							&event_id,
-							value,
-							false,
-							&room_version,
-						)
-						.await
-					{
-						// Auth rejection and other client-classified validation failures mean
-						// this server supplied unusable state. Missing auth events are also a
-						// response completeness problem; storage/key-fetch failures remain
-						// transient and use the normal retry backoff.
-						if error.status_code().is_client_error()
-							|| matches!(&error, conduwuit::Error::MissingAuthEvents(_))
-						{
-							return Err(StateEventLoadError::InvalidResponse(format!(
-								"state event {event_id} failed validation: {error}"
-							)));
-						}
-						return Err(StateEventLoadError::Transient(error));
-					}
-
-					let rejected = self_copy
-						.services
-						.pdu_metadata
-						.is_event_rejected(&event_id)
-						.map_err(StateEventLoadError::Transient)?;
-					let pending_auth = self_copy
-						.services
-						.pdu_metadata
-						.is_event_pending_auth_resolution(&event_id)
-						.map_err(StateEventLoadError::Transient)?;
-					if rejected || pending_auth {
-						return Err(StateEventLoadError::InvalidResponse(format!(
-							"state event {event_id} was not accepted during ingestion"
-						)));
-					}
-
-					let shortstatekey = self_copy
-						.services
-						.short
-						.get_or_create_shortstatekey(&kind_str.into(), &state_key)
-						.await;
-
-					Ok((shortstatekey, event_id))
-				}
-			})
-			.collect()
-			.await;
-
-		let mut loaded = HashSet::with_capacity(results.len());
+		// Keep state-event ingestion in the supplied order: later events can
+		// depend on earlier state events being available during auth checks.
+		let mut loaded = HashSet::with_capacity(parsed.len());
 		let mut state = BTreeMap::new();
-		for item in results {
-			let (shortstatekey, event_id) = item?;
+		for (event_id, value, kind_str, state_key) in parsed {
+			if let Err(error) = self
+				.services
+				.event_handler
+				.handle_incoming_pdu(
+					remote_server,
+					room_id,
+					&event_id,
+					value,
+					false,
+					room_version,
+				)
+				.await
+			{
+				// Auth rejection and other client-classified validation failures mean
+				// this server supplied unusable state. Missing auth events are also a
+				// response completeness problem; storage/key-fetch failures remain
+				// transient and use the normal retry backoff.
+				if error.status_code().is_client_error()
+					|| matches!(&error, conduwuit::Error::MissingAuthEvents(_))
+				{
+					return Err(StateEventLoadError::InvalidResponse(format!(
+						"state event {event_id} failed validation: {error}"
+					)));
+				}
+				return Err(StateEventLoadError::Transient(error));
+			}
+
+			let rejected = self
+				.services
+				.pdu_metadata
+				.is_event_rejected(&event_id)
+				.map_err(StateEventLoadError::Transient)?;
+			let pending_auth = self
+				.services
+				.pdu_metadata
+				.is_event_pending_auth_resolution(&event_id)
+				.map_err(StateEventLoadError::Transient)?;
+			if rejected || pending_auth {
+				return Err(StateEventLoadError::InvalidResponse(format!(
+					"state event {event_id} was not accepted during ingestion"
+				)));
+			}
+
+			let event_type = kind_str.into();
+			let shortstatekey = self
+				.services
+				.short
+				.get_or_create_shortstatekey(&event_type, &state_key)
+				.await;
 			state.insert(shortstatekey, event_id.clone());
 			loaded.insert(event_id);
 		}
