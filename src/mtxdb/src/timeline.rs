@@ -72,7 +72,7 @@ impl TimelineAdapter {
 	fn index(&self) -> TimelineIndex<'_, mtxdb::packfile::storage::PackfileStorage> {
 		TimelineIndex::with_collection_id(
 			self.store.database().pool(self.shard).as_ref(),
-			&self.name[..],
+			&*self.name,
 			self.collection_id,
 		)
 	}
