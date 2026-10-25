@@ -117,10 +117,7 @@ impl StateAdapter {
 	/// Repairs (for example `yolo reorder-timeline`) rewrite roots outside the
 	/// normal append path, so they must update the mtxdb short-ID index too;
 	/// otherwise the repaired redb mirror is shadowed by the stale mtxdb root.
-	pub fn put_short_event_roots(
-		&self,
-		roots: &[(u64, &[u8])],
-	) -> Result<(), StorageError> {
+	pub fn put_short_event_roots(&self, roots: &[(u64, &[u8])]) -> Result<(), StorageError> {
 		if roots.is_empty() {
 			return Ok(());
 		}

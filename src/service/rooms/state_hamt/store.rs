@@ -334,9 +334,7 @@ impl Store {
 	/// transaction. Used by bulk repair paths such as `yolo reorder-timeline`.
 	pub fn put_short_event_roots(&self, roots: &[(u64, &[u8])]) -> Result<()> {
 		self.mtxdb.put_short_event_roots(roots).map_err(|error| {
-			err!(Database(error!(
-				"Failed to write short event state roots to mtxdb: {error}"
-			)))
+			err!(Database(error!("Failed to write short event state roots to mtxdb: {error}")))
 		})
 	}
 
