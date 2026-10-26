@@ -550,6 +550,60 @@ restart:    ##H Restart service (using systemctl)
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Legacy conduwuit (RocksDB) -> metadata.redb + mtxdb migration
+# See tools/conduwuit-db-migrate/README.md. Configure in .env:
+#   MIGRATE_SRC=/path/to/old/conduwuit            (read-only RocksDB)
+#   MIGRATE_OUT=/path/to/work/dir                 (export/, new/, import.log)
+#   MIGRATE_SERVER=example.org                    (when users span many servers)
+#   MIGRATE_REJECTED=/path/ids.txt ...            (extra rejected event IDs, one per line)
+#   MIGRATE_SOFT_FAILED=/path/ids.txt ...         (extra soft-failed event IDs)
+#   MIGRATE_SKIP_ROOMS='!a:x.org !b:y.org'        (rooms with no m.room.create)
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+MIGRATE_SERVER ?=
+MIGRATE_REJECTED ?=
+MIGRATE_SOFT_FAILED ?=
+MIGRATE_SKIP_ROOMS ?=
+MIGRATE_OUT ?=
+MIGRATE_NEWDB ?= $(MIGRATE_OUT)/new/var/lib/conduwuit
+MIGRATE_BIN = cargo run --release --manifest-path tools/conduwuit-db-migrate/Cargo.toml --
+
+.PHONY: _migrate_vars
+_migrate_vars:
+	@test -n "$(MIGRATE_OUT)" || (echo "ERROR: MIGRATE_OUT is not set" && exit 1)
+
+.PHONY: migrate/export
+migrate/export: _migrate_vars ##H Export the old RocksDB to MIGRATE_OUT/export (mtxdb JSONL + metadata.jsonl)
+	@test -n "$(MIGRATE_SRC)" || (echo "ERROR: MIGRATE_SRC is not set" && exit 1)
+	ulimit -n 65535; \
+	mkdir -p "$(MIGRATE_OUT)/export" && \
+	$(MIGRATE_BIN) export-mtxdb "$(MIGRATE_SRC)" "$(MIGRATE_OUT)/export/mtxdb" $(MIGRATE_SERVER) \
+		$(foreach f,$(MIGRATE_REJECTED),--extra-rejected "$(f)") \
+		$(foreach f,$(MIGRATE_SOFT_FAILED),--extra-soft-failed "$(f)") && \
+	$(MIGRATE_BIN) export "$(MIGRATE_SRC)" "$(MIGRATE_OUT)/export/metadata.jsonl"
+
+.PHONY: migrate/import
+migrate/import: _migrate_vars ##H Import MIGRATE_OUT/export into MIGRATE_NEWDB (metadata.redb, then mtxdb)
+	mkdir -p "$(MIGRATE_NEWDB)"
+	$(MIGRATE_BIN) import "$(MIGRATE_OUT)/export/metadata.jsonl" "$(MIGRATE_NEWDB)/metadata.redb"
+	[ -d "$(MIGRATE_NEWDB)/mtxdb" ] || mtxdb init --dir "$(MIGRATE_NEWDB)/mtxdb"
+	@skip=""; \
+	for r in $(MIGRATE_SKIP_ROOMS); do \
+		skip="$$skip room-$$(printf '%s' "$$r" | xxd -p -c999).jsonl"; \
+	done; \
+	inputs=""; \
+	for f in "$(MIGRATE_OUT)"/export/mtxdb/*.jsonl; do \
+		case " $$skip " in \
+			*" $$(basename "$$f") "*) echo "skipping $$f";; \
+			*) inputs="$$inputs $$f";; \
+		esac; \
+	done; \
+	ulimit -n 65535; \
+	mtxdb --debug import --dir "$(MIGRATE_NEWDB)/mtxdb" $$inputs 2>&1 | tee "$(MIGRATE_OUT)/import.log"; \
+	exit $${PIPESTATUS[0]}
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Help command (messes up vim/sublime syntax, so stuck at end)
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
