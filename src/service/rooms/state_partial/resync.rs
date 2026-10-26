@@ -949,38 +949,78 @@ impl Service {
 			parsed.push((event_id, value, pdu.kind.to_string(), state_key, pdu.auth_events));
 		}
 
+		// The response must be exactly the /state_ids set, with no duplicates.
+		let mut seen = HashSet::with_capacity(parsed.len());
+		for item in &parsed {
+			if !seen.insert(item.0.clone()) {
+				return Err(StateEventLoadError::InvalidResponse(format!(
+					"state response contained duplicate event {}",
+					item.0
+				)));
+			}
+		}
+		if seen != expected {
+			return Err(StateEventLoadError::InvalidResponse(
+				"state response did not contain every event listed by /state_ids".to_owned(),
+			));
+		}
+
 		// Later state events can depend on their auth events being present, so
 		// ingest in waves: an event's wave is one past the deepest of its
 		// `auth_events` that are also in this response. Events within a wave
-		// are independent and run concurrently.
-		let order = conduwuit::utils::kahns_sort::kahn_sort(parsed.iter().map(|item| {
-			let auth: Vec<OwnedEventId> = item
+		// are independent and run concurrently. A cycle among the auth events
+		// leaves nodes that never become ready, and is rejected.
+		let mut pending: HashMap<OwnedEventId, usize> = HashMap::with_capacity(parsed.len());
+		let mut dependents: HashMap<OwnedEventId, Vec<OwnedEventId>> = HashMap::new();
+		for item in &parsed {
+			let deps: HashSet<&OwnedEventId> = item
 				.4
 				.iter()
 				.filter(|auth_id| expected.contains(*auth_id))
-				.cloned()
 				.collect();
-			(item.0.clone(), auth, item.0.clone())
-		}));
+			pending.insert(item.0.clone(), deps.len());
+			for dep in deps {
+				dependents
+					.entry(dep.clone())
+					.or_default()
+					.push(item.0.clone());
+			}
+		}
 		let mut by_id: HashMap<OwnedEventId, _> = parsed
 			.into_iter()
 			.map(|item| (item.0.clone(), item))
 			.collect();
-		let mut level_of: HashMap<OwnedEventId, usize> = HashMap::with_capacity(by_id.len());
+		let mut ready: Vec<OwnedEventId> = pending
+			.iter()
+			.filter(|(_, count)| **count == 0)
+			.map(|(id, _)| id.clone())
+			.collect();
+		ready.sort();
 		let mut waves: Vec<Vec<_>> = Vec::new();
-		for event_id in order {
-			let Some(item) = by_id.remove(&event_id) else { continue };
-			let level = item
-				.4
-				.iter()
-				.filter_map(|auth_id| level_of.get(auth_id))
-				.max()
-				.map_or(0, |level| level.saturating_add(1));
-			level_of.insert(event_id, level);
-			if waves.len() <= level {
-				waves.resize_with(level.saturating_add(1), Vec::new);
+		while !ready.is_empty() {
+			let mut next = Vec::new();
+			let mut wave = Vec::with_capacity(ready.len());
+			for event_id in ready {
+				for child in dependents.get(&event_id).into_iter().flatten() {
+					if let Some(count) = pending.get_mut(child) {
+						*count = count.saturating_sub(1);
+						if *count == 0 {
+							next.push(child.clone());
+						}
+					}
+				}
+				if let Some(item) = by_id.remove(&event_id) {
+					wave.push(item);
+				}
 			}
-			waves[level].push(item);
+			next.sort();
+			waves.push(wave);
+			ready = next;
+		}
+		if !by_id.is_empty() {
+			return Err(StateEventLoadError::InvalidResponse(
+				"state response contained cyclic auth_events".to_owned(),
+			));
 		}
 
 		let mut loaded = HashSet::with_capacity(expected.len());
@@ -1054,10 +1094,23 @@ impl Service {
 				.collect()
 				.await;
 
+			// Completion order is arbitrary, so pick the error by priority:
+			// an unusable response outranks a transient failure.
+			let mut transient = None;
 			for item in results {
-				let (shortstatekey, event_id) = item?;
-				state.insert(shortstatekey, event_id.clone());
-				loaded.insert(event_id);
+				match item {
+					| Ok((shortstatekey, event_id)) => {
+						state.insert(shortstatekey, event_id.clone());
+						loaded.insert(event_id);
+					},
+					| Err(e @ StateEventLoadError::InvalidResponse(_)) => return Err(e),
+					| Err(e) => {
+						transient.get_or_insert(e);
+					},
+				}
+			}
+			if let Some(e) = transient {
+				return Err(e);
 			}
 		}
 
