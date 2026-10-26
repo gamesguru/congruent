@@ -777,12 +777,18 @@ pub fn export(
 		.values()
 		.flat_map(|room| room.keys().map(String::as_str))
 		.collect();
-	for event_id in rejections.keys().chain(soft_fails.keys()) {
-		if !exported_ids.contains(event_id.as_str()) {
-			return Err(
-				format!("verdict exists for event {event_id}, but no PDU was exported").into()
-			);
-		}
+	let orphan_verdicts: HashSet<&str> = rejections
+		.keys()
+		.chain(soft_fails.keys())
+		.map(String::as_str)
+		.filter(|event_id| !exported_ids.contains(event_id))
+		.collect();
+	if !orphan_verdicts.is_empty() {
+		eprintln!(
+			"warning: dropping verdicts for {} events with no exported PDU (for example {})",
+			orphan_verdicts.len(),
+			orphan_verdicts.iter().next().expect("non-empty orphan set"),
+		);
 	}
 	if events.is_empty() {
 		return Err("found no readable room PDUs in eventid_pdu, pduid_pdu, or \
