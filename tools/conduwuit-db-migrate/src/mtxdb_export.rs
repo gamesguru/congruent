@@ -508,16 +508,37 @@ fn union_verdicts(
 /// store of an older copy of the database. Codes already learned from the
 /// primary database win, so a file can only add verdicts; events it names that
 /// have no exported PDU are dropped later with the other orphan verdicts.
+fn insert_supplemental_verdict(
+	event_id: &str,
+	verdicts: &mut HashMap<String, u8>,
+	opposite_verdicts: &HashMap<String, u8>,
+	sources: &mut VerdictSources,
+	source: &'static str,
+	code: u8,
+) -> bool {
+	// Keep the primary DB's verdict if the backup disagrees. When two
+	// supplemental sets disagree, rejection wins because those sets are
+	// processed before supplemental soft-fails.
+	if opposite_verdicts.contains_key(event_id) {
+		return false;
+	}
+	verdicts.entry(event_id.to_owned()).or_insert(code);
+	record_verdict_source(sources, event_id, source);
+	true
+}
+
 fn union_verdict_file(
 	path: &Path,
 	source: &'static str,
 	verdicts: &mut HashMap<String, u8>,
+	opposite_verdicts: &HashMap<String, u8>,
 	sources: &mut VerdictSources,
 	code: u8,
-) -> ExportResult<usize> {
+) -> ExportResult<(usize, usize)> {
 	let text = std::fs::read_to_string(path)
 		.map_err(|error| format!("cannot read {}: {error}", path.display()))?;
 	let mut count = 0;
+	let mut conflicts = 0;
 	for (index, line) in text.lines().enumerate() {
 		let event_id = line.trim();
 		if event_id.is_empty() {
@@ -531,11 +552,19 @@ fn union_verdict_file(
 			)
 			.into());
 		}
-		verdicts.entry(event_id.to_owned()).or_insert(code);
-		record_verdict_source(sources, event_id, source);
+		if !insert_supplemental_verdict(
+			event_id,
+			verdicts,
+			opposite_verdicts,
+			sources,
+			source,
+			code,
+		) {
+			conflicts += 1;
+		}
 		count += 1;
 	}
-	Ok(count)
+	Ok((count, conflicts))
 }
 
 fn legacy_status_verdicts(
@@ -807,24 +836,32 @@ pub fn export(
 		3,
 	)?;
 	for file in extra_rejected {
-		let count = union_verdict_file(
+		let (count, conflicts) = union_verdict_file(
 			file,
 			"extra-rejected-file",
 			&mut rejections,
+			&soft_fails,
 			&mut rejection_sources,
 			11,
 		)?;
-		eprintln!("Extra rejections from {}: {count}", file.display());
+		eprintln!(
+			"Extra rejections from {}: {count} (ignored {conflicts} conflicting soft-fails)",
+			file.display()
+		);
 	}
 	for file in extra_soft_failed {
-		let count = union_verdict_file(
+		let (count, conflicts) = union_verdict_file(
 			file,
 			"extra-soft-failed-file",
 			&mut soft_fails,
+			&rejections,
 			&mut soft_fail_sources,
 			3,
 		)?;
-		eprintln!("Extra soft-fails from {}: {count}", file.display());
+		eprintln!(
+			"Extra soft-fails from {}: {count} (ignored {conflicts} conflicting rejections)",
+			file.display()
+		);
 	}
 	eprintln!(
 		"Verdict sources: eventid_rejections={}, eventid_softfailed={}, eventid_status={}, eventid_metadata(rejected={}, soft_failed={}), rejectedeventids={}, adminrejectedeventids={}, softfailedeventids={}",
@@ -1004,6 +1041,60 @@ pub fn export(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn supplemental_verdicts_preserve_existing_precedence() {
+		let mut rejections = HashMap::new();
+		let mut soft_fails = HashMap::new();
+		let mut rejection_sources = VerdictSources::new();
+		let mut soft_fail_sources = VerdictSources::new();
+
+		// A backup rejection cannot replace a primary soft-fail.
+		soft_fails.insert("$primary-soft".into(), 7);
+		assert!(!insert_supplemental_verdict(
+			"$primary-soft",
+			&mut rejections,
+			&soft_fails,
+			&mut rejection_sources,
+			"backup-rejection",
+			11,
+		));
+		assert_eq!(soft_fails.get("$primary-soft"), Some(&7));
+		assert!(!rejections.contains_key("$primary-soft"));
+
+		// A backup soft-fail cannot replace a primary rejection.
+		rejections.insert("$primary-rejected".into(), 9);
+		assert!(!insert_supplemental_verdict(
+			"$primary-rejected",
+			&mut soft_fails,
+			&rejections,
+			&mut soft_fail_sources,
+			"backup-soft-fail",
+			3,
+		));
+		assert_eq!(rejections.get("$primary-rejected"), Some(&9));
+		assert!(!soft_fails.contains_key("$primary-rejected"));
+
+		// If the two backup sets conflict, rejected is processed first and wins.
+		assert!(insert_supplemental_verdict(
+			"$backup-conflict",
+			&mut rejections,
+			&soft_fails,
+			&mut rejection_sources,
+			"backup-rejection",
+			11,
+		));
+		assert!(!insert_supplemental_verdict(
+			"$backup-conflict",
+			&mut soft_fails,
+			&rejections,
+			&mut soft_fail_sources,
+			"backup-soft-fail",
+			3,
+		));
+		assert_eq!(rejections.get("$backup-conflict"), Some(&11));
+		assert!(!soft_fails.contains_key("$backup-conflict"));
+	}
 
 	#[test]
 	fn retired_key_keeps_expired_ts_over_stale_active_entry() {
