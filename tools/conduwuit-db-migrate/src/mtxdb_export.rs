@@ -81,15 +81,17 @@ fn parse_pdu(
 	rejections: &HashMap<String, u8>,
 	soft_fails: &HashMap<String, u8>,
 	event_to_room: &mut HashMap<String, String>,
-) -> Result<Event, String> {
+) -> Result<(Event, bool), String> {
 	let mut pdu = Value::parse_bytes(raw).map_err(|error| error.to_string())?;
 	let object = pdu.as_object_mut().ok_or("PDU JSON is not an object")?;
 	let stored_id = object.get("event_id").and_then(Value::as_str);
-	if let (Some(stored), Some(fallback)) = (stored_id, fallback_id)
-		&& stored != fallback
-	{
-		return Err(format!("PDU event_id {stored} disagrees with map key {fallback}"));
-	}
+	// Legacy indexes can outlive the PDU they pointed at. The stored PDU's
+	// own event_id is authoritative; a differing map key is reported and the
+	// event is treated as an outlier so it cannot corrupt timeline order.
+	let id_mismatch = matches!(
+		(stored_id, fallback_id),
+		(Some(stored), Some(fallback)) if stored != fallback
+	);
 	let event_id = stored_id
 		.or(fallback_id)
 		.ok_or("event ID missing from PDU and map key")?
@@ -150,14 +152,14 @@ fn parse_pdu(
 	if !object.contains_key("event_id") {
 		object.insert("event_id".into(), Value::String(event_id.clone()));
 	}
-	Ok(Event {
+	Ok((Event {
 		rejected: rejections.contains_key(&event_id),
 		soft_failed: soft_fails.contains_key(&event_id),
 		rejection_code: rejections.get(&event_id).copied(),
 		soft_fail_code: soft_fails.get(&event_id).copied(),
 		id: event_id,
 		room,
-		outlier,
+		outlier: outlier || id_mismatch,
 		prev: object
 			.get("prev_events")
 			.filter(|v| v.is_array())
@@ -169,7 +171,7 @@ fn parse_pdu(
 			.cloned()
 			.unwrap_or_else(|| Value::Array(Vec::new())),
 		pdu,
-	})
+	}, id_mismatch))
 }
 
 fn safe_name(room_id: &str) -> String {
@@ -544,6 +546,17 @@ fn legacy_metadata_row(raw: &[u8]) -> Option<(Option<u8>, Option<u8>)> {
 		r.done()?;
 		Some((rejected.then_some(11), soft.then_some(3)))
 	};
+	// v18 plus the topological depth, written before pdu_count and the reason
+	// strings existed. Common on outliers in v19 databases.
+	let v18_topo = || {
+		let mut r = Raw(raw);
+		r.prefix()?;
+		let (soft, rejected) = (r.flag()?, r.flag()?);
+		r.redacted_and_state()?;
+		r.u64()?;
+		r.done()?;
+		Some((rejected.then_some(11), soft.then_some(3)))
+	};
 	// v21+: no verdict fields; verdicts live in the independent maps.
 	let current = || {
 		let mut r = Raw(raw);
@@ -553,7 +566,7 @@ fn legacy_metadata_row(raw: &[u8]) -> Option<(Option<u8>, Option<u8>)> {
 		r.done()?;
 		Some((None, None))
 	};
-	v20().or_else(v19).or_else(v18).or_else(current)
+	v20().or_else(v19).or_else(v18_topo).or_else(v18).or_else(current)
 }
 
 fn legacy_metadata_verdicts(
@@ -691,6 +704,7 @@ pub fn export(
 		}
 	}
 	let mut events: BTreeMap<String, BTreeMap<String, Event>> = BTreeMap::new();
+	let mut id_mismatches = 0usize;
 	let mut add = |event: Event| {
 		events
 			.entry(event.room.clone())
@@ -703,7 +717,7 @@ pub fn export(
 	let timeline_set: HashSet<String> = timeline_ids.values().cloned().collect();
 	for (event_id, raw) in rows(&db, "eventid_pdu")? {
 		let fallback = std::str::from_utf8(&event_id).ok();
-		let event = parse_pdu(
+		let (event, mismatch) = parse_pdu(
 			&raw,
 			fallback,
 			!fallback.is_some_and(|id| timeline_set.contains(id)),
@@ -714,25 +728,30 @@ pub fn export(
 		.map_err(|error| {
 			format!("bad eventid_pdu row {}: {error}", String::from_utf8_lossy(&event_id))
 		})?;
+		id_mismatches += usize::from(mismatch);
 		add(event);
 	}
 	// Legacy layout: timeline PDUs were keyed by their packed PDU id.
 	for (pdu_id, raw) in rows(&db, "pduid_pdu")? {
-		let fallback = timeline_ids.get(&pdu_id).map(String::as_str);
-		let event = parse_pdu(
+		// The PDU body is authoritative for its event ID. The eventid_pduid /
+		// room_pducount_eventid indexes can be stale in old databases, so never
+		// use a secondary index as the fallback identity. These rows are
+		// timeline PDUs, so pass the fallback as None and keep outlier=false.
+		let (event, mismatch) = parse_pdu(
 			&raw,
-			fallback,
+			None,
 			false,
 			&rejections,
 			&soft_fails,
 			&mut event_to_room,
 		)
 		.map_err(|error| format!("bad pduid_pdu row {}: {error}", hex(&pdu_id)))?;
+		id_mismatches += usize::from(mismatch);
 		add(event);
 	}
 	for (event_id, raw) in rows(&db, "eventid_outlierpdu")? {
 		let fallback = std::str::from_utf8(&event_id).ok();
-		let event = parse_pdu(
+		let (event, mismatch) = parse_pdu(
 			&raw,
 			fallback,
 			true,
@@ -746,7 +765,13 @@ pub fn export(
 				String::from_utf8_lossy(&event_id)
 			)
 		})?;
+		id_mismatches += usize::from(mismatch);
 		add(event);
+	}
+	if id_mismatches > 0 {
+		eprintln!(
+			"warning: {id_mismatches} PDU event IDs disagreed with their map keys; used the PDU event ID and treated the mismatched rows as outliers"
+		);
 	}
 	let exported_ids: HashSet<&str> = events
 		.values()
@@ -893,5 +918,44 @@ mod tests {
 		let mut truncated = v20(2, Some(7));
 		truncated.pop();
 		assert_eq!(legacy_metadata_row(&truncated), None);
+	}
+
+	#[test]
+	fn legacy_metadata_v18_with_topo_depth() {
+		let mut row = Vec::new();
+		meta_prefix(&mut row);
+		row.extend([0, 1]); // soft_failed, rejected
+		meta_tail(&mut row);
+		row.extend(9_u64.to_le_bytes());
+		assert_eq!(legacy_metadata_row(&row), Some((Some(11), None)));
+
+		// Redacted variant: redacted_by = Some("$a").
+		let mut redacted = Vec::new();
+		meta_prefix(&mut redacted);
+		redacted.extend([1, 0]);
+		redacted.push(1);
+		redacted.extend(2_u64.to_le_bytes());
+		redacted.extend(b"$a");
+		redacted.push(0);
+		redacted.extend(9_u64.to_le_bytes());
+		assert_eq!(legacy_metadata_row(&redacted), Some((None, Some(3))));
+	}
+
+	#[test]
+	fn stored_pdu_id_wins_over_stale_index() {
+		let raw = br#"{"event_id":"$stored","room_id":"!room:example.org","prev_events":[],"auth_events":[]}"#;
+		let mut rooms = HashMap::new();
+		let (event, mismatch) = parse_pdu(
+			raw,
+			Some("$stale"),
+			false,
+			&HashMap::new(),
+			&HashMap::new(),
+			&mut rooms,
+		)
+		.unwrap();
+		assert!(mismatch);
+		assert!(event.outlier);
+		assert_eq!(event.id, "$stored");
 	}
 }

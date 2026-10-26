@@ -23,12 +23,19 @@ read-only snapshot; the tool opens it read-only and never writes to it.
 `export-mtxdb` writes one `room-<hex room id>.jsonl` per room plus
 `server-keys.jsonl`. It understands both the legacy `pduid_pdu` /
 `eventid_outlierpdu` layout and the newer `eventid_pdu` layout. It infers the
-homeserver name from the server part of local IDs in `userid_password`, and
-requires those IDs to agree. An optional server-name argument overrides that
-inference for databases with no local users or a changed server name. If the
-source has `eventid_rejections` or `eventid_softfailed` maps, their one-byte
-verdict codes are carried into the export. If those maps are absent, both flags
-are false. Legacy cached keys are exported as permanent keys with
+homeserver name from the server part of IDs in `userid_password`, and requires
+those IDs to agree. Federated user rows can make that ambiguous; pass the
+configured server name as the optional third argument in that case. The PDU
+body's own `event_id` is authoritative if a legacy index disagrees.
+
+Verdicts are unioned across every store a source version may use:
+`eventid_rejections` / `eventid_softfailed` (one-byte codes), the legacy
+`eventid_status` map, the retired `rejectedeventids`,
+`adminrejectedeventids`, and `softfailedeventids` sets, and the v18-v20
+`eventid_metadata` layouts. More specific codes win over a retired set; a
+retired-set-only verdict uses the Unknown rejection/soft-fail code. The
+exporter prints per-source counts and warns about metadata rows that match no
+known layout. Legacy cached keys are exported as permanent keys with
 `ts_added_ms=0`; no notary payload is synthesized.
 
 ```text
