@@ -27,6 +27,8 @@ use slipstream::{
 	sswire::Raw,
 };
 
+const DATABASE_FAILURE_RETRY_DELAY: Duration = Duration::from_secs(5);
+
 #[derive(Clone, Copy, Debug)]
 pub enum UpdateAction {
 	Restart,
@@ -523,9 +525,11 @@ impl Service {
 						Ok(())
 					},
 					| Err(error) => {
-						if leave_scheduled_on_error {
+						if leave_scheduled_on_error || matches!(&error, Error::Database(_)) {
 							// Manual sends should keep the delayed event scheduled on failure
 							// so the client can inspect the error without losing the schedule.
+							// Automatic sends do the same for database failures so temporary
+							// write conflicts can be retried by the submission queue.
 							self.scheduled_events.lock().await.insert(delay_id.clone());
 							return Err(error);
 						}
@@ -747,6 +751,11 @@ impl Service {
 			.await;
 			if let Err(err) = result {
 				error!(%delay_id, %err, "Error encountered submitting event.");
+				if matches!(&err, Error::Database(_)) {
+					return SystemTime::now()
+						.checked_add(DATABASE_FAILURE_RETRY_DELAY)
+						.map(|retry_at| (retry_at, delay_id));
+				}
 			} else {
 				info!(%delay_id, "Delayed event sent");
 			}
