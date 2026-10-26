@@ -349,6 +349,32 @@ fn dependency_order(events: Vec<Event>) -> Vec<Event> {
 		.collect()
 }
 
+/// `mtxdb-export/v1` carries signing keys as standard, padded base64. Matrix
+/// stores key bytes as unpadded standard base64, which the importer rejects, so
+/// restore the padding. Already-padded input is returned unchanged.
+fn pad_base64(encoded: &str) -> Result<String, String> {
+	if encoded.is_empty() {
+		return Err("signing key is empty".into());
+	}
+	if !encoded
+		.bytes()
+		.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+	{
+		return Err(format!("signing key {encoded:?} is not standard base64"));
+	}
+	let body = encoded.trim_end_matches('=');
+	let padding = match body.len() % 4 {
+		0 => 0,
+		2 => 2,
+		3 => 1,
+		_ => return Err(format!("signing key {encoded:?} has an impossible base64 length")),
+	};
+	if encoded.len() != body.len() && encoded.len() != body.len().saturating_add(padding) {
+		return Err(format!("signing key {encoded:?} has malformed base64 padding"));
+	}
+	Ok(format!("{body}{}", "=".repeat(padding)))
+}
+
 fn write_keys(db: &DB, out_path: &Path) -> Result<usize, Box<dyn std::error::Error>> {
 	let mut writer = BufWriter::new(
 		OpenOptions::new()
@@ -402,7 +428,10 @@ fn write_keys(db: &DB, out_path: &Path) -> Result<usize, Box<dyn std::error::Err
 				record.insert("origin".into(), Value::String(origin.into()));
 				record.insert("kind".into(), Value::String("permanent".into()));
 				record.insert("key_id".into(), Value::String(key_id.clone()));
-				record.insert("key".into(), Value::String(encoded_key.into()));
+				let padded_key = pad_base64(encoded_key).map_err(|error| {
+					format!("server_signingkeys entry for {origin}/{key_id}: {error}")
+				})?;
+				record.insert("key".into(), Value::String(padded_key));
 				record.insert("valid_until_ts".into(), codec::to_value(&valid_until));
 				record.insert(
 					"source".into(),
@@ -1061,5 +1090,44 @@ mod tests {
 		assert!(mismatch);
 		assert!(event.outlier);
 		assert_eq!(event.id, "$stored");
+	}
+
+	#[test]
+	fn unpadded_matrix_keys_are_padded_for_the_importer() {
+		// 32-byte ed25519 keys are 43 characters unpadded.
+		assert_eq!(
+			pad_base64("iFaAxYzZKymlSEzVmtMeHbHJDWqFvC8g1yFQGbsLO5g").unwrap(),
+			"iFaAxYzZKymlSEzVmtMeHbHJDWqFvC8g1yFQGbsLO5g="
+		);
+		// The standard alphabet's `/` and `+` are kept.
+		assert_eq!(pad_base64("CRmyAAbmuKI6tAj6/uq/DBFMGtBbmPFg4BsOSFyEMfE").unwrap().len(), 44);
+		assert_eq!(pad_base64("QUI").unwrap(), "QUI=");
+		assert_eq!(pad_base64("QQ").unwrap(), "QQ==");
+		assert_eq!(pad_base64("QUJD").unwrap(), "QUJD");
+	}
+
+	#[test]
+	fn already_padded_keys_are_unchanged() {
+		assert_eq!(pad_base64("QUI=").unwrap(), "QUI=");
+		assert_eq!(pad_base64("QQ==").unwrap(), "QQ==");
+	}
+
+	#[test]
+	fn malformed_keys_are_refused() {
+		assert!(pad_base64("").is_err());
+		assert!(pad_base64("A").is_err(), "one leftover character is impossible");
+		assert!(pad_base64("QQ=").is_err(), "wrong amount of padding");
+		assert!(pad_base64("ab-_").is_err(), "URL-safe alphabet is not standard base64");
+		assert!(pad_base64("QU I").is_err());
+	}
+
+	#[test]
+	fn padded_keys_decode_as_standard_base64_of_the_key_length() {
+		// What `mtxdb import` does with the field: 43 unpadded characters must
+		// pad to a 44-character string that decodes to 32 bytes.
+		let padded = pad_base64("P7eGkxDwvBZMKdfPFGFmuHGIneIzcrEsavAhIKeLbeA").unwrap();
+		assert_eq!(padded.len(), 44);
+		assert!(padded.ends_with('='));
+		assert_eq!(padded.trim_end_matches('=').len() * 3 / 4, 32);
 	}
 }
