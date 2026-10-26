@@ -557,16 +557,20 @@ restart:    ##H Restart service (using systemctl)
 #   MIGRATE_SERVER=example.org                    (when users span many servers)
 #   MIGRATE_REJECTED=/path/ids.txt ...            (extra rejected event IDs, one per line)
 #   MIGRATE_SOFT_FAILED=/path/ids.txt ...         (extra soft-failed event IDs)
-#   MIGRATE_SKIP_ROOMS='!a:x.org !b:y.org'        (rooms with no m.room.create)
+#   MIGRATE_SKIP_ROOMS=!a:x.org,!b:y.org          (comma-separated; rooms with no m.room.create)
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 MIGRATE_SERVER ?=
 MIGRATE_REJECTED ?=
 MIGRATE_SOFT_FAILED ?=
 MIGRATE_SKIP_ROOMS ?=
+COMMA := ,
 MIGRATE_OUT ?=
 MIGRATE_NEWDB ?= $(MIGRATE_OUT)/new/var/lib/conduwuit
-MIGRATE_BIN = cargo run --release --manifest-path tools/conduwuit-db-migrate/Cargo.toml --
+MIGRATE_BIN = ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
+	ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
+	LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
+	cargo run --release --manifest-path tools/conduwuit-db-migrate/Cargo.toml --
 
 .PHONY: _migrate_vars
 _migrate_vars:
@@ -582,13 +586,16 @@ migrate/export: _migrate_vars ##H Export the old RocksDB to MIGRATE_OUT/export (
 		$(foreach f,$(MIGRATE_SOFT_FAILED),--extra-soft-failed "$(f)") && \
 	$(MIGRATE_BIN) export "$(MIGRATE_SRC)" "$(MIGRATE_OUT)/export/metadata.jsonl"
 
-.PHONY: migrate/import
-migrate/import: _migrate_vars ##H Import MIGRATE_OUT/export into MIGRATE_NEWDB (metadata.redb, then mtxdb)
+.PHONY: migrate/import-meta
+migrate/import-meta: _migrate_vars ##H Import metadata.jsonl into MIGRATE_NEWDB/metadata.redb
 	mkdir -p "$(MIGRATE_NEWDB)"
 	$(MIGRATE_BIN) import "$(MIGRATE_OUT)/export/metadata.jsonl" "$(MIGRATE_NEWDB)/metadata.redb"
 	[ -d "$(MIGRATE_NEWDB)/mtxdb" ] || mtxdb init --dir "$(MIGRATE_NEWDB)/mtxdb"
+
+.PHONY: migrate/import-rooms
+migrate/import-rooms: _migrate_vars ##H Import the room export and signing keys into MIGRATE_NEWDB/mtxdb
 	@skip=""; \
-	for r in $(MIGRATE_SKIP_ROOMS); do \
+	for r in $(subst $(COMMA), ,$(MIGRATE_SKIP_ROOMS)); do \
 		skip="$$skip room-$$(printf '%s' "$$r" | xxd -p -c999).jsonl"; \
 	done; \
 	inputs=""; \
@@ -601,6 +608,12 @@ migrate/import: _migrate_vars ##H Import MIGRATE_OUT/export into MIGRATE_NEWDB (
 	ulimit -n 65535; \
 	mtxdb --debug import --dir "$(MIGRATE_NEWDB)/mtxdb" $$inputs 2>&1 | tee "$(MIGRATE_OUT)/import.log"; \
 	exit $${PIPESTATUS[0]}
+
+.PHONY: migrate/clean
+migrate/clean: _migrate_vars ##H Delete MIGRATE_OUT/export and MIGRATE_OUT/new (never the source)
+	@echo "Delete $(MIGRATE_OUT)/export and $(MIGRATE_OUT)/new?"
+	@$(MAKE) _confirm
+	rm -rf "$(MIGRATE_OUT)/export" "$(MIGRATE_OUT)/new"
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
