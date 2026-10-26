@@ -870,4 +870,28 @@ mod tests {
 
 		assert_eq!(legacy_metadata_row(b"{}"), None);
 	}
+
+	#[test]
+	fn legacy_metadata_v20_statuses_and_truncation() {
+		let v20 = |tag: u32, code: Option<u32>| {
+			let mut row = Vec::new();
+			meta_prefix(&mut row);
+			row.extend(tag.to_le_bytes());
+			if let Some(code) = code {
+				row.extend(code.to_le_bytes());
+			}
+			meta_tail(&mut row);
+			row.extend(3_u64.to_le_bytes());
+			row.push(0);
+			row
+		};
+		assert_eq!(legacy_metadata_row(&v20(0, None)), Some((None, None)));
+		assert_eq!(legacy_metadata_row(&v20(1, None)), Some((None, None)));
+		assert_eq!(legacy_metadata_row(&v20(3, Some(2))), Some((None, Some(2))));
+		assert_eq!(legacy_metadata_row(&v20(4, None)), None);
+
+		let mut truncated = v20(2, Some(7));
+		truncated.pop();
+		assert_eq!(legacy_metadata_row(&truncated), None);
+	}
 }
