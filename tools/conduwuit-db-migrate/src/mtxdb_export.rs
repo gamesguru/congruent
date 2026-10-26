@@ -2,7 +2,7 @@
 //! the `mtxdb-export/v1` files accepted by `mtxdb import`.
 
 use std::{
-	collections::{BTreeMap, HashMap, HashSet},
+	collections::{BTreeMap, BTreeSet, HashMap, HashSet},
 	fs::{self, OpenOptions},
 	io::{BufWriter, Write},
 	path::{Path, PathBuf},
@@ -17,6 +17,7 @@ use slipstream::{
 const FORMAT: &str = "mtxdb-export/v1";
 type ExportResult<T> = Result<T, Box<dyn std::error::Error>>;
 type DbRow = (Vec<u8>, Vec<u8>);
+type VerdictSources = HashMap<String, BTreeSet<&'static str>>;
 
 #[derive(Clone)]
 struct Event {
@@ -213,6 +214,49 @@ fn event_line(out: &mut impl Write, event: &Event) -> Result<(), Box<dyn std::er
 	Ok(())
 }
 
+fn write_orphan_audit(
+	path: &Path,
+	event_ids: &BTreeSet<&str>,
+	rejections: &HashMap<String, u8>,
+	soft_fails: &HashMap<String, u8>,
+	rejection_sources: &VerdictSources,
+	soft_fail_sources: &VerdictSources,
+) -> ExportResult<()> {
+	let mut writer = BufWriter::new(
+		OpenOptions::new()
+			.write(true)
+			.create_new(true)
+			.open(path)?,
+	);
+	for event_id in event_ids {
+		let mut record = Object::new();
+		record.insert("t".into(), Value::String("orphan_verdict".into()));
+		record.insert("event_id".into(), Value::String((*event_id).into()));
+		if let Some(code) = rejections.get(*event_id) {
+			record.insert("rejection_code".into(), codec::to_value(code));
+		}
+		if let Some(code) = soft_fails.get(*event_id) {
+			record.insert("soft_fail_code".into(), codec::to_value(code));
+		}
+		for (field, sources) in [
+			("rejection_sources", rejection_sources),
+			("soft_fail_sources", soft_fail_sources),
+		] {
+			let values = sources
+				.get(*event_id)
+				.into_iter()
+				.flatten()
+				.map(|source| Value::String((*source).into()))
+				.collect();
+			record.insert(field.into(), Value::Array(values));
+		}
+		writer.write_all(codec::to_string(&Value::Object(record)).as_bytes())?;
+		writer.write_all(b"\n")?;
+	}
+	writer.flush()?;
+	Ok(())
+}
+
 fn write_room(
 	out_dir: &Path,
 	server: &str,
@@ -387,7 +431,19 @@ fn write_keys(db: &DB, out_path: &Path) -> Result<usize, Box<dyn std::error::Err
 	Ok(count)
 }
 
-fn verdicts(db: &DB, map: &str) -> Result<HashMap<String, u8>, Box<dyn std::error::Error>> {
+fn record_verdict_source(sources: &mut VerdictSources, event_id: &str, source: &'static str) {
+	sources
+		.entry(event_id.to_owned())
+		.or_default()
+		.insert(source);
+}
+
+fn verdicts(
+	db: &DB,
+	map: &str,
+	source: &'static str,
+	sources: &mut VerdictSources,
+) -> Result<HashMap<String, u8>, Box<dyn std::error::Error>> {
 	let mut result = HashMap::new();
 	for (event_id, value) in rows(db, map)? {
 		let event_id = std::str::from_utf8(&event_id)
@@ -396,14 +452,16 @@ fn verdicts(db: &DB, map: &str) -> Result<HashMap<String, u8>, Box<dyn std::erro
 			return Err(format!("{map} value for {event_id} is not one byte").into());
 		};
 		result.insert(event_id.to_owned(), *code);
+		record_verdict_source(sources, event_id, source);
 	}
 	Ok(result)
 }
 
 fn union_verdicts(
 	db: &DB,
-	map: &str,
+	map: &'static str,
 	verdicts: &mut HashMap<String, u8>,
+	sources: &mut VerdictSources,
 	code: u8,
 ) -> ExportResult<usize> {
 	let mut count = 0;
@@ -411,6 +469,7 @@ fn union_verdicts(
 		let event_id = std::str::from_utf8(&event_id)
 			.map_err(|error| format!("invalid event ID in {map}: {error}"))?;
 		verdicts.entry(event_id.to_owned()).or_insert(code);
+		record_verdict_source(sources, event_id, map);
 		count += 1;
 	}
 	Ok(count)
@@ -418,9 +477,11 @@ fn union_verdicts(
 
 fn legacy_status_verdicts(
 	db: &DB,
-	map: &str,
+	map: &'static str,
 	rejections: &mut HashMap<String, u8>,
 	soft_fails: &mut HashMap<String, u8>,
+	rejection_sources: &mut VerdictSources,
+	soft_fail_sources: &mut VerdictSources,
 ) -> ExportResult<usize> {
 	let mut count = 0;
 	for (event_id, value) in rows(db, map)? {
@@ -433,6 +494,8 @@ fn legacy_status_verdicts(
 		};
 		let target = if kind == 1 { &mut *soft_fails } else { &mut *rejections };
 		target.entry(event_id.to_owned()).or_insert(code);
+		let sources = if kind == 1 { &mut *soft_fail_sources } else { &mut *rejection_sources };
+		record_verdict_source(sources, event_id, map);
 		count += 1;
 	}
 	Ok(count)
@@ -573,6 +636,8 @@ fn legacy_metadata_verdicts(
 	db: &DB,
 	rejections: &mut HashMap<String, u8>,
 	soft_fails: &mut HashMap<String, u8>,
+	rejection_sources: &mut VerdictSources,
+	soft_fail_sources: &mut VerdictSources,
 ) -> ExportResult<(usize, usize)> {
 	let mut rejected = 0;
 	let mut soft_failed = 0;
@@ -586,10 +651,12 @@ fn legacy_metadata_verdicts(
 		};
 		if let Some(code) = rejection {
 			rejections.entry(event_id.to_owned()).or_insert(code);
+			record_verdict_source(rejection_sources, event_id, "eventid_metadata");
 			rejected += 1;
 		}
 		if let Some(code) = soft_fail {
 			soft_fails.entry(event_id.to_owned()).or_insert(code);
+			record_verdict_source(soft_fail_sources, event_id, "eventid_metadata");
 			soft_failed += 1;
 		}
 	}
@@ -624,37 +691,60 @@ pub fn export(
 	let server = server_override
 		.or(inferred_server.as_deref())
 		.expect("server name available");
-	let mut rejections = verdicts(&db, "eventid_rejections")?;
-	let mut soft_fails = verdicts(&db, "eventid_softfailed")?;
+	let mut rejection_sources = VerdictSources::new();
+	let mut soft_fail_sources = VerdictSources::new();
+	let mut rejections = verdicts(
+		&db,
+		"eventid_rejections",
+		"eventid_rejections",
+		&mut rejection_sources,
+	)?;
+	let mut soft_fails = verdicts(
+		&db,
+		"eventid_softfailed",
+		"eventid_softfailed",
+		&mut soft_fail_sources,
+	)?;
 	let event_status = legacy_status_verdicts(
 		&db,
 		"eventid_status",
 		&mut rejections,
 		&mut soft_fails,
+		&mut rejection_sources,
+		&mut soft_fail_sources,
 	)?;
-	let metadata_verdicts = legacy_metadata_verdicts(&db, &mut rejections, &mut soft_fails)?;
+	let metadata_verdicts = legacy_metadata_verdicts(
+		&db,
+		&mut rejections,
+		&mut soft_fails,
+		&mut rejection_sources,
+		&mut soft_fail_sources,
+	)?;
 	let retired_rejections = union_verdicts(
 		&db,
 		"rejectedeventids",
 		&mut rejections,
+		&mut rejection_sources,
 		11,
 	)?;
 	let admin_rejections = union_verdicts(
 		&db,
 		"adminrejectedeventids",
 		&mut rejections,
+		&mut rejection_sources,
 		11,
 	)?;
 	let retired_soft_fails = union_verdicts(
 		&db,
 		"softfailedeventids",
 		&mut soft_fails,
+		&mut soft_fail_sources,
 		3,
 	)?;
 	eprintln!(
 		"Verdict sources: eventid_rejections={}, eventid_softfailed={}, eventid_status={}, eventid_metadata(rejected={}, soft_failed={}), rejectedeventids={}, adminrejectedeventids={}, softfailedeventids={}",
-		verdicts(&db, "eventid_rejections")?.len(),
-		verdicts(&db, "eventid_softfailed")?.len(),
+		rejection_sources.values().filter(|sources| sources.contains("eventid_rejections")).count(),
+		soft_fail_sources.values().filter(|sources| sources.contains("eventid_softfailed")).count(),
 		event_status,
 		metadata_verdicts.0,
 		metadata_verdicts.1,
@@ -777,7 +867,7 @@ pub fn export(
 		.values()
 		.flat_map(|room| room.keys().map(String::as_str))
 		.collect();
-	let orphan_verdicts: HashSet<&str> = rejections
+	let orphan_verdicts: BTreeSet<&str> = rejections
 		.keys()
 		.chain(soft_fails.keys())
 		.map(String::as_str)
@@ -798,6 +888,14 @@ pub fn export(
 	let stage = out_dir.with_extension(format!("exporting-{}", std::process::id()));
 	fs::create_dir(&stage)?;
 	let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+		write_orphan_audit(
+			&stage.join("orphan-verdicts.audit"),
+			&orphan_verdicts,
+			&rejections,
+			&soft_fails,
+			&rejection_sources,
+			&soft_fail_sources,
+		)?;
 		let mut total = 0usize;
 		for (room, by_id) in events {
 			let count = by_id.len();

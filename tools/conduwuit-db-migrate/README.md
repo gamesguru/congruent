@@ -36,8 +36,10 @@ Verdicts are unioned across every store a source version may use:
 retired-set-only verdict uses the Unknown rejection/soft-fail code. The
 exporter prints per-source counts and warns about metadata rows that match no
 known layout. Verdicts for event IDs with no exported PDU are reported and
-omitted from the room files. Legacy cached keys are exported as permanent keys
-with `ts_added_ms=0`; no notary payload is synthesized.
+omitted from the room files; `orphan-verdicts.audit` lists each omitted ID,
+code, and source map. It is an audit sidecar, not importer input. Legacy cached
+keys are exported as permanent keys with `ts_added_ms=0`; no notary payload is
+synthesized.
 
 ```text
 cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
