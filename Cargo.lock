@@ -1005,9 +1005,9 @@ checksum = "7a949c44fcacbbbb7ada007dc7acb34603dd97cd47de5d054f2b6493ecebb483"
 
 [[package]]
 name = "ctutils"
-version = "0.4.5"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38d28fb6aa7dd680b3ffd1a3e64e115c177bdba63c0ae7f9cd48129ff05c4fa0"
+checksum = "fe3e9d21d39e6f39ff46e03d5b621424f88ee23d8a1672c6bfc9ccc7f2da4f6a"
 dependencies = [
  "cmov",
 ]
@@ -2499,7 +2499,7 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 [[package]]
 name = "rezzy"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#cecb2d18b0243d00ece20f0ab0da7c506eaec26e"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#06ea70cb68384a3cde114804cef2ad45e3d2b55d"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -2514,7 +2514,7 @@ dependencies = [
 [[package]]
 name = "rezzy-json"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#cecb2d18b0243d00ece20f0ab0da7c506eaec26e"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#06ea70cb68384a3cde114804cef2ad45e3d2b55d"
 dependencies = [
  "ryu",
 ]
@@ -2522,7 +2522,7 @@ dependencies = [
 [[package]]
 name = "rezzy-log"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#cecb2d18b0243d00ece20f0ab0da7c506eaec26e"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#06ea70cb68384a3cde114804cef2ad45e3d2b55d"
 dependencies = [
  "tracing",
 ]
@@ -2530,7 +2530,7 @@ dependencies = [
 [[package]]
 name = "rezzy-recon"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#cecb2d18b0243d00ece20f0ab0da7c506eaec26e"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#06ea70cb68384a3cde114804cef2ad45e3d2b55d"
 dependencies = [
  "base64 0.23.1",
  "rezzy-log",
