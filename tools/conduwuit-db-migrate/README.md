@@ -112,3 +112,15 @@ over federation was tried and failed:
 Servers only release a room's events to a server that is in the room, so these
 can be recovered only from a server or account that is currently joined. Losing
 them changes no room state.
+
+## Contradicted rejections
+
+A verdict can contradict the graph: an accepted event may cite a rejected event
+as an auth event. The legacy server accepted the child, so it cannot have
+treated the parent as rejected, and `mtxdb import` would otherwise cascade the
+rejection through every dependent (one `wombatx.me` room lost 16,537 of its
+17,589 events to 9 such parents). `export-mtxdb` therefore drops the rejection
+verdict from any rejected event that an accepted event cites as an auth event,
+repeating until stable, and lists each one in `contradicted-rejections.audit`
+with its original code, verdict sources and the number of accepted events that
+cited it. Rejections nothing accepted depends on are kept.

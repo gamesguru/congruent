@@ -257,6 +257,73 @@ fn write_orphan_audit(
 	Ok(())
 }
 
+/// A rejected event that an accepted event cites as an auth event is a
+/// contradiction: the legacy server accepted the child, so it cannot have
+/// treated the parent as rejected. Importing both makes `mtxdb` cascade the
+/// rejection through every dependent, so the rejection verdict is dropped
+/// instead. Repeats until stable, because an event that is no longer rejected
+/// exposes its own rejected auth events to the same check. Returns each
+/// unrejected event with the number of accepted events that cited it.
+fn unreject_contradicted(by_id: &mut BTreeMap<String, Event>) -> Vec<(String, usize)> {
+	let mut unrejected = Vec::new();
+	loop {
+		let mut cited: BTreeMap<String, usize> = BTreeMap::new();
+		for event in by_id.values().filter(|event| !event.rejected) {
+			for auth in event.auth.as_array().into_iter().flatten() {
+				let Some(id) = auth.as_str() else { continue };
+				if by_id.get(id).is_some_and(|parent| parent.rejected) {
+					let count = cited.entry(id.to_owned()).or_default();
+					*count = count.saturating_add(1);
+				}
+			}
+		}
+		if cited.is_empty() {
+			return unrejected;
+		}
+		for (id, citers) in cited {
+			if let Some(parent) = by_id.get_mut(&id) {
+				parent.rejected = false;
+				parent.rejection_code = None;
+			}
+			unrejected.push((id, citers));
+		}
+	}
+}
+
+fn write_contradicted_audit(
+	path: &Path,
+	unrejected: &[(String, usize)],
+	rejections: &HashMap<String, u8>,
+	rejection_sources: &VerdictSources,
+) -> ExportResult<()> {
+	let mut writer = BufWriter::new(
+		OpenOptions::new()
+			.write(true)
+			.create_new(true)
+			.open(path)?,
+	);
+	for (event_id, citers) in unrejected {
+		let mut record = Object::new();
+		record.insert("t".into(), Value::String("contradicted_rejection".into()));
+		record.insert("event_id".into(), Value::String(event_id.clone()));
+		if let Some(code) = rejections.get(event_id) {
+			record.insert("rejection_code".into(), codec::to_value(code));
+		}
+		let sources = rejection_sources
+			.get(event_id)
+			.into_iter()
+			.flatten()
+			.map(|source| Value::String((*source).into()))
+			.collect();
+		record.insert("rejection_sources".into(), Value::Array(sources));
+		record.insert("accepted_citers".into(), codec::to_value(citers));
+		writer.write_all(codec::to_string(&Value::Object(record)).as_bytes())?;
+		writer.write_all(b"\n")?;
+	}
+	writer.flush()?;
+	Ok(())
+}
+
 fn write_room(
 	out_dir: &Path,
 	server: &str,
@@ -985,6 +1052,17 @@ pub fn export(
 			"warning: {id_mismatches} PDU event IDs disagreed with their map keys; used the PDU event ID and treated the mismatched rows as outliers"
 		);
 	}
+	let mut unrejected: Vec<(String, usize)> = Vec::new();
+	for by_id in events.values_mut() {
+		unrejected.extend(unreject_contradicted(by_id));
+	}
+	if !unrejected.is_empty() {
+		eprintln!(
+			"warning: dropped {} rejection verdicts on events that accepted events cite as auth \
+			 events (listed in contradicted-rejections.audit)",
+			unrejected.len(),
+		);
+	}
 	let exported_ids: HashSet<&str> = events
 		.values()
 		.flat_map(|room| room.keys().map(String::as_str))
@@ -1018,6 +1096,12 @@ pub fn export(
 			&rejection_sources,
 			&soft_fail_sources,
 		)?;
+		write_contradicted_audit(
+			&stage.join("contradicted-rejections.audit"),
+			&unrejected,
+			&rejections,
+			&rejection_sources,
+		)?;
 		let mut total = 0usize;
 		for (room, by_id) in events {
 			let count = by_id.len();
@@ -1041,6 +1125,56 @@ pub fn export(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	fn event(id: &str, auth: &[&str], rejected: bool) -> Event {
+		Event {
+			id: id.into(),
+			room: "!room:example.org".into(),
+			outlier: false,
+			rejected,
+			soft_failed: false,
+			rejection_code: rejected.then_some(11),
+			soft_fail_code: None,
+			pdu: Value::Object(Object::new()),
+			prev: Value::Array(Vec::new()),
+			auth: Value::Array(auth.iter().map(|id| Value::String((*id).into())).collect()),
+		}
+	}
+
+	fn room(events: Vec<Event>) -> BTreeMap<String, Event> {
+		events.into_iter().map(|event| (event.id.clone(), event)).collect()
+	}
+
+	#[test]
+	fn rejections_cited_by_accepted_events_are_dropped_until_stable() {
+		// $c is accepted and cites $b; $b is rejected and cites rejected $a.
+		// $z is rejected and nothing cites it.
+		let mut by_id = room(vec![
+			event("$a", &[], true),
+			event("$b", &["$a"], true),
+			event("$c", &["$b"], false),
+			event("$z", &["$a"], true),
+		]);
+		let mut dropped = unreject_contradicted(&mut by_id);
+		dropped.sort();
+		assert_eq!(dropped, [("$a".to_owned(), 1), ("$b".to_owned(), 1)]);
+		assert!(!by_id["$a"].rejected && by_id["$a"].rejection_code.is_none());
+		assert!(!by_id["$b"].rejected);
+		// $z cites $a but is itself rejected and uncited, so it stays rejected.
+		assert!(by_id["$z"].rejected);
+		assert_eq!(by_id["$z"].rejection_code, Some(11));
+	}
+
+	#[test]
+	fn rejections_only_cited_by_rejected_events_are_kept() {
+		let mut by_id = room(vec![
+			event("$a", &[], true),
+			event("$b", &["$a"], true),
+			event("$ok", &[], false),
+		]);
+		assert!(unreject_contradicted(&mut by_id).is_empty());
+		assert!(by_id["$a"].rejected && by_id["$b"].rejected);
+	}
 
 	#[test]
 	fn supplemental_verdicts_preserve_existing_precedence() {
