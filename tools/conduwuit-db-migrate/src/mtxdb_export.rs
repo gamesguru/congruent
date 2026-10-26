@@ -398,6 +398,194 @@ fn verdicts(db: &DB, map: &str) -> Result<HashMap<String, u8>, Box<dyn std::erro
 	Ok(result)
 }
 
+fn union_verdicts(
+	db: &DB,
+	map: &str,
+	verdicts: &mut HashMap<String, u8>,
+	code: u8,
+) -> ExportResult<usize> {
+	let mut count = 0;
+	for (event_id, _) in rows(db, map)? {
+		let event_id = std::str::from_utf8(&event_id)
+			.map_err(|error| format!("invalid event ID in {map}: {error}"))?;
+		verdicts.entry(event_id.to_owned()).or_insert(code);
+		count += 1;
+	}
+	Ok(count)
+}
+
+fn legacy_status_verdicts(
+	db: &DB,
+	map: &str,
+	rejections: &mut HashMap<String, u8>,
+	soft_fails: &mut HashMap<String, u8>,
+) -> ExportResult<usize> {
+	let mut count = 0;
+	for (event_id, value) in rows(db, map)? {
+		let event_id = std::str::from_utf8(&event_id)
+			.map_err(|error| format!("invalid event ID in {map}: {error}"))?;
+		let (kind, code) = match value.as_slice() {
+			[1, code] => (1, *code),
+			[2, code] => (2, *code),
+			_ => return Err(format!("{map} value for {event_id} is not [kind, code]").into()),
+		};
+		let target = if kind == 1 { &mut *soft_fails } else { &mut *rejections };
+		target.entry(event_id.to_owned()).or_insert(code);
+		count += 1;
+	}
+	Ok(count)
+}
+
+/// Minimal reader for bincode (fixint, little-endian) rows. The legacy
+/// `eventid_metadata` layouts are fixed, so reading them by hand avoids a
+/// bincode dependency in this tool.
+struct Raw<'a>(&'a [u8]);
+
+impl Raw<'_> {
+	fn take(&mut self, n: usize) -> Option<&[u8]> {
+		let (head, tail) = self.0.split_at_checked(n)?;
+		self.0 = tail;
+		Some(head)
+	}
+
+	fn u8(&mut self) -> Option<u8> { self.take(1).map(|b| b[0]) }
+
+	fn u32(&mut self) -> Option<u32> {
+		Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+	}
+
+	fn u64(&mut self) -> Option<u64> {
+		Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+	}
+
+	fn string(&mut self) -> Option<()> {
+		let len = usize::try_from(self.u64()?).ok()?;
+		std::str::from_utf8(self.take(len)?).ok().map(drop)
+	}
+
+	fn option(&mut self, mut inner: impl FnMut(&mut Self) -> Option<()>) -> Option<()> {
+		match self.u8()? {
+			| 0 => Some(()),
+			| 1 => inner(self),
+			| _ => None,
+		}
+	}
+
+	fn flag(&mut self) -> Option<bool> {
+		match self.u8()? {
+			| 0 => Some(false),
+			| 1 => Some(true),
+			| _ => None,
+		}
+	}
+
+	/// short_room_id, is_outlier, origin_server_ts, depth
+	fn prefix(&mut self) -> Option<()> {
+		self.u64()?;
+		self.flag()?;
+		self.u64()?;
+		self.u64()?;
+		Some(())
+	}
+
+	/// redacted_by, short_state_hash
+	fn redacted_and_state(&mut self) -> Option<()> {
+		self.option(Raw::string)?;
+		self.option(|r| r.u64().map(drop))
+	}
+
+	/// deprecated_local_topo_depth, pdu_count
+	fn topo_and_count(&mut self) -> Option<()> {
+		self.u64()?;
+		self.option(|r| r.u64().map(drop))
+	}
+
+	fn done(&self) -> Option<()> { self.0.is_empty().then_some(()) }
+}
+
+/// Verdict carried by one legacy `eventid_metadata` row: (rejection code,
+/// soft-fail code). Layouts are tried newest first, each requiring the whole
+/// row to be consumed, like `db_lt_21`. `None` means the row matches no known
+/// layout.
+fn legacy_metadata_row(raw: &[u8]) -> Option<(Option<u8>, Option<u8>)> {
+	// v20: status enum (Pending, Accepted, Rejected(code), SoftFailed(code)).
+	let v20 = || {
+		let mut r = Raw(raw);
+		r.prefix()?;
+		let verdict = match r.u32()? {
+			| 0 | 1 => (None, None),
+			| 2 => (Some(u8::try_from(r.u32()?).ok()?), None),
+			| 3 => (None, Some(u8::try_from(r.u32()?).ok()?)),
+			| _ => return None,
+		};
+		r.redacted_and_state()?;
+		r.topo_and_count()?;
+		r.done()?;
+		Some(verdict)
+	};
+	// v19: soft_failed and rejected booleans plus two reason strings.
+	let v19 = || {
+		let mut r = Raw(raw);
+		r.prefix()?;
+		let (soft, rejected) = (r.flag()?, r.flag()?);
+		r.redacted_and_state()?;
+		r.topo_and_count()?;
+		r.string()?;
+		r.string()?;
+		r.done()?;
+		Some((rejected.then_some(11), soft.then_some(3)))
+	};
+	// v18: booleans only, no topology or reason fields.
+	let v18 = || {
+		let mut r = Raw(raw);
+		r.prefix()?;
+		let (soft, rejected) = (r.flag()?, r.flag()?);
+		r.redacted_and_state()?;
+		r.done()?;
+		Some((rejected.then_some(11), soft.then_some(3)))
+	};
+	// v21+: no verdict fields; verdicts live in the independent maps.
+	let current = || {
+		let mut r = Raw(raw);
+		r.prefix()?;
+		r.redacted_and_state()?;
+		r.topo_and_count()?;
+		r.done()?;
+		Some((None, None))
+	};
+	v20().or_else(v19).or_else(v18).or_else(current)
+}
+
+fn legacy_metadata_verdicts(
+	db: &DB,
+	rejections: &mut HashMap<String, u8>,
+	soft_fails: &mut HashMap<String, u8>,
+) -> ExportResult<(usize, usize)> {
+	let mut rejected = 0;
+	let mut soft_failed = 0;
+	let mut unparsed = 0;
+	for (event_id, raw) in rows(db, "eventid_metadata")? {
+		let event_id = std::str::from_utf8(&event_id)
+			.map_err(|error| format!("invalid event ID in eventid_metadata: {error}"))?;
+		let Some((rejection, soft_fail)) = legacy_metadata_row(&raw) else {
+			unparsed += 1;
+			continue;
+		};
+		if let Some(code) = rejection {
+			rejections.entry(event_id.to_owned()).or_insert(code);
+			rejected += 1;
+		}
+		if let Some(code) = soft_fail {
+			soft_fails.entry(event_id.to_owned()).or_insert(code);
+			soft_failed += 1;
+		}
+	}
+	if unparsed > 0 {
+		eprintln!("warning: {unparsed} eventid_metadata rows matched no known layout");
+	}
+	Ok((rejected, soft_failed))
+}
+
 /// Exports legacy room events and cached remote signing keys as importer-ready
 /// files. The RocksDB is opened read-only; the output directory must not exist.
 pub fn export(
@@ -423,8 +611,44 @@ pub fn export(
 	let server = server_override
 		.or(inferred_server.as_deref())
 		.expect("server name available");
-	let rejections = verdicts(&db, "eventid_rejections")?;
-	let soft_fails = verdicts(&db, "eventid_softfailed")?;
+	let mut rejections = verdicts(&db, "eventid_rejections")?;
+	let mut soft_fails = verdicts(&db, "eventid_softfailed")?;
+	let event_status = legacy_status_verdicts(
+		&db,
+		"eventid_status",
+		&mut rejections,
+		&mut soft_fails,
+	)?;
+	let metadata_verdicts = legacy_metadata_verdicts(&db, &mut rejections, &mut soft_fails)?;
+	let retired_rejections = union_verdicts(
+		&db,
+		"rejectedeventids",
+		&mut rejections,
+		11,
+	)?;
+	let admin_rejections = union_verdicts(
+		&db,
+		"adminrejectedeventids",
+		&mut rejections,
+		11,
+	)?;
+	let retired_soft_fails = union_verdicts(
+		&db,
+		"softfailedeventids",
+		&mut soft_fails,
+		3,
+	)?;
+	eprintln!(
+		"Verdict sources: eventid_rejections={}, eventid_softfailed={}, eventid_status={}, eventid_metadata(rejected={}, soft_failed={}), rejectedeventids={}, adminrejectedeventids={}, softfailedeventids={}",
+		verdicts(&db, "eventid_rejections")?.len(),
+		verdicts(&db, "eventid_softfailed")?.len(),
+		event_status,
+		metadata_verdicts.0,
+		metadata_verdicts.1,
+		retired_rejections,
+		admin_rejections,
+		retired_soft_fails,
+	);
 
 	let mut short_to_room: HashMap<[u8; 8], String> = HashMap::new();
 	if let Some(cf) = db.cf_handle("roomid_shortroomid") {
@@ -595,5 +819,55 @@ mod tests {
 			.find(|line| line.contains("ed25519:a"))
 			.unwrap();
 		assert!(retired.contains("\"expired_ts\":5"), "{retired}");
+	}
+
+	fn meta_prefix(out: &mut Vec<u8>) {
+		out.extend(7_u64.to_le_bytes());
+		out.push(0);
+		out.extend(1_u64.to_le_bytes());
+		out.extend(2_u64.to_le_bytes());
+	}
+
+	fn meta_tail(out: &mut Vec<u8>) {
+		out.push(0); // redacted_by
+		out.push(0); // short_state_hash
+	}
+
+	#[test]
+	fn legacy_metadata_layouts_yield_verdicts() {
+		let mut v20 = Vec::new();
+		meta_prefix(&mut v20);
+		v20.extend(2_u32.to_le_bytes());
+		v20.extend(7_u32.to_le_bytes());
+		meta_tail(&mut v20);
+		v20.extend(3_u64.to_le_bytes());
+		v20.push(0);
+		assert_eq!(legacy_metadata_row(&v20), Some((Some(7), None)));
+
+		let mut v19 = Vec::new();
+		meta_prefix(&mut v19);
+		v19.extend([1, 0]);
+		meta_tail(&mut v19);
+		v19.extend(3_u64.to_le_bytes());
+		v19.push(0);
+		v19.extend(1_u64.to_le_bytes());
+		v19.push(b'x');
+		v19.extend(0_u64.to_le_bytes());
+		assert_eq!(legacy_metadata_row(&v19), Some((None, Some(3))));
+
+		let mut v18 = Vec::new();
+		meta_prefix(&mut v18);
+		v18.extend([0, 1]);
+		meta_tail(&mut v18);
+		assert_eq!(legacy_metadata_row(&v18), Some((Some(11), None)));
+
+		let mut current = Vec::new();
+		meta_prefix(&mut current);
+		meta_tail(&mut current);
+		current.extend(3_u64.to_le_bytes());
+		current.push(0);
+		assert_eq!(legacy_metadata_row(&current), Some((None, None)));
+
+		assert_eq!(legacy_metadata_row(b"{}"), None);
 	}
 }
