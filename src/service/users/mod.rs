@@ -2250,6 +2250,10 @@ impl Service {
 			);
 		}
 
+		// Hold the barrier between allocating the count and writing the row, so a
+		// concurrent /sync can't advance its token past this event before it is
+		// visible (see `globals::Service::edu_barrier`).
+		let _barrier = self.services.globals.edu_barrier.read().await;
 		let count = self.services.globals.next_count().unwrap();
 
 		trace!(
