@@ -504,6 +504,40 @@ fn union_verdicts(
 	Ok(count)
 }
 
+/// Unions event IDs listed one per line in `path`, which come from a verdict
+/// store of an older copy of the database. Codes already learned from the
+/// primary database win, so a file can only add verdicts; events it names that
+/// have no exported PDU are dropped later with the other orphan verdicts.
+fn union_verdict_file(
+	path: &Path,
+	source: &'static str,
+	verdicts: &mut HashMap<String, u8>,
+	sources: &mut VerdictSources,
+	code: u8,
+) -> ExportResult<usize> {
+	let text = std::fs::read_to_string(path)
+		.map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+	let mut count = 0;
+	for (index, line) in text.lines().enumerate() {
+		let event_id = line.trim();
+		if event_id.is_empty() {
+			continue;
+		}
+		if !event_id.starts_with('$') {
+			return Err(format!(
+				"{}:{}: `{event_id}` is not an event ID",
+				path.display(),
+				index.saturating_add(1)
+			)
+			.into());
+		}
+		verdicts.entry(event_id.to_owned()).or_insert(code);
+		record_verdict_source(sources, event_id, source);
+		count += 1;
+	}
+	Ok(count)
+}
+
 fn legacy_status_verdicts(
 	db: &DB,
 	map: &'static str,
@@ -701,6 +735,8 @@ pub fn export(
 	rocks_path: &Path,
 	out_dir: &Path,
 	server_override: Option<&str>,
+	extra_rejected: &[&Path],
+	extra_soft_failed: &[&Path],
 ) -> Result<(), Box<dyn std::error::Error>> {
 	if out_dir.exists() {
 		return Err(
@@ -770,6 +806,26 @@ pub fn export(
 		&mut soft_fail_sources,
 		3,
 	)?;
+	for file in extra_rejected {
+		let count = union_verdict_file(
+			file,
+			"extra-rejected-file",
+			&mut rejections,
+			&mut rejection_sources,
+			11,
+		)?;
+		eprintln!("Extra rejections from {}: {count}", file.display());
+	}
+	for file in extra_soft_failed {
+		let count = union_verdict_file(
+			file,
+			"extra-soft-failed-file",
+			&mut soft_fails,
+			&mut soft_fail_sources,
+			3,
+		)?;
+		eprintln!("Extra soft-fails from {}: {count}", file.display());
+	}
 	eprintln!(
 		"Verdict sources: eventid_rejections={}, eventid_softfailed={}, eventid_status={}, eventid_metadata(rejected={}, soft_failed={}), rejectedeventids={}, adminrejectedeventids={}, softfailedeventids={}",
 		rejection_sources.values().filter(|sources| sources.contains("eventid_rejections")).count(),
