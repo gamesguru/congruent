@@ -22,7 +22,6 @@ const MTXDB_OWNED_MAPS: &[&str] = &[
 	"eventid_pdu",
 	"eventid_pduid",
 	"eventid_rejections",
-	"eventid_shorteventid",
 	"eventid_softfailed",
 	"eventid_status",
 	"pduid_pdu",
@@ -37,18 +36,15 @@ const MTXDB_OWNED_MAPS: &[&str] = &[
 	"roomid_topologicalorder_pducount",
 	"server_signingkeys",
 	"shorteventid_authchain",
-	"shorteventid_eventid",
 	"shorteventid_roothandle",
 	"shorteventid_shortauthevents",
 	"shorteventid_shortprevevents",
 	"shorteventid_shortstatehash",
-	"shortstatekey_statekey",
 	"shortstatehash_statediff",
 	"state_hamt_node_mtimes",
 	"state_hamt_nodes",
 	"state_hamt_root_lattices",
 	"statehash_shortstatehash",
-	"statekey_shortstatekey",
 ];
 
 fn usage() -> ! {
