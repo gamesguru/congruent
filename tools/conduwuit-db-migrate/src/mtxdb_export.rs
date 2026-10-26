@@ -55,10 +55,11 @@ fn infer_server_name(db: &DB) -> Result<String, Box<dyn std::error::Error>> {
 	let mut names = std::collections::BTreeSet::new();
 	for row in db.iterator_cf(cf, IteratorMode::Start) {
 		let (key, _) = row?;
-		let raw_id = std::str::from_utf8(&key)?;
-		let user_id = OwnedUserId::parse(raw_id)
-			.map_err(|error| format!("invalid local user ID in userid_password: {error}"))?;
-		names.insert(user_id.server_name().to_string());
+		if let Ok(raw_id) = std::str::from_utf8(&key) {
+			if let Ok(user_id) = OwnedUserId::parse(raw_id) {
+				names.insert(user_id.server_name().to_string());
+			}
+		}
 	}
 	match names.len() {
 		| 1 => Ok(names.into_iter().next().expect("one inferred name")),
@@ -79,6 +80,7 @@ fn parse_pdu(
 	outlier: bool,
 	rejections: &HashMap<String, u8>,
 	soft_fails: &HashMap<String, u8>,
+	event_to_room: &mut HashMap<String, String>,
 ) -> Result<Event, String> {
 	let mut pdu = Value::parse_bytes(raw).map_err(|error| error.to_string())?;
 	let object = pdu.as_object_mut().ok_or("PDU JSON is not an object")?;
@@ -92,11 +94,59 @@ fn parse_pdu(
 		.or(fallback_id)
 		.ok_or("event ID missing from PDU and map key")?
 		.to_owned();
-	let room = object
-		.get("room_id")
-		.and_then(Value::as_str)
-		.ok_or("PDU has no string room_id")?
-		.to_owned();
+	let room = match object.get("room_id").and_then(Value::as_str) {
+		Some(r) => {
+			let room = r.to_owned();
+			event_to_room.insert(event_id.clone(), room.clone());
+			room
+		},
+		None => {
+			let is_create = object.get("type").and_then(Value::as_str) == Some("m.room.create");
+			let inferred = event_to_room
+				.get(&event_id)
+				.cloned()
+				.or_else(|| {
+					if is_create && event_id.starts_with('$') {
+						let derived = format!("!{}", &event_id[1..]);
+						Some(derived)
+					} else {
+						None
+					}
+				})
+				.or_else(|| {
+					if let Some(auths) = object.get("auth_events").and_then(Value::as_array) {
+						for auth in auths {
+							if let Some(id) = auth.as_str() {
+								if let Some(r) = event_to_room.get(id) {
+									return Some(r.clone());
+								}
+							}
+						}
+					}
+					if let Some(prevs) = object.get("prev_events").and_then(Value::as_array) {
+						for prev in prevs {
+							if let Some(id) = prev.as_str() {
+								if let Some(r) = event_to_room.get(id) {
+									return Some(r.clone());
+								}
+							}
+						}
+					}
+					None
+				});
+			match inferred {
+				Some(r) => {
+					object.insert("room_id".into(), Value::String(r.clone()));
+					event_to_room.insert(event_id.clone(), r.clone());
+					r
+				},
+				None => {
+					eprintln!("Unresolvable PDU {event_id}: {}", String::from_utf8_lossy(raw));
+					return Err("PDU has no string room_id and room could not be inferred".into());
+				},
+			}
+		},
+	};
 	if !object.contains_key("event_id") {
 		object.insert("event_id".into(), Value::String(event_id.clone()));
 	}
@@ -362,6 +412,7 @@ pub fn export(
 	}
 	let mut options = Options::default();
 	options.create_if_missing(false);
+	options.set_track_and_verify_wals_in_manifest(true);
 	let names = DB::list_cf(&options, rocks_path)?;
 	let db = DB::open_cf_for_read_only(&options, rocks_path, &names, false)?;
 	let inferred_server = if server_override.is_none() {
@@ -374,10 +425,45 @@ pub fn export(
 		.expect("server name available");
 	let rejections = verdicts(&db, "eventid_rejections")?;
 	let soft_fails = verdicts(&db, "eventid_softfailed")?;
+
+	let mut short_to_room: HashMap<[u8; 8], String> = HashMap::new();
+	if let Some(cf) = db.cf_handle("roomid_shortroomid") {
+		for row in db.iterator_cf(cf, IteratorMode::Start) {
+			let (room_id, short_bytes) = row?;
+			if short_bytes.len() == 8 {
+				let mut short = [0u8; 8];
+				short.copy_from_slice(&short_bytes);
+				if let Ok(room_str) = std::str::from_utf8(&room_id) {
+					short_to_room.insert(short, room_str.to_owned());
+				}
+			}
+		}
+	}
+
+	let mut event_to_room: HashMap<String, String> = HashMap::new();
 	let mut timeline_ids: HashMap<Vec<u8>, String> = HashMap::new();
 	for (event_id, pdu_id) in rows(&db, "eventid_pduid")? {
-		if let Ok(event_id) = std::str::from_utf8(&event_id) {
-			timeline_ids.insert(pdu_id, event_id.to_owned());
+		if let Ok(event_id_str) = std::str::from_utf8(&event_id) {
+			timeline_ids.insert(pdu_id.clone(), event_id_str.to_owned());
+			if pdu_id.len() >= 8 {
+				let mut short = [0u8; 8];
+				short.copy_from_slice(&pdu_id[0..8]);
+				if let Some(room) = short_to_room.get(&short) {
+					event_to_room.insert(event_id_str.to_owned(), room.clone());
+				}
+			}
+		}
+	}
+	for (pdu_id, event_id) in rows(&db, "room_pducount_eventid")? {
+		if let Ok(event_id_str) = std::str::from_utf8(&event_id) {
+			timeline_ids.insert(pdu_id.clone(), event_id_str.to_owned());
+			if pdu_id.len() >= 8 {
+				let mut short = [0u8; 8];
+				short.copy_from_slice(&pdu_id[0..8]);
+				if let Some(room) = short_to_room.get(&short) {
+					event_to_room.insert(event_id_str.to_owned(), room.clone());
+				}
+			}
 		}
 	}
 	let mut events: BTreeMap<String, BTreeMap<String, Event>> = BTreeMap::new();
@@ -399,6 +485,7 @@ pub fn export(
 			!fallback.is_some_and(|id| timeline_set.contains(id)),
 			&rejections,
 			&soft_fails,
+			&mut event_to_room,
 		)
 		.map_err(|error| {
 			format!("bad eventid_pdu row {}: {error}", String::from_utf8_lossy(&event_id))
@@ -408,19 +495,33 @@ pub fn export(
 	// Legacy layout: timeline PDUs were keyed by their packed PDU id.
 	for (pdu_id, raw) in rows(&db, "pduid_pdu")? {
 		let fallback = timeline_ids.get(&pdu_id).map(String::as_str);
-		let event = parse_pdu(&raw, fallback, false, &rejections, &soft_fails)
-			.map_err(|error| format!("bad pduid_pdu row {}: {error}", hex(&pdu_id)))?;
+		let event = parse_pdu(
+			&raw,
+			fallback,
+			false,
+			&rejections,
+			&soft_fails,
+			&mut event_to_room,
+		)
+		.map_err(|error| format!("bad pduid_pdu row {}: {error}", hex(&pdu_id)))?;
 		add(event);
 	}
 	for (event_id, raw) in rows(&db, "eventid_outlierpdu")? {
 		let fallback = std::str::from_utf8(&event_id).ok();
-		let event =
-			parse_pdu(&raw, fallback, true, &rejections, &soft_fails).map_err(|error| {
-				format!(
-					"bad eventid_outlierpdu row {}: {error}",
-					String::from_utf8_lossy(&event_id)
-				)
-			})?;
+		let event = parse_pdu(
+			&raw,
+			fallback,
+			true,
+			&rejections,
+			&soft_fails,
+			&mut event_to_room,
+		)
+		.map_err(|error| {
+			format!(
+				"bad eventid_outlierpdu row {}: {error}",
+				String::from_utf8_lossy(&event_id)
+			)
+		})?;
 		add(event);
 	}
 	let exported_ids: HashSet<&str> = events

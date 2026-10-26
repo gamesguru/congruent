@@ -127,6 +127,7 @@ fn export(
 	}
 	let mut options = Options::default();
 	options.create_if_missing(false);
+	options.set_track_and_verify_wals_in_manifest(true);
 	let names = DB::list_cf(&options, rocks_path)?;
 	let selected: Vec<String> = if requested.is_empty() {
 		names
