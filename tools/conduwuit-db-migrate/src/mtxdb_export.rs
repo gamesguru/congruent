@@ -2,7 +2,7 @@
 //! the `mtxdb-export/v1` files accepted by `mtxdb import`.
 
 use std::{
-	collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+	collections::{BTreeMap, HashMap, HashSet},
 	fs::{self, OpenOptions},
 	io::{BufWriter, Write},
 	path::{Path, PathBuf},
@@ -17,17 +17,11 @@ use slipstream::{
 const FORMAT: &str = "mtxdb-export/v1";
 type ExportResult<T> = Result<T, Box<dyn std::error::Error>>;
 type DbRow = (Vec<u8>, Vec<u8>);
-type VerdictSources = HashMap<String, BTreeSet<&'static str>>;
 
 #[derive(Clone)]
 struct Event {
 	id: String,
 	room: String,
-	outlier: bool,
-	rejected: bool,
-	soft_failed: bool,
-	rejection_code: Option<u8>,
-	soft_fail_code: Option<u8>,
 	pdu: Value,
 	prev: Value,
 	auth: Value,
@@ -78,17 +72,13 @@ fn infer_server_name(db: &DB) -> Result<String, Box<dyn std::error::Error>> {
 fn parse_pdu(
 	raw: &[u8],
 	fallback_id: Option<&str>,
-	outlier: bool,
-	rejections: &HashMap<String, u8>,
-	soft_fails: &HashMap<String, u8>,
 	event_to_room: &mut HashMap<String, String>,
 ) -> Result<(Event, bool), String> {
 	let mut pdu = Value::parse_bytes(raw).map_err(|error| error.to_string())?;
 	let object = pdu.as_object_mut().ok_or("PDU JSON is not an object")?;
 	let stored_id = object.get("event_id").and_then(Value::as_str);
 	// Legacy indexes can outlive the PDU they pointed at. The stored PDU's
-	// own event_id is authoritative; a differing map key is reported and the
-	// event is treated as an outlier so it cannot corrupt timeline order.
+	// own event_id is authoritative; a differing map key is reported.
 	let id_mismatch = matches!(
 		(stored_id, fallback_id),
 		(Some(stored), Some(fallback)) if stored != fallback
@@ -154,13 +144,8 @@ fn parse_pdu(
 		object.insert("event_id".into(), Value::String(event_id.clone()));
 	}
 	Ok((Event {
-		rejected: rejections.contains_key(&event_id),
-		soft_failed: soft_fails.contains_key(&event_id),
-		rejection_code: rejections.get(&event_id).copied(),
-		soft_fail_code: soft_fails.get(&event_id).copied(),
 		id: event_id,
 		room,
-		outlier: outlier || id_mismatch,
 		prev: object
 			.get("prev_events")
 			.filter(|v| v.is_array())
@@ -199,61 +184,9 @@ fn event_line(out: &mut impl Write, event: &Event) -> Result<(), Box<dyn std::er
 	record.insert("event_id".into(), Value::String(event.id.clone()));
 	record.insert("prev_events".into(), event.prev.clone());
 	record.insert("auth_events".into(), event.auth.clone());
-	record.insert("outlier".into(), Value::Bool(event.outlier));
-	record.insert("soft_failed".into(), Value::Bool(event.soft_failed));
-	record.insert("rejected".into(), Value::Bool(event.rejected));
-	if let Some(code) = event.soft_fail_code {
-		record.insert("soft_fail_code".into(), codec::to_value(&code));
-	}
-	if let Some(code) = event.rejection_code {
-		record.insert("rejection_code".into(), codec::to_value(&code));
-	}
 	record.insert("pdu".into(), event.pdu.clone());
 	out.write_all(codec::to_string(&Value::Object(record)).as_bytes())?;
 	out.write_all(b"\n")?;
-	Ok(())
-}
-
-fn write_orphan_audit(
-	path: &Path,
-	event_ids: &BTreeSet<&str>,
-	rejections: &HashMap<String, u8>,
-	soft_fails: &HashMap<String, u8>,
-	rejection_sources: &VerdictSources,
-	soft_fail_sources: &VerdictSources,
-) -> ExportResult<()> {
-	let mut writer = BufWriter::new(
-		OpenOptions::new()
-			.write(true)
-			.create_new(true)
-			.open(path)?,
-	);
-	for event_id in event_ids {
-		let mut record = Object::new();
-		record.insert("t".into(), Value::String("orphan_verdict".into()));
-		record.insert("event_id".into(), Value::String((*event_id).into()));
-		if let Some(code) = rejections.get(*event_id) {
-			record.insert("rejection_code".into(), codec::to_value(code));
-		}
-		if let Some(code) = soft_fails.get(*event_id) {
-			record.insert("soft_fail_code".into(), codec::to_value(code));
-		}
-		for (field, sources) in [
-			("rejection_sources", rejection_sources),
-			("soft_fail_sources", soft_fail_sources),
-		] {
-			let values = sources
-				.get(*event_id)
-				.into_iter()
-				.flatten()
-				.map(|source| Value::String((*source).into()))
-				.collect();
-			record.insert(field.into(), Value::Array(values));
-		}
-		writer.write_all(codec::to_string(&Value::Object(record)).as_bytes())?;
-		writer.write_all(b"\n")?;
-	}
-	writer.flush()?;
 	Ok(())
 }
 
@@ -498,312 +431,12 @@ fn write_keys(
 	Ok(count)
 }
 
-fn record_verdict_source(sources: &mut VerdictSources, event_id: &str, source: &'static str) {
-	sources
-		.entry(event_id.to_owned())
-		.or_default()
-		.insert(source);
-}
-
-fn verdicts(
-	db: &DB,
-	map: &str,
-	source: &'static str,
-	sources: &mut VerdictSources,
-) -> Result<HashMap<String, u8>, Box<dyn std::error::Error>> {
-	let mut result = HashMap::new();
-	for (event_id, value) in rows(db, map)? {
-		let event_id = std::str::from_utf8(&event_id)
-			.map_err(|error| format!("invalid event ID in {map}: {error}"))?;
-		let [code] = value.as_slice() else {
-			return Err(format!("{map} value for {event_id} is not one byte").into());
-		};
-		result.insert(event_id.to_owned(), *code);
-		record_verdict_source(sources, event_id, source);
-	}
-	Ok(result)
-}
-
-fn union_verdicts(
-	db: &DB,
-	map: &'static str,
-	verdicts: &mut HashMap<String, u8>,
-	sources: &mut VerdictSources,
-	code: u8,
-) -> ExportResult<usize> {
-	let mut count = 0;
-	for (event_id, _) in rows(db, map)? {
-		let event_id = std::str::from_utf8(&event_id)
-			.map_err(|error| format!("invalid event ID in {map}: {error}"))?;
-		verdicts.entry(event_id.to_owned()).or_insert(code);
-		record_verdict_source(sources, event_id, map);
-		count += 1;
-	}
-	Ok(count)
-}
-
-/// Unions event IDs listed one per line in `path`, which come from a verdict
-/// store of an older copy of the database. Codes already learned from the
-/// primary database win, so a file can only add verdicts; events it names that
-/// have no exported PDU are dropped later with the other orphan verdicts.
-fn insert_supplemental_verdict(
-	event_id: &str,
-	verdicts: &mut HashMap<String, u8>,
-	opposite_verdicts: &HashMap<String, u8>,
-	sources: &mut VerdictSources,
-	source: &'static str,
-	code: u8,
-) -> bool {
-	// Keep the primary DB's verdict if the backup disagrees. When two
-	// supplemental sets disagree, rejection wins because those sets are
-	// processed before supplemental soft-fails.
-	if opposite_verdicts.contains_key(event_id) {
-		return false;
-	}
-	verdicts.entry(event_id.to_owned()).or_insert(code);
-	record_verdict_source(sources, event_id, source);
-	true
-}
-
-fn union_verdict_file(
-	path: &Path,
-	source: &'static str,
-	verdicts: &mut HashMap<String, u8>,
-	opposite_verdicts: &HashMap<String, u8>,
-	sources: &mut VerdictSources,
-	code: u8,
-) -> ExportResult<(usize, usize)> {
-	let text = std::fs::read_to_string(path)
-		.map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-	let mut count = 0;
-	let mut conflicts = 0;
-	for (index, line) in text.lines().enumerate() {
-		let event_id = line.trim();
-		if event_id.is_empty() {
-			continue;
-		}
-		if !event_id.starts_with('$') {
-			return Err(format!(
-				"{}:{}: `{event_id}` is not an event ID",
-				path.display(),
-				index.saturating_add(1)
-			)
-			.into());
-		}
-		if !insert_supplemental_verdict(
-			event_id,
-			verdicts,
-			opposite_verdicts,
-			sources,
-			source,
-			code,
-		) {
-			conflicts += 1;
-		}
-		count += 1;
-	}
-	Ok((count, conflicts))
-}
-
-fn legacy_status_verdicts(
-	db: &DB,
-	map: &'static str,
-	rejections: &mut HashMap<String, u8>,
-	soft_fails: &mut HashMap<String, u8>,
-	rejection_sources: &mut VerdictSources,
-	soft_fail_sources: &mut VerdictSources,
-) -> ExportResult<usize> {
-	let mut count = 0;
-	for (event_id, value) in rows(db, map)? {
-		let event_id = std::str::from_utf8(&event_id)
-			.map_err(|error| format!("invalid event ID in {map}: {error}"))?;
-		let (kind, code) = match value.as_slice() {
-			[1, code] => (1, *code),
-			[2, code] => (2, *code),
-			_ => return Err(format!("{map} value for {event_id} is not [kind, code]").into()),
-		};
-		let target = if kind == 1 { &mut *soft_fails } else { &mut *rejections };
-		target.entry(event_id.to_owned()).or_insert(code);
-		let sources = if kind == 1 { &mut *soft_fail_sources } else { &mut *rejection_sources };
-		record_verdict_source(sources, event_id, map);
-		count += 1;
-	}
-	Ok(count)
-}
-
-/// Minimal reader for bincode (fixint, little-endian) rows. The legacy
-/// `eventid_metadata` layouts are fixed, so reading them by hand avoids a
-/// bincode dependency in this tool.
-struct Raw<'a>(&'a [u8]);
-
-impl Raw<'_> {
-	fn take(&mut self, n: usize) -> Option<&[u8]> {
-		let (head, tail) = self.0.split_at_checked(n)?;
-		self.0 = tail;
-		Some(head)
-	}
-
-	fn u8(&mut self) -> Option<u8> { self.take(1).map(|b| b[0]) }
-
-	fn u32(&mut self) -> Option<u32> {
-		Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
-	}
-
-	fn u64(&mut self) -> Option<u64> {
-		Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
-	}
-
-	fn string(&mut self) -> Option<()> {
-		let len = usize::try_from(self.u64()?).ok()?;
-		std::str::from_utf8(self.take(len)?).ok().map(drop)
-	}
-
-	fn option(&mut self, mut inner: impl FnMut(&mut Self) -> Option<()>) -> Option<()> {
-		match self.u8()? {
-			| 0 => Some(()),
-			| 1 => inner(self),
-			| _ => None,
-		}
-	}
-
-	fn flag(&mut self) -> Option<bool> {
-		match self.u8()? {
-			| 0 => Some(false),
-			| 1 => Some(true),
-			| _ => None,
-		}
-	}
-
-	/// short_room_id, is_outlier, origin_server_ts, depth
-	fn prefix(&mut self) -> Option<()> {
-		self.u64()?;
-		self.flag()?;
-		self.u64()?;
-		self.u64()?;
-		Some(())
-	}
-
-	/// redacted_by, short_state_hash
-	fn redacted_and_state(&mut self) -> Option<()> {
-		self.option(Raw::string)?;
-		self.option(|r| r.u64().map(drop))
-	}
-
-	/// deprecated_local_topo_depth, pdu_count
-	fn topo_and_count(&mut self) -> Option<()> {
-		self.u64()?;
-		self.option(|r| r.u64().map(drop))
-	}
-
-	fn done(&self) -> Option<()> { self.0.is_empty().then_some(()) }
-}
-
-/// Verdict carried by one legacy `eventid_metadata` row: (rejection code,
-/// soft-fail code). Layouts are tried newest first, each requiring the whole
-/// row to be consumed, like `db_lt_21`. `None` means the row matches no known
-/// layout.
-fn legacy_metadata_row(raw: &[u8]) -> Option<(Option<u8>, Option<u8>)> {
-	// v20: status enum (Pending, Accepted, Rejected(code), SoftFailed(code)).
-	let v20 = || {
-		let mut r = Raw(raw);
-		r.prefix()?;
-		let verdict = match r.u32()? {
-			| 0 | 1 => (None, None),
-			| 2 => (Some(u8::try_from(r.u32()?).ok()?), None),
-			| 3 => (None, Some(u8::try_from(r.u32()?).ok()?)),
-			| _ => return None,
-		};
-		r.redacted_and_state()?;
-		r.topo_and_count()?;
-		r.done()?;
-		Some(verdict)
-	};
-	// v19: soft_failed and rejected booleans plus two reason strings.
-	let v19 = || {
-		let mut r = Raw(raw);
-		r.prefix()?;
-		let (soft, rejected) = (r.flag()?, r.flag()?);
-		r.redacted_and_state()?;
-		r.topo_and_count()?;
-		r.string()?;
-		r.string()?;
-		r.done()?;
-		Some((rejected.then_some(11), soft.then_some(3)))
-	};
-	// v18: booleans only, no topology or reason fields.
-	let v18 = || {
-		let mut r = Raw(raw);
-		r.prefix()?;
-		let (soft, rejected) = (r.flag()?, r.flag()?);
-		r.redacted_and_state()?;
-		r.done()?;
-		Some((rejected.then_some(11), soft.then_some(3)))
-	};
-	// v18 plus the topological depth, written before pdu_count and the reason
-	// strings existed. Common on outliers in v19 databases.
-	let v18_topo = || {
-		let mut r = Raw(raw);
-		r.prefix()?;
-		let (soft, rejected) = (r.flag()?, r.flag()?);
-		r.redacted_and_state()?;
-		r.u64()?;
-		r.done()?;
-		Some((rejected.then_some(11), soft.then_some(3)))
-	};
-	// v21+: no verdict fields; verdicts live in the independent maps.
-	let current = || {
-		let mut r = Raw(raw);
-		r.prefix()?;
-		r.redacted_and_state()?;
-		r.topo_and_count()?;
-		r.done()?;
-		Some((None, None))
-	};
-	v20().or_else(v19).or_else(v18_topo).or_else(v18).or_else(current)
-}
-
-fn legacy_metadata_verdicts(
-	db: &DB,
-	rejections: &mut HashMap<String, u8>,
-	soft_fails: &mut HashMap<String, u8>,
-	rejection_sources: &mut VerdictSources,
-	soft_fail_sources: &mut VerdictSources,
-) -> ExportResult<(usize, usize)> {
-	let mut rejected = 0;
-	let mut soft_failed = 0;
-	let mut unparsed = 0;
-	for (event_id, raw) in rows(db, "eventid_metadata")? {
-		let event_id = std::str::from_utf8(&event_id)
-			.map_err(|error| format!("invalid event ID in eventid_metadata: {error}"))?;
-		let Some((rejection, soft_fail)) = legacy_metadata_row(&raw) else {
-			unparsed += 1;
-			continue;
-		};
-		if let Some(code) = rejection {
-			rejections.entry(event_id.to_owned()).or_insert(code);
-			record_verdict_source(rejection_sources, event_id, "eventid_metadata");
-			rejected += 1;
-		}
-		if let Some(code) = soft_fail {
-			soft_fails.entry(event_id.to_owned()).or_insert(code);
-			record_verdict_source(soft_fail_sources, event_id, "eventid_metadata");
-			soft_failed += 1;
-		}
-	}
-	if unparsed > 0 {
-		eprintln!("warning: {unparsed} eventid_metadata rows matched no known layout");
-	}
-	Ok((rejected, soft_failed))
-}
-
 /// Exports legacy room events and cached remote signing keys as importer-ready
 /// files. The RocksDB is opened read-only; the output directory must not exist.
 pub fn export(
 	rocks_path: &Path,
 	out_dir: &Path,
 	server_override: Option<&str>,
-	extra_rejected: &[&Path],
-	extra_soft_failed: &[&Path],
 ) -> Result<(), Box<dyn std::error::Error>> {
 	if out_dir.exists() {
 		return Err(
@@ -823,96 +456,6 @@ pub fn export(
 	let server = server_override
 		.or(inferred_server.as_deref())
 		.expect("server name available");
-	let mut rejection_sources = VerdictSources::new();
-	let mut soft_fail_sources = VerdictSources::new();
-	let mut rejections = verdicts(
-		&db,
-		"eventid_rejections",
-		"eventid_rejections",
-		&mut rejection_sources,
-	)?;
-	let mut soft_fails = verdicts(
-		&db,
-		"eventid_softfailed",
-		"eventid_softfailed",
-		&mut soft_fail_sources,
-	)?;
-	let event_status = legacy_status_verdicts(
-		&db,
-		"eventid_status",
-		&mut rejections,
-		&mut soft_fails,
-		&mut rejection_sources,
-		&mut soft_fail_sources,
-	)?;
-	let metadata_verdicts = legacy_metadata_verdicts(
-		&db,
-		&mut rejections,
-		&mut soft_fails,
-		&mut rejection_sources,
-		&mut soft_fail_sources,
-	)?;
-	let retired_rejections = union_verdicts(
-		&db,
-		"rejectedeventids",
-		&mut rejections,
-		&mut rejection_sources,
-		11,
-	)?;
-	let admin_rejections = union_verdicts(
-		&db,
-		"adminrejectedeventids",
-		&mut rejections,
-		&mut rejection_sources,
-		11,
-	)?;
-	let retired_soft_fails = union_verdicts(
-		&db,
-		"softfailedeventids",
-		&mut soft_fails,
-		&mut soft_fail_sources,
-		3,
-	)?;
-	for file in extra_rejected {
-		let (count, conflicts) = union_verdict_file(
-			file,
-			"extra-rejected-file",
-			&mut rejections,
-			&soft_fails,
-			&mut rejection_sources,
-			11,
-		)?;
-		eprintln!(
-			"Extra rejections from {}: {count} (ignored {conflicts} conflicting soft-fails)",
-			file.display()
-		);
-	}
-	for file in extra_soft_failed {
-		let (count, conflicts) = union_verdict_file(
-			file,
-			"extra-soft-failed-file",
-			&mut soft_fails,
-			&rejections,
-			&mut soft_fail_sources,
-			3,
-		)?;
-		eprintln!(
-			"Extra soft-fails from {}: {count} (ignored {conflicts} conflicting rejections)",
-			file.display()
-		);
-	}
-	eprintln!(
-		"Verdict sources: eventid_rejections={}, eventid_softfailed={}, eventid_status={}, eventid_metadata(rejected={}, soft_failed={}), rejectedeventids={}, adminrejectedeventids={}, softfailedeventids={}",
-		rejection_sources.values().filter(|sources| sources.contains("eventid_rejections")).count(),
-		soft_fail_sources.values().filter(|sources| sources.contains("eventid_softfailed")).count(),
-		event_status,
-		metadata_verdicts.0,
-		metadata_verdicts.1,
-		retired_rejections,
-		admin_rejections,
-		retired_soft_fails,
-	);
-
 	let mut short_to_room: HashMap<[u8; 8], String> = HashMap::new();
 	if let Some(cf) = db.cf_handle("roomid_shortroomid") {
 		for row in db.iterator_cf(cf, IteratorMode::Start) {
@@ -928,10 +471,8 @@ pub fn export(
 	}
 
 	let mut event_to_room: HashMap<String, String> = HashMap::new();
-	let mut timeline_ids: HashMap<Vec<u8>, String> = HashMap::new();
 	for (event_id, pdu_id) in rows(&db, "eventid_pduid")? {
 		if let Ok(event_id_str) = std::str::from_utf8(&event_id) {
-			timeline_ids.insert(pdu_id.clone(), event_id_str.to_owned());
 			if pdu_id.len() >= 8 {
 				let mut short = [0u8; 8];
 				short.copy_from_slice(&pdu_id[0..8]);
@@ -943,7 +484,6 @@ pub fn export(
 	}
 	for (pdu_id, event_id) in rows(&db, "room_pducount_eventid")? {
 		if let Ok(event_id_str) = std::str::from_utf8(&event_id) {
-			timeline_ids.insert(pdu_id.clone(), event_id_str.to_owned());
 			if pdu_id.len() >= 8 {
 				let mut short = [0u8; 8];
 				short.copy_from_slice(&pdu_id[0..8]);
@@ -962,17 +502,12 @@ pub fn export(
 			.entry(event.id.clone())
 			.or_insert(event);
 	};
-	// Current layout: eventid_pdu is the source of truth; eventid_pduid marks
-	// timeline events while records without it are outliers.
-	let timeline_set: HashSet<String> = timeline_ids.values().cloned().collect();
+	// Current layout: eventid_pdu is the source of truth.
 	for (event_id, raw) in rows(&db, "eventid_pdu")? {
 		let fallback = std::str::from_utf8(&event_id).ok();
 		let (event, mismatch) = parse_pdu(
 			&raw,
 			fallback,
-			!fallback.is_some_and(|id| timeline_set.contains(id)),
-			&rejections,
-			&soft_fails,
 			&mut event_to_room,
 		)
 		.map_err(|error| {
@@ -986,13 +521,10 @@ pub fn export(
 		// The PDU body is authoritative for its event ID. The eventid_pduid /
 		// room_pducount_eventid indexes can be stale in old databases, so never
 		// use a secondary index as the fallback identity. These rows are
-		// timeline PDUs, so pass the fallback as None and keep outlier=false.
+		// timeline PDUs, so pass the fallback as None.
 		let (event, mismatch) = parse_pdu(
 			&raw,
 			None,
-			false,
-			&rejections,
-			&soft_fails,
 			&mut event_to_room,
 		)
 		.map_err(|error| format!("bad pduid_pdu row {}: {error}", hex(&pdu_id)))?;
@@ -1004,9 +536,6 @@ pub fn export(
 		let (event, mismatch) = parse_pdu(
 			&raw,
 			fallback,
-			true,
-			&rejections,
-			&soft_fails,
 			&mut event_to_room,
 		)
 		.map_err(|error| {
@@ -1020,24 +549,7 @@ pub fn export(
 	}
 	if id_mismatches > 0 {
 		eprintln!(
-			"warning: {id_mismatches} PDU event IDs disagreed with their map keys; used the PDU event ID and treated the mismatched rows as outliers"
-		);
-	}
-	let exported_ids: HashSet<&str> = events
-		.values()
-		.flat_map(|room| room.keys().map(String::as_str))
-		.collect();
-	let orphan_verdicts: BTreeSet<&str> = rejections
-		.keys()
-		.chain(soft_fails.keys())
-		.map(String::as_str)
-		.filter(|event_id| !exported_ids.contains(event_id))
-		.collect();
-	if !orphan_verdicts.is_empty() {
-		eprintln!(
-			"warning: dropping verdicts for {} events with no exported PDU (for example {})",
-			orphan_verdicts.len(),
-			orphan_verdicts.iter().next().expect("non-empty orphan set"),
+			"warning: {id_mismatches} PDU event IDs disagreed with their map keys; used the PDU event ID"
 		);
 	}
 	if events.is_empty() {
@@ -1048,14 +560,6 @@ pub fn export(
 	let stage = out_dir.with_extension(format!("exporting-{}", std::process::id()));
 	fs::create_dir(&stage)?;
 	let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-		write_orphan_audit(
-			&stage.join("orphan-verdicts.audit"),
-			&orphan_verdicts,
-			&rejections,
-			&soft_fails,
-			&rejection_sources,
-			&soft_fail_sources,
-		)?;
 		let observed = observe_signatures(events.values().flat_map(BTreeMap::values));
 		let mut total = 0usize;
 		for (room, by_id) in events {
@@ -1091,60 +595,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn supplemental_verdicts_preserve_existing_precedence() {
-		let mut rejections = HashMap::new();
-		let mut soft_fails = HashMap::new();
-		let mut rejection_sources = VerdictSources::new();
-		let mut soft_fail_sources = VerdictSources::new();
-
-		// A backup rejection cannot replace a primary soft-fail.
-		soft_fails.insert("$primary-soft".into(), 7);
-		assert!(!insert_supplemental_verdict(
-			"$primary-soft",
-			&mut rejections,
-			&soft_fails,
-			&mut rejection_sources,
-			"backup-rejection",
-			11,
-		));
-		assert_eq!(soft_fails.get("$primary-soft"), Some(&7));
-		assert!(!rejections.contains_key("$primary-soft"));
-
-		// A backup soft-fail cannot replace a primary rejection.
-		rejections.insert("$primary-rejected".into(), 9);
-		assert!(!insert_supplemental_verdict(
-			"$primary-rejected",
-			&mut soft_fails,
-			&rejections,
-			&mut soft_fail_sources,
-			"backup-soft-fail",
-			3,
-		));
-		assert_eq!(rejections.get("$primary-rejected"), Some(&9));
-		assert!(!soft_fails.contains_key("$primary-rejected"));
-
-		// If the two backup sets conflict, rejected is processed first and wins.
-		assert!(insert_supplemental_verdict(
-			"$backup-conflict",
-			&mut rejections,
-			&soft_fails,
-			&mut rejection_sources,
-			"backup-rejection",
-			11,
-		));
-		assert!(!insert_supplemental_verdict(
-			"$backup-conflict",
-			&mut soft_fails,
-			&rejections,
-			&mut soft_fail_sources,
-			"backup-soft-fail",
-			3,
-		));
-		assert_eq!(rejections.get("$backup-conflict"), Some(&11));
-		assert!(!soft_fails.contains_key("$backup-conflict"));
-	}
-
-	#[test]
 	fn retired_key_keeps_expired_ts_over_stale_active_entry() {
 		let dir = std::env::temp_dir().join(format!("mtxdb-export-keys-{}", std::process::id()));
 		let _ = fs::remove_dir_all(&dir);
@@ -1174,101 +624,6 @@ mod tests {
 		assert!(retired.contains("\"expired_ts\":5"), "{retired}");
 	}
 
-	fn meta_prefix(out: &mut Vec<u8>) {
-		out.extend(7_u64.to_le_bytes());
-		out.push(0);
-		out.extend(1_u64.to_le_bytes());
-		out.extend(2_u64.to_le_bytes());
-	}
-
-	fn meta_tail(out: &mut Vec<u8>) {
-		out.push(0); // redacted_by
-		out.push(0); // short_state_hash
-	}
-
-	#[test]
-	fn legacy_metadata_layouts_yield_verdicts() {
-		let mut v20 = Vec::new();
-		meta_prefix(&mut v20);
-		v20.extend(2_u32.to_le_bytes());
-		v20.extend(7_u32.to_le_bytes());
-		meta_tail(&mut v20);
-		v20.extend(3_u64.to_le_bytes());
-		v20.push(0);
-		assert_eq!(legacy_metadata_row(&v20), Some((Some(7), None)));
-
-		let mut v19 = Vec::new();
-		meta_prefix(&mut v19);
-		v19.extend([1, 0]);
-		meta_tail(&mut v19);
-		v19.extend(3_u64.to_le_bytes());
-		v19.push(0);
-		v19.extend(1_u64.to_le_bytes());
-		v19.push(b'x');
-		v19.extend(0_u64.to_le_bytes());
-		assert_eq!(legacy_metadata_row(&v19), Some((None, Some(3))));
-
-		let mut v18 = Vec::new();
-		meta_prefix(&mut v18);
-		v18.extend([0, 1]);
-		meta_tail(&mut v18);
-		assert_eq!(legacy_metadata_row(&v18), Some((Some(11), None)));
-
-		let mut current = Vec::new();
-		meta_prefix(&mut current);
-		meta_tail(&mut current);
-		current.extend(3_u64.to_le_bytes());
-		current.push(0);
-		assert_eq!(legacy_metadata_row(&current), Some((None, None)));
-
-		assert_eq!(legacy_metadata_row(b"{}"), None);
-	}
-
-	#[test]
-	fn legacy_metadata_v20_statuses_and_truncation() {
-		let v20 = |tag: u32, code: Option<u32>| {
-			let mut row = Vec::new();
-			meta_prefix(&mut row);
-			row.extend(tag.to_le_bytes());
-			if let Some(code) = code {
-				row.extend(code.to_le_bytes());
-			}
-			meta_tail(&mut row);
-			row.extend(3_u64.to_le_bytes());
-			row.push(0);
-			row
-		};
-		assert_eq!(legacy_metadata_row(&v20(0, None)), Some((None, None)));
-		assert_eq!(legacy_metadata_row(&v20(1, None)), Some((None, None)));
-		assert_eq!(legacy_metadata_row(&v20(3, Some(2))), Some((None, Some(2))));
-		assert_eq!(legacy_metadata_row(&v20(4, None)), None);
-
-		let mut truncated = v20(2, Some(7));
-		truncated.pop();
-		assert_eq!(legacy_metadata_row(&truncated), None);
-	}
-
-	#[test]
-	fn legacy_metadata_v18_with_topo_depth() {
-		let mut row = Vec::new();
-		meta_prefix(&mut row);
-		row.extend([0, 1]); // soft_failed, rejected
-		meta_tail(&mut row);
-		row.extend(9_u64.to_le_bytes());
-		assert_eq!(legacy_metadata_row(&row), Some((Some(11), None)));
-
-		// Redacted variant: redacted_by = Some("$a").
-		let mut redacted = Vec::new();
-		meta_prefix(&mut redacted);
-		redacted.extend([1, 0]);
-		redacted.push(1);
-		redacted.extend(2_u64.to_le_bytes());
-		redacted.extend(b"$a");
-		redacted.push(0);
-		redacted.extend(9_u64.to_le_bytes());
-		assert_eq!(legacy_metadata_row(&redacted), Some((None, Some(3))));
-	}
-
 	#[test]
 	fn stored_pdu_id_wins_over_stale_index() {
 		let raw = br#"{"event_id":"$stored","room_id":"!room:example.org","prev_events":[],"auth_events":[]}"#;
@@ -1276,14 +631,10 @@ mod tests {
 		let (event, mismatch) = parse_pdu(
 			raw,
 			Some("$stale"),
-			false,
-			&HashMap::new(),
-			&HashMap::new(),
 			&mut rooms,
 		)
 		.unwrap();
 		assert!(mismatch);
-		assert!(event.outlier);
 		assert_eq!(event.id, "$stored");
 	}
 

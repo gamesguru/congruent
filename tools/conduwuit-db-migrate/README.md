@@ -28,17 +28,10 @@ those IDs to agree. Federated user rows can make that ambiguous; pass the
 configured server name as the optional third argument in that case. The PDU
 body's own `event_id` is authoritative if a legacy index disagrees.
 
-Verdicts are unioned across every store a source version may use:
-`eventid_rejections` / `eventid_softfailed` (one-byte codes), the legacy
-`eventid_status` map, the retired `rejectedeventids`, `adminrejectedeventids`,
-and `softfailedeventids` sets, and the v18-v20 `eventid_metadata` layouts. More
-specific codes win over a retired set; a retired-set-only verdict uses the
-Unknown rejection/soft-fail code. The exporter prints per-source counts and
-warns about metadata rows that match no known layout. Verdicts for event IDs
-with no exported PDU are reported and omitted from the room files;
-`orphan-verdicts.audit` lists each omitted ID, code, and source map. It is an
-audit sidecar, not importer input. Legacy cached keys are exported as permanent
-keys with `ts_added_ms=0`; no notary payload is synthesized.
+Room event records contain the PDU and its graph references. Rejection,
+soft-fail, and outlier flags are not exported; the importer derives its stored
+verdicts from the event data and available checks. Legacy cached keys are
+exported as permanent keys; no notary payload is synthesized.
 
 ```text
 cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
@@ -64,23 +57,6 @@ mtxdb import --dir /path/to/new-database/mtxdb /tmp/wombatx-mtxdb-export/*.jsonl
 The exporter refuses an existing output directory and never writes to the
 RocksDB source. Do not start the new server until both the redb metadata import
 and the complete mtxdb import have succeeded.
-
-## Verdicts from older copies
-
-Older database copies can hold `rejectedeventids` and `softfailedeventids`
-entries that later upgrades dropped. List the event IDs one per line (for
-example from `ldb ... scan --no_value`) and pass them to `export-mtxdb`:
-
-```text
-export-mtxdb <rocksdb> <output-dir> wombatx.me \
-  --extra-rejected  rejected-ids.txt \
-  --extra-soft-failed soft-failed-ids.txt
-```
-
-Verdicts the primary database already has win. IDs with no exported PDU are
-dropped with the other orphan verdicts and listed in `orphan-verdicts.audit`.
-`make migrate/export` takes the same files through `MIGRATE_REJECTED` and
-`MIGRATE_SOFT_FAILED`.
 
 ## Rooms that cannot be imported
 

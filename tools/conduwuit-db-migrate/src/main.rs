@@ -49,7 +49,7 @@ const MTXDB_OWNED_MAPS: &[&str] = &[
 
 fn usage() -> ! {
 	eprintln!("usage: conduwuit-db-migrate export <rocksdb> <bundle.jsonl> [map ...]");
-	eprintln!("       conduwuit-db-migrate export-mtxdb <rocksdb> <output-dir> [server-name] [--extra-rejected <ids-file>]... [--extra-soft-failed <ids-file>]...");
+	eprintln!("       conduwuit-db-migrate export-mtxdb <rocksdb> <output-dir> [server-name]");
 	eprintln!("       conduwuit-db-migrate import <bundle.jsonl> <new-metadata.redb>");
 	eprintln!("       conduwuit-db-migrate list <rocksdb>");
 	std::process::exit(2);
@@ -383,28 +383,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		| Some("export-mtxdb") => {
 			let rocks = args.next().unwrap_or_else(|| usage());
 			let output = args.next().unwrap_or_else(|| usage());
-			let mut server = None;
-			let mut rejected = Vec::new();
-			let mut soft_failed = Vec::new();
-			while let Some(arg) = args.next() {
-				if arg == "--extra-rejected" {
-					rejected.push(args.next().unwrap_or_else(|| usage()));
-				} else if arg == "--extra-soft-failed" {
-					soft_failed.push(args.next().unwrap_or_else(|| usage()));
-				} else if server.is_none() {
-					server = Some(arg);
-				} else {
-					usage();
-				}
+			let server = args.next();
+			if args.next().is_some() {
+				usage();
 			}
-			let rejected: Vec<&Path> = rejected.iter().map(Path::new).collect();
-			let soft_failed: Vec<&Path> = soft_failed.iter().map(Path::new).collect();
 			mtxdb_export::export(
 				Path::new(&rocks),
 				Path::new(&output),
 				server.as_deref(),
-				&rejected,
-				&soft_failed,
 			)
 		},
 		| Some("export") => {
