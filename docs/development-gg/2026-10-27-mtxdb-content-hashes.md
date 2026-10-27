@@ -82,7 +82,12 @@ The corrected export and clean import produced:
 | Imported events                                     |                                 1,036,607 |
 | Auth closures                                       |                                 1,036,537 |
 | Signing keys                                        | 12,938 permanent, 0 provisional, 0 notary |
+| Keys corroborated by verified events                |                                    11,917 |
+| Events with no usable in-window key                 |                                   201,944 |
+| Events with no signature material                   |                                        27 |
+| Events with invalid signatures (stored rejected)    |                                       148 |
 | Content-hash mismatches                             |                                    25,679 |
+| Content-differing mismatches                        |                                        17 |
 | Exported accepted but auth-failed (stored rejected) |                                         1 |
 | Exported rejected but auth-passed                   |                                         0 |
 | Cascaded rejections                                 |                                        57 |
@@ -100,6 +105,40 @@ The 57 cascades are downstream of the 13 missing auth events in `!UbCm…` (1 + 
 and `!iMZE…` (9 + 52). The single accepted-but-failed event is `$zzjanv…` in
 `!L58…`, where an `m.room.name` exceeds the sender's power level; it is stored
 rejected.
+
+## Signature verification
+
+Rooms are imported after the signing-key export, so every event can be checked
+against the key catalog without a live key scan. A key is usable only when the
+event's `origin_server_ts` falls inside the key's validity window
+(`valid_until_ts` and `expired_ts`), following MSC4499. The outcomes are kept
+separate:
+
+| Outcome                                        | Events |
+| ---------------------------------------------- | -----: |
+| No usable in-window key (stored as accepted)   | 201,944 |
+| No signature material to check (stored as accepted) | 27 |
+| Invalid signature (stored as rejected)         |    148 |
+| Verified by an in-window key                   | 834,488 |
+
+The verified total is the remainder of the 1,036,607 imported events after the
+three unverified outcomes. The no-key total reflects coverage, not a decision: an event with no usable key
+is stored accepted because there is nothing to verify against, and the key
+remains uncorroborated. The 148 invalid signatures are derived refusals, not
+exported verdicts, and use `m.signature_verification_failed`.
+
+Verified observations replace the key's candidate times: `first_seen_ms` and
+`last_active_ms` come only from events that actually verified,
+`ts_added_ms` remains the export time, and the key binding is unchanged. Keys
+with no verified event keep no candidate times and stay uncorroborated. In this
+run 11,917 of the 12,938 keys were corroborated; the remaining 1,021 are not an
+error under MSC4499.
+
+The content-differing events were checked the same way:
+16 of the 17 verified. One, `$DtItYlMAnhae0wiVHnfCEGKUdnhPRVVrO5mhHiqxqdE` in
+`!iMZE…` (room version 6), had no usable in-window key; none of the 17 had an
+invalid signature. A content-hash mismatch and a signature failure are
+independent outcomes.
 
 ## The four-event difference
 
@@ -125,17 +164,22 @@ events for `@shane:wombatx.me` from declined or never-joined invites. They are
 skipped intentionally; losing them changes no room state. See the exporter
 README for the attempted federation recovery.
 
-## Remaining audit work
+## Content-hash audit
 
-The import currently emits a warning with up to ten mismatched event IDs per
-room, but it does not yet persist a per-event mismatch audit. To make the
-"evidence, not proof" distinction reviewable, the audit row should record:
+Each run writes `content-hash-mismatches.jsonl` next to the mtxdb root. The
+sidecar holds one row per mismatch with:
 
 - `event_id`
 - `room_id`
 - stored `hashes.sha256`
 - recomputed content hash
-- whether the incoming PDU was already redaction-shaped
+- `content_matches_redaction`
 - the room version used for redaction
+- `signature_status` (`verified`, `no_usable_key`, `no_signature_material`, or
+  `invalid`) when signature checking was available
 
-That audit, plus the signature verification/key-timestamp work, remains open.
+The human-readable log lists only the 17 events whose content actually differs
+from the canonical redaction, plus the total. The sidecar retains all 25,679
+rows, so the "evidence, not proof" distinction remains reviewable without
+flooding the log. A same-content mismatch stays in the sidecar as evidence but
+does not imply data loss: the stored event is already the canonical redaction.
