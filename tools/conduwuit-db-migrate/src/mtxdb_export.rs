@@ -375,7 +375,39 @@ fn pad_base64(encoded: &str) -> Result<String, String> {
 	Ok(format!("{body}{}", "=".repeat(padding)))
 }
 
-fn write_keys(db: &DB, out_path: &Path) -> Result<usize, Box<dyn std::error::Error>> {
+/// (origin, key_id) -> (first, last) `origin_server_ts` of the stored events
+/// that carry a signature by that key.
+type KeyObservations = BTreeMap<(String, String), (u64, u64)>;
+
+fn observe_signatures<'a>(events: impl IntoIterator<Item = &'a Event>) -> KeyObservations {
+	let mut observed = KeyObservations::new();
+	for event in events {
+		let Some(ts) = event.pdu.get("origin_server_ts").and_then(Value::as_u64) else {
+			continue;
+		};
+		let Some(signatures) = event.pdu.get("signatures").and_then(Value::as_object) else {
+			continue;
+		};
+		for (origin, by_key) in signatures {
+			let Some(by_key) = by_key.as_object() else { continue };
+			for key_id in by_key.keys() {
+				let entry = observed
+					.entry((origin.to_string(), key_id.to_string()))
+					.or_insert((ts, ts));
+				entry.0 = entry.0.min(ts);
+				entry.1 = entry.1.max(ts);
+			}
+		}
+	}
+	observed
+}
+
+fn write_keys(
+	db: &DB,
+	out_path: &Path,
+	observed: &KeyObservations,
+	exported_at_ms: u64,
+) -> Result<usize, Box<dyn std::error::Error>> {
 	let mut writer = BufWriter::new(
 		OpenOptions::new()
 			.write(true)
@@ -439,7 +471,13 @@ fn write_keys(db: &DB, out_path: &Path) -> Result<usize, Box<dyn std::error::Err
 						if historical { "legacy-history" } else { "legacy-rocksdb" }.into(),
 					),
 				);
-				record.insert("ts_added_ms".into(), codec::to_value(&0_u64));
+				// The legacy store has no observed-at; the only evidence is the
+				// events a key signed. Keys that signed nothing stay uncorroborated.
+				record.insert("ts_added_ms".into(), codec::to_value(&exported_at_ms));
+				if let Some((first, last)) = observed.get(&id) {
+					record.insert("first_seen_ms".into(), codec::to_value(first));
+					record.insert("last_active_ms".into(), codec::to_value(last));
+				}
 				if let Some(expired) = key_value.get("expired_ts").and_then(Value::as_u64) {
 					record.insert("expired_ts".into(), codec::to_value(&expired));
 				}
@@ -1018,13 +1056,23 @@ pub fn export(
 			&rejection_sources,
 			&soft_fail_sources,
 		)?;
+		let observed = observe_signatures(events.values().flat_map(BTreeMap::values));
 		let mut total = 0usize;
 		for (room, by_id) in events {
 			let count = by_id.len();
 			write_room(&stage, server, &room, by_id.into_values().collect())?;
 			total += count;
 		}
-		let keys = write_keys(&db, &stage.join("server-keys.jsonl"))?;
+		let exported_at_ms = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)?
+			.as_millis()
+			.try_into()?;
+		let keys = write_keys(
+			&db,
+			&stage.join("server-keys.jsonl"),
+			&observed,
+			exported_at_ms,
+		)?;
 		fs::rename(&stage, out_dir)?;
 		eprintln!(
 			"Exported {total} room events and {keys} signing-key records to {}",
@@ -1113,7 +1161,7 @@ mod tests {
 		db.put_cf(cf, "example.org", latest).unwrap();
 
 		let out = dir.join("keys.jsonl");
-		let count = write_keys(&db, &out).unwrap();
+		let count = write_keys(&db, &out, &KeyObservations::new(), 1_000).unwrap();
 		let written = fs::read_to_string(&out).unwrap();
 		drop(db);
 		let _ = fs::remove_dir_all(&dir);
