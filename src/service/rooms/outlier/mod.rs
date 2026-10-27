@@ -211,17 +211,10 @@ fn derive_room_id(
 	room_id: Option<&RoomId>,
 	event_id: &EventId,
 ) -> Option<OwnedRoomId> {
-	pdu.get("room_id")
-		.and_then(CanonicalJsonValue::as_str)
-		.and_then(|r| OwnedRoomId::parse(r).ok())
-		.or_else(|| room_id.map(ToOwned::to_owned))
-		.or_else(|| {
-			let is_create =
-				pdu.get("type").and_then(CanonicalJsonValue::as_str) == Some("m.room.create");
-			is_create
-				.then(|| event_id.as_str().replace('$', "!"))
-				.and_then(|r| OwnedRoomId::parse(r).ok())
-		})
+	let mut pdu = pdu.clone();
+	pdu.entry("event_id".to_owned())
+		.or_insert_with(|| CanonicalJsonValue::String(event_id.as_str().to_owned()));
+	conduwuit::matrix::event::room_id_from_pdu(&pdu, room_id).ok()
 }
 
 /// Append the PDU as an outlier using a Batch.
