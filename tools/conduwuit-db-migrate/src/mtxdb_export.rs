@@ -69,6 +69,20 @@ fn infer_server_name(db: &DB) -> Result<String, Box<dyn std::error::Error>> {
 	}
 }
 
+/// Room v12 creates derive their room ID from the event and must omit the
+/// stored `room_id`; earlier versions keep it in the hashed event.
+fn create_strips_room_id(object: &Object) -> bool {
+	object.get("type").and_then(Value::as_str) == Some("m.room.create")
+		&& object
+			.get("content")
+			.and_then(Value::as_object)
+			.and_then(|content| content.get("room_version"))
+			.and_then(Value::as_str)
+			.and_then(|version| version.split(['.', '-']).next())
+			.and_then(|major| major.parse::<u32>().ok())
+			.is_some_and(|major| major >= 12)
+}
+
 fn parse_pdu(
 	raw: &[u8],
 	fallback_id: Option<&str>,
@@ -87,6 +101,7 @@ fn parse_pdu(
 		.or(fallback_id)
 		.ok_or("event ID missing from PDU and map key")?
 		.to_owned();
+	let is_create = object.get("type").and_then(Value::as_str) == Some("m.room.create");
 	let room = match object.get("room_id").and_then(Value::as_str) {
 		Some(r) => {
 			let room = r.to_owned();
@@ -94,7 +109,6 @@ fn parse_pdu(
 			room
 		},
 		None => {
-			let is_create = object.get("type").and_then(Value::as_str) == Some("m.room.create");
 			let inferred = event_to_room
 				.get(&event_id)
 				.cloned()
@@ -129,7 +143,6 @@ fn parse_pdu(
 				});
 			match inferred {
 				Some(r) => {
-					object.insert("room_id".into(), Value::String(r.clone()));
 					event_to_room.insert(event_id.clone(), r.clone());
 					r
 				},
@@ -140,8 +153,21 @@ fn parse_pdu(
 			}
 		},
 	};
-	if !object.contains_key("event_id") {
-		object.insert("event_id".into(), Value::String(event_id.clone()));
+	// The legacy store serializes the in-memory Pdu with its local event ID,
+	// a local `age_ts` timestamp, and (for v12 creates) a room ID the event
+	// format omits. Export the wire form: v3+ event IDs and `age_ts` are not
+	// part of the hashed event, v12 creates omit their room ID, and every
+	// other event keeps (or gets back) its room ID. A v1/v2 event ID is
+	// server-assigned (`$opaque:server`) and is part of the event; a v3+ ID is
+	// derived and has no `:`, so the shape decides without the room version.
+	if !event_id.contains(':') {
+		object.remove("event_id");
+	}
+	object.remove("age_ts");
+	if create_strips_room_id(object) {
+		object.remove("room_id");
+	} else if !object.contains_key("room_id") {
+		object.insert("room_id".into(), Value::String(room.clone()));
 	}
 	Ok((Event {
 		id: event_id,
@@ -625,6 +651,14 @@ mod tests {
 	}
 
 	#[test]
+	fn a_v1_event_id_stays_in_the_exported_pdu() {
+		let raw = br#"{"event_id":"$opaque:example.org","room_id":"!room:example.org","type":"m.room.message","content":{},"prev_events":[],"auth_events":[]}"#;
+		let mut rooms = HashMap::new();
+		let (event, _) = parse_pdu(raw, None, &mut rooms).unwrap();
+		assert!(event.pdu.as_object().unwrap().contains_key("event_id"));
+	}
+
+	#[test]
 	fn stored_pdu_id_wins_over_stale_index() {
 		let raw = br#"{"event_id":"$stored","room_id":"!room:example.org","prev_events":[],"auth_events":[]}"#;
 		let mut rooms = HashMap::new();
@@ -636,6 +670,71 @@ mod tests {
 		.unwrap();
 		assert!(mismatch);
 		assert_eq!(event.id, "$stored");
+		assert!(!event.pdu.as_object().unwrap().contains_key("event_id"));
+		assert!(event.pdu.as_object().unwrap().contains_key("room_id"));
+	}
+
+	#[test]
+	fn local_age_ts_is_not_exported() {
+		// `age_ts` is a local timestamp the legacy store adds to the PDU; it
+		// is not covered by the content hash.
+		let raw = br#"{"event_id":"$event","room_id":"!room:example.org","age_ts":123,"type":"m.room.message","content":{},"prev_events":[],"auth_events":[]}"#;
+		let mut rooms = HashMap::new();
+		let (event, _) = parse_pdu(raw, Some("$event"), &mut rooms).unwrap();
+		let pdu = event.pdu.as_object().unwrap();
+		assert!(!pdu.contains_key("event_id"));
+		assert!(!pdu.contains_key("age_ts"));
+		assert_eq!(pdu.get("room_id").and_then(Value::as_str), Some("!room:example.org"));
+	}
+
+	#[test]
+	fn v12_create_room_id_is_not_exported() {
+		let raw = r##"{"event_id":"$create","room_id":"!create:example.org","type":"m.room.create","content":{"room_version":"12"},"prev_events":[],"auth_events":[]}"##;
+		let mut rooms = HashMap::new();
+		let (event, _) = parse_pdu(raw.as_bytes(), None, &mut rooms).unwrap();
+		let pdu = event.pdu.as_object().unwrap();
+		assert!(!pdu.contains_key("event_id"));
+		assert!(!pdu.contains_key("room_id"));
+	}
+
+	#[test]
+	fn inferred_event_id_is_not_exported_but_room_id_is_restored() {
+		// A v3+ event ID is not part of the hashed event, while every event
+		// except a v12+ create keeps its room ID. The legacy store may drop
+		// either; export the wire form so the content hash still verifies.
+		let raw =
+			r##"{"type":"m.room.create","content":{"room_version":"11"},"prev_events":[],"auth_events":[]}"##;
+		let mut rooms = HashMap::new();
+		let (event, mismatch) =
+			parse_pdu(raw.as_bytes(), Some("$create"), &mut rooms).unwrap();
+		assert!(!mismatch);
+		assert_eq!(event.id, "$create");
+		assert_eq!(event.room, "!create");
+		let pdu = event.pdu.as_object().unwrap();
+		assert!(!pdu.contains_key("event_id"));
+		assert_eq!(
+			pdu.get("room_id").and_then(Value::as_str),
+			Some("!create")
+		);
+	}
+
+	#[test]
+	fn inferred_room_id_is_restored_for_non_create_events() {
+		// Conduwuit omitted `room_id` from some v12 non-create PDUs even
+		// though the hashed event includes it. Without restoring it the
+		// importer redacts every such event.
+		let raw =
+			r##"{"type":"m.room.message","content":{"body":"hi"},"prev_events":[],"auth_events":["$create"]}"##;
+		let mut rooms = HashMap::new();
+		rooms.insert("$create".to_owned(), "!room:example.org".to_owned());
+		let (event, _) = parse_pdu(raw.as_bytes(), Some("$msg"), &mut rooms).unwrap();
+		assert_eq!(event.room, "!room:example.org");
+		let pdu = event.pdu.as_object().unwrap();
+		assert!(!pdu.contains_key("event_id"));
+		assert_eq!(
+			pdu.get("room_id").and_then(Value::as_str),
+			Some("!room:example.org")
+		);
 	}
 
 	#[test]
