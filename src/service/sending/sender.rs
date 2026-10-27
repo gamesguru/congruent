@@ -1558,10 +1558,10 @@ impl Service {
 		// transaction ID this process emits is distinct, and per-process
 		// uniqueness is all the spec requires (`origin` + `txn_id` together
 		// identify a transaction).
-		let txn_id = self.next_txn_id.fetch_add(1, Ordering::Relaxed).to_string();
+		let txn_id = format!("0x{:x}", self.next_txn_id.fetch_add(1, Ordering::Relaxed));
 		let request = send_transaction_message::v1::Request {
 			transaction_id: slipstream::OwnedTransactionId::parse(&txn_id)
-				.expect("numeric transaction counter is a valid transaction ID"),
+				.expect("hexadecimal transaction counter is a valid transaction ID"),
 			origin: self.server.name.clone(),
 			origin_server_ts: now,
 			pdus: outbound_pdus,
