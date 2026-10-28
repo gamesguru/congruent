@@ -418,8 +418,11 @@ A key is active at `T` as follows:
 - **Retired key** (it has an `expired_ts`): the key is active if and only if
   `T < expired_ts`. `valid_until_ts` MUST NOT be consulted. A retired key was
   active until its retirement, and the `valid_until_ts` last cached for it is
-  only a refresh deadline. This matches Synapse, which records
-  `valid_until_ts = expired_ts` for retired keys.
+  only a refresh deadline. Continuwuity and the current MSC use this strict
+  boundary. Synapse records `valid_until_ts = expired_ts` for retired keys and
+  accepts equality there, so this MSC is one millisecond stricter at
+  `expired_ts`; implementations MUST NOT rely on the exact boundary for
+  compatibility.
 - **Unretired key, room version 5 or later**: an online verifier MUST hold a
   key response whose `valid_until_ts >= T`. If its cached response does not
   cover `T`, it MUST refresh the response, directly or via a notary, before
@@ -924,10 +927,18 @@ legacy key formats thoroughly entrenched in the wild, it requires a new room
 version and is deferred to a future MSC. Until then, protection must remain
 strictly at the local server caching layer as outlined in this proposal.
 
-### Member Keys [MSC4430]
+### Member Keys and server key identity [MSC4430, MSC4345]
 
-The Member Keys proposal caps these concerns to a future room version by moving
-the key body in-band (and reducing the complications inherent in today's
-out-of-band notary model, while freeing up notary capacity to serve future
-functions such as aiding in EDU reconciliation or corroborating correct room
-state accumulation for a given epoch).
+The Member Keys proposal ([MSC4430](https://github.com/matrix-org/matrix-spec-proposals/pull/4430))
+caps these concerns to a future room version by moving the key body in-band
+(and reducing the complications inherent in today's out-of-band notary model,
+while freeing up notary capacity to serve future functions such as aiding in
+EDU reconciliation or corroborating correct room state accumulation for a given
+epoch).
+
+[MSC4345: Server key identity and room membership](https://github.com/matrix-org/matrix-spec-proposals/pull/4345)
+addresses the deeper authority question by weakening the protocol's dependence
+on domain-scoped identifiers. Content-addressed key IDs remove binding
+ambiguity, but do not by themselves authenticate authorization or retirement
+history; resolving conflicting authenticated key histories remains follow-up
+work.
