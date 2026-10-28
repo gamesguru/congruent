@@ -1,19 +1,56 @@
 //! Domain adapter for federation signing-key records.
 //!
-//! Keys are global, not per-room, so every origin's records share one
-//! collection in the server-info shard. Each origin has several independent
-//! records, told apart by [`KeyRecordKind`]; the payloads are opaque bytes
-//! (JSON, written by the caller). Validity windows (`valid_until_ts`,
-//! `expired_ts`) live inside the payloads.
+//! The authoritative layout is mtxdb's native one: one collection per origin,
+//! one record per key id. Each record carries its tier, validity window,
+//! digest binding and observation timestamps, and [`ServerKeysAdapter::update`]
+//! applies mtxdb's MSC4499 binding rules. The origin's verbatim Notary payload
+//! is stored beside the per-origin collections. The shared-collection methods
+//! remain for reading databases written before the native layout.
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
-pub use mtxdb::interop::KeyRecordKind;
+use mtxdb::server_keys as native;
+pub use mtxdb::server_keys::{
+	KeyIssue, KeyIssueKind, KeyLimits, KeyMerge, KeySighting, KeyTier, KeyUpdate, ObservedKey,
+	ServerKey,
+};
+
+use crate::keys::{derive_id, legacy_server_key_record_id, server_key_record_id};
+
+const ORIGIN_INDEX_DOMAIN: &[u8] = b"server-key-origins-v1";
+const ORIGIN_INDEX_NODE_DOMAIN: &[u8] = b"server-key-origin-index-v1";
+
+fn origin_index_collection() -> [u8; 16] { derive_id(ORIGIN_INDEX_DOMAIN, b"index") }
+
+fn origin_index_node(origin: &[u8]) -> [u8; 16] { derive_id(ORIGIN_INDEX_NODE_DOMAIN, origin) }
+
+/// Logical class of a server's signing-key payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KeyRecordKind {
+	Historical,
+	Provisional,
+	Corroborated,
+	Notary,
+}
+
+impl KeyRecordKind {
+	const ALL: [Self; 4] =
+		[Self::Historical, Self::Provisional, Self::Corroborated, Self::Notary];
+
+	/// The kind tag written into export records.
+	#[must_use]
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			| Self::Historical => "historical",
+			| Self::Provisional => "provisional",
+			| Self::Corroborated => "corroborated",
+			| Self::Notary => "notary",
+		}
+	}
+}
 use mtxdb::{
 	ShardType,
-	interop::{
-		decode_server_key, encode_server_key, server_key_record_id, server_keys_collection_id,
-	},
+	interop::{decode_server_key, encode_server_key, server_keys_collection_id},
 };
 
 use crate::{StorageError, store::MtxdbStore};
@@ -45,12 +82,19 @@ impl ServerKeysAdapter {
 		origin: &[u8],
 	) -> Result<Option<Vec<u8>>, StorageError> {
 		let node = server_key_record_id(kind, origin);
-		self.store
-			.get(ShardType::ServerInfo, &server_keys_collection_id(), node)?
-			.map_or(Ok(None), |bytes| {
-				let (stored_origin, payload) = decode_server_key(&bytes)?;
-				Ok((stored_origin == origin).then(|| payload.to_vec()))
-			})
+		let legacy_node = legacy_server_key_record_id(kind, origin);
+		let collection = server_keys_collection_id();
+		let bytes = match self.store.get(ShardType::ServerInfo, &collection, node)? {
+			| Some(bytes) => Some(bytes),
+			| None if legacy_node != node =>
+				self.store
+					.get(ShardType::ServerInfo, &collection, legacy_node)?,
+			| None => None,
+		};
+		bytes.map_or(Ok(None), |bytes| {
+			let (stored_origin, payload) = decode_server_key(&bytes)?;
+			Ok((stored_origin == origin).then(|| payload.to_vec()))
+		})
 	}
 
 	/// All live key records, with their original origins recovered from the
@@ -61,9 +105,10 @@ impl ServerKeysAdapter {
 		let mut out = Vec::with_capacity(records.len());
 		for (node, bytes) in records {
 			let (origin, payload) = decode_server_key(&bytes)?;
-			let kind = KeyRecordKind::ALL
-				.into_iter()
-				.find(|kind| server_key_record_id(*kind, origin) == node);
+			let kind = KeyRecordKind::ALL.into_iter().find(|kind| {
+				server_key_record_id(*kind, origin) == node
+					|| legacy_server_key_record_id(*kind, origin) == node
+			});
 			let Some(kind) = kind else {
 				return Err(StorageError::Corrupt(
 					"signing-key record id does not match origin".to_owned(),
@@ -112,6 +157,98 @@ impl ServerKeysAdapter {
 			}
 		}
 		tx.remove(ShardType::ServerInfo, collection, node)
+	}
+
+	/// One key of `origin` from mtxdb's native per-key layout.
+	pub fn read_key(
+		&self,
+		origin: &[u8],
+		key_id: &[u8],
+	) -> Result<Option<ServerKey>, StorageError> {
+		native::read_server_key(self.store.database().pool(ShardType::ServerInfo), origin, key_id)
+	}
+
+	/// Every key of `origin`, ordered by key id.
+	pub fn read_keys(&self, origin: &[u8]) -> Result<Vec<ServerKey>, StorageError> {
+		native::read_server_keys(self.store.database().pool(ShardType::ServerInfo), origin)
+	}
+
+	/// The verbatim Notary payload for `origin`.
+	pub fn read_notary(&self, origin: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+		native::read_notary_payload(self.store.database().pool(ShardType::ServerInfo), origin)
+	}
+
+	/// Merge one observation batch through mtxdb's MSC4499 binding rules.
+	///
+	/// The write is native: one record per key id, plus the origin's Notary
+	/// payload, committed in one transaction by mtxdb. The export origin index
+	/// is updated afterward; an index error can be returned after the key merge
+	/// has committed. Storage errors from either write propagate.
+	pub fn update(&self, update: &KeyUpdate<'_>) -> Result<KeyMerge, StorageError> {
+		let merged = native::update_server_keys(self.store.database(), update)?;
+		self.record_origin(update.origin)?;
+		Ok(merged)
+	}
+
+	/// Persist an origin in the index used by the export path, which cannot
+	/// enumerate per-origin collections otherwise.
+	fn record_origin(&self, origin: &[u8]) -> Result<(), StorageError> {
+		let tx = self.store.begin_transaction();
+		tx.put(
+			ShardType::ServerInfo,
+			origin_index_collection(),
+			origin_index_node(origin),
+			origin,
+		)?;
+		tx.commit()
+	}
+
+	/// Indexed origins and origins discovered from native key records, sorted
+	/// by origin bytes without duplicates. Indexed origins may have no keys.
+	///
+	/// The index covers writes made through this adapter. Origins written by
+	/// the mtxdb CLI importer, which only knows the native layout, are found by
+	/// scanning the server-info pool for collections whose first record decodes
+	/// as a key belonging to that same collection. Undecodable first records
+	/// are skipped; storage scan errors propagate.
+	pub fn origins(&self) -> Result<Vec<Vec<u8>>, StorageError> {
+		let mut origins: BTreeSet<Vec<u8>> = self
+			.store
+			.scan(ShardType::ServerInfo, &origin_index_collection())?
+			.into_iter()
+			.map(|(_, origin)| origin)
+			.collect();
+
+		let pool = self.store.database().pool(ShardType::ServerInfo);
+		for collection in pool.collection_ids() {
+			let Some((_, bytes)) = self
+				.store
+				.scan(ShardType::ServerInfo, &collection)?
+				.into_iter()
+				.next()
+			else {
+				continue;
+			};
+			let Ok((origin, _)) = native::decode_server_key_record(&bytes) else {
+				continue;
+			};
+			if native::origin_keys_collection_id(&origin) == collection {
+				origins.insert(origin);
+			}
+		}
+
+		Ok(origins.into_iter().collect())
+	}
+
+	/// Whether any native key record exists, for startup's incomplete-import
+	/// check.
+	pub fn has_any_native_records(&self) -> Result<bool, StorageError> {
+		for origin in self.origins()? {
+			if !self.read_keys(&origin)?.is_empty() {
+				return Ok(true);
+			}
+		}
+		Ok(false)
 	}
 }
 
@@ -206,6 +343,36 @@ mod tests {
 			.unwrap();
 		tx.commit().unwrap();
 		assert_eq!(get(KeyRecordKind::Historical, b"a.example").unwrap(), b"{\"h\":3}");
+		fs::remove_dir_all(&path).unwrap();
+	}
+
+	#[test]
+	fn legacy_server_key_ids_remain_readable_and_scannable() {
+		let path = std::env::temp_dir()
+			.join(format!("conduwuit-mtxdb-server-keys-legacy-{}", std::process::id()));
+		let _ = fs::remove_dir_all(&path);
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = ServerKeysAdapter::new(store.clone());
+		let kind = KeyRecordKind::Historical;
+		let origin = b"legacy.example";
+		let payload = b"legacy-payload";
+		let tx = store.begin_transaction();
+		tx.put(
+			ShardType::ServerInfo,
+			server_keys_collection_id(),
+			legacy_server_key_record_id(kind, origin),
+			&encode_server_key(origin, payload).unwrap(),
+		)
+		.unwrap();
+		tx.commit().unwrap();
+
+		assert_eq!(adapter.get(kind, origin).unwrap().as_deref(), Some(payload.as_slice()));
+		assert!(
+			adapter
+				.scan()
+				.unwrap()
+				.contains(&(kind, origin.to_vec(), payload.to_vec()))
+		);
 		fs::remove_dir_all(&path).unwrap();
 	}
 }

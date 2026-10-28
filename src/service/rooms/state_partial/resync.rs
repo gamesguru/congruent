@@ -325,7 +325,14 @@ impl Service {
 	/// Retry the resync with exponential backoff until it succeeds or the
 	/// room is no longer partial.
 	async fn resync_with_backoff(self: Arc<Self>, room_id: &RoomId) {
-		let mut delay = Duration::from_secs(1);
+		let initial_delay = Duration::from_millis(
+			self.services
+				.server
+				.config
+				.partial_state_resync_initial_delay_ms
+				.max(1),
+		);
+		let mut delay = initial_delay;
 		// When the failures to get usable state from any server began.
 		let mut failing_since: Option<Instant> = None;
 		let mut servers_before: Option<HashSet<OwnedServerName>> = None;
@@ -353,7 +360,7 @@ impl Service {
 						info!("Successfully resynced partial state for room {}", room_id);
 						found.extend(users);
 						resynced = Some(installed);
-						delay = Duration::from_secs(1);
+						delay = initial_delay;
 					},
 					| Err(e) => {
 						warn!("Failed to resync partial state for room {}: {}", room_id, e);
@@ -914,8 +921,7 @@ impl Service {
 		use conduwuit::matrix::event::gen_event_id_canonical_json;
 
 		let expected: HashSet<_> = expected_ids.iter().cloned().collect();
-		let mut loaded = HashSet::with_capacity(expected.len());
-		let mut state = BTreeMap::new();
+		let mut parsed = Vec::with_capacity(pdus.len());
 		for pdu_json in pdus {
 			let (event_id, value) = gen_event_id_canonical_json(&pdu_json, room_version)
 				.map_err(|e| {
@@ -929,66 +935,183 @@ impl Service {
 				)));
 			}
 
-			if let Err(error) = self
-				.services
-				.event_handler
-				.handle_incoming_pdu(
-					remote_server,
-					room_id,
-					&event_id,
-					value.clone(),
-					false,
-					room_version,
-				)
-				.await
-			{
-				// Auth rejection and other client-classified validation failures mean
-				// this server supplied unusable state. Missing auth events are also a
-				// response completeness problem; storage/key-fetch failures remain
-				// transient and use the normal retry backoff.
-				if error.status_code().is_client_error()
-					|| matches!(&error, conduwuit::Error::MissingAuthEvents(_))
-				{
-					return Err(StateEventLoadError::InvalidResponse(format!(
-						"state event {event_id} failed validation: {error}"
-					)));
-				}
-				return Err(StateEventLoadError::Transient(error));
-			}
-
-			let rejected = self
-				.services
-				.pdu_metadata
-				.is_event_rejected(&event_id)
-				.map_err(StateEventLoadError::Transient)?;
-			let pending_auth = self
-				.services
-				.pdu_metadata
-				.is_event_pending_auth_resolution(&event_id)
-				.map_err(StateEventLoadError::Transient)?;
-			if rejected || pending_auth {
-				return Err(StateEventLoadError::InvalidResponse(format!(
-					"state event {event_id} was not accepted during ingestion"
-				)));
-			}
-
-			let pdu = PduEvent::from_id_val(&event_id, value, Some(room_id)).map_err(|e| {
-				StateEventLoadError::InvalidResponse(format!(
-					"could not decode state event {event_id}: {e}"
-				))
-			})?;
-			let state_key = pdu.state_key.as_ref().ok_or_else(|| {
+			let pdu =
+				PduEvent::from_id_val(&event_id, value.clone(), Some(room_id)).map_err(|e| {
+					StateEventLoadError::InvalidResponse(format!(
+						"could not decode state event {event_id}: {e}"
+					))
+				})?;
+			let state_key = pdu.state_key.ok_or_else(|| {
 				StateEventLoadError::InvalidResponse(format!(
 					"state response contained non-state event {event_id}"
 				))
 			})?;
-			let shortstatekey = self
-				.services
-				.short
-				.get_or_create_shortstatekey(&pdu.kind.to_string().into(), state_key)
+			parsed.push((event_id, value, pdu.kind.to_string(), state_key, pdu.auth_events));
+		}
+
+		// The response must be exactly the /state_ids set, with no duplicates.
+		let mut seen = HashSet::with_capacity(parsed.len());
+		for item in &parsed {
+			if !seen.insert(item.0.clone()) {
+				return Err(StateEventLoadError::InvalidResponse(format!(
+					"state response contained duplicate event {}",
+					item.0
+				)));
+			}
+		}
+		if seen != expected {
+			return Err(StateEventLoadError::InvalidResponse(
+				"state response did not contain every event listed by /state_ids".to_owned(),
+			));
+		}
+
+		// Later state events can depend on their auth events being present, so
+		// ingest in waves: an event's wave is one past the deepest of its
+		// `auth_events` that are also in this response. Events within a wave
+		// are independent and run concurrently. A cycle among the auth events
+		// leaves nodes that never become ready, and is rejected.
+		let mut pending: HashMap<OwnedEventId, usize> = HashMap::with_capacity(parsed.len());
+		let mut dependents: HashMap<OwnedEventId, Vec<OwnedEventId>> = HashMap::new();
+		for item in &parsed {
+			let deps: HashSet<&OwnedEventId> = item
+				.4
+				.iter()
+				.filter(|auth_id| expected.contains(*auth_id))
+				.collect();
+			pending.insert(item.0.clone(), deps.len());
+			for dep in deps {
+				dependents
+					.entry(dep.clone())
+					.or_default()
+					.push(item.0.clone());
+			}
+		}
+		let mut by_id: HashMap<OwnedEventId, _> = parsed
+			.into_iter()
+			.map(|item| (item.0.clone(), item))
+			.collect();
+		let mut ready: Vec<OwnedEventId> = pending
+			.iter()
+			.filter(|(_, count)| **count == 0)
+			.map(|(id, _)| id.clone())
+			.collect();
+		ready.sort();
+		let mut waves: Vec<Vec<_>> = Vec::new();
+		while !ready.is_empty() {
+			let mut next = Vec::new();
+			let mut wave = Vec::with_capacity(ready.len());
+			for event_id in ready {
+				for child in dependents.get(&event_id).into_iter().flatten() {
+					if let Some(count) = pending.get_mut(child) {
+						*count = count.saturating_sub(1);
+						if *count == 0 {
+							next.push(child.clone());
+						}
+					}
+				}
+				if let Some(item) = by_id.remove(&event_id) {
+					wave.push(item);
+				}
+			}
+			next.sort();
+			waves.push(wave);
+			ready = next;
+		}
+		if !by_id.is_empty() {
+			return Err(StateEventLoadError::InvalidResponse(
+				"state response contained cyclic auth_events".to_owned(),
+			));
+		}
+
+		let mut loaded = HashSet::with_capacity(expected.len());
+		let mut state = BTreeMap::new();
+		for wave in waves {
+			let wave_self = self.clone();
+			let results: Vec<
+				std::result::Result<(ShortStateKey, OwnedEventId), StateEventLoadError>,
+			> = wave
+				.into_iter()
+				.stream()
+				.broad_then(move |(event_id, value, kind_str, state_key, _)| {
+					let room_version = room_version.clone();
+					let remote_server = remote_server.to_owned();
+					let room_id = room_id.to_owned();
+					let self_copy = wave_self.clone();
+					async move {
+						if let Err(error) = self_copy
+							.services
+							.event_handler
+							.handle_incoming_pdu(
+								&remote_server,
+								&room_id,
+								&event_id,
+								value,
+								false,
+								&room_version,
+							)
+							.await
+						{
+							// Auth rejection and other client-classified validation
+							// failures mean this server supplied unusable state. Missing
+							// auth events are also a response completeness problem;
+							// storage/key-fetch failures remain transient and use the
+							// normal retry backoff.
+							if error.status_code().is_client_error()
+								|| matches!(&error, conduwuit::Error::MissingAuthEvents(_))
+							{
+								return Err(StateEventLoadError::InvalidResponse(format!(
+									"state event {event_id} failed validation: {error}"
+								)));
+							}
+							return Err(StateEventLoadError::Transient(error));
+						}
+
+						let rejected = self_copy
+							.services
+							.pdu_metadata
+							.is_event_rejected(&event_id)
+							.map_err(StateEventLoadError::Transient)?;
+						let pending_auth = self_copy
+							.services
+							.pdu_metadata
+							.is_event_pending_auth_resolution(&event_id)
+							.map_err(StateEventLoadError::Transient)?;
+						if rejected || pending_auth {
+							return Err(StateEventLoadError::InvalidResponse(format!(
+								"state event {event_id} was not accepted during ingestion"
+							)));
+						}
+
+						let shortstatekey = self_copy
+							.services
+							.short
+							.get_or_create_shortstatekey(&kind_str.into(), &state_key)
+							.await;
+
+						Ok((shortstatekey, event_id))
+					}
+				})
+				.collect()
 				.await;
-			state.insert(shortstatekey, event_id.clone());
-			loaded.insert(event_id);
+
+			// Completion order is arbitrary, so pick the error by priority:
+			// an unusable response outranks a transient failure.
+			let mut transient = None;
+			for item in results {
+				match item {
+					| Ok((shortstatekey, event_id)) => {
+						state.insert(shortstatekey, event_id.clone());
+						loaded.insert(event_id);
+					},
+					| Err(e @ StateEventLoadError::InvalidResponse(_)) => return Err(e),
+					| Err(e) => {
+						transient.get_or_insert(e);
+					},
+				}
+			}
+			if let Some(e) = transient {
+				return Err(e);
+			}
 		}
 
 		if loaded != expected {
@@ -1068,7 +1191,7 @@ impl Service {
 				covered_keys.push(key);
 				continue;
 			}
-			match self.services.timeline.get_pdu(event_id).await {
+			match self.services.timeline.get_pdu(event_id) {
 				| Ok(pdu) if anchor_depth.is_some_and(|depth| pdu.depth() <= depth) => {
 					// Already part of the anchor's state.
 					covered_keys.push(key);

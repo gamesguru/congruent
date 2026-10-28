@@ -293,7 +293,31 @@ async fn knock_room_helper_local(
 ) -> Result {
 	debug_info!("We can knock locally");
 
-	let room_version_id = services.rooms.state.get_room_version(room_id).await?;
+	let room_version_id = match services.rooms.state.get_room_version(room_id).await {
+		| Ok(room_version_id) => room_version_id,
+		| Err(error) => {
+			// A room can be known to this server through membership or partial
+			// state before its create event has arrived. In that case we cannot
+			// build a local knock, but a remote server may still be able to do so.
+			if servers
+				.iter()
+				.any(|server| !services.globals.server_is_ours(server))
+			{
+				warn!(?error, %room_id, "Room version unavailable locally; trying remote knock");
+				return Box::pin(knock_room_helper_remote(
+					services,
+					sender_user,
+					room_id,
+					reason,
+					servers,
+					state_lock,
+				))
+				.await;
+			}
+
+			return Err(error);
+		},
+	};
 
 	if matches!(
 		room_version_id,
@@ -535,6 +559,48 @@ async fn knock_room_helper_remote(
 
 	info!("send_knock finished");
 
+	let state: Vec<_> = send_knock_response
+		.knock_room_state
+		.iter()
+		.map(|event| codec::from_str::<CanonicalJsonObject>(event.get()))
+		.collect();
+	let create_event = state
+		.iter()
+		.filter_map(|event| event.as_ref().ok())
+		.find(|event| {
+			event.get("type").and_then(CanonicalJsonValue::as_str) == Some("m.room.create")
+		})
+		.ok_or_else(|| {
+			err!(BadServerResponse("send_knock response has no m.room.create event"))
+		})?;
+	let create_content = create_event
+		.get("content")
+		.and_then(CanonicalJsonValue::as_object)
+		.ok_or_else(|| err!(BadServerResponse("send_knock create event has invalid content")))?;
+	let create_room_version = match create_content.get("room_version") {
+		| Some(value) => value.as_str().ok_or_else(|| {
+			err!(BadServerResponse("send_knock create event has invalid room_version"))
+		})?,
+		| None => {
+			return Err!(BadServerResponse(
+				"send_knock create event lacks room_version; conduwuit doesn't support v1 rooms"
+			));
+		},
+	};
+	if create_room_version != room_version_id.as_str() {
+		return Err!(BadServerResponse(
+			"send_knock create event declares room version {create_room_version}, but \
+			 make_knock declared {room_version_id}"
+		));
+	}
+
+	// The response's create event now confirms the make_knock room version.
+	// Persist it before adding any stripped-state outliers to mtxdb.
+	services
+		.rooms
+		.short
+		.set_room_version(room_id, &room_version_id)?;
+
 	services
 		.rooms
 		.short
@@ -548,11 +614,7 @@ async fn knock_room_helper_remote(
 	let previous_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
 	info!("Going through send_knock response knock state events");
-	let state = send_knock_response
-		.knock_room_state
-		.iter()
-		.map(|event| codec::from_str::<CanonicalJsonObject>(event.get()))
-		.filter_map(Result::ok);
+	let state = state.into_iter().filter_map(Result::ok);
 
 	let mut state_map: HashMap<u64, OwnedEventId> = HashMap::new();
 	let mut lattice = rezzy::incremental::LtHash::default();

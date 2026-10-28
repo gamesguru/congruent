@@ -53,13 +53,7 @@ pub(super) async fn compare_room_state(
 	};
 
 	// Fetch tip once — used for state-event detection and injection
-	let tip_pdu_opt = self
-		.services
-		.rooms
-		.timeline
-		.get_pdu(&at_event_id)
-		.await
-		.ok();
+	let tip_pdu_opt = self.services.rooms.timeline.get_pdu(&at_event_id).ok();
 	let tip_is_state_event = tip_pdu_opt
 		.as_ref()
 		.is_some_and(|pdu| pdu.state_key.is_some());
@@ -108,17 +102,11 @@ pub(super) async fn compare_room_state(
 		let room_version = room_version.clone();
 		let room_id = room_id.clone();
 		async move {
-			if let Ok(pdu) = self.services.rooms.timeline.get_pdu(&event_id).await {
+			if let Ok(pdu) = self.services.rooms.timeline.get_pdu(&event_id) {
 				return Ok::<Option<(PduEvent, bool)>, conduwuit::Error>(Some((pdu, false)));
 			}
 
-			if let Ok(json) = self
-				.services
-				.rooms
-				.outlier
-				.get_outlier_pdu_json(&event_id)
-				.await
-			{
+			if let Ok(json) = self.services.rooms.outlier.get_outlier_pdu_json(&event_id) {
 				let pdu_res = slipstream::codec::from_value::<PduEvent>(
 					&slipstream::json::Value::Object(json),
 				)
@@ -859,7 +847,7 @@ pub(super) async fn set_state_event(
 	let event_type: StateEventType = event_type.into();
 
 	// Verify the event exists locally (timeline or outlier)
-	let pdu = match self.services.rooms.timeline.get_pdu(&event_id).await {
+	let pdu = match self.services.rooms.timeline.get_pdu(&event_id) {
 		| Ok(pdu) => pdu,
 		| Err(_) => {
 			// Try outlier: get the JSON and parse it
@@ -868,7 +856,6 @@ pub(super) async fn set_state_event(
 				.rooms
 				.outlier
 				.get_outlier_pdu_json(&event_id)
-				.await
 				.map_err(|_| err!(Request(NotFound("Event {event_id} not found locally"))))?;
 			slipstream::codec::from_value::<PduEvent>(&slipstream::json::Value::Object(json))
 				.map_err(|e| err!(Request(InvalidParam("Failed to parse outlier: {e}"))))?
@@ -1223,9 +1210,7 @@ pub(super) async fn audit_membership(
 						.lock(&room_id)
 						.await;
 
-					if let Ok(pdu_json) =
-						self.services.rooms.timeline.get_pdu_json(&event_id).await
-					{
+					if let Ok(pdu_json) = self.services.rooms.timeline.get_pdu_json(&event_id) {
 						// Demotion is atomic: remove timeline pointers and write outlier metadata
 						// in a single database batch using add_pdu_outlier_batch_demote.
 						let mut demote_batch = Batch::new();
@@ -1732,8 +1717,7 @@ pub(super) async fn audit_membership(
 
 				// Inject the tip event into remote_members, if it is a member event!
 
-				if let Ok(tip_pdu) = self.services.rooms.timeline.get_pdu(&latest_event_id).await
-				{
+				if let Ok(tip_pdu) = self.services.rooms.timeline.get_pdu(&latest_event_id) {
 					if tip_pdu.kind == TimelineEventType::RoomMember {
 						if let Some(state_key) = tip_pdu.state_key() {
 							let content: JsonValue = crate::utils::content_value(&tip_pdu);
@@ -1789,16 +1773,13 @@ pub(super) async fn audit_membership(
 					match local_members.get(user) {
 						| Some((local_ms, eid)) if local_ms != remote_ms => {
 							let age_secs = if let Ok(eid) = OwnedEventId::parse(eid) {
-								self.services
-									.rooms
-									.timeline
-									.get_pdu(&eid)
-									.await
-									.ok()
-									.map_or(u64::MAX, |p| {
+								self.services.rooms.timeline.get_pdu(&eid).ok().map_or(
+									u64::MAX,
+									|p| {
 										let ms = p.origin_server_ts;
 										now_secs.saturating_sub(ms / 1000)
-									})
+									},
+								)
 							} else {
 								u64::MAX
 							};
@@ -1833,16 +1814,13 @@ pub(super) async fn audit_membership(
 						&& (local_ms == "join" || local_ms == "invite")
 					{
 						let age_secs = if let Ok(eid) = OwnedEventId::parse(eid) {
-							self.services
-								.rooms
-								.timeline
-								.get_pdu(&eid)
-								.await
-								.ok()
-								.map_or(u64::MAX, |p| {
+							self.services.rooms.timeline.get_pdu(&eid).ok().map_or(
+								u64::MAX,
+								|p| {
 									let ms = p.origin_server_ts;
 									now_secs.saturating_sub(ms / 1000)
-								})
+								},
+							)
 						} else {
 							u64::MAX
 						};

@@ -141,7 +141,7 @@ async fn compute_outbound_state_hashes(
 			| None => StateHashEntry::limited(with_inputs),
 			| Some(digests) => {
 				let inputs = if with_inputs {
-					let pdu = services.timeline.get_pdu(event_id).await.ok();
+					let pdu = services.timeline.get_pdu(event_id).ok();
 					let digest = match pdu {
 						| Some(pdu) =>
 							services
@@ -1558,10 +1558,10 @@ impl Service {
 		// transaction ID this process emits is distinct, and per-process
 		// uniqueness is all the spec requires (`origin` + `txn_id` together
 		// identify a transaction).
-		let txn_id = self.next_txn_id.fetch_add(1, Ordering::Relaxed).to_string();
+		let txn_id = format!("0x{:x}", self.next_txn_id.fetch_add(1, Ordering::Relaxed));
 		let request = send_transaction_message::v1::Request {
 			transaction_id: slipstream::OwnedTransactionId::parse(&txn_id)
-				.expect("numeric transaction counter is a valid transaction ID"),
+				.expect("hexadecimal transaction counter is a valid transaction ID"),
 			origin: self.server.name.clone(),
 			origin_server_ts: now,
 			pdus: outbound_pdus,
@@ -1592,7 +1592,6 @@ impl Service {
 					.services
 					.timeline
 					.get_pdu(event_id)
-					.await
 					.ok()
 					.and_then(|pdu| pdu.room_id_or_hash().map(|r| r.to_string()))
 					.unwrap_or_default();

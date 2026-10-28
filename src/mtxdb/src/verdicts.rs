@@ -18,6 +18,8 @@ use crate::{
 	store::{CollectionId, MtxdbStore, NodeId},
 };
 
+const MAX_STALE_READ_RETRIES: usize = 8;
+
 #[derive(Clone)]
 pub struct VerdictAdapter {
 	store: Arc<MtxdbStore>,
@@ -102,33 +104,32 @@ impl VerdictAdapter {
 	{
 		let node = event_record_id(event_id);
 		let collection = event_verdict_collection_id(&node);
-		let mut attempts = 0_u8;
+		let mut attempts = 0_usize;
 		loop {
-			let version = self
-				.store
-				.collection_version(ShardType::EventDag, &collection)?;
-			let mut verdict = match self.store.get(ShardType::EventDag, &collection, node)? {
-				| Some(bytes) => {
-					let (stored_event, verdict) = decode_verdict(&bytes)?;
-					if stored_event != event_id {
-						return Err(StorageError::Corrupt(
-							"event record id collision in verdicts".to_owned(),
-						));
-					}
-					verdict
-				},
-				| None => Verdict::default(),
-			};
-			change(&mut verdict);
-
 			let tx = self.store.begin_transaction();
-			tx.expect_collection_version(ShardType::EventDag, collection, version)?;
-			self.stage(&tx, event_id, &verdict)?;
-			match tx.commit() {
-				| Err(StorageError::StaleRead { .. }) if attempts < 3 => {
-					attempts = attempts
-						.checked_add(1)
-						.expect("attempts is less than three");
+			let result = (|| {
+				let (values, version) =
+					tx.get_with_collection_version(ShardType::EventDag, collection, &[node])?;
+				let mut verdict = match values.into_iter().next().flatten() {
+					| Some(bytes) => {
+						let (stored_event, verdict) = decode_verdict(&bytes)?;
+						if stored_event != event_id {
+							return Err(StorageError::Corrupt(
+								"event record id collision in verdicts".to_owned(),
+							));
+						}
+						verdict
+					},
+					| None => Verdict::default(),
+				};
+				change(&mut verdict);
+				tx.expect_collection_version(ShardType::EventDag, collection, version)?;
+				self.stage(&tx, event_id, &verdict)?;
+				tx.commit()
+			})();
+			match result {
+				| Err(error) if error.is_stale_read() && attempts < MAX_STALE_READ_RETRIES => {
+					attempts = attempts.saturating_add(1);
 				},
 				| result => return result,
 			}
@@ -148,7 +149,12 @@ impl VerdictAdapter {
 	) -> Result<(), StorageError> {
 		let node = event_record_id(event_id);
 		let collection = event_verdict_collection_id(&node);
-		if let Some(existing) = self.store.get(ShardType::EventDag, &collection, node)? {
+		if let Some(existing) = tx
+			.get_many(ShardType::EventDag, collection, &[node])?
+			.into_iter()
+			.next()
+			.flatten()
+		{
 			let (stored_event, _) = decode_verdict(&existing)?;
 			if stored_event != event_id {
 				return Err(StorageError::Corrupt(

@@ -13,7 +13,7 @@ use conduwuit::{
 		stream::{ReadyExt, TryReadyExt, WidebandExt},
 	},
 };
-use database::{Database, Deserialized, Json, KeyVal, Map, serialize_key};
+use database::{Database, KeyVal, Map, serialize_key};
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt, pin_mut};
 use slipstream::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
@@ -27,14 +27,13 @@ use crate::{Dep, rooms, rooms::short::ShortRoomId};
 pub(super) struct Data {
 	mtxdb_events: conduwuit_mtxdb::events::EventAdapter,
 	mtxdb_verdicts: conduwuit_mtxdb::verdicts::VerdictAdapter,
+	mtxdb_timeline: conduwuit_mtxdb::timeline::TimelineAdapter,
 	eventid_pduid: Arc<Map>,
 	userroomid_highlightcount: Arc<Map>,
 	userroomid_notificationcount: Arc<Map>,
-	eventid_pdu: Arc<Map>,
 	eventid_metadata: Arc<Map>,
 	room_pducount_eventid: Arc<Map>,
 	roomid_topologicalorder_pducount: Arc<Map>,
-	shorteventid_shortauthevents: Arc<Map>,
 	shorteventid_shortprevevents: Arc<Map>,
 	pub(super) db: Arc<Database>,
 	services: Services,
@@ -43,6 +42,7 @@ pub(super) struct Data {
 #[derive(Clone)]
 struct Services {
 	short: Dep<rooms::short::Service>,
+	state: Dep<rooms::state::Service>,
 }
 
 pub type PdusIterItem = (PduCount, PduEvent);
@@ -54,18 +54,18 @@ impl Data {
 		Self {
 			mtxdb_events: conduwuit_mtxdb::events::EventAdapter::new(args.mtxdb.clone()),
 			mtxdb_verdicts: conduwuit_mtxdb::verdicts::VerdictAdapter::new(args.mtxdb.clone()),
+			mtxdb_timeline: conduwuit_mtxdb::timeline::TimelineAdapter::new(args.mtxdb.clone()),
 			eventid_pduid: db["eventid_pduid"].clone(),
 			userroomid_highlightcount: db["userroomid_highlightcount"].clone(),
 			userroomid_notificationcount: db["userroomid_notificationcount"].clone(),
-			eventid_pdu: db["eventid_pdu"].clone(),
 			eventid_metadata: db["eventid_metadata"].clone(),
 			room_pducount_eventid: db["room_pducount_eventid"].clone(),
 			roomid_topologicalorder_pducount: db["roomid_topologicalorder_pducount"].clone(),
-			shorteventid_shortauthevents: db["shorteventid_shortauthevents"].clone(),
 			shorteventid_shortprevevents: db["shorteventid_shortprevevents"].clone(),
 			db: args.db.clone(),
 			services: Services {
 				short: args.depend::<rooms::short::Service>("rooms::short"),
+				state: args.depend::<rooms::state::Service>("rooms::state"),
 			},
 		}
 	}
@@ -77,7 +77,7 @@ impl Data {
 			.await?;
 
 		let prefix = current.shortroomid();
-		let last_count = self
+		let mut last_count = self
 			.room_pducount_eventid
 			.rev_raw_stream_from(&current)
 			.ready_try_take_while(move |(key, _)| Ok(key.starts_with(&prefix)))
@@ -85,6 +85,12 @@ impl Data {
 			.try_next()
 			.await?
 			.unwrap_or(PduCount::min());
+
+		if last_count == PduCount::min() {
+			if let Ok(Some(entry)) = self.mtxdb_timeline.latest_entry(room_id.as_bytes()) {
+				last_count = PduCount::from_signed(entry.stream_ordering);
+			}
+		}
 
 		conduwuit::debug!(
 			target: "timeline_debug",
@@ -148,21 +154,12 @@ impl Data {
 	}
 
 	/// Returns the json of a pdu.
-	pub(super) async fn get_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
-		self.eventid_pdu
-			.get(event_id.as_bytes())
-			.await?
-			.deserialized()
+	pub(super) fn get_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
+		database::from_json_slice(&self.get_event_json_bytes(event_id.as_bytes())?)
 	}
 
-	pub(super) async fn get_outlier_pdu_json(
-		&self,
-		event_id: &EventId,
-	) -> Result<CanonicalJsonObject> {
-		self.eventid_pdu
-			.get_nocache(event_id.as_bytes())
-			.await?
-			.deserialized()
+	pub(super) fn get_outlier_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
+		self.get_pdu_json(event_id)
 	}
 
 	/// Returns the json of a pdu.
@@ -172,32 +169,40 @@ impl Data {
 	) -> Result<CanonicalJsonObject> {
 		let _pduid = self.get_pdu_id(event_id).await?;
 
-		self.eventid_pdu
-			.get(event_id.as_bytes())
-			.await
-			.deserialized()
+		self.get_pdu_json(event_id)
 	}
 
-	/// Directly gets the PDU and JSON from the double-write `eventid_pdu` tree.
+	fn get_event_json_bytes(&self, event_id: &[u8]) -> Result<Vec<u8>> {
+		let room_id = self
+			.mtxdb_events
+			.locate_event(event_id)
+			.map_err(|error| err!(Database("mtxdb event locator lookup failed: {error}")))?
+			.ok_or_else(|| err!(Request(NotFound("event not found in mtxdb"))))?;
+		self.mtxdb_events
+			.get_event(&room_id, event_id)
+			.map_err(|error| err!(Database("mtxdb event lookup failed: {error}")))?
+			.ok_or_else(|| err!(Request(NotFound("event body not found in mtxdb"))))
+	}
+
+	/// Directly gets the PDU and JSON from the authoritative mtxdb event store.
 	/// Used for timeline re-insertion when other indices are cleared.
-	pub(super) async fn get_from_eventid_pdu(
+	pub(super) fn get_from_eventid_pdu(
 		&self,
 		event_id: &EventId,
 	) -> Result<(PduEvent, CanonicalJsonObject)> {
-		let handle = self.eventid_pdu.get(event_id.as_bytes()).await?;
-		let pdu: PduEvent = handle.deserialized()?;
-		let json: CanonicalJsonObject = handle.deserialized()?;
+		let bytes = self.get_event_json_bytes(event_id.as_bytes())?;
+		let pdu: PduEvent = database::from_json_slice(&bytes)?;
+		let json: CanonicalJsonObject = database::from_json_slice(&bytes)?;
 		Ok((pdu, json))
 	}
 
-	/// Directly get raw PDU bytes from double-write `eventid_pdu` tree.
-	pub(super) async fn get_pdu_and_raw_bytes(
+	/// Directly get raw PDU bytes from the authoritative mtxdb event store.
+	pub(super) fn get_pdu_and_raw_bytes(
 		&self,
 		event_id: &EventId,
 	) -> Result<(PduEvent, Vec<u8>)> {
-		let handle = self.eventid_pdu.get(event_id.as_bytes()).await?;
-		let pdu: PduEvent = handle.deserialized()?;
-		let raw_bytes = handle.as_ref().to_vec();
+		let raw_bytes = self.get_event_json_bytes(event_id.as_bytes())?;
+		let pdu: PduEvent = database::from_json_slice(&raw_bytes)?;
 		Ok((pdu, raw_bytes))
 	}
 
@@ -207,11 +212,7 @@ impl Data {
 		pin_mut!(pdus);
 
 		while let Some((_, pdu)) = pdus.try_next().await? {
-			if let Ok(json) = self.get_non_outlier_pdu_json(&pdu.event_id).await {
-				// `raw_put` already wakes watchers for this key (see
-				// `Map::insert`); an extra explicit wake here would be redundant.
-				self.eventid_pdu
-					.raw_put(pdu.event_id.as_bytes(), Json(&json));
+			if self.get_non_outlier_pdu_json(&pdu.event_id).await.is_ok() {
 				count = count.saturating_add(1);
 			}
 		}
@@ -219,12 +220,12 @@ impl Data {
 	}
 
 	pub(super) fn apply_batch(&self, batch: database::Batch<'_>) {
-		self.eventid_pdu.apply_batch(batch);
+		self.room_pducount_eventid.apply_batch(batch);
 	}
 
-	pub(super) async fn fallback_prev_events(&self, event_id: &EventId) -> HashSet<OwnedEventId> {
+	pub(super) fn fallback_prev_events(&self, event_id: &EventId) -> HashSet<OwnedEventId> {
 		let mut prevs = HashSet::new();
-		if let Ok((pdu, _)) = self.get_from_eventid_pdu(event_id).await {
+		if let Ok((pdu, _)) = self.get_from_eventid_pdu(event_id) {
 			for prev_id in pdu.prev_events() {
 				prevs.insert(prev_id.to_owned());
 			}
@@ -239,7 +240,7 @@ impl Data {
 		&self,
 		event_id: &EventId,
 	) -> HashSet<OwnedEventId> {
-		let prevs = self.fallback_prev_events(event_id).await;
+		let prevs = self.fallback_prev_events(event_id);
 
 		if !prevs.is_empty() {
 			let short_eid = self
@@ -333,6 +334,26 @@ impl Data {
 			}
 		}
 
+		if all_event_ids.is_empty() {
+			if let Ok(page) =
+				self.mtxdb_timeline
+					.page_room(room_id.as_bytes(), None, true, usize::MAX)
+			{
+				for entry in page.entries {
+					let count = PduCount::from_signed(entry.stream_ordering);
+					if let Ok(Some((event_id_bytes, _))) =
+						self.mtxdb_events.locate_event_by_node(&entry.node_id)
+					{
+						if let Ok(event_id_str) = std::str::from_utf8(&event_id_bytes) {
+							if let Ok(event_id) = OwnedEventId::parse(event_id_str) {
+								all_event_ids.push((count, event_id));
+							}
+						}
+					}
+				}
+			}
+		}
+
 		// Phase 1b: For each event, read metadata (origin_server_ts) and
 		// resolve prev_events from the shortprevevents table.
 		for (count, event_id) in &all_event_ids {
@@ -344,8 +365,13 @@ impl Data {
 				None
 			};
 
-			let ts = meta_opt.as_ref().map_or(0, |m| m.origin_server_ts);
-			let depth = meta_opt.as_ref().map_or(0, |m| m.depth);
+			let (ts, depth) = if let Some(ref m) = meta_opt {
+				(m.origin_server_ts, m.depth)
+			} else if let Ok((pdu, _)) = self.get_from_eventid_pdu(event_id) {
+				(pdu.origin_server_ts().get(), pdu.depth())
+			} else {
+				(0, 0)
+			};
 
 			entries.insert(event_id.clone(), (*count, depth, ts));
 
@@ -405,12 +431,7 @@ impl Data {
 			if let Ok(event_id_str) = std::str::from_utf8(event_id_bytes) {
 				if let Ok(event_id) = OwnedEventId::parse(event_id_str) {
 					let _pdu_id: RawPduId = pdu_id_bytes.into();
-					if let Ok(mut json) = self
-						.eventid_pdu
-						.get(&event_id_bytes)
-						.await
-						.deserialized::<CanonicalJsonObject>()
-					{
+					if let Ok(mut json) = self.get_pdu_json(&event_id) {
 						if !json.contains_key("event_id") {
 							json.insert(
 								"event_id".into(),
@@ -418,7 +439,11 @@ impl Data {
 									event_id.as_str().to_owned(),
 								),
 							);
-							self.eventid_pdu.raw_put(event_id_bytes, Json(&json));
+							if let Ok(pdu) = slipstream::codec::from_value::<PduEvent>(
+								&slipstream::json::Value::Object(json.clone()),
+							) {
+								self.write_event_to_mtxdb(&pdu, &json).await?;
+							}
 							fixed = fixed.saturating_add(1);
 						}
 					}
@@ -677,7 +702,6 @@ impl Data {
 			self.remove_topo_pducount(&pduid, event_id.as_bytes());
 
 			if self.outlier_pdu_exists(event_id).await.is_err() {
-				self.eventid_pdu.remove(event_id.as_bytes());
 				self.eventid_metadata.remove(event_id.as_bytes());
 			}
 		}
@@ -686,7 +710,7 @@ impl Data {
 	/// Strips only the timeline-membership of `event_id` (the
 	/// `eventid_pduid`/`room_pducount_eventid`/topo pointers, plus the stale
 	/// `eventid_metadata` entry those pointers were keyed against), leaving
-	/// `eventid_pdu` untouched.
+	/// authoritative mtxdb event body untouched.
 	///
 	/// This exists for callers that intend to immediately re-persist the
 	/// event as an outlier (e.g. `add_pdu_outlier`/`add_pdu_outlier_locked`)
@@ -853,7 +877,7 @@ impl Data {
 			.map(|handle| RawPduId::from(&*handle))
 	}
 
-	/// Returns the pdu directly from `eventid_pduid` only.
+	/// Returns the PDU after verifying timeline membership through `eventid_pduid`.
 	/// If `room_id` is provided, validates the PDU belongs to that room.
 	pub(super) async fn get_non_outlier_pdu_in_room(
 		&self,
@@ -861,11 +885,8 @@ impl Data {
 		event_id: &EventId,
 	) -> Result<PduEvent> {
 		let pduid = self.get_pdu_id(event_id).await?;
-		let pdu: PduEvent = self
-			.eventid_pdu
-			.get(event_id.as_bytes())
-			.await
-			.deserialized()?;
+		let pdu: PduEvent =
+			database::from_json_slice(&self.get_event_json_bytes(event_id.as_bytes())?)?;
 
 		// Enforce cross-room boundary: verify the PDU belongs to the expected room
 		if let Some(expected_room) = room_id {
@@ -959,18 +980,30 @@ impl Data {
 
 	/// Returns the pdu.
 	///
-	/// Checks the `eventid_pdu` Tree if not found in the timeline.
+	/// Checks the mtxdb event store if not found in the timeline.
 	/// If `room_id` is provided, validates the PDU belongs to that room.
-	pub(super) async fn get_pdu_in_room(
+	pub(super) fn get_pdu_in_room(
 		&self,
 		room_id: Option<&RoomId>,
 		event_id: &EventId,
 	) -> Result<PduEvent> {
-		let pdu: PduEvent = self
-			.eventid_pdu
-			.get(event_id.as_bytes())
-			.await?
-			.deserialized()?;
+		// When the room is known, read the body straight from its event
+		// collection instead of paying for a locator lookup first. This is the
+		// hot path when auth-checking a large fetched auth chain. A miss falls
+		// back to the locator so an event stored under another room still
+		// reports the room mismatch rather than a bare NotFound.
+		let bytes = match room_id {
+			| Some(room_id) => match self
+				.mtxdb_events
+				.get_event(room_id.as_bytes(), event_id.as_bytes())
+				.map_err(|error| err!(Database("mtxdb event lookup failed: {error}")))?
+			{
+				| Some(bytes) => bytes,
+				| None => self.get_event_json_bytes(event_id.as_bytes())?,
+			},
+			| None => self.get_event_json_bytes(event_id.as_bytes())?,
+		};
+		let pdu: PduEvent = database::from_json_slice(&bytes)?;
 
 		if let Some(expected_room) = room_id {
 			let actual_room = pdu.room_id_or_hash();
@@ -983,6 +1016,65 @@ impl Data {
 		}
 
 		Ok(pdu)
+	}
+
+	/// Which of `event_ids` already have a stored event body in this room,
+	/// positionally. One batched mtxdb read instead of a locator lookup per ID.
+	pub(super) fn event_ids_present(
+		&self,
+		room_id: &RoomId,
+		event_ids: &[OwnedEventId],
+	) -> Result<Vec<bool>> {
+		let ids: Vec<&[u8]> = event_ids.iter().map(OwnedEventId::as_bytes).collect();
+		self.mtxdb_events
+			.get_events(room_id.as_bytes(), &ids)
+			.map(|values| values.into_iter().map(|value| value.is_some()).collect())
+			.map_err(|error| err!(Database("mtxdb event existence batch failed: {error}")))
+	}
+
+	/// Preload the full auth context for the given events from mtxdb's persisted
+	/// auth-chain closures. State resolution can then decode the room's event
+	/// bodies in one batch instead of walking a deep auth chain one event at a
+	/// time.
+	pub(super) fn get_mtxdb_auth_context(
+		&self,
+		room_id: &RoomId,
+		starting_events: &[OwnedEventId],
+	) -> Result<Vec<PduEvent>> {
+		let mut seen = HashSet::new();
+		let mut event_ids = Vec::new();
+		for event_id in starting_events {
+			if seen.insert(event_id.clone()) {
+				event_ids.push(event_id.clone());
+			}
+			let auth_chain = self
+				.mtxdb_events
+				.get_auth_chain(room_id.as_bytes(), event_id.as_bytes())
+				.map_err(|error| err!(Database("mtxdb auth-chain lookup failed: {error}")))?;
+			for auth_event_id in auth_chain {
+				let auth_event_id =
+					OwnedEventId::parse(std::str::from_utf8(&auth_event_id).map_err(
+						|error| err!(Database("invalid event ID in mtxdb auth chain: {error}")),
+					)?)
+					.map_err(|error| {
+						err!(Database("invalid event ID in mtxdb auth chain: {error}"))
+					})?;
+				if seen.insert(auth_event_id.clone()) {
+					event_ids.push(auth_event_id);
+				}
+			}
+		}
+
+		let event_id_bytes: Vec<&[u8]> = event_ids.iter().map(OwnedEventId::as_bytes).collect();
+		let pdus = self
+			.mtxdb_events
+			.get_events(room_id.as_bytes(), &event_id_bytes)
+			.map_err(|error| err!(Database("mtxdb auth-context lookup failed: {error}")))?;
+		Ok(pdus
+			.into_iter()
+			.flatten()
+			.filter_map(|bytes| database::from_json_slice(&bytes).ok())
+			.collect())
 	}
 
 	pub(super) async fn get_pdus_in_room_batch(
@@ -1018,18 +1110,18 @@ impl Data {
 			}
 		}
 
-		// Two-hop resolve: room_pducount_eventid → eventid_pdu
+		// Two-hop resolve: room_pducount_eventid → mtxdb event body
 		let pdu_events = self.resolve_pdu_batch(&valid_pdu_ids).await;
 
-		// Batch fetch outliers directly from eventid_pdu
+		// Resolve outliers from mtxdb by event ID.
 		let outlier_events = if !missing_event_ids.is_empty() {
-			self.eventid_pdu
-				.get_batch(futures::stream::iter(missing_event_ids))
-				.map(|res: Result<database::Handle<'_>>| {
-					res.and_then(|handle| handle.deserialized::<PduEvent>())
+			missing_event_ids
+				.into_iter()
+				.map(|event_id| {
+					self.get_event_json_bytes(event_id)
+						.and_then(|bytes| database::from_json_slice::<PduEvent>(&bytes))
 				})
 				.collect()
-				.await
 		} else {
 			Vec::new()
 		};
@@ -1111,8 +1203,15 @@ impl Data {
 	}
 
 	/// Like get_pdu(), but without the expense of fetching and parsing the data
-	pub(super) async fn pdu_exists(&self, event_id: &EventId) -> Result {
-		self.eventid_pdu.exists(event_id.as_bytes()).await
+	pub(super) fn pdu_exists(&self, event_id: &EventId) -> Result {
+		match self
+			.mtxdb_events
+			.locate_event(event_id.as_bytes())
+			.map_err(|error| err!(Database("mtxdb event lookup failed: {error}")))?
+		{
+			| Some(_) => Ok(()),
+			| None => Err(err!(Request(NotFound("event not found in mtxdb")))),
+		}
 	}
 
 	/// Returns the pdu.
@@ -1125,7 +1224,8 @@ impl Data {
 		pdu_id: &RawPduId,
 	) -> Result<PduEvent> {
 		let event_id_bytes = self.room_pducount_eventid.get(pdu_id).await?;
-		let pdu: PduEvent = self.eventid_pdu.get(&event_id_bytes).await.deserialized()?;
+		let pdu: PduEvent =
+			database::from_json_slice(&self.get_event_json_bytes(&event_id_bytes)?)?;
 
 		if let Some(expected_room) = room_id {
 			let actual_room = pdu.room_id_or_hash();
@@ -1155,14 +1255,15 @@ impl Data {
 		pdu_id: &RawPduId,
 	) -> Result<CanonicalJsonObject> {
 		let event_id_bytes = self.room_pducount_eventid.get(pdu_id).await?;
-		self.eventid_pdu.get(&event_id_bytes).await.deserialized()
+		let event_id = EventId::parse(std::str::from_utf8(&event_id_bytes)?)?;
+		self.get_pdu_json(&event_id)
 	}
 
 	#[allow(clippy::unused_self)]
 	pub(super) fn db_batch(&self) -> database::Batch<'_> { database::Batch::new() }
 
 	pub(super) fn db_apply_batch(&self, batch: database::Batch<'_>) {
-		self.eventid_pdu.apply_batch(batch);
+		self.room_pducount_eventid.apply_batch(batch);
 	}
 
 	pub(super) async fn append_pdu(
@@ -1171,34 +1272,147 @@ impl Data {
 		pdu: &PduEvent,
 		json: &CanonicalJsonObject,
 		count: PduCount,
-	) {
+	) -> Result {
 		let mut batch = database::Batch::new();
 		self.append_pdu_batch(&mut batch, pdu_id, pdu, json, count)
-			.await;
-		self.eventid_pdu.apply_batch(batch);
+			.await?;
+		self.room_pducount_eventid.apply_batch(batch);
+		Ok(())
 	}
 
 	/// Persist the event body and its prev/auth edges in mtxdb. Keyed by event
 	/// id and idempotent, so it needs no stream count and can run before one is
-	/// allocated. A failure is logged and leaves the event unrecorded there.
-	pub(super) fn write_event_to_mtxdb(&self, pdu: &PduEvent, json: &CanonicalJsonObject) {
+	/// allocated. Timeline insertion stops if the authoritative write fails.
+	pub(super) async fn write_event_to_mtxdb(
+		&self,
+		pdu: &PduEvent,
+		json: &CanonicalJsonObject,
+	) -> Result {
+		let room_id = pdu
+			.room_id_or_hash()
+			.ok_or_else(|| err!(Database("Event {} has no room ID", pdu.event_id)))?;
+		if pdu.kind == slipstream::events::TimelineEventType::RoomCreate {
+			match pdu.get_content::<slipstream::events::room::create::RoomCreateEventContent>() {
+				| Ok(content) => {
+					self.services
+						.short
+						.set_room_version(&room_id, &content.room_version)
+						.map_err(|error| {
+							err!(Database("Failed to store room version: {error}"))
+						})?;
+				},
+				| Err(error) => {
+					return Err(err!(Database("Invalid room-create content: {error}")));
+				},
+			}
+		} else {
+			self.services.state.get_room_version(&room_id).await?;
+		}
+
+		for auth_event in pdu.auth_events() {
+			let _ = self
+				.services
+				.short
+				.get_or_create_shorteventid_blocking(auth_event);
+		}
 		let event_id_bytes = pdu.event_id.as_bytes();
-		let room_id_bytes = pdu
-			.room_id
-			.as_ref()
-			.map(OwnedRoomId::as_bytes)
-			.expect("room_id present on PDU");
+		let room_id_bytes = room_id.as_bytes();
 		let event_json = slipstream::codec::to_string(json);
 		let prev_events = pdu.prev_events().map(EventId::as_bytes).collect::<Vec<_>>();
 		let auth_events = pdu.auth_events().map(EventId::as_bytes).collect::<Vec<_>>();
-		if let Err(error) = self.mtxdb_events.write_event_with_edges(
-			room_id_bytes,
-			event_id_bytes,
-			event_json.as_bytes(),
-			&prev_events,
-			&auth_events,
-		) {
-			conduwuit::warn!(?error, event_id = %pdu.event_id, "Failed shadow-writing event in mtxdb");
+		self.mtxdb_events
+			.write_event_with_edges(
+				room_id_bytes,
+				event_id_bytes,
+				event_json.as_bytes(),
+				&prev_events,
+				&auth_events,
+			)
+			.map_err(|error| err!(Database("Failed to write event to mtxdb: {error}")))?;
+		Ok(())
+	}
+
+	/// Persist a verified batch of a room's events and edges in one mtxdb
+	/// transaction.
+	///
+	/// Used by federation state recovery, where a single `/state_ids` response
+	/// can yield hundreds of events. The events arrive topologically sorted, so
+	/// each one's auth events are staged before it and the auth-chain closures
+	/// complete in order.
+	pub(super) async fn write_events_to_mtxdb(
+		&self,
+		room_id: &RoomId,
+		events: &[(&PduEvent, &CanonicalJsonObject)],
+	) -> Result {
+		const EVENTS_PER_TRANSACTION: usize = 64;
+		if events.is_empty() {
+			return Ok(());
+		}
+		self.services.state.get_room_version(room_id).await?;
+
+		let mut bodies = Vec::with_capacity(events.len());
+		let mut event_ids = Vec::with_capacity(events.len());
+		let mut prev_events = Vec::with_capacity(events.len());
+		let mut auth_events = Vec::with_capacity(events.len());
+		for &(pdu, json) in events {
+			for auth_event in pdu.auth_events() {
+				let _ = self
+					.services
+					.short
+					.get_or_create_shorteventid_blocking(auth_event);
+			}
+			// Match the body `add_pdu_outlier` writes, including the event ID,
+			// so the per-event auth pass can skip a redundant rewrite instead
+			// of re-committing every pre-persisted body.
+			let mut body = (*json).clone();
+			body.insert(
+				"event_id".to_owned(),
+				slipstream::CanonicalJsonValue::String(pdu.event_id.as_str().to_owned()),
+			);
+			bodies.push(slipstream::codec::to_string(&body));
+			event_ids.push(pdu.event_id.as_bytes());
+			prev_events.push(pdu.prev_events().map(EventId::as_bytes).collect::<Vec<_>>());
+			auth_events.push(pdu.auth_events().map(EventId::as_bytes).collect::<Vec<_>>());
+		}
+
+		let writes = (0..events.len())
+			.map(|index| conduwuit_mtxdb::events::EventWrite {
+				event_id: event_ids[index],
+				event_body: bodies[index].as_bytes(),
+				prev_events: &prev_events[index],
+				auth_events: &auth_events[index],
+			})
+			.collect::<Vec<_>>();
+
+		// Chunk so a stale-read conflict only re-stages (and re-materializes) a
+		// bounded prefix, rather than the entire auth chain. `stage_put` already
+		// enforces mtxdb's transaction-size budget per put, but the limit is
+		// per-database, so a rejected chunk is split again.
+		for chunk in writes.chunks(EVENTS_PER_TRANSACTION) {
+			self.write_event_chunk(room_id, chunk)?;
+		}
+		Ok(())
+	}
+
+	/// Write one mtxdb event batch, halving it if the database's transaction
+	/// staging budget rejects it. A single event that still does not fit is a
+	/// real error.
+	fn write_event_chunk(
+		&self,
+		room_id: &RoomId,
+		chunk: &[conduwuit_mtxdb::events::EventWrite<'_>],
+	) -> Result {
+		match self
+			.mtxdb_events
+			.write_events_with_edges(room_id.as_bytes(), chunk)
+		{
+			| Ok(()) => Ok(()),
+			| Err(error) if error.is_stage_too_large() && chunk.len() > 1 => {
+				let (head, tail) = chunk.split_at(chunk.len() / 2);
+				self.write_event_chunk(room_id, head)?;
+				self.write_event_chunk(room_id, tail)
+			},
+			| Err(error) => Err(err!(Database("Failed to write event batch to mtxdb: {error}"))),
 		}
 	}
 
@@ -1214,9 +1428,12 @@ impl Data {
 		let mut batch = database::Batch::new();
 		self.append_pdu_batch_rows(&mut batch, pdu_id, pdu, json, count)
 			.await;
-		self.eventid_pdu.apply_batch(batch);
+		self.room_pducount_eventid.apply_batch(batch);
 	}
 
+	/// Write the event and edges to mtxdb, then stage timeline rows in `batch`.
+	/// The mtxdb write commits separately from the caller's batch; a write
+	/// failure is returned before any timeline rows are staged.
 	pub(super) async fn append_pdu_batch<'a>(
 		&'a self,
 		batch: &mut database::Batch<'a>,
@@ -1224,10 +1441,11 @@ impl Data {
 		pdu: &PduEvent,
 		json: &CanonicalJsonObject,
 		count: PduCount,
-	) {
-		self.write_event_to_mtxdb(pdu, json);
+	) -> Result {
+		self.write_event_to_mtxdb(pdu, json).await?;
 		self.append_pdu_batch_rows(batch, pdu_id, pdu, json, count)
 			.await;
+		Ok(())
 	}
 
 	async fn append_pdu_batch_rows<'a>(
@@ -1238,8 +1456,6 @@ impl Data {
 		json: &CanonicalJsonObject,
 		count: PduCount,
 	) {
-		debug_assert!(matches!(count, PduCount::Normal(_)), "PduCount not Normal");
-
 		let event_id_bytes = pdu.event_id.as_bytes();
 		let existing_metadata = if let Ok(bytes) = self.eventid_metadata.get(event_id_bytes).await
 		{
@@ -1269,15 +1485,24 @@ impl Data {
 		// Map event_id -> pdu_id
 		self.eventid_pduid.batch_put(batch, &event_id_bytes, pdu_id);
 
-		self.eventid_pdu
-			.batch_raw_put(batch, event_id_bytes, Json(json));
-
 		self.room_pducount_eventid
 			.batch_put(batch, pdu_id, event_id_bytes);
 
 		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth());
 		self.roomid_topologicalorder_pducount
 			.batch_put(batch, &topo_key, event_id_bytes);
+
+		if let Some(room_id) = pdu.room_id() {
+			let entry = conduwuit_mtxdb::timeline::TimelineAdapter::make_entry(
+				room_id.as_bytes(),
+				pdu.depth().cast_signed(),
+				pdu_id.pdu_count().into_signed(),
+				pdu.event_id().as_bytes(),
+			);
+			let _ = self
+				.mtxdb_timeline
+				.append_room(room_id.as_bytes(), &[entry]);
+		}
 
 		// Integrate hotfix timestamp index into WriteBatch
 		if let Some(ts) = json
@@ -1298,7 +1523,10 @@ impl Data {
 			redacted_by: pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
 			deprecated_local_topo_depth: pdu.depth(),
-			pdu_count: Some(count.into_unsigned()),
+			pdu_count: match count {
+				| PduCount::Normal(x) => Some(x),
+				| PduCount::Backfilled(_) => None,
+			},
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
 			self.eventid_metadata
@@ -1318,23 +1546,14 @@ impl Data {
 			.await;
 		self.store_shortprevevents_into_batch(batch, short_event_id, &prev_shorts);
 
-		let auth_shorts: Vec<_> = self
-			.services
-			.short
-			.multi_get_or_create_shorteventid(pdu.auth_events())
-			.collect()
-			.await;
-		self.store_shortauthevents_into_batch(batch, short_event_id, &auth_shorts);
-
 		self.record_backward_extremities_into_batch(batch, pdu_id, pdu)
 			.await;
 	}
 
 	/// Tier 3 write-time bookkeeping (see `backward_extremities.rs` and
 	/// `docs/development-gg/backfill-extremities-write-time-design.md`).
-	/// Called from both `append_pdu_batch` and `prepend_backfill_pdu_batch`
-	/// -- every insert path in the codebase funnels through one of those
-	/// two, so this is the single place this bookkeeping needs to happen.
+	/// Every timeline insert funnels through `append_pdu_batch`, so this is
+	/// the single place this bookkeeping needs to happen.
 	///
 	/// Not yet read by anything (`backfill_if_required` still uses the old
 	/// scan) -- this only writes the index so it's ready once the read path
@@ -1389,119 +1608,6 @@ impl Data {
 		}
 	}
 
-	pub(super) async fn prepend_backfill_pdu(
-		&self,
-		pdu_id: &RawPduId,
-		event_id: &EventId,
-		json: &CanonicalJsonObject,
-		pdu: &PduEvent,
-	) {
-		let mut batch = database::Batch::new();
-		self.prepend_backfill_pdu_batch(&mut batch, pdu_id, event_id, json, pdu)
-			.await;
-		self.eventid_pdu.apply_batch(batch);
-	}
-
-	pub(super) async fn prepend_backfill_pdu_batch<'a>(
-		&'a self,
-		batch: &mut database::Batch<'a>,
-		pdu_id: &RawPduId,
-		event_id: &EventId,
-		json: &CanonicalJsonObject,
-		pdu: &PduEvent,
-	) {
-		let event_id_bytes = event_id.as_bytes();
-		let existing_metadata = if let Ok(bytes) = self.eventid_metadata.get(event_id_bytes).await
-		{
-			rooms::timeline::EventMetadata::from_bincode(&bytes).ok()
-		} else {
-			None
-		};
-
-		if let Ok(existing_pdu_id) = self
-			.eventid_pduid
-			.get(event_id_bytes)
-			.await
-			.map(|handle| RawPduId::from(&*handle))
-		{
-			if existing_pdu_id != *pdu_id {
-				self.remove_stream_and_topo_pducount_from_batch(
-					batch,
-					&existing_pdu_id,
-					event_id_bytes,
-					existing_metadata
-						.as_ref()
-						.map(|meta| meta.deprecated_local_topo_depth),
-				);
-			}
-		}
-
-		self.eventid_pduid.batch_put(batch, &event_id_bytes, pdu_id);
-
-		self.eventid_pdu
-			.batch_raw_put(batch, event_id_bytes, Json(json));
-		self.room_pducount_eventid
-			.batch_put(batch, pdu_id, event_id_bytes);
-
-		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth());
-		self.roomid_topologicalorder_pducount
-			.batch_put(batch, &topo_key, event_id_bytes);
-
-		// Integrate hotfix timestamp index into WriteBatch
-		if let Some(ts) = json
-			.get("origin_server_ts")
-			.and_then(slipstream::json::Value::as_i64)
-		{
-			if let Ok(ts) = slipstream::UInt::try_from(ts) {
-				let ts_key = pack_timestamp_key(pdu_id.shortroomid(), ts, pdu_id.pdu_count());
-				self.db["roomid_timestamp_pducount"].batch_put(batch, &ts_key, []);
-			}
-		}
-
-		let metadata = rooms::timeline::EventMetadata {
-			short_room_id: u64::from_be_bytes(pdu_id.shortroomid()),
-			is_outlier: false,
-			origin_server_ts: pdu.origin_server_ts().0,
-			depth: pdu.depth(),
-			redacted_by: pdu.redacts().map(ToOwned::to_owned),
-			short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
-			deprecated_local_topo_depth: pdu.depth(),
-			pdu_count: match pdu_id.pdu_count() {
-				| PduCount::Normal(x) => Some(x),
-				| PduCount::Backfilled(_) => None,
-			},
-		};
-		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
-			self.eventid_metadata
-				.batch_put(batch, event_id_bytes, metadata_bytes);
-		}
-
-		let short_event_id = self
-			.services
-			.short
-			.get_or_create_shorteventid(event_id)
-			.await;
-
-		let prev_shorts: Vec<_> = self
-			.services
-			.short
-			.multi_get_or_create_shorteventid(pdu.prev_events())
-			.collect()
-			.await;
-		self.store_shortprevevents_into_batch(batch, short_event_id, &prev_shorts);
-
-		let auth_shorts: Vec<_> = self
-			.services
-			.short
-			.multi_get_or_create_shorteventid(pdu.auth_events())
-			.collect()
-			.await;
-		self.store_shortauthevents_into_batch(batch, short_event_id, &auth_shorts);
-
-		self.record_backward_extremities_into_batch(batch, pdu_id, pdu)
-			.await;
-	}
-
 	/// Persist the redaction edge in the authoritative mtxdb verdict.
 	pub(super) fn persist_redaction(&self, event_id: &EventId, redacted_by: &EventId) -> Result {
 		self.mtxdb_verdicts
@@ -1529,12 +1635,10 @@ impl Data {
 		let event_id_bytes = event_id.as_bytes();
 
 		// --- Phase 1: Double-Write ---
-		self.eventid_pdu
-			.batch_raw_put(&mut batch, event_id_bytes, Json(pdu_json));
-
 		if let Ok(pdu) = slipstream::codec::from_value::<PduEvent>(
 			&slipstream::json::Value::Object(pdu_json.clone()),
 		) {
+			self.write_event_to_mtxdb(&pdu, pdu_json).await?;
 			let existing_metadata =
 				if let Ok(bytes) = self.eventid_metadata.get(event_id_bytes).await {
 					rooms::timeline::EventMetadata::from_bincode(&bytes).ok()
@@ -1579,17 +1683,9 @@ impl Data {
 				.collect()
 				.await;
 			self.store_shortprevevents_into_batch(&mut batch, short_event_id, &prev_shorts);
-
-			let auth_shorts: Vec<_> = self
-				.services
-				.short
-				.multi_get_or_create_shorteventid(pdu.auth_events())
-				.collect()
-				.await;
-			self.store_shortauthevents_into_batch(&mut batch, short_event_id, &auth_shorts);
 		}
 
-		self.eventid_pdu.apply_batch(batch);
+		self.room_pducount_eventid.apply_batch(batch);
 		Ok(())
 	}
 
@@ -1618,7 +1714,7 @@ impl Data {
 					// RocksDB cursor invalidation through try_buffered
 					.map_ok(|(key, val)| (key.to_vec(), val.to_vec()))
 					.and_then(
-						move |(key, val)| async move { self.resolve_pdu((&key, &val)).await },
+						move |(key, val)| async move { self.resolve_pdu((&key, &val)) },
 					)
 			})
 			.inspect_err(|e| conduwuit::warn!("pdus_rev count_to_id failed: {e}"))
@@ -1652,7 +1748,7 @@ impl Data {
 					// RocksDB cursor invalidation through try_buffered
 					.map_ok(|(key, val)| (key.to_vec(), val.to_vec()))
 					.and_then(
-						move |(key, val)| async move { self.resolve_pdu((&key, &val)).await },
+						move |(key, val)| async move { self.resolve_pdu((&key, &val)) },
 					)
 			})
 			.try_flatten_stream()
@@ -1794,20 +1890,14 @@ mod boundary_tests {
 
 impl Data {
 	/// Resolve a (pdu_id, event_id_bytes) pair from `room_pducount_eventid`
-	/// into a full `PdusIterItem` by looking up the PDU JSON in
-	/// `eventid_pdu`.
-	async fn resolve_pdu(&self, (pdu_id, event_id_bytes): KeyVal<'_>) -> Result<PdusIterItem> {
-		let json_bytes = match self.eventid_pdu.get(&event_id_bytes).await {
-			| Ok(h) => h,
-			| Err(e) => {
-				return Err(e);
-			},
-		};
-		Self::parse_json_slice(None, (pdu_id, json_bytes.as_ref()))
+	/// into a full `PdusIterItem` by looking up the PDU JSON in mtxdb.
+	fn resolve_pdu(&self, (pdu_id, event_id_bytes): KeyVal<'_>) -> Result<PdusIterItem> {
+		let json_bytes = self.get_event_json_bytes(event_id_bytes)?;
+		Self::parse_json_slice(None, (pdu_id, &json_bytes))
 	}
 
 	/// Resolve a batch of `pdu_id`s via the two-hop path:
-	/// `room_pducount_eventid` → event_id_bytes → `eventid_pdu` → PduEvent.
+	/// `room_pducount_eventid` → event_id_bytes → mtxdb → PduEvent.
 	async fn resolve_pdu_batch(&self, pdu_ids: &[RawPduId]) -> Vec<Result<PduEvent>> {
 		use futures::StreamExt;
 
@@ -1826,10 +1916,8 @@ impl Data {
 			match res {
 				| Ok(event_id_handle) => {
 					results.push(
-						self.eventid_pdu
-							.get(&*event_id_handle)
-							.await
-							.and_then(|h| h.deserialized::<PduEvent>()),
+						self.get_event_json_bytes(&event_id_handle)
+							.and_then(|bytes| database::from_json_slice::<PduEvent>(&bytes)),
 					);
 				},
 				| Err(e) => results.push(Err(e)),
@@ -2196,9 +2284,9 @@ impl Data {
 				let depth = timeline_key.depth;
 
 				let pdu_id = Self::topo_key_to_pdu_id(&topo_key);
-				let json_bytes = self.eventid_pdu.get(&event_id_bytes).await?;
+				let json_bytes = self.get_event_json_bytes(&event_id_bytes)?;
 				let (pdu_count, pdu) =
-					Self::parse_json_slice(None, (pdu_id.as_ref(), json_bytes.as_ref()))?;
+					Self::parse_json_slice(None, (pdu_id.as_ref(), &json_bytes))?;
 				let metadata_bytes = self.eventid_metadata.get(&event_id_bytes).await?;
 				let Ok(metadata) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
 				else {
@@ -2232,8 +2320,8 @@ impl Data {
 				// moved this event_id to a different depth or counter) from the
 				// entry that is actually this event's current position. Cross-check
 				// against `eventid_pduid`, which every write site (append_pdu_batch,
-				// prepend_backfill_pdu_batch, reindex.rs, reorder.rs) keeps pointed
-				// at the event's live position, and drop the key if it disagrees.
+				// reindex.rs, reorder.rs) keeps pointed at the event's live
+				// position, and drop the key if it disagrees.
 				if matches!(pdu_count, PduCount::Backfilled(_)) {
 					let Ok(canonical_id) = self.eventid_pduid.get(&event_id_bytes).await else {
 						conduwuit::debug!(
@@ -2366,47 +2454,50 @@ impl Data {
 		Ok(prev_shorts)
 	}
 
-	pub(super) fn store_shortauthevents(
-		&self,
-		shorteventid: rooms::short::ShortEventId,
-		shortauthevents: &[rooms::short::ShortEventId],
-	) {
-		let key = shorteventid.to_be_bytes();
-		let val = shortauthevents
-			.iter()
-			.flat_map(|s| s.to_be_bytes())
-			.collect::<Vec<u8>>();
-		self.shorteventid_shortauthevents.insert(&key, &val);
-	}
-
+	/// Read direct auth edges from mtxdb and resolve or allocate their short IDs.
+	/// An existing empty edge row yields an empty vector; a missing event mapping,
+	/// locator, or edge row returns `NotFound`. There is no legacy-PDU fallback:
+	/// the offline import must write auth edges for every event. Read and decoding
+	/// errors propagate; short-ID allocation failures panic.
 	pub(super) async fn get_shortauthevents(
 		&self,
 		shorteventid: rooms::short::ShortEventId,
 	) -> Result<Vec<rooms::short::ShortEventId>> {
-		let key = shorteventid.to_be_bytes();
-		let val = self.shorteventid_shortauthevents.get(&key).await?;
-		let auth_shorts = val
-			.as_chunks::<{ size_of::<u64>() }>()
-			.0
-			.iter()
-			.map(|c| u64::from_be_bytes(*c))
-			.collect();
-		Ok(auth_shorts)
-	}
-
-	pub(super) fn store_shortauthevents_into_batch<'a>(
-		&'a self,
-		batch: &mut database::Batch<'a>,
-		shorteventid: rooms::short::ShortEventId,
-		shortauthevents: &[rooms::short::ShortEventId],
-	) {
-		let key = shorteventid.to_be_bytes();
-		let val = shortauthevents
-			.iter()
-			.flat_map(|s| s.to_be_bytes())
-			.collect::<Vec<u8>>();
-		self.shorteventid_shortauthevents
-			.batch_put(batch, &key, &val);
+		let event_id = self
+			.services
+			.short
+			.get_eventid_from_short::<OwnedEventId>(shorteventid)
+			.await?;
+		let Some(room_id) = self
+			.mtxdb_events
+			.locate_event(event_id.as_bytes())
+			.map_err(|e| err!(Database("mtxdb event locator lookup failed: {e}")))?
+		else {
+			return Err(err!(Request(NotFound("event has no mtxdb auth edges"))));
+		};
+		let auth_ids = self
+			.mtxdb_events
+			.get_auth_events_if_present(&room_id, event_id.as_bytes())
+			.map_err(|e| err!(Database("mtxdb direct auth-edge lookup failed: {e}")))?;
+		let Some(auth_ids) = auth_ids else {
+			return Err(err!(Request(NotFound("event has no mtxdb auth edges"))));
+		};
+		let auth_ids: Vec<OwnedEventId> = auth_ids
+			.into_iter()
+			.map(|bytes| {
+				utils::string::str_from_bytes(&bytes).and_then(|text| {
+					OwnedEventId::parse(text)
+						.map_err(|e| err!(Database("Invalid event ID in mtxdb auth edges: {e}")))
+				})
+			})
+			.collect::<Result<_>>()?;
+		let shorts = self
+			.services
+			.short
+			.multi_get_or_create_shorteventid(auth_ids.iter())
+			.collect()
+			.await;
+		Ok(shorts)
 	}
 
 	pub(super) fn multi_get_shortprevevents<'a, I>(
@@ -2431,6 +2522,9 @@ impl Data {
 			})
 	}
 
+	/// Yield one direct-auth lookup result per input short ID, in input order.
+	/// Uses [`Self::get_shortauthevents`], including its allocation side effects
+	/// and errors; an error result does not end the stream.
 	pub(super) fn multi_get_shortauthevents<'a, I>(
 		&'a self,
 		shorteventids: I,
@@ -2438,19 +2532,7 @@ impl Data {
 	where
 		I: Stream<Item = rooms::short::ShortEventId> + Send + 'a,
 	{
-		use futures::StreamExt;
-		self.shorteventid_shortauthevents
-			.get_batch(shorteventids.map(u64::to_be_bytes))
-			.map(|res| {
-				let val = res?;
-				let auth_shorts = val
-					.as_chunks::<{ size_of::<u64>() }>()
-					.0
-					.iter()
-					.map(|c| u64::from_be_bytes(*c))
-					.collect();
-				Ok(auth_shorts)
-			})
+		shorteventids.then(move |short| self.get_shortauthevents(short))
 	}
 
 	pub(super) async fn get_origin_server_ts(

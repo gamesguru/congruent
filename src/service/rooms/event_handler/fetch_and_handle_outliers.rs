@@ -227,7 +227,7 @@ where
 	for id in events {
 		requested_seeds.push(id.to_owned());
 
-		if let Ok(local_pdu) = self.services.timeline.get_pdu(id).await {
+		if let Ok(local_pdu) = self.services.timeline.get_pdu(id) {
 			if self
 				.services
 				.pdu_metadata
@@ -555,6 +555,7 @@ where
 				value.clone(),
 				true,
 				skip_sig_verify,
+				false,
 				room_version,
 				super::AuthRecoveryStage::BeforeStateIds,
 			))

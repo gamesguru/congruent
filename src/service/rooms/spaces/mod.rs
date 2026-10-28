@@ -337,9 +337,8 @@ fn get_space_child_events<'a>(
 			self.services
 				.timeline
 				.get_pdu(&event_id)
-				.map_ok(move |pdu| (state_key, pdu))
+				.map(move |pdu| (state_key, pdu))
 				.ok()
-				.await
 		})
 		.ready_filter_map(move |(state_key, pdu)| {
 			if let Ok(content) = pdu.get_content::<SpaceChildEventContent>() {

@@ -8,8 +8,8 @@
 //! testable, the same way `data.rs`'s `boundary_tests` module tests the
 //! `pdus`/`pdus_rev` boundary arithmetic in isolation from RocksDB. The
 //! stateful half (reading/writing the two column families) lives in
-//! `data.rs` next to `append_pdu_batch`/`prepend_backfill_pdu_batch`, the two
-//! functions every insert path in the codebase ultimately calls.
+//! `data.rs` next to `append_pdu_batch`, the function every insert path in
+//! the codebase ultimately calls.
 //!
 //! ## Schema
 //!

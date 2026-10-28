@@ -12,7 +12,7 @@ use std::{
 
 use async_trait::async_trait;
 use conduwuit::{
-	Err, Error, Result, debug_warn, err, error,
+	Err, Error, Result, debug_warn, err, error, info,
 	utils::{self, stream::WidebandExt},
 };
 use database::{Deserialized, Json, Map};
@@ -26,6 +26,8 @@ use slipstream::{
 	events::TimelineEventType,
 	sswire::Raw,
 };
+
+const DATABASE_FAILURE_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug)]
 pub enum UpdateAction {
@@ -199,6 +201,10 @@ pub struct Service {
 	mem_usage: AtomicUsize,
 }
 
+impl Service {
+	pub async fn initialize(&self) { submission_queue::initialize(self).await; }
+}
+
 #[async_trait]
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
@@ -247,7 +253,7 @@ impl crate::Service for Service {
 	}
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ScheduledDelayedEvent {
 	pub event_type: TimelineEventType,
 	pub state_key: Option<String>,
@@ -519,9 +525,11 @@ impl Service {
 						Ok(())
 					},
 					| Err(error) => {
-						if leave_scheduled_on_error {
-							// In case of error on a manual send, return the error and leave the
-							// event scheduled
+						if leave_scheduled_on_error || matches!(&error, Error::Database(_)) {
+							// Manual sends should keep the delayed event scheduled on failure
+							// so the client can inspect the error without losing the schedule.
+							// Automatic sends do the same for database failures so temporary
+							// write conflicts can be retried by the submission queue.
 							self.scheduled_events.lock().await.insert(delay_id.clone());
 							return Err(error);
 						}
@@ -577,11 +585,13 @@ impl Service {
 
 	/// Add a delayed event to the queue
 	/// It will be submitted when it's timer runs out, unless modified before
-	#[allow(clippy::arithmetic_side_effects)]
 	pub async fn queue_delayed_event(&self, event: ScheduledDelayedEvent) -> Result<String> {
 		let delay_id = utils::random_string(DELAY_ID_SIZE);
 
-		let submission_time = event.running_since + event.delay;
+		let submission_time = event
+			.running_since
+			.checked_add(event.delay)
+			.ok_or_else(|| err!(Request(InvalidParam("delayed event due time is too large"))))?;
 		let relation = (event.user_id.clone(), event.room_id.clone(), delay_id.clone());
 
 		self.db
@@ -704,6 +714,13 @@ impl Service {
 	/// path that can return an error.
 	#[allow(clippy::arithmetic_side_effects)]
 	async fn send_event_if_ready(&self, delay_id: String) -> Option<(SystemTime, String)> {
+		// Leave overdue events in the schedule during graceful shutdown. The next
+		// process reloads them; sending here would fire after the server has
+		// already begun stopping and can race client-visible restart behavior.
+		if self.interrupt_requested.load(Ordering::Relaxed) {
+			return None;
+		}
+
 		let event = self
 			.db
 			.delayid_scheduleddelayedevent
@@ -724,14 +741,24 @@ impl Service {
 		let submission_time = event.running_since + event.delay;
 
 		if submission_time <= SystemTime::now() {
-			let _ = Box::pin(self.finalize_delayed_event(
+			info!(%delay_id, "Sending due delayed event");
+			let result = Box::pin(self.finalize_delayed_event(
 				&delay_id,
 				event,
 				UpdateAction::Send,
 				false,
 			))
-			.await
-			.inspect_err(|err| error!(%delay_id, %err, "Error encountered submitting event."));
+			.await;
+			if let Err(err) = result {
+				error!(%delay_id, %err, "Error encountered submitting event.");
+				if matches!(&err, Error::Database(_)) {
+					return SystemTime::now()
+						.checked_add(DATABASE_FAILURE_RETRY_DELAY)
+						.map(|retry_at| (retry_at, delay_id));
+				}
+			} else {
+				info!(%delay_id, "Delayed event sent");
+			}
 			None
 		} else {
 			Some((submission_time, delay_id))

@@ -1654,6 +1654,12 @@ pub struct Config {
 	#[serde(default = "default_partial_state_resync_give_up_after")]
 	pub partial_state_resync_give_up_after: u64,
 
+	/// Initial delay in milliseconds to wait before retrying a failed partial-state resync.
+	///
+	/// default: 1000
+	#[serde(default = "default_partial_state_resync_initial_delay_ms")]
+	pub partial_state_resync_initial_delay_ms: u64,
+
 	/// Allow receiving incoming read receipts from remote servers.
 	#[serde(default = "true_fn")]
 	pub allow_incoming_read_receipts: bool,
@@ -3340,6 +3346,8 @@ fn default_login_token_ttl() -> u64 { 2 * 60 * 1000 }
 fn default_access_token_ttl() -> u64 { 5 * 60 * 1000 }
 
 fn default_partial_state_resync_give_up_after() -> u64 { 0 }
+
+fn default_partial_state_resync_initial_delay_ms() -> u64 { 1000 }
 
 fn default_turn_ttl() -> u64 { 60 * 60 * 24 }
 

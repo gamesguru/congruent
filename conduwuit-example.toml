@@ -1362,6 +1362,10 @@
 #
 #partial_state_resync_give_up_after = 0
 
+# Initial delay in milliseconds to wait before retrying a failed partial-state resync.
+#
+#partial_state_resync_initial_delay_ms = 1000
+
 # Allow receiving incoming read receipts from remote servers.
 #
 #allow_incoming_read_receipts = true

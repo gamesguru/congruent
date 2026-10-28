@@ -211,20 +211,8 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 
 	// NATIVE RETRY INTERCEPTION: If it's a known outlier that was rejected, check
 	// local auth.
-	if is_timeline_event
-		&& self
-			.services
-			.outlier
-			.get_pdu_outlier(event_id)
-			.await
-			.is_ok()
-	{
-		let pdu = self
-			.services
-			.outlier
-			.get_pdu_outlier(event_id)
-			.await
-			.unwrap();
+	if is_timeline_event && self.services.outlier.get_pdu_outlier(event_id).is_ok() {
+		let pdu = self.services.outlier.get_pdu_outlier(event_id).unwrap();
 		let is_accepted = self.services.pdu_metadata.is_event_accepted(event_id)?;
 		let is_rejected = self.services.pdu_metadata.is_event_rejected(event_id)?;
 		info!(
@@ -271,7 +259,6 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					.services
 					.outlier
 					.get_outlier_pdu_json(event_id)
-					.await
 					.unwrap_or_else(|_| value.clone());
 				return Box::pin(self.process_timeline_upgrade(
 					pdu,
@@ -458,6 +445,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 		event_id,
 		room_id,
 		value.clone(),
+		false,
 		false,
 		false,
 		room_version,
@@ -654,6 +642,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 						value,
 						false,
 						false,
+						false,
 						&room_version_id,
 						AuthRecoveryStage::AfterStateIds,
 					))
@@ -671,6 +660,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					event_id,
 					room_id,
 					value.clone(),
+					false,
 					false,
 					false,
 					room_version,
@@ -867,6 +857,7 @@ pub async fn process_timeline_upgrade(
 					prev_id,
 					room_id,
 					val,
+					false,
 					false,
 					false,
 					&room_version_id,

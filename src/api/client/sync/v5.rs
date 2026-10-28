@@ -2225,7 +2225,7 @@ where
 							continue;
 						}
 
-						let Ok(pdu) = services.rooms.timeline.get_pdu(&id).await else {
+						let Ok(pdu) = services.rooms.timeline.get_pdu(&id) else {
 							error!("Pdu in state not found: {id}");
 							continue;
 						};

@@ -304,7 +304,6 @@ impl Service {
 				.services
 				.timeline
 				.get_pdu_in_room(Some(room_id), &event_id_obj)
-				.await
 			else {
 				continue;
 			};
@@ -337,7 +336,6 @@ impl Service {
 				.services
 				.timeline
 				.get_pdu_in_room(Some(room_id), &event_id_obj)
-				.await
 			else {
 				continue;
 			};
@@ -417,12 +415,17 @@ impl Service {
 		// One mtxdb transaction for the new nodes and both roots, committed
 		// before the RocksDB index batch below, so a failure leaves at worst
 		// unreferenced nodes and never an index entry pointing at nothing.
-		self.services.state_hamt.store.publish(
+		let lattice = self.db.lattice_cache.get(&root_handle.structural_hash);
+		self.services.state_hamt.store.publish_roots_with_short(
 			room_id.as_bytes(),
-			new_pdu.event_id().as_bytes(),
 			&deferred_nodes,
+			new_pdu.event_id().as_bytes(),
+			shorteventid,
 			&serialized,
-			is_state,
+			is_state.then_some(serialized.as_slice()),
+			lattice
+				.as_ref()
+				.map(|bytes| (&root_handle.structural_hash, bytes.as_ref())),
 		)?;
 
 		let mut batch = Batch::new();
@@ -678,13 +681,29 @@ impl Service {
 	}
 
 	/// Returns the lattice persisted for a root, if any. Served from the
-	/// bounded cache, falling back to the database on a miss.
+	/// bounded cache, falling back to mtxdb, then the legacy redb mirror.
 	pub async fn get_root_lattice(
 		&self,
 		root_handle: &rezzy::hamt::RootHandle,
 	) -> Option<rezzy::incremental::LtHash> {
 		if let Some(raw) = self.db.lattice_cache.get(&root_handle.structural_hash) {
 			return rezzy::incremental::LtHash::from_bytes(&raw);
+		}
+
+		if let Ok(Some(raw)) = self
+			.services
+			.state_hamt
+			.store
+			.root_lattice(&root_handle.structural_hash)
+		{
+			if raw.len() == LATTICE_LEN {
+				if let Some(lattice) = rezzy::incremental::LtHash::from_bytes(&raw) {
+					self.db
+						.lattice_cache
+						.insert(root_handle.structural_hash, Arc::from(&*raw));
+					return Some(lattice);
+				}
+			}
 		}
 
 		let raw = self
@@ -795,11 +814,15 @@ impl Service {
 		nodes: &[rooms::state_hamt::store::PendingNode],
 	) -> Result<()> {
 		let data = root_handle_to_bytes(root_handle);
-		self.services.state_hamt.store.publish_roots(
+		let lattice = self.db.lattice_cache.get(&root_handle.structural_hash);
+		self.services.state_hamt.store.publish_roots_with_lattice(
 			room_id.as_bytes(),
 			nodes,
 			&[],
 			Some(&data),
+			lattice
+				.as_ref()
+				.map(|bytes| (&root_handle.structural_hash, bytes.as_ref())),
 		)?;
 		self.db
 			.roomid_roothandle
@@ -809,11 +832,23 @@ impl Service {
 
 	/// Returns the room's current HAMT RootHandle.
 	pub async fn get_room_state_hamt(&self, room_id: &RoomId) -> Result<rezzy::hamt::RootHandle> {
+		if let Ok(Some(data)) = self
+			.services
+			.state_hamt
+			.store
+			.root_for_room(room_id.as_bytes())
+		{
+			return root_handle_from_bytes(&data);
+		}
+
 		let data = self.db.roomid_roothandle.get(room_id).await?;
 		root_handle_from_bytes(&data)
 	}
 
-	/// Returns the room's version.
+	/// Returns the room's version, falling back from direct lookup to the create
+	/// event in current state and then outliers. Fallback versions are persisted.
+	/// Lookup failures are ignored while searching; persistence errors propagate.
+	/// Returns `NotFound` if no usable version is found.
 	pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> {
 		if let Ok(version) = self.services.short.get_room_version(room_id).await {
 			return Ok(version);
@@ -832,7 +867,7 @@ impl Service {
 			.await
 		{
 			let version = content.room_version;
-			self.services.short.set_room_version(room_id, &version);
+			self.services.short.set_room_version(room_id, &version)?;
 			return Ok(version);
 		}
 
@@ -844,7 +879,7 @@ impl Service {
 			if pdu.kind == TimelineEventType::RoomCreate {
 				if let Ok(content) = pdu.get_content::<RoomCreateEventContent>() {
 					let version = content.room_version;
-					self.services.short.set_room_version(room_id, &version);
+					self.services.short.set_room_version(room_id, &version)?;
 					return Ok(version);
 				}
 			}
@@ -859,7 +894,39 @@ impl Service {
 		&self,
 		shorteventid: ShortEventId,
 	) -> Result<rezzy::hamt::RootHandle> {
-		let data = self.db.shorteventid_roothandle.qry(&shorteventid).await?;
+		if let Some(data) = self
+			.services
+			.state_hamt
+			.store
+			.root_for_short_event(shorteventid)?
+		{
+			return root_handle_from_bytes(&data);
+		}
+
+		let legacy = self.db.shorteventid_roothandle.qry(&shorteventid).await;
+		if let Ok(data) = &legacy {
+			return root_handle_from_bytes(data);
+		}
+
+		// Imported event roots can predate the short-ID index and lack the redb
+		// mirror. Preserve that migration read path until they are backfilled.
+		if let Ok(event_id) = self
+			.services
+			.short
+			.get_eventid_from_short::<OwnedEventId>(shorteventid)
+			.await
+		{
+			if let Some(data) = self
+				.services
+				.state_hamt
+				.store
+				.root_for_event(event_id.as_bytes())?
+			{
+				return root_handle_from_bytes(&data);
+			}
+		}
+
+		let data = legacy?;
 		root_handle_from_bytes(&data)
 	}
 
@@ -894,11 +961,17 @@ impl Service {
 			.get_or_create_shorteventid(event_id)
 			.await;
 		let data = root_handle_to_bytes(root_handle);
-		self.services.state_hamt.store.publish_roots(
+		let lattice = self.db.lattice_cache.get(&root_handle.structural_hash);
+		self.services.state_hamt.store.publish_roots_with_short(
 			room_id.as_bytes(),
 			nodes,
-			&[(event_id.as_bytes(), data.as_slice())],
+			event_id.as_bytes(),
+			shorteventid,
+			&data,
 			None,
+			lattice
+				.as_ref()
+				.map(|bytes| (&root_handle.structural_hash, bytes.as_ref())),
 		)?;
 		self.db
 			.shorteventid_roothandle
@@ -921,11 +994,17 @@ impl Service {
 			.get_or_create_shorteventid(event_id)
 			.await;
 		let data = root_handle_to_bytes(root_handle);
-		self.services.state_hamt.store.publish_roots(
+		let lattice = self.db.lattice_cache.get(&root_handle.structural_hash);
+		self.services.state_hamt.store.publish_roots_with_short(
 			room_id.as_bytes(),
 			nodes,
-			&[(event_id.as_bytes(), data.as_slice())],
+			event_id.as_bytes(),
+			shorteventid,
+			&data,
 			Some(&data),
+			lattice
+				.as_ref()
+				.map(|bytes| (&root_handle.structural_hash, bytes.as_ref())),
 		)?;
 		let mut batch = Batch::new();
 		self.db
@@ -1253,7 +1332,6 @@ impl Service {
 				self.services
 					.timeline
 					.get_pdu(&event_id)
-					.await
 					.map(move |pdu| (((*ty).clone(), (*sk).clone()), pdu))
 					.inspect_err(|e| warn!("Failed to get auth event {event_id}: {e:?}"))
 					.ok()

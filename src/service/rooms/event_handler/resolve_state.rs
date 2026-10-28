@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use conduwuit::{
-	Error, Result, err, implement,
+	Error, Result, debug, err, implement,
 	state_res::StateMap,
 	trace,
 	utils::stream::{IterStream, ReadyExt, WidebandExt},
@@ -210,6 +210,35 @@ where
 	let timeline = &self.services.timeline;
 	let prefetch_cache_ref = prefetch_cache;
 	let meta = &self.services.pdu_metadata;
+	let prefetched_auth_context: HashMap<OwnedEventId, conduwuit_core::PduEvent> = if matches!(
+		version,
+		rezzy::StateResVersion::V2_1
+			| rezzy::StateResVersion::V2_1_1
+			| rezzy::StateResVersion::V2_2
+	) {
+		let starting_events: Vec<OwnedEventId> = lean_state_sets
+			.iter()
+			.flat_map(rezzy::PersistentOrdMap::values)
+			.filter_map(|event_id| OwnedEventId::parse(event_id.as_str()).ok())
+			.collect();
+		match timeline.get_mtxdb_auth_context(room_id, &starting_events) {
+			| Ok(events) => events
+				.into_iter()
+				.map(|event| (event.event_id.clone(), event))
+				.collect(),
+			| Err(error) => {
+				debug!(
+					%error,
+					room_id = %room_id,
+					"Failed to preload mtxdb auth context; using event-by-event lookup"
+				);
+				HashMap::new()
+			},
+		}
+	} else {
+		HashMap::new()
+	};
+	let prefetched_auth_context_ref = &prefetched_auth_context;
 	let fetch_pdu = move |eid: &OwnedEventId| -> Option<conduwuit_core::PduEvent> {
 		// This synchronous provider may block only on database-pool I/O. The
 		// prefetch cache uses a synchronous lock so cache hits never depend on
@@ -223,49 +252,49 @@ where
 					}
 				}
 
-				if let Ok(mut pdu) = timeline.get_pdu_in_room(Some(room_id), eid).await {
-					let rejected = match meta.is_event_rejected(&pdu.event_id) {
-						| Ok(rejected) => rejected,
-						| Err(error) => {
-							warn!(
-								%error,
-								event_id = %pdu.event_id,
-								"state_res: failed to read rejection flag; treating event as unavailable"
-							);
-							return None;
-						},
-					};
-					if rejected {
-						// An auth failure is a verdict about the event; keep it, like
-						// Synapse does, and keep the event out of resolved state.
-						// Rejections of another kind on a timeline event are stale.
-						// If the reason can't be read, keep the rejection.
-						let auth_failed =
-							meta.get_rejection_reason(&pdu.event_id)
-								.map_or(true, |reason| {
-									reason.is_some_and(|reason| {
-										reason
-										== crate::rooms::pdu_metadata::RejectionCode::AuthCheckFailed
-											.tag()
-									})
-								});
-						if !auth_failed && timeline.non_outlier_pdu_exists(&pdu.event_id).await {
-							warn!(
-								event_id = %pdu.event_id,
-								"state_res: clearing stale rejection flag on timeline event"
-							);
-							if let Err(error) = meta.unmark_event_rejected(&pdu.event_id) {
-								warn!(%error, event_id = %pdu.event_id, "state_res: failed to clear stale rejection flag");
-							}
-							pdu.rejected = false;
-						} else {
-							pdu.rejected = true;
+				let mut pdu = prefetched_auth_context_ref
+					.get(eid)
+					.cloned()
+					.or_else(|| timeline.get_pdu_in_room(Some(room_id), eid).ok())?;
+				let rejected = match meta.is_event_rejected(&pdu.event_id) {
+					| Ok(rejected) => rejected,
+					| Err(error) => {
+						warn!(
+							%error,
+							event_id = %pdu.event_id,
+							"state_res: failed to read rejection flag; treating event as unavailable"
+						);
+						return None;
+					},
+				};
+				if rejected {
+					// An auth failure is a verdict about the event; keep it, like
+					// Synapse does, and keep the event out of resolved state.
+					// Rejections of another kind on a timeline event are stale.
+					// If the reason can't be read, keep the rejection.
+					let auth_failed =
+						meta.get_rejection_reason(&pdu.event_id)
+							.map_or(true, |reason| {
+								reason.is_some_and(|reason| {
+									reason
+									== crate::rooms::pdu_metadata::RejectionCode::AuthCheckFailed
+										.tag()
+								})
+							});
+					if !auth_failed && timeline.non_outlier_pdu_exists(&pdu.event_id).await {
+						warn!(
+							event_id = %pdu.event_id,
+							"state_res: clearing stale rejection flag on timeline event"
+						);
+						if let Err(error) = meta.unmark_event_rejected(&pdu.event_id) {
+							warn!(%error, event_id = %pdu.event_id, "state_res: failed to clear stale rejection flag");
 						}
+						pdu.rejected = false;
+					} else {
+						pdu.rejected = true;
 					}
-					Some(pdu)
-				} else {
-					None
 				}
+				Some(pdu)
 			})
 		};
 

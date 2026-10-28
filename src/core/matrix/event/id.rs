@@ -1,4 +1,6 @@
-use slipstream::{CanonicalJsonObject, OwnedEventId, RoomVersionId};
+use slipstream::{
+	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId,
+};
 
 use super::super::pdu::RawJson;
 use crate::{Result, err, utils::pdu_json_canonical_strip};
@@ -52,6 +54,71 @@ pub fn gen_event_id(
 	Ok(event_id)
 }
 
+/// Resolve the room ID claimed or implied by an incoming PDU.
+///
+/// Events normally carry `room_id`. MSC4291 v12+ create events omit it; for
+/// those, the room ID is the create event ID with its leading `$` changed to
+/// `!`. Missing room IDs on all other events, or on legacy create events, are
+/// invalid and return an error.
+pub fn room_id_from_pdu(
+	value: &CanonicalJsonObject,
+	room_id_hint: Option<&RoomId>,
+) -> Result<OwnedRoomId> {
+	if let Some(room_id) = value.get("room_id").and_then(CanonicalJsonValue::as_str) {
+		return OwnedRoomId::parse(room_id)
+			.map_err(|e| err!(Request(BadJson("Invalid room_id {room_id:?} in pdu: {e}"))));
+	}
+	if let Some(room_id) = room_id_hint {
+		return Ok(room_id.to_owned());
+	}
+
+	let is_create = value.get("type").and_then(CanonicalJsonValue::as_str)
+		== Some("m.room.create")
+		&& value.get("state_key").and_then(CanonicalJsonValue::as_str) == Some("");
+	if !is_create {
+		return Err(err!(Request(BadJson("Missing room_id in pdu"))));
+	}
+
+	let content = value
+		.get("content")
+		.and_then(CanonicalJsonValue::as_object)
+		.ok_or_else(|| err!(Request(InvalidParam("Missing or invalid content in pdu"))))?;
+	let room_version = RoomVersionId::parse(
+		content
+			.get("room_version")
+			.and_then(CanonicalJsonValue::as_str)
+			.unwrap_or("1"),
+	)
+	.map_err(|e| err!(Request(BadJson("Invalid room_version in pdu: {e}"))))?;
+	if matches!(
+		room_version,
+		RoomVersionId::V1
+			| RoomVersionId::V2
+			| RoomVersionId::V3
+			| RoomVersionId::V4
+			| RoomVersionId::V5
+			| RoomVersionId::V6
+			| RoomVersionId::V7
+			| RoomVersionId::V8
+			| RoomVersionId::V9
+			| RoomVersionId::V10
+			| RoomVersionId::V11
+	) {
+		return Err(err!(Request(BadJson("Missing room_id in pdu"))));
+	}
+
+	let event_id = gen_event_id(value, &room_version)?;
+	room_id_from_event_id(&event_id)
+		.ok_or_else(|| err!(Request(BadJson("Could not derive room ID from create event"))))
+}
+
+/// Derive a room ID from the event ID of a v12+ create event.
+#[must_use]
+pub fn room_id_from_event_id(event_id: &slipstream::EventId) -> Option<OwnedRoomId> {
+	let reference_hash = event_id.as_str().strip_prefix('$')?;
+	OwnedRoomId::new_v2(reference_hash).ok()
+}
+
 /// Generates a correct eventId from raw stored bytes, avoiding serde
 /// round-trip issues that would produce false hash mismatches.
 pub fn gen_event_id_from_bytes(
@@ -88,7 +155,7 @@ mod tests {
 
 		event.insert(
 			"event_id".to_owned(),
-			slipstream::CanonicalJsonValue::String("$abc:example.org".to_owned()),
+			CanonicalJsonValue::String("$abc:example.org".to_owned()),
 		);
 		for version in [RoomVersionId::V1, RoomVersionId::V2] {
 			assert_eq!(gen_event_id(&event, &version).unwrap().as_str(), "$abc:example.org");

@@ -5,7 +5,7 @@ use std::{
 	time::{Duration, SystemTime},
 };
 
-use conduwuit::{Result, err, utils::stream::TryIgnore};
+use conduwuit::{Result, err, info, utils::stream::TryIgnore, warn};
 use futures::{FutureExt, StreamExt, pin_mut};
 use loole::Receiver;
 
@@ -14,12 +14,22 @@ use super::{DELAY_ID_SIZE, ScheduledDelayedEvent, Service};
 pub(crate) struct SubmissionQueue {
 	receiver: Receiver<(SystemTime, String)>,
 	queue: BinaryHeap<(Reverse<SystemTime>, String)>,
+	initialized: bool,
 }
 
 impl SubmissionQueue {
 	pub(crate) fn new(receiver: Receiver<(SystemTime, String)>) -> Self {
-		Self { receiver, queue: BinaryHeap::new() }
+		Self {
+			receiver,
+			queue: BinaryHeap::new(),
+			initialized: false,
+		}
 	}
+}
+
+pub(crate) async fn initialize(service: &Service) {
+	let mut queue = service.submission_queue.lock().await;
+	load_scheduled_events(service, &mut queue).await;
 }
 
 #[allow(clippy::arithmetic_side_effects)]
@@ -28,27 +38,11 @@ pub(crate) async fn worker(service: &Service) -> Result<()> {
 		.submission_queue
 		.try_lock()
 		.map_err(|_| err!(Err("Attempted to launch multiple instances of the worker")))?;
+	load_scheduled_events(service, &mut queue).await;
+	// A restarted worker must rescan in case it exited while an event was
+	// removed from the in-memory heap but still remains scheduled in the DB.
+	queue.initialized = false;
 	let receiver = queue.receiver.clone();
-
-	let mut stream = service
-		.db
-		.delayid_scheduleddelayedevent
-		.stream::<'_, String, ScheduledDelayedEvent>()
-		.ignore_err();
-
-	let mut loaded_events = Vec::new();
-
-	while let Some((delay_id, event)) = stream.next().await {
-		let submission_time = event.running_since + event.delay;
-		queue
-			.queue
-			.push((Reverse(submission_time), delay_id.clone()));
-		loaded_events.push(delay_id);
-	}
-
-	let mut scheduled_events = service.scheduled_events.lock().await;
-	scheduled_events.extend(loaded_events);
-	drop(scheduled_events);
 
 	// work loop
 
@@ -79,7 +73,10 @@ pub(crate) async fn worker(service: &Service) -> Result<()> {
 		};
 		let next_submit = next_submit.fuse();
 		let next_receive = receiver.recv_async().fuse();
-		let stop_check = FutureExt::fuse(smol::Timer::after(Duration::from_secs(2)));
+		// Poll often enough that shutdown does not wait a whole timer tick after
+		// the service has been interrupted. This is an idle wakeup per interval,
+		// negligible next to the cost of a graceful restart.
+		let stop_check = FutureExt::fuse(smol::Timer::after(Duration::from_millis(100)));
 		pin_mut!(next_submit, next_receive, stop_check);
 
 		// RescvFuture is cancellation-safe
@@ -103,4 +100,58 @@ pub(crate) async fn worker(service: &Service) -> Result<()> {
 	}
 
 	Ok(())
+}
+
+async fn load_scheduled_events(service: &Service, queue: &mut SubmissionQueue) {
+	if queue.initialized {
+		return;
+	}
+
+	let mut stream = service
+		.db
+		.delayid_scheduleddelayedevent
+		.stream::<'_, String, ScheduledDelayedEvent>()
+		.ignore_err();
+
+	let mut loaded_events = Vec::new();
+	let mut invalid_events = Vec::new();
+
+	while let Some((delay_id, event)) = stream.next().await {
+		let Some(submission_time) = event.running_since.checked_add(event.delay) else {
+			warn!(%delay_id, "Removing delayed event with an unrepresentable due time");
+			invalid_events.push((delay_id, event.user_id, event.room_id));
+			continue;
+		};
+		queue
+			.queue
+			.push((Reverse(submission_time), delay_id.clone()));
+		loaded_events.push(delay_id);
+	}
+
+	// Drop the RocksDB table iterator before deleting invalid entries from
+	// `delayid_scheduleddelayedevent`.
+	drop(stream);
+	for (delay_id, user_id, room_id) in invalid_events {
+		service.db.delayid_scheduleddelayedevent.remove(&delay_id);
+		service
+			.db
+			.userroomdelayid
+			.del(&(user_id, room_id, delay_id));
+	}
+
+	let now = SystemTime::now();
+	let overdue = queue
+		.queue
+		.iter()
+		.filter(|(Reverse(submission_time), _)| *submission_time <= now)
+		.count();
+	info!(
+		loaded = loaded_events.len(),
+		overdue, "Delayed event worker restored scheduled events from the database"
+	);
+
+	let mut scheduled_events = service.scheduled_events.lock().await;
+	scheduled_events.extend(loaded_events);
+	drop(scheduled_events);
+	queue.initialized = true;
 }

@@ -207,6 +207,7 @@ async fn persist_federation_events(
 				value.clone(),
 				false,
 				false,
+				false,
 				&room_version,
 				AuthRecoveryStage::BeforeStateIds,
 			))
@@ -373,7 +374,7 @@ async fn walk_down(
 			if seen.contains(&child_id) {
 				continue;
 			}
-			if let Ok(pdu) = services.rooms.timeline.get_pdu(&child_id).await {
+			if let Ok(pdu) = services.rooms.timeline.get_pdu(&child_id) {
 				child_pdus.push(pdu);
 			}
 		}
@@ -450,10 +451,10 @@ async fn walk_up(
 			break;
 		}
 
-		let mut parent = services.rooms.timeline.get_pdu(&parent_id).await.ok();
+		let mut parent = services.rooms.timeline.get_pdu(&parent_id).ok();
 		if parent.is_none() && can_fetch {
 			Box::pin(fetch_missing(services, room_id, &parent_id)).await;
-			parent = services.rooms.timeline.get_pdu(&parent_id).await.ok();
+			parent = services.rooms.timeline.get_pdu(&parent_id).ok();
 		}
 		let Some(parent) = parent else {
 			break;
@@ -479,7 +480,7 @@ pub(crate) async fn resolve(
 ) -> Result<(Vec<PduEvent>, bool)> {
 	let can_fetch = matches!(requester, Requester::Client(_));
 
-	let mut anchor = services.rooms.timeline.get_pdu(&params.event_id).await.ok();
+	let mut anchor = services.rooms.timeline.get_pdu(&params.event_id).ok();
 
 	if can_fetch {
 		let needs_fetch = match &anchor {
@@ -498,7 +499,7 @@ pub(crate) async fn resolve(
 				.or_else(|| params.room_id.clone());
 			if let Some(room_id) = room_id {
 				Box::pin(fetch_full(services, &room_id, &params)).await;
-				anchor = services.rooms.timeline.get_pdu(&params.event_id).await.ok();
+				anchor = services.rooms.timeline.get_pdu(&params.event_id).ok();
 			}
 		}
 	}
@@ -523,10 +524,10 @@ pub(crate) async fn resolve(
 
 	if params.include_parent {
 		if let Some((parent_id, _rel_type)) = parent_of(&anchor) {
-			let mut parent = services.rooms.timeline.get_pdu(&parent_id).await.ok();
+			let mut parent = services.rooms.timeline.get_pdu(&parent_id).ok();
 			if parent.is_none() && can_fetch {
 				Box::pin(fetch_missing(services, &room_id, &parent_id)).await;
-				parent = services.rooms.timeline.get_pdu(&parent_id).await.ok();
+				parent = services.rooms.timeline.get_pdu(&parent_id).ok();
 			}
 			if let Some(parent) = parent {
 				if seen.insert(parent.event_id().to_owned())

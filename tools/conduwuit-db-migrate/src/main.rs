@@ -9,18 +9,24 @@ use std::{
 use redb::{Database, TableDefinition};
 use rust_rocksdb::{DB, IteratorMode, Options};
 
+mod mtxdb_export;
+
 const FORMAT: &str = "conduwuit-metadata/v1";
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("conduwuit_metadata");
 
 // These records are exported through the room and signing-key mtxdb JSONL
 // formats, or are derived from those exports. Copying them into redb would
 // leave stale legacy indexes beside the newly imported mtxdb data.
+//
+// The legacy state maps are the exception: `mtxdb import` does not yet build
+// state groups for `mtxdb-export/v1` inputs, so the server's v20 migration
+// needs these maps to build its own HAMT roots. The root handles and HAMT node
+// maps stay out because that migration rewrites them.
 const MTXDB_OWNED_MAPS: &[&str] = &[
 	"eventid_outlierpdu",
 	"eventid_pdu",
 	"eventid_pduid",
 	"eventid_rejections",
-	"eventid_shorteventid",
 	"eventid_softfailed",
 	"eventid_status",
 	"pduid_pdu",
@@ -30,27 +36,23 @@ const MTXDB_OWNED_MAPS: &[&str] = &[
 	"roomid_missingeventid_depth",
 	"roomid_pduleaves",
 	"roomid_roothandle",
-	"roomid_shortstatehash",
 	"roomid_timestamp_pducount",
 	"roomid_topologicalorder_pducount",
 	"server_signingkeys",
 	"shorteventid_authchain",
-	"shorteventid_eventid",
 	"shorteventid_roothandle",
 	"shorteventid_shortauthevents",
 	"shorteventid_shortprevevents",
 	"shorteventid_shortstatehash",
-	"shortstatekey_statekey",
-	"shortstatehash_statediff",
 	"state_hamt_node_mtimes",
 	"state_hamt_nodes",
 	"state_hamt_root_lattices",
 	"statehash_shortstatehash",
-	"statekey_shortstatekey",
 ];
 
 fn usage() -> ! {
 	eprintln!("usage: conduwuit-db-migrate export <rocksdb> <bundle.jsonl> [map ...]");
+	eprintln!("       conduwuit-db-migrate export-mtxdb <rocksdb> <output-dir> [server-name]");
 	eprintln!("       conduwuit-db-migrate import <bundle.jsonl> <new-metadata.redb>");
 	eprintln!("       conduwuit-db-migrate list <rocksdb>");
 	std::process::exit(2);
@@ -77,7 +79,7 @@ fn hex(bytes: &[u8]) -> String {
 	let mut output = String::with_capacity(bytes.len().saturating_mul(2));
 	for byte in bytes {
 		output.push(char::from(DIGITS[usize::from(byte >> 4)]));
-		output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+		output.push(char::from(DIGITS[usize::from(byte & 0x0F)]));
 	}
 	output
 }
@@ -124,6 +126,7 @@ fn export(
 	}
 	let mut options = Options::default();
 	options.create_if_missing(false);
+	options.set_track_and_verify_wals_in_manifest(true);
 	let names = DB::list_cf(&options, rocks_path)?;
 	let selected: Vec<String> = if requested.is_empty() {
 		names
@@ -184,7 +187,8 @@ fn export(
 			json_line(
 				&mut writer,
 				&format!(
-					"{{\"type\":\"record\",\"map\":\"{map}\",\"key_hex\":\"{}\",\"value_hex\":\"{}\"}}",
+					"{{\"type\":\"record\",\"map\":\"{map}\",\"key_hex\":\"{}\",\"value_hex\":\"\
+					 {}\"}}",
 					hex(&key),
 					hex(&value),
 				),
@@ -379,6 +383,19 @@ fn import(bundle_path: &Path, redb_path: &Path) -> Result<(), Box<dyn std::error
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let mut args = env::args().skip(1);
 	match args.next().as_deref() {
+		| Some("export-mtxdb") => {
+			let rocks = args.next().unwrap_or_else(|| usage());
+			let output = args.next().unwrap_or_else(|| usage());
+			let server = args.next();
+			if args.next().is_some() {
+				usage();
+			}
+			mtxdb_export::export(
+				Path::new(&rocks),
+				Path::new(&output),
+				server.as_deref(),
+			)
+		},
 		| Some("export") => {
 			let rocks = args.next().unwrap_or_else(|| usage());
 			let bundle = args.next().unwrap_or_else(|| usage());
@@ -394,5 +411,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			list(Path::new(&rocks))
 		},
 		| _ => usage(),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::MTXDB_OWNED_MAPS;
+
+	#[test]
+	fn legacy_state_maps_are_exported_for_the_v20_migration() {
+		assert!(!MTXDB_OWNED_MAPS.contains(&"roomid_shortstatehash"));
+		assert!(!MTXDB_OWNED_MAPS.contains(&"shortstatehash_statediff"));
+		assert!(MTXDB_OWNED_MAPS.contains(&"roomid_roothandle"));
+		assert!(MTXDB_OWNED_MAPS.contains(&"state_hamt_nodes"));
 	}
 }

@@ -7,7 +7,7 @@ use mtxdb::ShardType;
 use crate::{
 	StorageError,
 	keys::{
-		event_root_node_id, hamt_node_id, room_root_node_id, room_roots_collection_id,
+		derive_id, event_root_node_id, hamt_node_id, room_root_node_id, room_roots_collection_id,
 		room_state_collection_id,
 	},
 	store::{CollectionId, MtxdbStore, MtxdbTransaction, NodeId},
@@ -34,6 +34,25 @@ impl StateAdapter {
 
 	fn roots_collection(room_id: &[u8]) -> CollectionId { room_roots_collection_id(room_id) }
 
+	/// Legacy global event-root collection. New writes go only to the
+	/// room-scoped roots and the short-ID index; this is read-only fallback for
+	/// imported data that predates both.
+	fn event_roots_collection() -> CollectionId { derive_id(b"sys", b"event-roots") }
+
+	fn short_event_roots_collection() -> CollectionId {
+		derive_id(b"sys", b"event-roots-by-short")
+	}
+
+	fn short_event_root_node_id(short_event_id: u64) -> NodeId {
+		let mut id = [0; 16];
+		id[8..].copy_from_slice(&short_event_id.to_be_bytes());
+		id
+	}
+
+	/// Content-addressed root lattices, shared across rooms because the
+	/// structural hash is already globally unique.
+	fn lattice_collection() -> CollectionId { derive_id(b"sys", b"state-lattices") }
+
 	/// Read a room's current state root.
 	pub fn root_for_room(&self, room_id: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
 		self.store
@@ -48,6 +67,70 @@ impl StateAdapter {
 	) -> Result<Option<Vec<u8>>, StorageError> {
 		self.store
 			.get(self.shard, &Self::roots_collection(room_id), event_root_node_id(event_id))
+	}
+
+	/// Read a legacy global event root. This is read-only compatibility for
+	/// imported events that predate the short-ID index.
+	pub fn root_for_event_global(
+		&self,
+		event_id: &[u8],
+	) -> Result<Option<Vec<u8>>, StorageError> {
+		self.store
+			.get(self.shard, &Self::event_roots_collection(), event_root_node_id(event_id))
+	}
+
+	/// Read an event root directly by its short event ID.
+	pub fn root_for_short_event(
+		&self,
+		short_event_id: u64,
+	) -> Result<Option<Vec<u8>>, StorageError> {
+		self.store.get(
+			self.shard,
+			&Self::short_event_roots_collection(),
+			Self::short_event_root_node_id(short_event_id),
+		)
+	}
+
+	/// Read a content-addressed root lattice by its 32-byte structural hash.
+	pub fn get_lattice(
+		&self,
+		structural_hash: &[u8; 32],
+	) -> Result<Option<Vec<u8>>, StorageError> {
+		self.store
+			.get(self.shard, &Self::lattice_collection(), hamt_node_id(structural_hash))
+	}
+
+	/// Write a content-addressed root lattice. Lattices are immutable, so a
+	/// repeated write of the same hash is idempotent.
+	pub fn put_lattice(
+		&self,
+		structural_hash: &[u8; 32],
+		bytes: &[u8],
+	) -> Result<(), StorageError> {
+		let tx = self.store.begin_transaction();
+		tx.put(self.shard, Self::lattice_collection(), hamt_node_id(structural_hash), bytes)?;
+		tx.commit()
+	}
+
+	/// Write rebuilt event roots for many short event IDs in one transaction.
+	///
+	/// Repairs (for example `yolo reorder-timeline`) rewrite roots outside the
+	/// normal append path, so they must update the mtxdb short-ID index too;
+	/// otherwise the repaired redb mirror is shadowed by the stale mtxdb root.
+	pub fn put_short_event_roots(&self, roots: &[(u64, &[u8])]) -> Result<(), StorageError> {
+		if roots.is_empty() {
+			return Ok(());
+		}
+		let tx = self.store.begin_transaction();
+		for (short_event_id, bytes) in roots {
+			tx.put(
+				self.shard,
+				Self::short_event_roots_collection(),
+				Self::short_event_root_node_id(*short_event_id),
+				bytes,
+			)?;
+		}
+		tx.commit()
 	}
 
 	/// Read HAMT nodes by their full 32-byte structural hashes.
@@ -218,12 +301,65 @@ impl StateAdapter {
 		event_roots: &[(&[u8], &[u8])],
 		room_root: Option<&[u8]>,
 	) -> Result<(), StorageError> {
+		self.publish_roots_with_lattice(room_id, new_nodes, event_roots, room_root, None)
+	}
+
+	/// Publish roots and an optional content-addressed lattice together.
+	pub fn publish_roots_with_lattice(
+		&self,
+		room_id: &[u8],
+		new_nodes: &[([u8; 32], Vec<u8>)],
+		event_roots: &[(&[u8], &[u8])],
+		room_root: Option<&[u8]>,
+		lattice: Option<(&[u8; 32], &[u8])>,
+	) -> Result<(), StorageError> {
 		let refs: Vec<([u8; 32], &[u8])> = new_nodes
 			.iter()
 			.map(|(hash, bytes)| (*hash, bytes.as_slice()))
 			.collect();
 		let tx = self.store.begin_transaction();
-		self.publish_roots_update(&tx, room_id, &refs, event_roots, room_root)?;
+		self.publish_roots_update_with_lattice(
+			&tx,
+			room_id,
+			&refs,
+			event_roots,
+			room_root,
+			lattice,
+		)?;
+		tx.commit()
+	}
+
+	/// Publish roots and the short-ID lookup in one transaction.
+	#[allow(clippy::too_many_arguments)]
+	pub fn publish_roots_with_short(
+		&self,
+		room_id: &[u8],
+		new_nodes: &[([u8; 32], Vec<u8>)],
+		event_id: &[u8],
+		short_event_id: u64,
+		root_bytes: &[u8],
+		room_root: Option<&[u8]>,
+		lattice: Option<(&[u8; 32], &[u8])>,
+	) -> Result<(), StorageError> {
+		let refs: Vec<([u8; 32], &[u8])> = new_nodes
+			.iter()
+			.map(|(hash, bytes)| (*hash, bytes.as_slice()))
+			.collect();
+		let tx = self.store.begin_transaction();
+		self.publish_roots_update_with_lattice(
+			&tx,
+			room_id,
+			&refs,
+			&[(event_id, root_bytes)],
+			room_root,
+			lattice,
+		)?;
+		tx.put(
+			self.shard,
+			Self::short_event_roots_collection(),
+			Self::short_event_root_node_id(short_event_id),
+			root_bytes,
+		)?;
 		tx.commit()
 	}
 
@@ -236,6 +372,26 @@ impl StateAdapter {
 		event_roots: &[(&[u8], &[u8])],
 		room_root: Option<&[u8]>,
 	) -> Result<(), StorageError> {
+		self.publish_roots_update_with_lattice(
+			tx,
+			room_id,
+			new_nodes,
+			event_roots,
+			room_root,
+			None,
+		)
+	}
+
+	/// Stage nodes, roots, and an optional lattice in a caller-owned transaction.
+	pub fn publish_roots_update_with_lattice(
+		&self,
+		tx: &MtxdbTransaction<'_>,
+		room_id: &[u8],
+		new_nodes: &[([u8; 32], &[u8])],
+		event_roots: &[(&[u8], &[u8])],
+		room_root: Option<&[u8]>,
+		lattice: Option<(&[u8; 32], &[u8])>,
+	) -> Result<(), StorageError> {
 		let stat_coll = Self::stat_collection(room_id);
 		let roots_coll = Self::roots_collection(room_id);
 		for (full_hash, data) in new_nodes {
@@ -246,6 +402,9 @@ impl StateAdapter {
 		}
 		if let Some(root_bytes) = room_root {
 			tx.put(self.shard, roots_coll, room_root_node_id(), root_bytes)?;
+		}
+		if let Some((hash, bytes)) = lattice {
+			tx.put(self.shard, Self::lattice_collection(), hamt_node_id(hash), bytes)?;
 		}
 		Ok(())
 	}
@@ -262,6 +421,38 @@ mod tests {
 	}
 
 	fn hash(seed: u8) -> [u8; 32] { [seed; 32] }
+
+	#[test]
+	fn short_event_root_is_published_with_nodes() {
+		let path = test_path("short-event-root");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let event = b"$event:example.com";
+		let root = root_of(&[hash(1)]);
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = StateAdapter::new(store.clone());
+		adapter
+			.publish_roots_with_short(
+				room,
+				&[(hash(1), b"node".to_vec())],
+				event,
+				42,
+				&root,
+				Some(&root),
+				None,
+			)
+			.unwrap();
+		assert_eq!(adapter.root_for_short_event(42).unwrap(), Some(root.clone()));
+		assert_eq!(adapter.root_for_short_event(43).unwrap(), None);
+		drop(adapter);
+		drop(store);
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = StateAdapter::new(store.clone());
+		assert_eq!(adapter.root_for_short_event(42).unwrap(), Some(root));
+		drop(adapter);
+		drop(store);
+		let _ = fs::remove_dir_all(path);
+	}
 
 	#[test]
 	fn publish_is_atomic_and_advances_both_roots() {
@@ -609,6 +800,53 @@ mod tests {
 
 		drop(adapter);
 		drop(store);
+		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn short_event_roots_and_lattices_survive_restart() {
+		let path = test_path("short-roots-lattices");
+		let _ = fs::remove_dir_all(&path);
+		let room_a = b"!a:example.com";
+		let room_b = b"!b:example.com";
+		let event = b"$event:example.com";
+		let lattice_hash = hash(7);
+
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = StateAdapter::new(store.clone());
+		adapter
+			.publish_roots_with_short(
+				room_a,
+				&[(hash(1), b"n1".to_vec())],
+				event,
+				42,
+				&root_of(&[hash(1)]),
+				Some(&root_of(&[hash(1)])),
+				Some((&lattice_hash, b"lattice-bytes")),
+			)
+			.unwrap();
+
+		assert_eq!(
+			adapter.get_lattice(&lattice_hash).unwrap().as_deref(),
+			Some(&b"lattice-bytes"[..])
+		);
+		assert_eq!(adapter.root_for_short_event(42).unwrap(), Some(root_of(&[hash(1)])));
+
+		drop(adapter);
+		drop(store);
+
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = StateAdapter::new(store);
+		assert_eq!(
+			adapter.get_lattice(&lattice_hash).unwrap().as_deref(),
+			Some(&b"lattice-bytes"[..])
+		);
+		// The room-scoped copy still exists for export and orphan scans.
+		assert!(adapter.root_for_event(room_a, event).unwrap().is_some());
+		assert!(adapter.root_for_event(room_b, event).unwrap().is_none());
+		assert!(adapter.root_for_short_event(42).unwrap().is_some());
+
+		drop(adapter);
 		let _ = fs::remove_dir_all(path);
 	}
 }

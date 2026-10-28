@@ -33,17 +33,8 @@ pub(super) async fn rescue_room(
 		let mut outliers = self.services.rooms.outlier.stream();
 
 		while let Some((_event_id, pdu)) = outliers.next().await {
-			if let Some(room_id) = pdu.room_id() {
-				room_ids.insert(room_id.to_owned());
-			} else {
-				// V3+ rooms: PDU JSON doesn't contain room_id.
-				// We need a way to find the room association.
-				// For --all, we scan eventid_metadata for outliers.
-				// But we can also just try to find it from the event_id if it's
-				// a create event, or just ignore for now as it's expensive.
-				if let Some(room_id) = pdu.room_id_or_hash() {
-					room_ids.insert(room_id);
-				}
+			if let Some(room_id) = pdu.room_id_derived() {
+				room_ids.insert(room_id);
 			}
 		}
 		drop(outliers);
@@ -225,15 +216,13 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 		.rooms
 		.timeline
 		.get_pdu_json(&event_id)
-		.await
 		.map_err(|_| err!("PDU not found in database."))?;
 
 	let pdu: PduEvent =
 		slipstream::codec::from_value(&slipstream::json::Value::Object(pdu_json.clone()))?;
 	let room_id = pdu
-		.room_id()
-		.ok_or_else(|| err!("PDU has no room_id."))?
-		.to_owned();
+		.room_id_derived()
+		.ok_or_else(|| err!("PDU has no room_id."))?;
 
 	// Clear all soft-fail and rejection markers when rescuing unconditionally
 	// (if an admin is rescuing a PDU, they definitely want it un-rejected)
@@ -327,7 +316,7 @@ pub(super) async fn clean_corrupt_rooms(&self, execute: bool) -> Result {
 				self.services.rooms.state_cache.server_rooms_remove_raw(
 					&conduwuit_database::serialize_to_vec(prefix).unwrap(),
 				);
-			self.services.rooms.metadata.remove_room_raw(room_id);
+			self.services.rooms.metadata.remove_room_raw(room_id)?;
 		}
 	}
 

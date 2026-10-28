@@ -92,6 +92,13 @@
 {"Action":"pass","Test":"TestDeactivateAccount/Can_deactivate_account"}
 {"Action":"pass","Test":"TestDeactivateAccount/Password_flow_is_available"}
 {"Action":"pass","Test":"TestDelayedEvents"}
+{"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay"}
+{"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay/missing_content"}
+{"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay/missing_delay_ms"}
+{"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay/negative_delay_ms"}
+{"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay/non-integer_delay_ms"}
+{"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay/string_delay_ms"}
+{"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay/zero_delay_ms"}
 {"Action":"pass","Test":"TestDelayedEvents/cannot_update_a_delayed_event_with_an_invalid_action"}
 {"Action":"pass","Test":"TestDelayedEvents/cannot_update_a_delayed_event_without_an_action"}
 {"Action":"pass","Test":"TestDelayedEvents/delayed_event_lookups_are_authenticated"}

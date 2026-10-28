@@ -115,6 +115,20 @@ fn select_server_key_response(
 	merged_server_key: Option<ServerSigningKeys>,
 ) -> Result<Raw<ServerSigningKeys>> {
 	if let Some(keys) = merged_server_key {
+		// The native merge re-encodes the key set without the origin's
+		// signatures. When it adds nothing over the stored Notary payload, serve
+		// the original bytes so the origin's self-signature still verifies.
+		if let Some(raw) = &raw_server_key {
+			let unchanged_from_raw = raw.deserialize().is_ok_and(|raw_keys| {
+				keys.verify_keys == raw_keys.verify_keys
+					&& keys.old_verify_keys == raw_keys.old_verify_keys
+					&& keys.valid_until_ts == raw_keys.valid_until_ts
+			});
+			if unchanged_from_raw {
+				return Ok(raw.clone());
+			}
+		}
+
 		Raw::new(&keys).map_err(Into::into)
 	} else if let Some(keys) = raw_server_key {
 		Ok(keys)
@@ -133,7 +147,7 @@ async fn get_signing_keys_for(
 		return Raw::new(&get_our_signing_keys(services).await).map_err(Into::into);
 	}
 
-	let raw_server_key = match services.server_keys.raw_signing_keys_for(server_name).await {
+	let mut raw_server_key = match services.server_keys.raw_signing_keys_for(server_name).await {
 		| Ok(keys) => Some(keys),
 		| Err(ref e) if e.is_not_found() => None,
 		| Err(e) => return Err(e),
@@ -178,6 +192,13 @@ async fn get_signing_keys_for(
 				.await
 			{
 				| Ok(patched_keys) => {
+					// The fetch may have refreshed the stored payload (for example
+					// `valid_until_ts`) without changing the key maps. Re-read it so
+					// the selection below compares against what is actually stored.
+					if let Ok(raw) = services.server_keys.raw_signing_keys_for(server_name).await
+					{
+						raw_server_key = Some(raw);
+					}
 					merged_server_key = match services
 						.server_keys
 						.merged_signing_keys_for(server_name)
@@ -368,7 +389,7 @@ mod tests {
 
 		ServerSigningKeys {
 			server_name: "example.com".try_into().unwrap(),
-			valid_until_ts: MilliSecondsSinceUnixEpoch::now(),
+			valid_until_ts: MilliSecondsSinceUnixEpoch(1_700_000_000_000),
 			verify_keys,
 			old_verify_keys,
 			signatures: Signatures::new(),
@@ -380,6 +401,32 @@ mod tests {
 			reload: LogLevelReloadHandles,
 			capture: Arc::new(CaptureState::new()),
 		}
+	}
+
+	#[test]
+	fn unchanged_merge_preserves_raw_notary_payload() {
+		let raw = Raw::new(&key_payload("ed25519:active", "AAA", None, None)).unwrap();
+		let merged = key_payload("ed25519:active", "AAA", None, None);
+
+		let selected = select_server_key_response(Some(raw.clone()), Some(merged)).unwrap();
+
+		assert_eq!(selected.get(), raw.get());
+	}
+
+	#[test]
+	fn changed_validity_does_not_reuse_raw_notary_payload() {
+		let mut raw_payload = key_payload("ed25519:active", "AAA", None, None);
+		raw_payload.valid_until_ts = MilliSecondsSinceUnixEpoch(1_600_000_000_000);
+		let mut merged = key_payload("ed25519:active", "AAA", None, None);
+		merged.valid_until_ts = MilliSecondsSinceUnixEpoch(1_700_000_000_000);
+
+		let raw = Raw::new(&raw_payload).unwrap();
+		let expected_raw = Raw::new(&merged).unwrap();
+		let selected_raw = select_server_key_response(Some(raw), Some(merged)).unwrap();
+		let selected: ServerSigningKeys = selected_raw.deserialize().unwrap();
+
+		assert_eq!(selected.valid_until_ts, MilliSecondsSinceUnixEpoch(1_700_000_000_000));
+		assert_eq!(selected_raw.get(), expected_raw.get());
 	}
 
 	#[test]
@@ -431,26 +478,22 @@ mod tests {
 		let raw = key_payload("ed25519:active", "AAA", None, None);
 		let merged =
 			key_payload("ed25519:active", "AAA", Some("ed25519:historical"), Some("BBB"));
-		let adapter =
-			conduwuit_mtxdb::server_keys::ServerKeysAdapter::new(services.mtxdb.clone());
-		let tx = services.mtxdb.begin_transaction();
-		adapter
-			.put(
-				&tx,
-				conduwuit_mtxdb::server_keys::KeyRecordKind::Notary,
-				origin.as_bytes(),
-				&slipstream::codec::to_vec(&Raw::new(&raw).unwrap()),
+		services
+			.server_keys
+			.add_signing_keys(
+				&Raw::new(&raw).unwrap(),
+				conduwuit_service::server_keys::FetchSource::Direct,
 			)
+			.await
 			.unwrap();
-		adapter
-			.put(
-				&tx,
-				conduwuit_mtxdb::server_keys::KeyRecordKind::Historical,
-				origin.as_bytes(),
-				&slipstream::codec::to_vec(&merged),
+		services
+			.server_keys
+			.add_signing_keys(
+				&Raw::new(&merged).unwrap(),
+				conduwuit_service::server_keys::FetchSource::Direct,
 			)
+			.await
 			.unwrap();
-		tx.commit().unwrap();
 		let (state, guard) = conduwuit_service::state::create(services.clone());
 		let router =
 			crate::router::build(crate::hyper_router::MinimalRouter::new(), &services.server);
@@ -468,6 +511,14 @@ mod tests {
 			.unwrap();
 		assert_eq!(response.status(), StatusCode::OK);
 		let json: Value = slipstream::codec::from_slice(response.body()).unwrap();
+		let signatures = json
+			.get("server_keys")
+			.and_then(|keys| keys.as_array())
+			.and_then(|keys| keys.first())
+			.and_then(|key| key.get("signatures"))
+			.and_then(|signatures| signatures.as_object())
+			.expect("notary response should retain its signatures");
+		assert!(!signatures.is_empty());
 		let old_key = json
 			.get("server_keys")
 			.and_then(|keys| keys.as_array())

@@ -8,6 +8,8 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
+conduwuit-core.workspace = true
+log.workspace = true
 mtxdb.workspace = true
 rezzy.workspace = true
 sha2.workspace = true

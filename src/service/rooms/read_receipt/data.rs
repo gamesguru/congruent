@@ -668,7 +668,7 @@ impl Data {
 		futures::pin_mut!(stream);
 
 		while let Some(Ok((_, pdu))) = stream.next().await {
-			if self.services.threads.get_thread_id(&pdu).await.is_none() {
+			if self.services.threads.get_thread_id(&pdu).is_none() {
 				return Some(pdu.event_id().to_owned());
 			}
 		}

@@ -1,9 +1,9 @@
 mod data;
 
-use std::{collections::HashSet, fmt::Debug, sync::Arc, time::Instant};
+use std::{fmt::Debug, sync::Arc, time::Instant};
 
 use conduwuit::{
-	Err, Result, debug, implement, info, trace,
+	Result, debug, implement, info,
 	utils::{
 		IterStream, MutexMap,
 		stream::{ReadyExt, TryBroadbandExt},
@@ -250,7 +250,7 @@ async fn get_auth_chain_inner(
 	event_id: &EventId,
 	shortid: ShortEventId,
 ) -> Result<(RoaringTreemap, bool)> {
-	let mut todo = vec![(shortid, event_id.to_owned())];
+	let mut todo = vec![shortid];
 	let mut found = RoaringTreemap::new();
 	let mut is_complete = true;
 
@@ -264,19 +264,16 @@ async fn get_auth_chain_inner(
 		}
 
 		let current_batch = std::mem::take(&mut todo);
-		let (short_ids, event_ids): (Vec<_>, Vec<_>) = current_batch.into_iter().unzip();
-
 		let mut next_short_ids = Vec::new();
-		let mut missing_events = Vec::new();
 
 		let batch_results: Vec<_> = self
 			.services
 			.timeline
-			.multi_get_shortauthevents(futures::stream::iter(short_ids.clone()))
+			.multi_get_shortauthevents(futures::stream::iter(current_batch))
 			.collect()
 			.await;
 
-		for (idx, (res, _short_id)) in batch_results.into_iter().zip(short_ids).enumerate() {
+		for res in batch_results {
 			match res {
 				| Ok(auth_shorts) =>
 					for auth_short in auth_shorts {
@@ -291,103 +288,17 @@ async fn get_auth_chain_inner(
 							}
 						}
 					},
-				| Err(_) => {
-					missing_events.push(event_ids[idx].clone());
+				| Err(error) => {
+					// Auth edges come only from mtxdb. A missing locator or edge row
+					// means the offline import was incomplete; never reconstruct the
+					// walk from legacy PDU data.
+					debug!(%room_id, ?error, "Could not read mtxdb auth edges; marking auth chain as incomplete");
+					is_complete = false;
 				},
 			}
 		}
 
-		if !next_short_ids.is_empty() {
-			let resolved_events: Vec<_> = futures::stream::iter(next_short_ids.clone())
-				.zip(
-					self.services
-						.short
-						.multi_get_eventid_from_short::<OwnedEventId, _>(futures::stream::iter(
-							next_short_ids,
-						)),
-				)
-				.collect()
-				.await;
-
-			for (auth_short, res) in resolved_events {
-				if let Ok(auth_event_id) = res {
-					todo.push((auth_short, auth_event_id));
-				} else {
-					is_complete = false;
-				}
-			}
-		}
-
-		if !missing_events.is_empty() {
-			let results: Vec<_> = missing_events
-				.into_iter()
-				.try_stream::<conduwuit::Error>()
-				.broad_and_then(|missing_event_id| async move {
-					trace!(%missing_event_id, "processing legacy auth event");
-
-					let pdu_result = self
-						.services
-						.timeline
-						.get_pdu_in_room(Some(room_id), &missing_event_id)
-						.await;
-
-					Ok((missing_event_id, pdu_result))
-				})
-				.try_collect()
-				.await?;
-
-			let mut new_auth_events = HashSet::new();
-			for (missing_event_id, pdu_result) in results {
-				match pdu_result {
-					| Err(e) => {
-						info!(%missing_event_id, ?e, "Could not find pdu mentioned in auth events; marking chain as incomplete");
-						is_complete = false;
-					},
-					| Ok(pdu) => {
-						if let Some(claimed_room_id) = pdu.room_id.clone() {
-							if claimed_room_id != *room_id {
-								return Err!(Request(Forbidden(error!(
-									%missing_event_id,
-									%room_id,
-									wrong_room_id = ?pdu.room_id.unwrap(),
-									"auth event for incorrect room"
-								))));
-							}
-						}
-
-						for auth_event in &pdu.auth_events {
-							new_auth_events.insert(auth_event.clone());
-						}
-					},
-				}
-			}
-
-			let new_auth_events: Vec<_> = new_auth_events.into_iter().collect();
-			if new_auth_events.is_empty() {
-				continue;
-			}
-
-			let mut legacy_short_ids = self
-				.services
-				.short
-				.multi_get_or_create_shorteventid(new_auth_events.iter())
-				.zip(futures::stream::iter(new_auth_events.clone()))
-				.boxed();
-
-			while let Some((sauthevent, auth_event)) = legacy_short_ids.next().await {
-				if found.insert(sauthevent) {
-					if let Ok(cached) = self
-						.get_cached_eventid_authchain(shortroomid, sauthevent)
-						.await
-					{
-						found |= cached.as_ref();
-					} else {
-						trace!(?auth_event, "adding legacy auth event to processing queue");
-						todo.push((sauthevent, auth_event));
-					}
-				}
-			}
-		}
+		todo.extend(next_short_ids);
 	}
 
 	if !self
@@ -431,7 +342,6 @@ async fn add_derived_create_event(
 		.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), &create_id)
-		.await
 		.is_err()
 	{
 		return false;

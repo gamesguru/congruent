@@ -279,7 +279,7 @@ pub async fn backfill_if_required(
 		}
 		let mut known_ids: HashSet<OwnedEventId> = HashSet::with_capacity(all_prev_ids.len());
 		for prev_id in &all_prev_ids {
-			// Outliers exist in `eventid_pdu`, but they are still gaps in the
+			// Outliers exist in mtxdb, but they are still gaps in the
 			// timeline because `/messages` scans the non-outlier topo index. If
 			// we treat an outlier parent as "known" here, pagination can advance
 			// past its depth and only upgrade it later during a deeper backfill,
@@ -398,7 +398,7 @@ pub async fn backfill_if_required(
 				"Asking {backfill_server} for backfill in {room_id} (extremities: \
 				 {backwards_extremities:?})"
 			);
-			let response = self
+			match self
 				.services
 				.sending
 				.send_federation_request(
@@ -409,8 +409,8 @@ pub async fn backfill_if_required(
 						limit: UInt::from(scan_limit_u32),
 					},
 				)
-				.await;
-			match response {
+				.await
+			{
 				| Ok(response) => {
 					let pdus = response.pdus;
 					info!(
@@ -433,10 +433,25 @@ pub async fn backfill_if_required(
 					// outside a `/messages` page boundary and looks like a dropped event.
 					let pdus = topo_sort_backfill_batch(pdus);
 
-					// Handle timeline events newest-first (maintain timeline integrity)
-					for pdu in pdus {
-						if let Err(e) =
-							self.backfill_pdu(backfill_server, pdu, None).boxed().await
+					// Reserve stream positions in newest-first order, then process
+					// oldest-first so each event's predecessors from this batch are
+					// already available during auth and state resolution. The assigned
+					// positions preserve the existing newest-first timeline ordering.
+					let batch_size = u64::try_from(pdus.len())?;
+					let mut count = self.services.globals.next_count_batch(batch_size)?;
+					let mut counts = Vec::with_capacity(pdus.len());
+					for _ in &pdus {
+						count = count
+							.checked_add(1)
+							.ok_or_else(|| err!(Arithmetic("Counter overflow")))?;
+						counts.push(count);
+					}
+
+					for (pdu, count) in pdus.into_iter().zip(counts).rev() {
+						if let Err(e) = self
+							.backfill_pdu(backfill_server, pdu, Some(count))
+							.boxed()
+							.await
 						{
 							debug_warn!("Failed to add backfilled pdu in room {room_id}: {e}");
 						}
@@ -653,7 +668,7 @@ async fn get_remote_pdu_limited(
 ) -> Result<PduEvent> {
 	let _mutex = self.mutex_fetch.lock(event_id).await;
 
-	let local = self.get_pdu(event_id).await;
+	let local = self.get_pdu(event_id);
 	if local.is_ok() {
 		// `get_pdu` also finds outliers, e.g. one a resync stored first. Those have
 		// no timeline position yet, so give them the same treatment as a freshly
@@ -773,7 +788,7 @@ async fn get_remote_pdu_limited(
 						self.promote_outlier(room_id, event_id).await?;
 					}
 					debug!("Successfully backfilled {event_id} from {backfill_server}");
-					Some(self.get_pdu(event_id).await)
+					Some(self.get_pdu(event_id))
 				},
 				| Err(e) => {
 					warn!(
@@ -813,7 +828,7 @@ async fn materialize_remote_history_limited(
 		return Ok(());
 	}
 
-	let pdu = self.get_pdu(event_id).await?;
+	let pdu = self.get_pdu(event_id)?;
 	for prev_id in pdu.prev_events() {
 		if self.get_pdu_id(prev_id).await.is_ok() {
 			continue;
@@ -823,7 +838,7 @@ async fn materialize_remote_history_limited(
 			continue;
 		}
 
-		if self.get_pdu(prev_id).await.is_err() {
+		if self.get_pdu(prev_id).is_err() {
 			let _ = Box::pin(self.get_remote_pdu_limited(room_id, prev_id, budget)).await;
 		} else {
 			Box::pin(self.materialize_remote_history_limited(room_id, prev_id, budget)).await?;
@@ -884,6 +899,7 @@ pub async fn backfill_pdu(
 		&event_id,
 		&room_id,
 		value.clone(),
+		false,
 		false,
 		false,
 		&room_version_id,
@@ -972,8 +988,8 @@ pub async fn backfill_pdu(
 
 	// Insert pdu
 	self.db
-		.prepend_backfill_pdu(&pdu_id, &event_id, &json_value, &pdu_event)
-		.await;
+		.append_pdu(&pdu_id, &pdu_event, &json_value, pdu_id.pdu_count())
+		.await?;
 	self.reconciliation_cache.invalidate(&room_id);
 	drop(reconciliation_lock);
 
@@ -1073,7 +1089,7 @@ pub async fn promote_outlier_batch<'a>(
 		return Ok(PromoteOutlierOutcome::Skipped);
 	}
 
-	let value = self.get_outlier_pdu_json(event_id).await?;
+	let value = self.get_outlier_pdu_json(event_id)?;
 
 	let pdu: PduEvent =
 		slipstream::codec::from_value(&slipstream::json::Value::Object(value.clone()))
@@ -1144,8 +1160,8 @@ pub async fn promote_outlier_batch<'a>(
 
 	self.associate_current_state(room_id, event_id).await?;
 	self.db
-		.prepend_backfill_pdu_batch(batch, &pdu_id, event_id, &value, &pdu)
-		.await;
+		.append_pdu_batch(batch, &pdu_id, &pdu, &value, pdu_id.pdu_count())
+		.await?;
 
 	drop(insert_lock);
 
@@ -1331,7 +1347,7 @@ pub async fn promote_outliers_sorted(
 			continue;
 		}
 
-		let Ok(pdu) = self.get_pdu_outlier(event_id).await else {
+		let Ok(pdu) = self.get_pdu_outlier(event_id) else {
 			continue;
 		};
 
@@ -1429,7 +1445,7 @@ pub async fn reindex_timeline_events(
 		let Ok(pdu_id) = self.get_pdu_id(event_id).await else {
 			continue;
 		};
-		let Ok(pdu) = self.get_pdu_in_room(Some(room_id), event_id).await else {
+		let Ok(pdu) = self.get_pdu_in_room(Some(room_id), event_id) else {
 			continue;
 		};
 		pdus.insert(event_id.clone(), (pdu_id, pdu));
@@ -1574,13 +1590,7 @@ pub async fn force_insert_pdu(
 	let (pdu_count, pdu_id, value) =
 		self.prepare_pdu_insert(shortroomid, event_id, value, backfill)?;
 
-	if backfill {
-		self.db
-			.prepend_backfill_pdu(&pdu_id, event_id, &value, pdu)
-			.await;
-	} else {
-		self.db.append_pdu(&pdu_id, pdu, &value, pdu_count).await;
-	}
+	self.db.append_pdu(&pdu_id, pdu, &value, pdu_count).await?;
 
 	drop(insert_lock);
 
@@ -1609,15 +1619,9 @@ pub async fn force_insert_pdu_batch<'a>(
 	let (pdu_count, pdu_id, value) =
 		self.prepare_pdu_insert(shortroomid, event_id, value, backfill)?;
 
-	if backfill {
-		self.db
-			.prepend_backfill_pdu_batch(batch, &pdu_id, event_id, &value, pdu)
-			.await;
-	} else {
-		self.db
-			.append_pdu_batch(batch, &pdu_id, pdu, &value, pdu_count)
-			.await;
-	}
+	self.db
+		.append_pdu_batch(batch, &pdu_id, pdu, &value, pdu_count)
+		.await?;
 
 	self.index_pdu_search(shortroomid, &pdu_id, pdu);
 

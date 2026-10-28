@@ -4,7 +4,7 @@ use std::{borrow::Borrow, time::Instant, vec};
 
 use conduwuit::{
 	Err, Event, Result, at, debug, err, info, trace,
-	utils::stream::{BroadbandExt, IterStream, TryBroadbandExt},
+	utils::stream::{BroadbandExt, IterStream, TryBroadbandExt, TryReadyExt},
 	warn,
 };
 use conduwuit_service::Services;
@@ -178,11 +178,7 @@ async fn create_join_event(
 			async move {
 				if omit_members {
 					if let Ok(e) = event_id.as_ref() {
-						let pdu = services
-							.rooms
-							.timeline
-							.get_pdu_in_room(Some(room_id), e)
-							.await;
+						let pdu = services.rooms.timeline.get_pdu_in_room(Some(room_id), e);
 						if let Ok(p) = pdu {
 							if p.kind().to_cow_str() == "m.room.member"
 								&& !p.state_key().is_some_and(|sk| heroes.contains(sk))
@@ -203,7 +199,7 @@ async fn create_join_event(
 	let state = retained_state_ids
 		.iter()
 		.try_stream()
-		.broad_and_then(|event_id| services.rooms.timeline.get_pdu_json(event_id))
+		.ready_and_then(|event_id| services.rooms.timeline.get_pdu_json(event_id))
 		.broad_and_then(|pdu| {
 			services
 				.sending
@@ -235,9 +231,7 @@ async fn create_join_event(
 				}
 			}
 		})
-		.broad_and_then(|event_id| async move {
-			services.rooms.timeline.get_pdu_json(&event_id).await
-		})
+		.broad_and_then(|event_id| async move { services.rooms.timeline.get_pdu_json(&event_id) })
 		.broad_and_then(|pdu| {
 			services
 				.sending

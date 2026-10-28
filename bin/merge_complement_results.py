@@ -31,7 +31,9 @@ def normalize(line: str) -> str:
         obj = json.loads(line)
     except Exception:
         return line
-    return json.dumps({"Action": obj.get("Action"), "Test": obj.get("Test")}, separators=(",", ":"))
+    return json.dumps(
+        {"Action": obj.get("Action"), "Test": obj.get("Test")}, separators=(",", ":")
+    )
 
 
 def merge_results(main_lines: list[str], patch_lines: list[str]) -> list[str]:
@@ -75,7 +77,9 @@ def merge_results(main_lines: list[str], patch_lines: list[str]) -> list[str]:
         if name not in main_present:
             merged.append(result_record(patch_by_test[name]))
 
-    return sorted(merged, key=lambda line: (test_name(line) == "", test_name(line), line))
+    return sorted(
+        merged, key=lambda line: (test_name(line) == "", test_name(line), line)
+    )
 
 
 def sort_jsonl(lines: list[str]) -> list[str]:
@@ -122,7 +126,8 @@ def main() -> int:
     parser.add_argument(
         "--dedupe-in-place",
         action="store_true",
-        help="Collapse duplicate .Test entries in a JSONL results file and rewrite it in place.",
+        help="Collapse duplicate .Test entries in a JSONL results"
+        "file and rewrite it in place.",
     )
     args = parser.parse_args()
 

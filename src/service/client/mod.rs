@@ -340,13 +340,13 @@ impl HttpClient {
 
 					return Ok(response);
 				},
-				| Ok(Err((stale, error))) =>
+				| Ok(Err((stale, error))) => {
 					if reused && stale {
 						// Retry once on a fresh connection.
 						continue;
-					} else {
-						return Err(error);
-					},
+					}
+					return Err(error);
+				},
 				| Err(TimeoutError) =>
 					return Err(Error::HttpClientTimeout(
 						format!(
