@@ -1495,7 +1495,7 @@ impl Data {
 		if let Some(room_id) = pdu.room_id() {
 			let entry = conduwuit_mtxdb::timeline::TimelineAdapter::make_entry(
 				room_id.as_bytes(),
-				pdu.depth() as i64,
+				pdu.depth().cast_signed(),
 				pdu_id.pdu_count().into_signed(),
 				pdu.event_id().as_bytes(),
 			);

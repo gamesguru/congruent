@@ -21,6 +21,9 @@ use crate::{
 
 const MAX_STALE_READ_RETRIES: usize = 8;
 
+/// An event ID paired with the ID of the room that owns it.
+pub type EventLocator = (Vec<u8>, Vec<u8>);
+
 #[derive(Clone)]
 pub struct EventAdapter {
 	store: Arc<MtxdbStore>,
@@ -85,7 +88,7 @@ impl EventAdapter {
 	pub fn locate_event_by_node(
 		&self,
 		node_id: &[u8; 16],
-	) -> Result<Option<(Vec<u8>, Vec<u8>)>, StorageError> {
+	) -> Result<Option<EventLocator>, StorageError> {
 		self.store
 			.get(ShardType::EventDag, &event_locator_collection_id(node_id), *node_id)?
 			.map_or(Ok(None), |bytes| {
