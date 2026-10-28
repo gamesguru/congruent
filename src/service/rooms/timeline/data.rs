@@ -1499,9 +1499,17 @@ impl Data {
 				pdu_id.pdu_count().into_signed(),
 				pdu.event_id().as_bytes(),
 			);
-			let _ = self
+			if let Err(e) = self
 				.mtxdb_timeline
-				.append_room(room_id.as_bytes(), &[entry]);
+				.append_room(room_id.as_bytes(), &[entry])
+			{
+				conduwuit::warn!(
+					%room_id,
+					%e,
+					event_id = ?pdu.event_id(),
+					"failed to append timeline entry to mtxdb",
+				);
+			}
 		}
 
 		// Integrate hotfix timestamp index into WriteBatch

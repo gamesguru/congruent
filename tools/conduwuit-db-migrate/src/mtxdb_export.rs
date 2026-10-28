@@ -618,6 +618,16 @@ pub fn export(
 			"warning: {id_mismatches} PDU event IDs disagreed with their map keys; used the PDU event ID"
 		);
 	}
+	let missing_stream_ordering = events
+		.values()
+		.flat_map(BTreeMap::values)
+		.filter(|event| event.stream_ordering.is_none())
+		.count();
+	if missing_stream_ordering > 0 {
+		eprintln!(
+			"warning: {missing_stream_ordering} exported events have no stream ordering and will be omitted from the timeline index"
+		);
+	}
 	if events.is_empty() {
 		return Err("found no readable room PDUs in eventid_pdu, pduid_pdu, or \
 		            eventid_outlierpdu"
