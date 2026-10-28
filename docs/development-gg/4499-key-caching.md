@@ -363,17 +363,129 @@ other deviation from First Seen Wins on a receiving server. It may inform the
 human operator who decides whether to invoke this manual mechanism; it must
 never invoke it by itself.
 
+### Convergence guarantees and non-goals
+
+This MSC is a cache-policy and evidence-retention proposal, not a key-authority
+protocol. Its guarantee is conditional:
+
+> Servers that agree on the established key bindings, retirement evidence, room
+> version and events reach the same verification outcomes once the required
+> evidence is available, independent of delivery order, cache refresh time,
+> restart or eviction.
+
+Local corroboration state and cache freshness are diagnostics. They MUST NOT
+change a verdict. The guarantee does **not** cover servers with conflicting First
+Seen Wins histories, missing evidence that never arrives, or state already
+finalized from an earlier verdict. First Seen Wins and first-observed
+`expired_ts` are local containment policies, not convergence mechanisms: two
+servers holding the same two conflicting responses can legitimately keep
+different winners.
+
+**Deferred verification.** Missing evidence is not an invalid signature and MUST
+NOT become a permanent rejection or cascade into rejecting dependent events. A
+server SHOULD record the event as _unresolved_, retain the reference to the
+evidence it needs, and retry through its normal admission path when that
+evidence arrives, including the events that depended on it. An unresolved event
+MUST NOT participate in room state or grant authority until it is resolved;
+implementations that accept unresolved events anyway (for example during a
+database migration) do so as a local policy, not a federation rule. This is
+distinct from soft failure, which is an authorization decision against current
+room state. Retry queues and rates MAY be bounded; a bound is a resource limit,
+not a verdict, and a server that discards an unresolved event has accepted a
+convergence limitation. Reversing events already accepted or definitively
+rejected is out of scope.
+
+**Testing.** For non-conflicting evidence, tests SHOULD show that delivery
+order, temporary outages, restarts and cache eviction converge to the same
+verdicts and resolved state. For conflicting first-seen bindings, tests SHOULD
+assert the documented divergence and its diagnostics rather than convergence.
+Boundary tests SHOULD cover equality at `valid_until_ts` and `expired_ts`, and
+signature sets with several keys in every order.
+
+Arrival-order-independent key authorization and retirement evidence require new
+room-version or member-key design; see
+[Future considerations](#future-considerations).
+
 ### Historical event verification
 
 Cached keys, including keys retired to `old_verify_keys`, MUST be retained for
 historical PDU verification. An event signed by `algorithm:key_id` at time `T`
-(where `T` is the event's `origin_server_ts`) is valid if and only if: (1) `T`
-falls within the key's validity window (i.e., `T` is less than the key's
-`expired_ts` if present, and `T` is less than the `valid_until_ts` asserted when
-the key was active), and (2) the event signature cryptographically validates.
-The 7-day cache validity clamp restricts the window in which the key is
-authorized to sign new events, but does not invalidate historically signed
-events when verifying them years later.
+(the event's `origin_server_ts`) is valid if and only if: (1) the key was
+active at `T`, and (2) the event signature cryptographically validates.
+
+A key is active at `T` as follows:
+
+- **Retired key** (it has an `expired_ts`): the key is active if and only if
+  `T < expired_ts`. `valid_until_ts` MUST NOT be consulted. A retired key was
+  active until its retirement, and the `valid_until_ts` last cached for it is
+  only a refresh deadline. This matches Synapse, which records
+  `valid_until_ts = expired_ts` for retired keys.
+- **Unretired key, room version 5 or later**: an online verifier MUST hold a
+  key response whose `valid_until_ts >= T`. If its cached response does not
+  cover `T`, it MUST refresh the response, directly or via a notary, before
+  treating the event as verified. A server that cannot obtain a response
+  covering `T` MUST NOT treat the event as fully verified against a
+  current-validity response.
+- **Unretired key, room versions 1–4**: `valid_until_ts` MUST NOT be used as a
+  cutoff.
+
+A future room version that changes these signing rules governs itself.
+
+`valid_until_ts` is a cache-refresh deadline. It is not evidence that the key
+stopped signing at that time. The 7-day cache validity clamp limits cache
+freshness; it does not, by itself, establish a key's signing lifetime. A key
+without `expired_ts` has no recorded retirement bound; the freshness
+requirement above still applies to online verification in room versions 5 and
+later.
+
+**Non-normative note:** A tool that verifies a historical archive offline,
+such as a database migration, cannot refresh key responses. For an unretired
+key in a room version that uses `valid_until_ts`, when the cached response
+does not cover `T`, it SHOULD still check the signature against the retained
+key and record a successful result as
+`verified_without_fresh_validity_response`. That result does not corroborate
+the key and is not a full protocol verification. A key with an `expired_ts` is
+instead bounded by that observed retirement timestamp: a successful signature
+before `expired_ts` is normal verification and MAY corroborate the key.
+
+If the signature fails in this offline stale-cache situation, it is not by
+itself proof of forgery; the tool SHOULD record the event as unverified rather
+than rejecting it solely on that basis. This window covers an unretired key
+with `valid_until_ts < T` and a retired key with
+`valid_until_ts < T < expired_ts`. A successful signature from a retired key
+with `T < expired_ts` is normal verification and may corroborate; only the
+failure outcome is softened. For a retired key with `T < valid_until_ts`, the
+normal in-window failure rules apply. This offline exception does not apply to
+room versions 1–4, which do not use `valid_until_ts` as a cutoff, or to a key at
+or after its `expired_ts`, which is unusable.
+
+**Boundary conventions.** All of `origin_server_ts`, `valid_until_ts` and
+`expired_ts` are compared as integer milliseconds. A response covers `T` when
+`valid_until_ts >= T`, so equality is fresh, not stale. A retired key is usable
+for `T < expired_ts`, so equality at `expired_ts` is unusable.
+
+**Verification outcomes and precedence.** An event has exactly one of three
+signature outcomes, and servers MUST derive it the same way regardless of the
+order in which signatures or keys are examined:
+
+- **Verified**: at least one origin signature validates against a key that was
+  active at `T` under the rules above, with a response covering `T` where one is
+  required. Verified in-window outranks every other result for the same event.
+- **Invalid**: no signature verifies, and at least one signature failed
+  cryptographically against a key that was active at `T` with a covering
+  response (or in a room version that does not consult `valid_until_ts`), or a
+  signature or key body is malformed.
+- **Unresolved**: the verifier lacks the evidence to decide, for example no
+  key for the key ID, or only stale cached responses that cannot be refreshed
+  and fail to verify. Missing evidence is not a cryptographic failure.
+
+A late success (against a stale response that could not be refreshed) outranks
+a late failure. Only a failure against a key that was active at `T` with a
+covering response is `Invalid`. Which corroboration a signature earns follows
+from its outcome and MUST NOT depend on iteration order. The treatment of
+non-canonical base64 (for example non-zero trailing bits) is a verdict-affecting
+decoding choice that implementations differ on; see [Open
+questions](#open-questions).
 
 Servers MUST sanity-check `expired_ts` values in `old_verify_keys`. A future
 `expired_ts` (beyond a 5-minute clock-skew allowance) MUST be treated as
@@ -766,6 +878,10 @@ requirements that can be readily adopted. No API endpoints substantially change.
 - How should moderation tooling (community ban lists, Draunir) treat a server
   locally isolated by a key collision — as a temporary outage, or as a signal
   worth surfacing to operators?
+- Should signature and key-body decoding accept non-canonical unpadded base64
+  (non-zero trailing bits)? Implementations differ, so the choice changes
+  verdicts for the same event. The proposal needs one answer, either lenient to
+  match deployed servers or strict with a documented incompatibility.
 
 ## Backwards compatibility
 
