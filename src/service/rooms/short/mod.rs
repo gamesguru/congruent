@@ -42,60 +42,137 @@ struct Data {
 	mtxdb: Arc<conduwuit_mtxdb::store::MtxdbStore>,
 }
 
+/// Mappings committed per import transaction.
+const IMPORT_BATCH: usize = 512;
+
+/// Batches between journal-reclaim checks. At 512 mappings per batch this is
+/// about 8K mappings, well inside the journal's reclaim trigger (a quarter of
+/// the 256 MiB segment cap).
+const RECLAIM_CHECK_BATCHES: usize = 16;
+
+/// Extra journal growth required before retrying a reclaim that did not bring
+/// the segment back under its trigger.
+const RECLAIM_RETRY_GROWTH: u64 = 8 << 20;
+
+/// Back off between reclaim checks while a sync is not shrinking the segment.
+#[derive(Default)]
+struct ImportReclaim {
+	next_attempt_len: u64,
+}
+
+impl ImportReclaim {
+	/// Sync `ServerInfo` when the journal reaches its trigger. If that does not
+	/// get the segment back under the trigger, another pool is pinning it:
+	/// checkpoint every pool once, then wait for the segment to grow before
+	/// trying again instead of re-syncing every batch.
+	fn check(&mut self, shortids: &ShortIdAdapter, force: bool) -> Result {
+		let len = shortids.journal_segment_len();
+		if !force && len < self.next_attempt_len {
+			return Ok(());
+		}
+		let outcome = shortids.reclaim_if_needed().map_err(|error| {
+			err!(Database("Failed to reclaim the legacy short-ID import journal: {error}"))
+		})?;
+		if !outcome.synced || outcome.reclaimed() {
+			self.next_attempt_len = outcome.trigger_len.saturating_add(1);
+			return Ok(());
+		}
+
+		shortids.checkpoint_all().map_err(|error| {
+			err!(Database("Failed to reclaim the legacy short-ID import journal: {error}"))
+		})?;
+		let after = shortids.journal_segment_len();
+		self.next_attempt_len = if after <= outcome.trigger_len {
+			outcome.trigger_len.saturating_add(1)
+		} else {
+			after.saturating_add(RECLAIM_RETRY_GROWTH)
+		};
+		Ok(())
+	}
+}
+
 /// Import the legacy event and state-key mappings before any HAMT leaf or
 /// auth-chain entry can be resolved through the mtxdb-backed adapter.
 ///
 /// Preserves assigned IDs. Read, decoding, and import errors propagate;
 /// mappings committed before an error remain imported for a retry.
-fn import_legacy_short_ids(shortids: &ShortIdAdapter, db: &Arc<database::Database>) -> Result {
+///
+/// The import reclaims the journal before the first batch. The loop syncs the
+/// `ServerInfo` shard (the only shard these mappings touch) whenever the
+/// journal reaches its trigger; without that, a large import fills the shared
+/// segment and later commits fail with `WouldBlock`.
+fn import_legacy_short_ids(
+	shortids: &ShortIdAdapter,
+	mtxdb: &conduwuit_mtxdb::store::MtxdbStore,
+	db: &Arc<database::Database>,
+) -> Result {
+	// The previous process may have stopped with the WAL near its hard cap.
+	// Drain every pool before the first import commit, and wait for any
+	// background checkpoint tails to report coverage.
+	mtxdb.checkpoint_all().map_err(|error| {
+		err!(Database("Failed to checkpoint mtxdb before legacy short-ID import: {error}"))
+	})?;
+
+	let mut reclaim = ImportReclaim::default();
 	let event_map = db
 		.deprecated("eventid_shorteventid")
 		.expect("legacy event short-ID map is registered")
 		.clone();
-	let event_rows = event_map.raw_entries()?;
-	let mut events = Vec::with_capacity(event_rows.len());
-	for (event_id, short) in event_rows {
-		let short = u64::from_be_bytes(
-			short
-				.as_slice()
-				.try_into()
-				.map_err(|_| err!(Database("Malformed legacy event short ID")))?,
-		);
-		events.push((event_id, short));
-	}
-	for chunk in events.chunks(512) {
-		let mappings: Vec<_> = chunk
-			.iter()
-			.map(|(event_id, short)| (event_id.as_slice(), *short))
-			.collect();
+	for (batch, rows) in event_map.raw_entries()?.chunks(IMPORT_BATCH).enumerate() {
+		let mut mappings = Vec::with_capacity(rows.len());
+		for (event_id, short) in rows {
+			let short = u64::from_be_bytes(
+				short
+					.as_slice()
+					.try_into()
+					.map_err(|_| err!(Database("Malformed legacy event short ID")))?,
+			);
+			mappings.push((event_id.as_slice(), short));
+		}
 		shortids.import_event_mappings(&mappings).map_err(|error| {
 			err!(Database("Failed to import legacy event short IDs: {error}"))
 		})?;
+		if batch
+			.saturating_add(1)
+			.is_multiple_of(RECLAIM_CHECK_BATCHES)
+		{
+			reclaim.check(shortids, false)?;
+		}
 	}
 
 	let state_map = db
 		.deprecated("shortstatekey_statekey")
 		.expect("legacy reverse state-key map is registered")
 		.clone();
-	let mut states = Vec::new();
-	for (short_bytes, value_bytes) in state_map.raw_entries()? {
-		let short = u64::from_be_bytes(
-			short_bytes
-				.as_slice()
-				.try_into()
-				.map_err(|_| err!(Database("Malformed legacy state-key short ID")))?,
-		);
-		let (event_type, state_key): (StateEventType, StateKey) =
-			database::keyval::deserialize_val(&value_bytes)?;
-		states.push((event_type.to_string(), state_key.to_string(), short));
-	}
-	for chunk in states.chunks(512) {
-		shortids.import_state_key_mappings(chunk).map_err(|error| {
-			err!(Database("Failed to import legacy state-key short IDs: {error}"))
-		})?;
+	for (batch, rows) in state_map.raw_entries()?.chunks(IMPORT_BATCH).enumerate() {
+		let mut mappings = Vec::with_capacity(rows.len());
+		for (short_bytes, value_bytes) in rows {
+			let short = u64::from_be_bytes(
+				short_bytes
+					.as_slice()
+					.try_into()
+					.map_err(|_| err!(Database("Malformed legacy state-key short ID")))?,
+			);
+			let (event_type, state_key): (StateEventType, StateKey) =
+				database::keyval::deserialize_val(value_bytes)?;
+			mappings.push((event_type.to_string(), state_key.to_string(), short));
+		}
+		shortids
+			.import_state_key_mappings(&mappings)
+			.map_err(|error| {
+				err!(Database("Failed to import legacy state-key short IDs: {error}"))
+			})?;
+		if batch
+			.saturating_add(1)
+			.is_multiple_of(RECLAIM_CHECK_BATCHES)
+		{
+			reclaim.check(shortids, false)?;
+		}
 	}
 
-	Ok(())
+	// Do not leave a nearly full segment behind when the last batch did not
+	// land on a reclaim-check boundary.
+	reclaim.check(shortids, true)
 }
 
 impl crate::Service for Service {
@@ -138,9 +215,12 @@ impl crate::Service for Service {
 			.legacy_import_complete()
 			.map_err(|error| err!(Database("Failed to check legacy short-ID import: {error}")))?
 		{
-			import_legacy_short_ids(&shortids, args.db)?;
+			import_legacy_short_ids(&shortids, args.mtxdb, args.db)?;
 			shortids.mark_legacy_import_complete().map_err(|error| {
 				err!(Database("Failed to mark legacy short-ID import: {error}"))
+			})?;
+			shortids.sync().map_err(|error| {
+				err!(Database("Failed to sync the legacy short-ID import: {error}"))
 			})?;
 		}
 		let globals = args.depend::<globals::Service>("globals");

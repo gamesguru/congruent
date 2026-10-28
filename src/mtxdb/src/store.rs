@@ -45,6 +45,25 @@ struct Maintenance {
 	handle: Option<JoinHandle<()>>,
 }
 
+/// Result of one journal-reclaim attempt. The segment length is reported after
+/// the attempt so a bulk writer can back off instead of syncing every batch
+/// while some other pool still pins the segment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReclaimOutcome {
+	/// Whether a sync ran.
+	pub synced: bool,
+	/// Segment length after the attempt.
+	pub segment_len: u64,
+	/// Length at which another attempt is worthwhile.
+	pub trigger_len: u64,
+}
+
+impl ReclaimOutcome {
+	/// Whether the segment is back at or below the reclaim trigger.
+	#[must_use]
+	pub fn reclaimed(&self) -> bool { self.segment_len <= self.trigger_len }
+}
+
 impl MtxdbStore {
 	#[must_use]
 	pub fn new(db: Arc<Database>) -> Self { Self { db, maintenance: Mutex::new(None) } }
@@ -155,6 +174,52 @@ impl MtxdbStore {
 	pub fn sync(&self, shard: ShardType) -> Result<(), StorageError> {
 		self.db.pool(shard).sync_all()
 	}
+
+	/// Sync `shard` and wait for any checkpoint tail the sync started.
+	///
+	/// A checkpoint with a coverage claim reports it from the tail, after the
+	/// image is durable. A caller that needs the resulting WAL coverage before
+	/// it stages more writes (a bulk import, for example) must wait for that
+	/// tail rather than only call [`Self::sync`].
+	pub fn sync_and_wait(&self, shard: ShardType) -> Result<(), StorageError> {
+		self.sync(shard)?;
+		self.db.pool(shard).wait_for_checkpoint();
+		Ok(())
+	}
+
+	/// Reclaim the shared journal when it has reached its trigger, syncing
+	/// `shard` and waiting for the resulting coverage.
+	///
+	/// Below the trigger this does nothing: the segment has headroom, so a
+	/// delta append (or no work at all) is enough. At or above it, the sync
+	/// takes the coverage checkpoint that lets the journal reclaim; waiting
+	/// ensures the next write does not race the checkpoint tail on a nearly
+	/// full segment.
+	///
+	/// The returned length is measured after the sync, so a caller can tell
+	/// whether the reclaim actually brought the segment back under the trigger.
+	pub fn reclaim_if_needed(&self, shard: ShardType) -> Result<ReclaimOutcome, StorageError> {
+		let coordinator = self.db.coordinator();
+		let trigger_len = coordinator.reclaim_trigger_len();
+		let before = coordinator.segment_len();
+		if before <= trigger_len {
+			return Ok(ReclaimOutcome {
+				synced: false,
+				segment_len: before,
+				trigger_len,
+			});
+		}
+		self.sync_and_wait(shard)?;
+		Ok(ReclaimOutcome {
+			synced: true,
+			segment_len: coordinator.segment_len(),
+			trigger_len,
+		})
+	}
+
+	/// Current length of the shared journal segment.
+	#[must_use]
+	pub fn journal_segment_len(&self) -> u64 { self.db.coordinator().segment_len() }
 
 	/// Sync every pool and drain any background checkpoint tail.
 	///

@@ -21,7 +21,7 @@ use mtxdb::ShardType;
 use crate::{
 	StorageError,
 	keys::{EVENT_LOCATOR_BUCKETS, derive_id, encode_state_key_v1, event_record_id},
-	store::{CollectionId, MtxdbStore, MtxdbTransaction, NodeId},
+	store::{CollectionId, MtxdbStore, MtxdbTransaction, NodeId, ReclaimOutcome},
 };
 
 const SHORT: usize = size_of::<u64>();
@@ -162,6 +162,29 @@ impl ShortIdAdapter {
 	pub fn last_allocated(&self) -> u64 {
 		*self.counter.lock().unwrap_or_else(PoisonError::into_inner)
 	}
+
+	/// Sync the `ServerInfo` shard and wait for the checkpoint tail, so the
+	/// coverage it reports is durable before more mappings are committed.
+	pub fn sync(&self) -> Result<(), StorageError> {
+		self.store.sync_and_wait(ShardType::ServerInfo)
+	}
+
+	/// Reclaim the shared journal when it reaches its trigger.
+	///
+	/// Every mapping this adapter writes lives in `ServerInfo`, so syncing that
+	/// shard reports the only coverage a long import needs. The outcome carries
+	/// the post-sync segment length so a caller can back off when another pool
+	/// still pins the segment.
+	pub fn reclaim_if_needed(&self) -> Result<ReclaimOutcome, StorageError> {
+		self.store.reclaim_if_needed(ShardType::ServerInfo)
+	}
+
+	/// Current length of the shared journal segment.
+	#[must_use]
+	pub fn journal_segment_len(&self) -> u64 { self.store.journal_segment_len() }
+
+	/// Sync every pool and wait for their checkpoint tails.
+	pub fn checkpoint_all(&self) -> Result<(), StorageError> { self.store.checkpoint_all() }
 
 	/// Advance the allocator past IDs issued by the legacy global counter.
 	/// This is used during the room-ID migration so new IDs cannot collide with
@@ -616,6 +639,23 @@ mod tests {
 		// Events and state keys draw from one counter, so no id is reused.
 		let event = adapter.allocate_events(&[b"$a:example.com"]).unwrap()[0];
 		assert!(event > member);
+		fs::remove_dir_all(&path).unwrap();
+	}
+
+	#[test]
+	fn reclaim_is_a_no_op_below_the_trigger() {
+		let path = test_path("reclaim-noop");
+		let _ = fs::remove_dir_all(&path);
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = ShortIdAdapter::new(Arc::clone(&store)).unwrap();
+
+		let outcome = adapter.reclaim_if_needed().unwrap();
+		assert!(!outcome.synced);
+		assert!(outcome.reclaimed());
+		adapter.sync().unwrap();
+
+		drop(adapter);
+		drop(store);
 		fs::remove_dir_all(&path).unwrap();
 	}
 
