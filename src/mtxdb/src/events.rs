@@ -80,6 +80,20 @@ impl EventAdapter {
 			})
 	}
 
+	/// Look up an event ID and room ID by the event's 128-bit node ID using the
+	/// global event locator.
+	pub fn locate_event_by_node(
+		&self,
+		node_id: &[u8; 16],
+	) -> Result<Option<(Vec<u8>, Vec<u8>)>, StorageError> {
+		self.store
+			.get(ShardType::EventDag, &event_locator_collection_id(node_id), *node_id)?
+			.map_or(Ok(None), |bytes| {
+				let (stored_event, room) = Self::decode_locator(&bytes)?;
+				Ok(Some((stored_event.to_vec(), room.to_vec())))
+			})
+	}
+
 	fn encode_locator(event_id: &[u8], room_id: &[u8]) -> Result<Vec<u8>, StorageError> {
 		encode_event_locator(event_id, room_id)
 	}

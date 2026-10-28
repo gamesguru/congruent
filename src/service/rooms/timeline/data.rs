@@ -27,6 +27,7 @@ use crate::{Dep, rooms, rooms::short::ShortRoomId};
 pub(super) struct Data {
 	mtxdb_events: conduwuit_mtxdb::events::EventAdapter,
 	mtxdb_verdicts: conduwuit_mtxdb::verdicts::VerdictAdapter,
+	mtxdb_timeline: conduwuit_mtxdb::timeline::TimelineAdapter,
 	eventid_pduid: Arc<Map>,
 	userroomid_highlightcount: Arc<Map>,
 	userroomid_notificationcount: Arc<Map>,
@@ -53,6 +54,7 @@ impl Data {
 		Self {
 			mtxdb_events: conduwuit_mtxdb::events::EventAdapter::new(args.mtxdb.clone()),
 			mtxdb_verdicts: conduwuit_mtxdb::verdicts::VerdictAdapter::new(args.mtxdb.clone()),
+			mtxdb_timeline: conduwuit_mtxdb::timeline::TimelineAdapter::new(args.mtxdb.clone()),
 			eventid_pduid: db["eventid_pduid"].clone(),
 			userroomid_highlightcount: db["userroomid_highlightcount"].clone(),
 			userroomid_notificationcount: db["userroomid_notificationcount"].clone(),
@@ -75,7 +77,7 @@ impl Data {
 			.await?;
 
 		let prefix = current.shortroomid();
-		let last_count = self
+		let mut last_count = self
 			.room_pducount_eventid
 			.rev_raw_stream_from(&current)
 			.ready_try_take_while(move |(key, _)| Ok(key.starts_with(&prefix)))
@@ -83,6 +85,12 @@ impl Data {
 			.try_next()
 			.await?
 			.unwrap_or(PduCount::min());
+
+		if last_count == PduCount::min() {
+			if let Ok(Some(entry)) = self.mtxdb_timeline.latest_entry(room_id.as_bytes()) {
+				last_count = PduCount::from_signed(entry.stream_ordering);
+			}
+		}
 
 		conduwuit::debug!(
 			target: "timeline_debug",
@@ -326,6 +334,26 @@ impl Data {
 			}
 		}
 
+		if all_event_ids.is_empty() {
+			if let Ok(page) =
+				self.mtxdb_timeline
+					.page_room(room_id.as_bytes(), None, true, usize::MAX)
+			{
+				for entry in page.entries {
+					let count = PduCount::from_signed(entry.stream_ordering);
+					if let Ok(Some((event_id_bytes, _))) =
+						self.mtxdb_events.locate_event_by_node(&entry.node_id)
+					{
+						if let Ok(event_id_str) = std::str::from_utf8(&event_id_bytes) {
+							if let Ok(event_id) = OwnedEventId::parse(event_id_str) {
+								all_event_ids.push((count, event_id));
+							}
+						}
+					}
+				}
+			}
+		}
+
 		// Phase 1b: For each event, read metadata (origin_server_ts) and
 		// resolve prev_events from the shortprevevents table.
 		for (count, event_id) in &all_event_ids {
@@ -337,8 +365,13 @@ impl Data {
 				None
 			};
 
-			let ts = meta_opt.as_ref().map_or(0, |m| m.origin_server_ts);
-			let depth = meta_opt.as_ref().map_or(0, |m| m.depth);
+			let (ts, depth) = if let Some(ref m) = meta_opt {
+				(m.origin_server_ts, m.depth)
+			} else if let Ok((pdu, _)) = self.get_from_eventid_pdu(event_id) {
+				(pdu.origin_server_ts().get(), pdu.depth())
+			} else {
+				(0, 0)
+			};
 
 			entries.insert(event_id.clone(), (*count, depth, ts));
 
@@ -1458,6 +1491,18 @@ impl Data {
 		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth());
 		self.roomid_topologicalorder_pducount
 			.batch_put(batch, &topo_key, event_id_bytes);
+
+		if let Some(room_id) = pdu.room_id() {
+			let entry = conduwuit_mtxdb::timeline::TimelineAdapter::make_entry(
+				room_id.as_bytes(),
+				pdu.depth() as i64,
+				pdu_id.pdu_count().into_signed(),
+				pdu.event_id().as_bytes(),
+			);
+			let _ = self
+				.mtxdb_timeline
+				.append_room(room_id.as_bytes(), &[entry]);
+		}
 
 		// Integrate hotfix timestamp index into WriteBatch
 		if let Some(ts) = json

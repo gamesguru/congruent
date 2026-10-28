@@ -25,6 +25,8 @@ struct Event {
 	pdu: Value,
 	prev: Value,
 	auth: Value,
+	stream_ordering: Option<i64>,
+	depth: Option<i64>,
 }
 
 fn rows(db: &DB, name: &str) -> ExportResult<Vec<DbRow>> {
@@ -169,6 +171,9 @@ fn parse_pdu(
 	} else if !object.contains_key("room_id") {
 		object.insert("room_id".into(), Value::String(room.clone()));
 	}
+	let depth = object
+		.get("depth")
+		.and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|d| d as i64)));
 	Ok((Event {
 		id: event_id,
 		room,
@@ -183,6 +188,8 @@ fn parse_pdu(
 			.cloned()
 			.unwrap_or_else(|| Value::Array(Vec::new())),
 		pdu,
+		stream_ordering: None,
+		depth,
 	}, id_mismatch))
 }
 
@@ -210,6 +217,12 @@ fn event_line(out: &mut impl Write, event: &Event) -> Result<(), Box<dyn std::er
 	record.insert("event_id".into(), Value::String(event.id.clone()));
 	record.insert("prev_events".into(), event.prev.clone());
 	record.insert("auth_events".into(), event.auth.clone());
+	if let Some(stream_ordering) = event.stream_ordering {
+		record.insert("stream_ordering".into(), codec::to_value(&stream_ordering));
+	}
+	if let Some(depth) = event.depth {
+		record.insert("depth".into(), codec::to_value(&depth));
+	}
 	record.insert("pdu".into(), event.pdu.clone());
 	out.write_all(codec::to_string(&Value::Object(record)).as_bytes())?;
 	out.write_all(b"\n")?;
@@ -236,6 +249,7 @@ fn write_room(
 	header.insert("format".into(), Value::String(FORMAT.into()));
 	header.insert("server".into(), Value::String(server.into()));
 	header.insert("room_id".into(), Value::String(room.into()));
+	header.insert("timeline".into(), Value::Bool(true));
 	writer.write_all(codec::to_string(&Value::Object(header)).as_bytes())?;
 	writer.write_all(b"\n")?;
 	for event in &events {
@@ -496,7 +510,19 @@ pub fn export(
 		}
 	}
 
+	let decode_stream_ordering = |pdu_id: &[u8]| -> Option<i64> {
+		if pdu_id.len() >= 16 {
+			let mut count_bytes = [0u8; 8];
+			count_bytes.copy_from_slice(&pdu_id[8..16]);
+			count_bytes[0] ^= 0x80;
+			Some(i64::from_be_bytes(count_bytes))
+		} else {
+			None
+		}
+	};
+
 	let mut event_to_room: HashMap<String, String> = HashMap::new();
+	let mut event_to_stream_order: HashMap<String, i64> = HashMap::new();
 	for (event_id, pdu_id) in rows(&db, "eventid_pduid")? {
 		if let Ok(event_id_str) = std::str::from_utf8(&event_id) {
 			if pdu_id.len() >= 8 {
@@ -505,6 +531,9 @@ pub fn export(
 				if let Some(room) = short_to_room.get(&short) {
 					event_to_room.insert(event_id_str.to_owned(), room.clone());
 				}
+			}
+			if let Some(stream_ord) = decode_stream_ordering(&pdu_id) {
+				event_to_stream_order.insert(event_id_str.to_owned(), stream_ord);
 			}
 		}
 	}
@@ -517,11 +546,19 @@ pub fn export(
 					event_to_room.insert(event_id_str.to_owned(), room.clone());
 				}
 			}
+			if let Some(stream_ord) = decode_stream_ordering(&pdu_id) {
+				event_to_stream_order.insert(event_id_str.to_owned(), stream_ord);
+			}
 		}
 	}
 	let mut events: BTreeMap<String, BTreeMap<String, Event>> = BTreeMap::new();
 	let mut id_mismatches = 0usize;
-	let mut add = |event: Event| {
+	let mut add = |mut event: Event| {
+		if event.stream_ordering.is_none() {
+			if let Some(&stream_ord) = event_to_stream_order.get(&event.id) {
+				event.stream_ordering = Some(stream_ord);
+			}
+		}
 		events
 			.entry(event.room.clone())
 			.or_default()
@@ -548,12 +585,15 @@ pub fn export(
 		// room_pducount_eventid indexes can be stale in old databases, so never
 		// use a secondary index as the fallback identity. These rows are
 		// timeline PDUs, so pass the fallback as None.
-		let (event, mismatch) = parse_pdu(
+		let (mut event, mismatch) = parse_pdu(
 			&raw,
 			None,
 			&mut event_to_room,
 		)
 		.map_err(|error| format!("bad pduid_pdu row {}: {error}", hex(&pdu_id)))?;
+		if event.stream_ordering.is_none() {
+			event.stream_ordering = decode_stream_ordering(&pdu_id);
+		}
 		id_mismatches += usize::from(mismatch);
 		add(event);
 	}

@@ -77,6 +77,14 @@ impl TimelineAdapter {
 		)
 	}
 
+	fn room_index<'a>(
+		&'a self,
+		room_id: &'a [u8],
+	) -> TimelineIndex<'a, mtxdb::packfile::storage::PackfileStorage> {
+		let room_str = std::str::from_utf8(room_id).unwrap_or("");
+		TimelineIndex::open(self.store.database().pool(self.shard).as_ref(), room_str)
+	}
+
 	/// Ensure index collection metadata is registered.
 	pub fn ensure_metadata(&self) -> Result<(), StorageError> { self.index().ensure_metadata() }
 
@@ -93,6 +101,27 @@ impl TimelineAdapter {
 		entries: &[TimelineEntry],
 	) -> Result<NodeId, StorageError> {
 		self.index()
+			.stage_append(tx.as_database_transaction(), self.shard, entries)
+	}
+
+	/// Append entries for a room directly to its timeline index.
+	pub fn append_room(
+		&self,
+		room_id: &[u8],
+		entries: &[TimelineEntry],
+	) -> Result<NodeId, StorageError> {
+		self.room_index(room_id)
+			.append(self.store.database().as_ref(), self.shard, entries)
+	}
+
+	/// Stage timeline entries for a room into an in-progress transaction.
+	pub fn stage_append_room(
+		&self,
+		room_id: &[u8],
+		tx: &MtxdbTransaction<'_>,
+		entries: &[TimelineEntry],
+	) -> Result<NodeId, StorageError> {
+		self.room_index(room_id)
 			.stage_append(tx.as_database_transaction(), self.shard, entries)
 	}
 
@@ -122,7 +151,13 @@ impl TimelineAdapter {
 		limit: usize,
 	) -> Result<TimelinePage, StorageError> {
 		let scope = room_scope_id(room_id);
-		self.index().page(&scope, cursor, forward, limit)
+		let room_idx = self.room_index(room_id);
+		let page = room_idx.page(&scope, cursor, forward, limit)?;
+		if page.entries.is_empty() && cursor.is_none() {
+			// Fallback to legacy shared timeline index if per-room collection has no entries
+			return self.index().page(&scope, cursor, forward, limit);
+		}
+		Ok(page)
 	}
 
 	/// Retrieve the latest entry for a room, if any exists.
