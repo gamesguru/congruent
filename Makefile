@@ -600,7 +600,7 @@ migrate/import-rooms: _migrate_vars ##H Import the room export and signing keys 
 		esac; \
 	done; \
 	ulimit -n 65535; \
-	mtxdb --debug import --dir "$(MIGRATE_NEWDB)/mtxdb" $$inputs 2>&1 | tee "$(MIGRATE_OUT)/import.log"; \
+	mtxdb --debug import --no-state-hamts --dir "$(MIGRATE_NEWDB)/mtxdb" $$inputs 2>&1 | tee "$(MIGRATE_OUT)/import.log"; \
 	exit $${PIPESTATUS[0]}
 
 .PHONY: migrate/clean

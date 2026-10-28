@@ -54,8 +54,10 @@ cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
   /tmp/wombatx-redb/metadata.redb
 
 # Import every room file and the keys file in one invocation. The import
-# marker is only written when the complete set succeeds.
-mtxdb import --dir /path/to/new-database/mtxdb /tmp/wombatx-mtxdb-export/*.jsonl
+# marker is only written when the complete set succeeds. `--no-state-hamts`
+# leaves state to the server: congruent's v20 migration builds its short-ID
+# HAMTs from the legacy state maps in metadata.redb.
+mtxdb import --no-state-hamts --dir /path/to/new-database/mtxdb /tmp/wombatx-mtxdb-export/*.jsonl
 ```
 
 The exporter refuses an existing output directory and never writes to the
