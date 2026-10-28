@@ -17,6 +17,11 @@ const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("conduwuit_met
 // These records are exported through the room and signing-key mtxdb JSONL
 // formats, or are derived from those exports. Copying them into redb would
 // leave stale legacy indexes beside the newly imported mtxdb data.
+//
+// The legacy state maps are the exception: `mtxdb import` does not yet build
+// state groups for `mtxdb-export/v1` inputs, so the server's v20 migration
+// needs these maps to build its own HAMT roots. The root handles and HAMT node
+// maps stay out because that migration rewrites them.
 const MTXDB_OWNED_MAPS: &[&str] = &[
 	"eventid_outlierpdu",
 	"eventid_pdu",
@@ -31,7 +36,6 @@ const MTXDB_OWNED_MAPS: &[&str] = &[
 	"roomid_missingeventid_depth",
 	"roomid_pduleaves",
 	"roomid_roothandle",
-	"roomid_shortstatehash",
 	"roomid_timestamp_pducount",
 	"roomid_topologicalorder_pducount",
 	"server_signingkeys",
@@ -40,7 +44,6 @@ const MTXDB_OWNED_MAPS: &[&str] = &[
 	"shorteventid_shortauthevents",
 	"shorteventid_shortprevevents",
 	"shorteventid_shortstatehash",
-	"shortstatehash_statediff",
 	"state_hamt_node_mtimes",
 	"state_hamt_nodes",
 	"state_hamt_root_lattices",
@@ -408,5 +411,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			list(Path::new(&rocks))
 		},
 		| _ => usage(),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::MTXDB_OWNED_MAPS;
+
+	#[test]
+	fn legacy_state_maps_are_exported_for_the_v20_migration() {
+		assert!(!MTXDB_OWNED_MAPS.contains(&"roomid_shortstatehash"));
+		assert!(!MTXDB_OWNED_MAPS.contains(&"shortstatehash_statediff"));
+		assert!(MTXDB_OWNED_MAPS.contains(&"roomid_roothandle"));
+		assert!(MTXDB_OWNED_MAPS.contains(&"state_hamt_nodes"));
 	}
 }

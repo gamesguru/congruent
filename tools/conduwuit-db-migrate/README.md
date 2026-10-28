@@ -13,12 +13,16 @@ redb records use the production table name and composite-key encoding from
 `src/database/engine/redb.rs`.
 
 Export defaults to every source column family except `default` and the
-mtxdb-owned event/state/DAG/signing-key families. The `list` command shows that
-classification before export. Explicit map names can select a subset, but
-mtxdb-owned families are refused. The importer refuses to overwrite an existing
-redb destination and publishes the completed temporary database by rename. Stop
-the source homeserver before exporting so RocksDB is a stable read-only
-snapshot; the tool opens it read-only and never writes to it.
+mtxdb-owned event/DAG/signing-key families. Legacy state maps stay in the
+metadata archive: `mtxdb import` does not yet build state groups for
+`mtxdb-export/v1` inputs, so the server's v20 migration uses these maps to
+build its HAMT roots. The root-handle and HAMT-node maps remain excluded
+because v20 rewrites them. The `list` command shows the classification before
+export. Explicit map names can select a subset, but mtxdb-owned families are
+refused. The importer refuses to overwrite an existing redb destination and
+publishes the completed temporary database by rename. Stop the source
+homeserver before exporting so RocksDB is a stable read-only snapshot; the
+tool opens it read-only and never writes to it.
 
 `export-mtxdb` writes one `room-<hex room id>.jsonl` per room plus
 `server-keys.jsonl`. It understands both the legacy `pduid_pdu` /
@@ -57,6 +61,11 @@ mtxdb import --dir /path/to/new-database/mtxdb /tmp/wombatx-mtxdb-export/*.jsonl
 The exporter refuses an existing output directory and never writes to the
 RocksDB source. Do not start the new server until both the redb metadata import
 and the complete mtxdb import have succeeded.
+
+Archives made by an older build that excluded the legacy state maps cannot
+build room state: v20 sees no `roomid_shortstatehash`, falls back to empty HAMT
+roots, and leaves `roomid_roothandle` unwritten, so room-state reads fail with
+`Missing state for ...`. Re-export the metadata with a current build.
 
 ## Rooms that cannot be imported
 
