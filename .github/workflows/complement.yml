@@ -68,6 +68,9 @@ jobs:
           fetch-depth: 0
           submodules: false
 
+      - name: Checkout mtxdb path-patched dependency
+        uses: ./.github/actions/checkout-mtxdb
+
       - name: Init required submodules
         run: git submodule update --init complement-src
 
