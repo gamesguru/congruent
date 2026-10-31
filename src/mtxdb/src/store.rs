@@ -1,8 +1,9 @@
 //! Generic, Matrix-independent access to the mtxdb shard pools.
 
 use std::{
+	hash::{DefaultHasher, Hash, Hasher},
 	sync::{
-		Arc, Mutex,
+		Arc, Mutex, MutexGuard, PoisonError,
 		atomic::{AtomicBool, Ordering},
 	},
 	thread::JoinHandle,
@@ -32,12 +33,16 @@ const GROUP_COMMIT_INTERVAL: Duration = Duration::from_millis(10);
 const PACK_FSYNC_BUDGET: u64 = 8 << 20;
 /// Fsync the index delta log in slices instead of at the coverage barrier.
 const DELTA_FSYNC_BUDGET: u64 = 2 << 20;
+/// Striped writer locks. Fixed, because collections grow with rooms and events;
+/// unrelated collections sharing a stripe only wait, they never conflict.
+const WRITE_LOCK_STRIPES: usize = 256;
 
 /// Physical mtxdb boundary shared by event, state, edge, and metadata
 /// adapters. Matrix codecs and key derivation do not belong here.
 pub struct MtxdbStore {
 	db: Arc<Database>,
 	maintenance: Mutex<Option<Maintenance>>,
+	write_locks: Box<[Mutex<()>]>,
 }
 
 struct Maintenance {
@@ -66,7 +71,13 @@ impl ReclaimOutcome {
 
 impl MtxdbStore {
 	#[must_use]
-	pub fn new(db: Arc<Database>) -> Self { Self { db, maintenance: Mutex::new(None) } }
+	pub fn new(db: Arc<Database>) -> Self {
+		Self {
+			db,
+			maintenance: Mutex::new(None),
+			write_locks: (0..WRITE_LOCK_STRIPES).map(|_| Mutex::new(())).collect(),
+		}
+	}
 
 	pub fn open<P: Into<std::path::PathBuf>>(path: P) -> Result<Self, StorageError> {
 		let db = Database::open_with_policies(path.into(), mtxdb::matrix_pool_policies())?;
@@ -89,6 +100,25 @@ impl MtxdbStore {
 
 	#[must_use]
 	pub fn database(&self) -> &Arc<Database> { &self.db }
+
+	/// Serialize read-modify-write transactions guarded by one collection's
+	/// version, so writers in this process wait instead of conflicting.
+	///
+	/// Hold it from before the versioned read until commit. The database root's
+	/// writer lock excludes other processes. This lock is a leaf: never take a
+	/// second write lock or wait on anything else while holding it.
+	pub(crate) fn write_lock(
+		&self,
+		shard: ShardType,
+		collection: CollectionId,
+	) -> MutexGuard<'_, ()> {
+		let mut hasher = DefaultHasher::new();
+		(shard, collection).hash(&mut hasher);
+		let stripe = usize::try_from(hasher.finish() % WRITE_LOCK_STRIPES as u64).unwrap_or(0);
+		self.write_locks[stripe]
+			.lock()
+			.unwrap_or_else(PoisonError::into_inner)
+	}
 
 	pub fn get(
 		&self,
@@ -251,7 +281,7 @@ impl MtxdbStore {
 		let mut guard = self
 			.maintenance
 			.lock()
-			.unwrap_or_else(std::sync::PoisonError::into_inner);
+			.unwrap_or_else(PoisonError::into_inner);
 		if guard.is_some() {
 			return Ok(());
 		}
@@ -285,7 +315,7 @@ impl MtxdbStore {
 		let mut guard = self
 			.maintenance
 			.lock()
-			.unwrap_or_else(std::sync::PoisonError::into_inner);
+			.unwrap_or_else(PoisonError::into_inner);
 		let Some(mut maintenance) = guard.take() else {
 			return;
 		};

@@ -371,7 +371,7 @@ where
 		// Write first, then publish the count
 		self.db
 			.append_pdu_prewritten(&pdu_id, pdu, &pdu_json, pdu_count)
-			.await;
+			.await?;
 		info!(target: "timeline_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: insert complete");
 
 		info!(

@@ -1,6 +1,8 @@
 use std::{
 	collections::{HashMap, HashSet},
+	future::Future,
 	ops::Bound,
+	pin::Pin,
 	sync::Arc,
 };
 
@@ -1320,15 +1322,17 @@ impl Data {
 		let event_json = slipstream::codec::to_string(json);
 		let prev_events = pdu.prev_events().map(EventId::as_bytes).collect::<Vec<_>>();
 		let auth_events = pdu.auth_events().map(EventId::as_bytes).collect::<Vec<_>>();
-		self.mtxdb_events
-			.write_event_with_edges(
+		super::retry::retry_stale(|| {
+			self.mtxdb_events.write_event_with_edges(
 				room_id_bytes,
 				event_id_bytes,
 				event_json.as_bytes(),
 				&prev_events,
 				&auth_events,
 			)
-			.map_err(|error| err!(Database("Failed to write event to mtxdb: {error}")))?;
+		})
+		.await
+		.map_err(|error| err!(Database("Failed to write event to mtxdb: {error}")))?;
 		Ok(())
 	}
 
@@ -1389,7 +1393,7 @@ impl Data {
 		// enforces mtxdb's transaction-size budget per put, but the limit is
 		// per-database, so a rejected chunk is split again.
 		for chunk in writes.chunks(EVENTS_PER_TRANSACTION) {
-			self.write_event_chunk(room_id, chunk)?;
+			self.write_event_chunk(room_id, chunk).await?;
 		}
 		Ok(())
 	}
@@ -1397,23 +1401,28 @@ impl Data {
 	/// Write one mtxdb event batch, halving it if the database's transaction
 	/// staging budget rejects it. A single event that still does not fit is a
 	/// real error.
-	fn write_event_chunk(
-		&self,
-		room_id: &RoomId,
-		chunk: &[conduwuit_mtxdb::events::EventWrite<'_>],
-	) -> Result {
-		match self
-			.mtxdb_events
-			.write_events_with_edges(room_id.as_bytes(), chunk)
-		{
-			| Ok(()) => Ok(()),
-			| Err(error) if error.is_stage_too_large() && chunk.len() > 1 => {
-				let (head, tail) = chunk.split_at(chunk.len() / 2);
-				self.write_event_chunk(room_id, head)?;
-				self.write_event_chunk(room_id, tail)
-			},
-			| Err(error) => Err(err!(Database("Failed to write event batch to mtxdb: {error}"))),
-		}
+	fn write_event_chunk<'a>(
+		&'a self,
+		room_id: &'a RoomId,
+		chunk: &'a [conduwuit_mtxdb::events::EventWrite<'a>],
+	) -> Pin<Box<dyn Future<Output = Result> + Send + 'a>> {
+		Box::pin(async move {
+			match super::retry::retry_stale(|| {
+				self.mtxdb_events
+					.write_events_with_edges(room_id.as_bytes(), chunk)
+			})
+			.await
+			{
+				| Ok(()) => Ok(()),
+				| Err(error) if error.is_stage_too_large() && chunk.len() > 1 => {
+					let (head, tail) = chunk.split_at(chunk.len() / 2);
+					self.write_event_chunk(room_id, head).await?;
+					self.write_event_chunk(room_id, tail).await
+				},
+				| Err(error) =>
+					Err(err!(Database("Failed to write event batch to mtxdb: {error}"))),
+			}
+		})
 	}
 
 	/// Like [`Self::append_pdu`], for a caller that already ran
@@ -1424,11 +1433,12 @@ impl Data {
 		pdu: &PduEvent,
 		json: &CanonicalJsonObject,
 		count: PduCount,
-	) {
+	) -> Result {
 		let mut batch = database::Batch::new();
 		self.append_pdu_batch_rows(&mut batch, pdu_id, pdu, json, count)
-			.await;
+			.await?;
 		self.room_pducount_eventid.apply_batch(batch);
+		Ok(())
 	}
 
 	/// Write the event and edges to mtxdb, then stage timeline rows in `batch`.
@@ -1444,7 +1454,7 @@ impl Data {
 	) -> Result {
 		self.write_event_to_mtxdb(pdu, json).await?;
 		self.append_pdu_batch_rows(batch, pdu_id, pdu, json, count)
-			.await;
+			.await?;
 		Ok(())
 	}
 
@@ -1455,7 +1465,7 @@ impl Data {
 		pdu: &PduEvent,
 		json: &CanonicalJsonObject,
 		count: PduCount,
-	) {
+	) -> Result {
 		let event_id_bytes = pdu.event_id.as_bytes();
 		let existing_metadata = if let Ok(bytes) = self.eventid_metadata.get(event_id_bytes).await
 		{
@@ -1499,17 +1509,17 @@ impl Data {
 				pdu_id.pdu_count().into_signed(),
 				pdu.event_id().as_bytes(),
 			);
-			if let Err(e) = self
-				.mtxdb_timeline
-				.append_room(room_id.as_bytes(), &[entry])
-			{
-				conduwuit::warn!(
-					%room_id,
-					%e,
-					event_id = ?pdu.event_id(),
-					"failed to append timeline entry to mtxdb",
-				);
-			}
+			super::retry::retry_stale(|| {
+				self.mtxdb_timeline
+					.append_room(room_id.as_bytes(), &[entry])
+			})
+			.await
+			.map_err(|e| {
+				err!(Database(
+					"Failed to append timeline entry to mtxdb for {}: {e}",
+					pdu.event_id()
+				))
+			})?;
 		}
 
 		// Integrate hotfix timestamp index into WriteBatch
@@ -1556,6 +1566,7 @@ impl Data {
 
 		self.record_backward_extremities_into_batch(batch, pdu_id, pdu)
 			.await;
+		Ok(())
 	}
 
 	/// Tier 3 write-time bookkeeping (see `backward_extremities.rs` and

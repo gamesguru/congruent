@@ -9,7 +9,9 @@ pub use mtxdb::timeline::{event_id_ref, room_scope_id};
 use mtxdb::{
 	ShardType,
 	interop::event_record_id,
-	timeline::{TimelineCursor, TimelineEntry, TimelineIndex, TimelinePage},
+	timeline::{
+		TimelineCursor, TimelineEntry, TimelineIndex, TimelinePage, timeline_collection_id,
+	},
 };
 
 use crate::{
@@ -46,34 +48,25 @@ impl TimelineAdapter {
 		self.room_index(room_id).ensure_metadata()
 	}
 
-	/// Append entries for a room directly to its timeline index, retrying on CAS conflict.
+	/// Append entries to a room's timeline index in one transaction.
+	///
+	/// Writers in this process serialize on the collection's write lock. A
+	/// [`StorageError::StaleRead`] from anything else is returned unchanged so
+	/// the application owns the retry policy.
 	pub fn append_room(
 		&self,
 		room_id: &[u8],
 		entries: &[TimelineEntry],
 	) -> Result<NodeId, StorageError> {
+		let room_str = std::str::from_utf8(room_id).unwrap_or("");
+		let _write_lock = self
+			.store
+			.write_lock(self.shard, timeline_collection_id(room_str));
 		let room_idx = self.room_index(room_id);
-		let db = self.store.database();
-		for attempt in 0..5 {
-			let tx = db.begin_transaction();
-			match room_idx.stage_append(&tx, self.shard, entries) {
-				| Ok(root_id) => match tx.commit() {
-					| Ok(()) => return Ok(root_id),
-					| Err(e) if matches!(e, StorageError::StaleRead { .. }) && attempt < 4 => {
-						crate::contention::retried(crate::contention::Site::Timeline);
-						continue;
-					},
-					| Err(e) => return Err(e),
-				},
-				| Err(StorageError::StaleRead { .. }) if attempt < 4 => {
-					crate::contention::retried(crate::contention::Site::Timeline);
-					continue;
-				},
-				| Err(e) => return Err(e),
-			}
-		}
-		crate::contention::exhausted(crate::contention::Site::Timeline);
-		Err(StorageError::Internal("timeline append exceeded retry limit".into()))
+		let tx = self.store.database().begin_transaction();
+		let root_id = room_idx.stage_append(&tx, self.shard, entries)?;
+		tx.commit()?;
+		Ok(root_id)
 	}
 
 	/// Stage timeline entries for a room into an in-progress transaction.

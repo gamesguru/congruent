@@ -18,8 +18,6 @@ use crate::{
 	store::{CollectionId, MtxdbStore, NodeId},
 };
 
-const MAX_STALE_READ_RETRIES: usize = 8;
-
 #[derive(Clone)]
 pub struct VerdictAdapter {
 	store: Arc<MtxdbStore>,
@@ -104,36 +102,26 @@ impl VerdictAdapter {
 	{
 		let node = event_record_id(event_id);
 		let collection = event_verdict_collection_id(&node);
-		let mut attempts = 0_usize;
-		loop {
-			let tx = self.store.begin_transaction();
-			let result = (|| {
-				let (values, version) =
-					tx.get_with_collection_version(ShardType::EventDag, collection, &[node])?;
-				let mut verdict = match values.into_iter().next().flatten() {
-					| Some(bytes) => {
-						let (stored_event, verdict) = decode_verdict(&bytes)?;
-						if stored_event != event_id {
-							return Err(StorageError::Corrupt(
-								"event record id collision in verdicts".to_owned(),
-							));
-						}
-						verdict
-					},
-					| None => Verdict::default(),
-				};
-				change(&mut verdict);
-				tx.expect_collection_version(ShardType::EventDag, collection, version)?;
-				self.stage(&tx, event_id, &verdict)?;
-				tx.commit()
-			})();
-			match result {
-				| Err(error) if error.is_stale_read() && attempts < MAX_STALE_READ_RETRIES => {
-					attempts = attempts.saturating_add(1);
-				},
-				| result => return result,
-			}
-		}
+		let _write_lock = self.store.write_lock(ShardType::EventDag, collection);
+		let tx = self.store.begin_transaction();
+		let (values, version) =
+			tx.get_with_collection_version(ShardType::EventDag, collection, &[node])?;
+		let mut verdict = match values.into_iter().next().flatten() {
+			| Some(bytes) => {
+				let (stored_event, verdict) = decode_verdict(&bytes)?;
+				if stored_event != event_id {
+					return Err(StorageError::Corrupt(
+						"event record id collision in verdicts".to_owned(),
+					));
+				}
+				verdict
+			},
+			| None => Verdict::default(),
+		};
+		change(&mut verdict);
+		tx.expect_collection_version(ShardType::EventDag, collection, version)?;
+		self.stage(&tx, event_id, &verdict)?;
+		tx.commit()
 	}
 
 	/// Stage the event's whole verdict in `tx`, replacing any stored one, so an

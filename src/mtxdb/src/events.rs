@@ -19,8 +19,6 @@ use crate::{
 	store::{CollectionId, MtxdbStore, MtxdbTransaction, NodeId},
 };
 
-const MAX_STALE_READ_RETRIES: usize = 8;
-
 /// An event ID paired with the ID of the room that owns it.
 pub type EventLocator = (Vec<u8>, Vec<u8>);
 
@@ -438,7 +436,7 @@ impl EventAdapter {
 		prev_events: &[&[u8]],
 		auth_events: &[&[u8]],
 	) -> Result<(), StorageError> {
-		self.write_with_retries(|tx| {
+		self.write_once(room_id, |tx| {
 			self.put_event_with_edges(tx, room_id, event_id, event_body, prev_events, auth_events)
 		})
 	}
@@ -455,7 +453,7 @@ impl EventAdapter {
 		room_id: &[u8],
 		events: &[EventWrite<'_>],
 	) -> Result<(), StorageError> {
-		self.write_with_retries(|tx| {
+		self.write_once(room_id, |tx| {
 			events.iter().try_for_each(|event| {
 				self.put_event_with_edges(
 					tx,
@@ -469,39 +467,26 @@ impl EventAdapter {
 		})
 	}
 
-	/// Stage one write attempt and retry the complete transaction on a
-	/// concurrent `StaleRead`.
+	/// Stage one write transaction and commit it under the room auth
+	/// collection's write lock.
 	///
-	/// Short-id allocation makes the commit conditional on the room's auth
-	/// collection being unchanged; a concurrent writer fails it and the whole
-	/// write is redone against the new version.
-	fn write_with_retries<F>(&self, mut stage: F) -> Result<(), StorageError>
+	/// The lock serializes this process's writers, so short-id allocation does
+	/// not conflict. A [`StorageError::StaleRead`] from anything else is returned
+	/// unchanged: retry policy belongs to the application.
+	fn write_once<F>(&self, room_id: &[u8], mut stage: F) -> Result<(), StorageError>
 	where
 		F: FnMut(&MtxdbTransaction<'_>) -> Result<(), StorageError>,
 	{
-		let mut attempts = 0_usize;
-		loop {
-			let tx = self.store.begin_transaction();
-			let staged = stage(&tx);
-			let result = match staged {
-				| Ok(()) => tx.commit(),
-				| Err(error) => {
-					drop(tx);
-					Err(error)
-				},
-			};
-			match result {
-				| Err(error) if error.is_stale_read() && attempts < MAX_STALE_READ_RETRIES => {
-					attempts = attempts.saturating_add(1);
-					crate::contention::retried(crate::contention::Site::Event);
-				},
-				| result => {
-					if matches!(&result, Err(e) if e.is_stale_read()) {
-						crate::contention::exhausted(crate::contention::Site::Event);
-					}
-					return result;
-				},
-			}
+		let _write_lock = self
+			.store
+			.write_lock(ShardType::Edges, Self::auth_collection(room_id));
+		let tx = self.store.begin_transaction();
+		match stage(&tx) {
+			| Ok(()) => tx.commit(),
+			| Err(error) => {
+				drop(tx);
+				Err(error)
+			},
 		}
 	}
 
@@ -1007,15 +992,13 @@ mod room_tests {
 	}
 }
 
-/// Reproduces the same-room auth-closure CAS contention seen in `append_pdu`:
-/// unserialized same-room writers conflict on the room-global auth collection
-/// and fall back on the `StaleRead` retry loop; serializing them (as
-/// `mutex_insert` does) removes the conflicts.
+/// Concurrent same-room writers serialize on the auth collection's write lock:
+/// no caller-side lock is needed and none of them sees a conflict.
 #[cfg(test)]
 mod contention_tests {
 	use std::{
 		fs,
-		sync::{Arc, Barrier, Mutex},
+		sync::{Arc, Barrier},
 		thread,
 	};
 
@@ -1024,72 +1007,37 @@ mod contention_tests {
 	const THREADS: usize = 8;
 	const PER_THREAD: usize = 25;
 
-	/// Run `THREADS` writers against one room; returns (retries, failed writes).
-	fn run(
-		adapter: &EventAdapter,
-		room: &'static [u8],
-		lock: Option<&Arc<Mutex<()>>>,
-	) -> (u64, usize) {
-		let before = crate::contention::snapshot().0;
-		let barrier = Arc::new(Barrier::new(THREADS));
-		// Spawn every writer into the barrier before joining any of them:
-		// joining lazily would block thread 0 forever waiting for the others.
-		let mut handles = Vec::with_capacity(THREADS);
-		for t in 0..THREADS {
-			let adapter = adapter.clone();
-			let barrier = barrier.clone();
-			let lock = lock.cloned();
-			handles.push(thread::spawn(move || {
-				barrier.wait();
-				let mut failed = 0_usize;
-				for i in 0..PER_THREAD {
-					let id = format!("${t}-{i}:{}", String::from_utf8_lossy(room));
-					// An auth event makes `stage_closure` allocate a short id.
-					let auth = format!("$auth-{t}:{}", String::from_utf8_lossy(room));
-					let _guard = lock.as_ref().map(|l| l.lock().unwrap());
-					if adapter
-						.write_event_with_edges(room, id.as_bytes(), b"body", &[], &[
-							auth.as_bytes()
-						])
-						.is_err()
-					{
-						failed = failed.saturating_add(1);
-					}
-				}
-				failed
-			}));
-		}
-		let failed = handles.into_iter().map(|h| h.join().unwrap()).sum();
-		(crate::contention::snapshot().0.saturating_sub(before), failed)
-	}
-
 	#[test]
-	fn same_room_writers_conflict_unless_serialized() {
-		// The counters are process-wide; serialize against other users of them.
-		let _serial = crate::contention::TEST_LOCK
-			.lock()
-			.unwrap_or_else(std::sync::PoisonError::into_inner);
+	fn same_room_writers_do_not_conflict() {
+		let room: &[u8] = b"!contended:example.com";
 		let path = std::env::temp_dir()
 			.join(format!("conduwuit-mtxdb-contention-{}", std::process::id()));
 		let _ = fs::remove_dir_all(&path);
 		let store = Arc::new(MtxdbStore::open(&path).unwrap());
 		let adapter = EventAdapter::new(store);
 
-		let (free_retries, free_failed) = run(&adapter, b"!free:example.com", None);
-		let serialized_lock = Arc::new(Mutex::new(()));
-		let (locked_retries, locked_failed) =
-			run(&adapter, b"!locked:example.com", Some(&serialized_lock));
-		eprintln!(
-			"unserialized: {free_retries} retries, {free_failed} failed; serialized: \
-			 {locked_retries} retries, {locked_failed} failed"
-		);
-
-		assert_eq!(locked_retries, 0, "serialized same-room writers must not conflict");
-		assert_eq!(locked_failed, 0);
-		// Conflicts need real parallelism; on a single core the interleave can
-		// legitimately produce none.
-		if thread::available_parallelism().map_or(1, usize::from) > 1 {
-			assert!(free_retries > 0, "unserialized same-room writers should conflict");
+		let barrier = Arc::new(Barrier::new(THREADS));
+		// Spawn every writer into the barrier before joining any of them.
+		let mut handles = Vec::with_capacity(THREADS);
+		for t in 0..THREADS {
+			let adapter = adapter.clone();
+			let barrier = barrier.clone();
+			handles.push(thread::spawn(move || {
+				barrier.wait();
+				for i in 0..PER_THREAD {
+					let id = format!("${t}-{i}:example.com");
+					// An auth event makes `stage_closure` allocate a short id.
+					let auth = format!("$auth-{t}:example.com");
+					adapter
+						.write_event_with_edges(room, id.as_bytes(), b"body", &[], &[
+							auth.as_bytes()
+						])
+						.expect("same-room writers must serialize, not conflict");
+				}
+			}));
+		}
+		for handle in handles {
+			handle.join().unwrap();
 		}
 
 		drop(adapter);

@@ -14,7 +14,6 @@ const ROOM_VERSION_COLLECTION: &[u8] = b"matrix-room-version-record-v1";
 const ROOM_VERSION_NODE: &[u8] = b"room-version";
 const ROOM_VERSION_MAGIC: &[u8; 4] = b"MRV1";
 const ROOM_VERSION_HEADER_LEN: usize = 8;
-const MAX_STALE_READ_RETRIES: usize = 8;
 
 fn version_collection(room_id: &[u8]) -> [u8; 16] { derive_id(ROOM_VERSION_DOMAIN, room_id) }
 
@@ -92,8 +91,9 @@ pub fn get_room_version(
 /// validation rules.
 ///
 /// Returns `StorageError::Collision` for a conflicting version or room ID,
-/// `StorageError::StaleRead` after repeated concurrent write contention,
-/// and propagates record encoding, decoding, and storage errors.
+/// and propagates [`StorageError::StaleRead`] from a writer outside the
+/// collection's write lock so the caller can decide whether to retry. Record encoding, decoding, and
+/// storage errors are propagated unchanged.
 pub fn set_room_version(
 	store: &MtxdbStore,
 	room_id: &[u8],
@@ -103,35 +103,24 @@ pub fn set_room_version(
 	let node = version_node();
 	let record = encode_record(room_id, version)?;
 
-	let mut attempts = 0_usize;
-	loop {
-		let tx = store.begin_transaction();
-		let result = (|| {
-			let (values, collection_version) =
-				tx.get_with_collection_version(ShardType::ServerInfo, collection, &[node])?;
-			if let Some(existing) = values.into_iter().next().flatten() {
-				return match decode_record(&existing, room_id)? {
-					| Some(existing) if existing == version => Ok(()),
-					| Some(existing) => Err(StorageError::Collision(format!(
-						"room {room_id:?} already has room version {existing}, cannot change it \
-						 to {version}"
-					))),
-					| None => Err(StorageError::Collision(
-						"room-version collection key collision".into(),
-					)),
-				};
-			}
-			tx.put(ShardType::ServerInfo, collection, node, &record)?;
-			tx.expect_collection_version(ShardType::ServerInfo, collection, collection_version)?;
-			tx.commit()
-		})();
-		match result {
-			| Err(error) if error.is_stale_read() && attempts < MAX_STALE_READ_RETRIES => {
-				attempts = attempts.saturating_add(1);
-			},
-			| result => return result,
-		}
+	let _write_lock = store.write_lock(ShardType::ServerInfo, collection);
+	let tx = store.begin_transaction();
+	let (values, collection_version) =
+		tx.get_with_collection_version(ShardType::ServerInfo, collection, &[node])?;
+	if let Some(existing) = values.into_iter().next().flatten() {
+		return match decode_record(&existing, room_id)? {
+			| Some(existing) if existing == version => Ok(()),
+			| Some(existing) => Err(StorageError::Collision(format!(
+				"room {room_id:?} already has room version {existing}, cannot change it to \
+				 {version}"
+			))),
+			| None =>
+				Err(StorageError::Collision("room-version collection key collision".into())),
+		};
 	}
+	tx.put(ShardType::ServerInfo, collection, node, &record)?;
+	tx.expect_collection_version(ShardType::ServerInfo, collection, collection_version)?;
+	tx.commit()
 }
 
 /// Read a room version from the collection header written by the mtxdb importer.
