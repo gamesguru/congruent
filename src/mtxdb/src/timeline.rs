@@ -5,13 +5,11 @@
 
 use std::sync::Arc;
 
-pub use mtxdb::timeline::{event_id_ref, room_scope_id};
+pub use mtxdb::timeline::{TIMELINE_HEAD_ID, event_id_ref, room_scope_id, timeline_collection_id};
 use mtxdb::{
 	ShardType,
 	interop::event_record_id,
-	timeline::{
-		TimelineCursor, TimelineEntry, TimelineIndex, TimelinePage, timeline_collection_id,
-	},
+	timeline::{TimelineCursor, TimelineEntry, TimelineIndex, TimelinePage},
 };
 
 use crate::{

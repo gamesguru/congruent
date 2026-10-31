@@ -1595,3 +1595,83 @@ async fn append_pdu_takes_insert_lock_before_writing_body() {
 		"event body must exist once append_pdu completes"
 	);
 }
+
+/// A failed timeline insert must not publish the event as a forward extremity
+/// or a reference: nothing would ever have a timeline row for it.
+#[conduwuit_macros::async_test]
+async fn failed_timeline_insert_leaves_no_extremity_or_reference() {
+	use futures::StreamExt;
+
+	use crate::rooms::timeline::AppendPduContext;
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!failed:test.conduwuit.local").unwrap();
+	let event_id = slipstream::OwnedEventId::parse("$failed:test.conduwuit.local").unwrap();
+	let prev_id = slipstream::OwnedEventId::parse("$prev:test.conduwuit.local").unwrap();
+	let room_id = room_id.as_ref();
+	let event_id = event_id.as_ref();
+	let prev_id: &EventId = prev_id.as_ref();
+	let mut json = create_dummy_pdu(room_id, event_id, "m.room.message", "").to_canonical_object();
+	json.insert(
+		"prev_events".into(),
+		slipstream::CanonicalJsonValue::Array(vec![slipstream::CanonicalJsonValue::String(
+			prev_id.as_str().to_owned(),
+		)]),
+	);
+	let pdu = PduEvent::from_id_val(event_id, json.clone(), Some(room_id)).expect("pdu");
+
+	services.rooms.short.get_or_create_shortroomid(room_id).await;
+	services
+		.rooms
+		.short
+		.set_room_version(room_id, &slipstream::RoomVersionId::V10)
+		.expect("room version");
+
+	// A malformed head makes `stage_append` fail with `Corrupt`, after the event
+	// body has been written.
+	let timeline = conduwuit_mtxdb::timeline::TimelineAdapter::new(services.mtxdb.clone());
+	timeline
+		.ensure_room_metadata(room_id.as_bytes())
+		.expect("timeline metadata");
+	let tx = services.mtxdb.begin_transaction();
+	tx.put(
+		conduwuit_mtxdb::ShardType::EventDag,
+		conduwuit_mtxdb::timeline::timeline_collection_id(room_id.as_str()),
+		conduwuit_mtxdb::timeline::TIMELINE_HEAD_ID,
+		b"not a timeline head",
+	)
+	.expect("stage corrupt head");
+	tx.commit().expect("commit corrupt head");
+
+	let state_lock = services.rooms.state.mutex.lock(room_id).await;
+	let result = services
+		.rooms
+		.timeline
+		.append_pdu(&pdu, json, std::iter::once(event_id), false, AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: None,
+			pending_nodes: Vec::new(),
+			prev_state_root_handle: None,
+			advance_current_state: false,
+			was_joined_before_state_install: None,
+		})
+		.await;
+	assert!(result.is_err(), "the corrupt head must fail the append");
+
+	let extremities: Vec<_> = services
+		.rooms
+		.state
+		.get_forward_extremities(room_id)
+		.collect()
+		.await;
+	assert!(extremities.is_empty(), "failed append published {extremities:?}");
+	assert!(
+		!services
+			.rooms
+			.pdu_metadata
+			.is_event_referenced(room_id, prev_id)
+			.await,
+		"failed append marked its prev event as referenced"
+	);
+}

@@ -269,45 +269,10 @@ where
 	);
 
 	// mtxdb is the authoritative event store for recovered history. Write the
-	// event before publishing references or pending-state marks, so a failed
-	// write leaves those structures untouched. The write is idempotent when the
+	// event before the timeline row, references, or pending-state marks, so a
+	// failed write leaves those structures untouched. The write is idempotent when the
 	// event already has a timeline row.
 	self.db.write_event_to_mtxdb(pdu, &pdu_json).await?;
-
-	// We must keep track of all events that have been referenced.
-	// EXCEPT for soft-failed events, which are invisible to DAG tips.
-	if !soft_fail {
-		self.services
-			.pdu_metadata
-			.mark_as_referenced(room_id, pdu.prev_events().map(AsRef::as_ref));
-	}
-
-	trace!("setting forward extremities");
-	self.services
-		.state
-		.set_forward_extremities(
-			room_id,
-			leaves.map(ToOwned::to_owned),
-			Some(pdu.event_id()),
-			state_lock,
-		)
-		.await?;
-
-	// An event accepted while the room's state is partial is outside every
-	// re-authorised window until a resync has seen it, so record it under the
-	// state lock the extremity update just used: the resync reads the marks
-	// back under that same lock before dropping the room's markers.
-	if self
-		.services
-		.state_partial
-		.partial_server(room_id)
-		.await
-		.is_ok_and(|server| server.is_some())
-	{
-		self.services
-			.state_partial
-			.mark_pending_event(room_id, pdu.event_id());
-	}
 
 	let existing_pdu = if self.non_outlier_pdu_exists(pdu.event_id()).await {
 		warn!(
@@ -384,6 +349,44 @@ where
 
 		(pdu_id, pdu_count, Some(count))
 	};
+
+	// Only after the timeline row exists: a failed insert must not leave a
+	// reference or forward extremity naming an event with no row. A retry takes
+	// the `existing_pdu` path and reaches this again.
+	// We must keep track of all events that have been referenced.
+	// EXCEPT for soft-failed events, which are invisible to DAG tips.
+	if !soft_fail {
+		self.services
+			.pdu_metadata
+			.mark_as_referenced(room_id, pdu.prev_events().map(AsRef::as_ref));
+	}
+
+	trace!("setting forward extremities");
+	self.services
+		.state
+		.set_forward_extremities(
+			room_id,
+			leaves.map(ToOwned::to_owned),
+			Some(pdu.event_id()),
+			state_lock,
+		)
+		.await?;
+
+	// An event accepted while the room's state is partial is outside every
+	// re-authorised window until a resync has seen it, so record it under the
+	// state lock the extremity update just used: the resync reads the marks
+	// back under that same lock before dropping the room's markers.
+	if self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|server| server.is_some())
+	{
+		self.services
+			.state_partial
+			.mark_pending_event(room_id, pdu.event_id());
+	}
 
 	// Must stay after the timeline row is inserted and its count published: this
 	// applies the membership change and wakes sync, which has to find the PDU.
