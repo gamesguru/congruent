@@ -5,13 +5,12 @@
 
 use std::sync::Arc;
 
+pub use mtxdb::timeline::{event_id_ref, room_scope_id};
 use mtxdb::{
 	ShardType,
 	interop::event_record_id,
 	timeline::{TimelineCursor, TimelineEntry, TimelineIndex, TimelinePage},
 };
-
-pub use mtxdb::timeline::{event_id_ref, room_scope_id};
 
 use crate::{
 	StorageError,
@@ -28,15 +27,11 @@ pub struct TimelineAdapter {
 impl TimelineAdapter {
 	/// Open or initialize a timeline adapter using the default `ShardType::EventDag`.
 	#[must_use]
-	pub fn new(store: Arc<MtxdbStore>) -> Self {
-		Self::with_shard(store, ShardType::EventDag)
-	}
+	pub fn new(store: Arc<MtxdbStore>) -> Self { Self::with_shard(store, ShardType::EventDag) }
 
 	/// Open the adapter on a custom shard.
 	#[must_use]
-	pub fn with_shard(store: Arc<MtxdbStore>, shard: ShardType) -> Self {
-		Self { store, shard }
-	}
+	pub fn with_shard(store: Arc<MtxdbStore>, shard: ShardType) -> Self { Self { store, shard } }
 
 	fn room_index<'a>(
 		&'a self,
@@ -62,17 +57,22 @@ impl TimelineAdapter {
 		for attempt in 0..5 {
 			let tx = db.begin_transaction();
 			match room_idx.stage_append(&tx, self.shard, entries) {
-				Ok(root_id) => match tx.commit() {
-					Ok(()) => return Ok(root_id),
-					Err(e) if matches!(e, StorageError::StaleRead { .. }) && attempt < 4 => {
+				| Ok(root_id) => match tx.commit() {
+					| Ok(()) => return Ok(root_id),
+					| Err(e) if matches!(e, StorageError::StaleRead { .. }) && attempt < 4 => {
+						crate::contention::retried(crate::contention::Site::Timeline);
 						continue;
-					}
-					Err(e) => return Err(e),
+					},
+					| Err(e) => return Err(e),
 				},
-				Err(StorageError::StaleRead { .. }) if attempt < 4 => continue,
-				Err(e) => return Err(e),
+				| Err(StorageError::StaleRead { .. }) if attempt < 4 => {
+					crate::contention::retried(crate::contention::Site::Timeline);
+					continue;
+				},
+				| Err(e) => return Err(e),
 			}
 		}
+		crate::contention::exhausted(crate::contention::Site::Timeline);
 		Err(StorageError::Internal("timeline append exceeded retry limit".into()))
 	}
 

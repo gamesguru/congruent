@@ -257,6 +257,17 @@ where
 		}
 	}
 
+	// Take the per-room insert lock before the body write: `write_event_to_mtxdb`
+	// does a compare-and-swap on the room-global auth-closure collection, so
+	// same-room appends must be serialized before it, not just before the
+	// timeline row, or they race and rely on the StaleRead retry loop.
+	let insert_lock = self.mutex_insert.lock(room_id).await;
+	info!(
+		target: "watermark_debug",
+		%room_id, event_id = %pdu.event_id(),
+		"append_pdu: acquired insert_lock"
+	);
+
 	// mtxdb is the authoritative event store for recovered history. Write the
 	// event before publishing references or pending-state marks, so a failed
 	// write leaves those structures untouched. The write is idempotent when the
@@ -297,13 +308,6 @@ where
 			.state_partial
 			.mark_pending_event(room_id, pdu.event_id());
 	}
-
-	let insert_lock = self.mutex_insert.lock(room_id).await;
-	info!(
-		target: "watermark_debug",
-		%room_id, event_id = %pdu.event_id(),
-		"append_pdu: acquired insert_lock"
-	);
 
 	let existing_pdu = if self.non_outlier_pdu_exists(pdu.event_id()).await {
 		warn!(

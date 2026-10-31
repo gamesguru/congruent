@@ -1507,3 +1507,91 @@ async fn test_room_export_fails_when_writer_errors_mid_stream() {
 		"a failed export must not emit a valid end record"
 	);
 }
+
+/// `append_pdu` must take the per-room `mutex_insert` *before* it writes the
+/// event body, because that write CASes the room-wide auth collection.
+///
+/// The future is polled by hand while the test holds the lock, so no sleep or
+/// scheduler timing decides the result. With the lock taken first the future
+/// stays pending at the lock and the body is never written; if the body write
+/// came first, it would land on an early poll.
+#[conduwuit_macros::async_test]
+async fn append_pdu_takes_insert_lock_before_writing_body() {
+	use std::{
+		future::Future,
+		pin::pin,
+		task::{Context, Poll, Waker},
+	};
+
+	use crate::rooms::timeline::AppendPduContext;
+
+	const POLLS_WITH_LOCK_HELD: usize = 200;
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!ordering:test.conduwuit.local").unwrap();
+	let event_id = slipstream::OwnedEventId::parse("$ordering:test.conduwuit.local").unwrap();
+	let room_id = room_id.as_ref();
+	let event_id = event_id.as_ref();
+	let pdu = create_dummy_pdu(room_id, event_id, "m.room.message", "");
+	let pdu_json = pdu.to_canonical_object();
+
+	services
+		.rooms
+		.short
+		.get_or_create_shortroomid(room_id)
+		.await;
+	services
+		.rooms
+		.short
+		.set_room_version(room_id, &slipstream::RoomVersionId::V10)
+		.expect("room version");
+
+	let events = conduwuit_mtxdb::events::EventAdapter::new(services.mtxdb.clone());
+	let state_lock = services.rooms.state.mutex.lock(room_id).await;
+	let insert_lock = services.rooms.timeline.mutex_insert.lock(room_id).await;
+
+	let append = services.rooms.timeline.append_pdu(
+		&pdu,
+		pdu_json,
+		std::iter::empty::<&EventId>(),
+		false,
+		AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: None,
+			pending_nodes: Vec::new(),
+			prev_state_root_handle: None,
+			advance_current_state: false,
+			was_joined_before_state_install: None,
+		},
+	);
+	let mut append = pin!(append);
+	let mut cx = Context::from_waker(Waker::noop());
+
+	for _ in 0..POLLS_WITH_LOCK_HELD {
+		assert!(
+			matches!(append.as_mut().poll(&mut cx), Poll::Pending),
+			"append_pdu finished while mutex_insert was held"
+		);
+		assert!(
+			events
+				.get_event(room_id.as_bytes(), event_id.as_bytes())
+				.expect("get_event")
+				.is_none(),
+			"event body was written before append_pdu took mutex_insert"
+		);
+		tokio::task::yield_now().await;
+	}
+
+	drop(insert_lock);
+	append
+		.await
+		.expect("append_pdu after releasing the insert lock");
+	assert!(
+		events
+			.get_event(room_id.as_bytes(), event_id.as_bytes())
+			.expect("get_event")
+			.is_some(),
+		"event body must exist once append_pdu completes"
+	);
+}

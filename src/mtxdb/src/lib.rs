@@ -10,6 +10,7 @@ use std::{
 	sync::Arc,
 };
 
+pub mod contention;
 pub mod events;
 pub mod keys;
 pub mod marker;
