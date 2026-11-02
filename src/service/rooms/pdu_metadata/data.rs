@@ -174,10 +174,7 @@ impl Data {
 		})
 	}
 
-	pub(super) fn get_arrival_ordering(
-		&self,
-		event_id: &EventId,
-	) -> Result<Option<u64>> {
+	pub(super) fn get_arrival_ordering(&self, event_id: &EventId) -> Result<Option<u64>> {
 		self.mtxdb_verdicts
 			.get(event_id.as_bytes())
 			.map(|verdict| verdict.and_then(|value| value.arrival_ordering))

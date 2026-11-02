@@ -73,15 +73,11 @@ impl Service {
 			.timeline
 			.all_pdus(room_id)
 			.map(|(count, pdu)| {
-				(
-					conduwuit::matrix::Event::event_id(&pdu).to_owned(),
-					false,
-					Some(count),
-				)
+				(conduwuit::matrix::Event::event_id(&pdu).to_owned(), false, Some(count))
 			})
 			.collect()
 			.await;
-		let mut seen: HashSet<OwnedEventId> = events.iter().map(|(id, _, _)| id.clone()).collect();
+		let mut seen: HashSet<OwnedEventId> = events.iter().map(|(id, ..)| id.clone()).collect();
 		let outliers: Vec<OwnedEventId> = self
 			.services
 			.outlier
@@ -131,10 +127,7 @@ impl Service {
 				let arrival = i64::try_from(arrival).map_err(|_| {
 					err!("event {event_id}: arrival ordering {arrival} does not fit in i64")
 				})?;
-				event.insert(
-					field::ARRIVAL_ORDERING.to_owned(),
-					Value::from(arrival),
-				);
+				event.insert(field::ARRIVAL_ORDERING.to_owned(), Value::from(arrival));
 			}
 			event.insert(
 				field::SOFT_FAILED.to_owned(),
