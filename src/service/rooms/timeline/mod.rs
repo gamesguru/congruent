@@ -49,6 +49,11 @@ use slipstream::{
 	json::Value,
 };
 
+/// Number of `StaleRead` conflicts the timeline retry policy has absorbed since
+/// startup. Exhausted conflicts are not counted; they are returned to callers.
+#[must_use]
+pub fn stale_read_retries() -> u64 { retry::retry_count() }
+
 // Update Relationships
 struct ExtractRelatesTo {
 	// JSON key: `m.relates_to`

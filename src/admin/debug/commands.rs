@@ -1850,6 +1850,27 @@ pub(super) async fn database_stats(
 }
 
 #[admin_command]
+pub(super) async fn mtxdb_contention(&self) -> Result {
+	let stats = self.services.mtxdb.write_lock_stats();
+	let retries = service::rooms::timeline::stale_read_retries();
+	let average_nanos = stats
+		.total_wait
+		.as_nanos()
+		.checked_div(u128::from(stats.acquisitions))
+		.unwrap_or(0);
+	let mut output = String::new();
+	let _ = writeln!(output, "| metric | value |");
+	let _ = writeln!(output, "| --- | ---: |");
+	let _ = writeln!(output, "| write-lock acquisitions | {} |", stats.acquisitions);
+	let _ = writeln!(output, "| write-lock waits >= 1 ms | {} |", stats.contended);
+	let _ = writeln!(output, "| write-lock total wait | {:?} |", stats.total_wait);
+	let _ = writeln!(output, "| write-lock max wait | {:?} |", stats.max_wait);
+	let _ = writeln!(output, "| write-lock average wait | {average_nanos} ns |");
+	let _ = writeln!(output, "| StaleRead retries | {retries} |");
+	self.write_str(&output).await
+}
+
+#[admin_command]
 pub(super) async fn database_files(&self, map: Option<String>, level: Option<i32>) -> Result {
 	let mut files: Vec<_> = self.services.db.db.file_list().collect::<Result<_>>()?;
 

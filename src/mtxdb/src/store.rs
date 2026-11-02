@@ -4,10 +4,10 @@ use std::{
 	hash::{DefaultHasher, Hash, Hasher},
 	sync::{
 		Arc, Mutex, MutexGuard, PoisonError,
-		atomic::{AtomicBool, Ordering},
+		atomic::{AtomicBool, AtomicU64, Ordering},
 	},
 	thread::JoinHandle,
-	time::Duration,
+	time::{Duration, Instant},
 };
 
 use mtxdb::{
@@ -37,12 +37,61 @@ const DELTA_FSYNC_BUDGET: u64 = 2 << 20;
 /// unrelated collections sharing a stripe only wait, they never conflict.
 const WRITE_LOCK_STRIPES: usize = 256;
 
+/// A wait at or above this counts as contention worth reporting: the waiter
+/// almost certainly parked a worker thread rather than spinning briefly.
+const CONTENDED_WAIT: Duration = Duration::from_millis(1);
+
+/// How long writers wait for a striped collection lock. Lock acquisition is on
+/// the hot path, so this records plain counters and never allocates or blocks.
+#[derive(Debug, Default)]
+struct WriteLockStats {
+	acquisitions: AtomicU64,
+	contended: AtomicU64,
+	total_wait_nanos: AtomicU64,
+	max_wait_nanos: AtomicU64,
+}
+
+impl WriteLockStats {
+	fn record(&self, waited: Duration) {
+		let nanos = u64::try_from(waited.as_nanos()).unwrap_or(u64::MAX);
+		self.acquisitions.fetch_add(1, Ordering::Relaxed);
+		self.total_wait_nanos.fetch_add(nanos, Ordering::Relaxed);
+		self.max_wait_nanos.fetch_max(nanos, Ordering::Relaxed);
+		if waited >= CONTENDED_WAIT {
+			self.contended.fetch_add(1, Ordering::Relaxed);
+		}
+	}
+
+	fn snapshot(&self) -> WriteLockSnapshot {
+		WriteLockSnapshot {
+			acquisitions: self.acquisitions.load(Ordering::Relaxed),
+			contended: self.contended.load(Ordering::Relaxed),
+			total_wait: Duration::from_nanos(self.total_wait_nanos.load(Ordering::Relaxed)),
+			max_wait: Duration::from_nanos(self.max_wait_nanos.load(Ordering::Relaxed)),
+		}
+	}
+}
+
+/// Snapshot of the write-lock contention counters since the store was opened.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WriteLockSnapshot {
+	/// Acquisitions of a striped collection lock.
+	pub acquisitions: u64,
+	/// Acquisitions that waited at least one millisecond.
+	pub contended: u64,
+	/// Total time spent waiting to acquire.
+	pub total_wait: Duration,
+	/// Longest single wait.
+	pub max_wait: Duration,
+}
+
 /// Physical mtxdb boundary shared by event, state, edge, and metadata
 /// adapters. Matrix codecs and key derivation do not belong here.
 pub struct MtxdbStore {
 	db: Arc<Database>,
 	maintenance: Mutex<Option<Maintenance>>,
 	write_locks: Box<[Mutex<()>]>,
+	write_lock_counters: WriteLockStats,
 }
 
 struct Maintenance {
@@ -76,6 +125,7 @@ impl MtxdbStore {
 			db,
 			maintenance: Mutex::new(None),
 			write_locks: (0..WRITE_LOCK_STRIPES).map(|_| Mutex::new(())).collect(),
+			write_lock_counters: WriteLockStats::default(),
 		}
 	}
 
@@ -115,10 +165,21 @@ impl MtxdbStore {
 		let mut hasher = DefaultHasher::new();
 		(shard, collection).hash(&mut hasher);
 		let stripe = usize::try_from(hasher.finish() % WRITE_LOCK_STRIPES as u64).unwrap_or(0);
-		self.write_locks[stripe]
+		let started = Instant::now();
+		let guard = self.write_locks[stripe]
 			.lock()
-			.unwrap_or_else(PoisonError::into_inner)
+			.unwrap_or_else(PoisonError::into_inner);
+		self.write_lock_counters.record(started.elapsed());
+		guard
 	}
+
+	/// How long writers have waited for a collection lock since startup.
+	///
+	/// This is the blocking cost of in-process serialization; a rising
+	/// `max_wait` or `contended` means the stripes are too few or a writer is
+	/// holding one across slow I/O.
+	#[must_use]
+	pub fn write_lock_stats(&self) -> WriteLockSnapshot { self.write_lock_counters.snapshot() }
 
 	pub fn get(
 		&self,
@@ -622,6 +683,34 @@ mod tests {
 				.unwrap()
 				.is_some()
 		);
+		let _ = fs::remove_dir_all(directory);
+	}
+
+	#[test]
+	fn write_lock_stats_separate_short_waits_from_contention() {
+		let stats = WriteLockStats::default();
+		stats.record(Duration::from_micros(10));
+		stats.record(Duration::from_millis(2));
+
+		let snapshot = stats.snapshot();
+		assert_eq!(snapshot.acquisitions, 2);
+		assert_eq!(snapshot.contended, 1);
+		assert_eq!(snapshot.total_wait, Duration::from_micros(2_010));
+		assert_eq!(snapshot.max_wait, Duration::from_millis(2));
+	}
+
+	#[test]
+	fn write_lock_records_each_acquisition() {
+		let directory = test_path("write-lock-stats");
+		let _ = fs::remove_dir_all(&directory);
+		let collection = derive_id(b"sys", b"test-write-lock-stats");
+
+		let store = MtxdbStore::open(&directory).expect("open mtxdb");
+		drop(store.write_lock(ShardType::EventDag, collection));
+		drop(store.write_lock(ShardType::EventDag, collection));
+
+		assert_eq!(store.write_lock_stats().acquisitions, 2);
+		drop(store);
 		let _ = fs::remove_dir_all(directory);
 	}
 }
