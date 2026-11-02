@@ -272,6 +272,19 @@ where
 	// event before the timeline row, references, or pending-state marks, so a
 	// failed write leaves those structures untouched. The write is idempotent when the
 	// event already has a timeline row.
+	//
+	// A process crash is not a returned error: the body can commit and the
+	// process can die before any of the following are published:
+	//   - the timeline row and the legacy count/metadata batch
+	//   - forward extremities and the prev-event reference marks
+	//   - the partial-state pending mark
+	//   - the event's state root (`set_event_state_with_root`)
+	// Redelivery repairs that only while the legacy batch is missing. Once it
+	// lands, `handle_incoming_pdu` sees the event as an accepted duplicate and
+	// returns early, so the rest stays missing permanently. If the crash lands
+	// after the timeline row but before the batch, redelivery instead allocates
+	// a new count and appends a second entry for the same event. A repair must
+	// re-run the whole append, not just insert a missing row.
 	self.db.write_event_to_mtxdb(pdu, &pdu_json).await?;
 
 	let existing_pdu = if self.non_outlier_pdu_exists(pdu.event_id()).await {
