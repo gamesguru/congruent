@@ -72,8 +72,9 @@ pub(super) async fn retry_stale<T>(
 fn backoff(attempt: u32) -> Duration {
 	let shift = attempt.saturating_sub(1).min(6);
 	let base = BASE_BACKOFF.saturating_mul(1_u32 << shift).min(MAX_BACKOFF);
-	let span = base / 2;
-	base.saturating_sub(span / 2).saturating_add(jitter(span))
+	let span = base.checked_div(2).unwrap_or(Duration::ZERO);
+	let half_span = span.checked_div(2).unwrap_or(Duration::ZERO);
+	base.saturating_sub(half_span).saturating_add(jitter(span))
 }
 
 fn jitter(span: Duration) -> Duration {

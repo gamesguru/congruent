@@ -33,9 +33,14 @@ const GROUP_COMMIT_INTERVAL: Duration = Duration::from_millis(10);
 const PACK_FSYNC_BUDGET: u64 = 8 << 20;
 /// Fsync the index delta log in slices instead of at the coverage barrier.
 const DELTA_FSYNC_BUDGET: u64 = 2 << 20;
+/// Stripe index width. The stripe count and hash mask both derive from it, so
+/// they cannot drift apart.
+const WRITE_LOCK_STRIPE_BITS: u32 = 8;
 /// Striped writer locks. Fixed, because collections grow with rooms and events;
 /// unrelated collections sharing a stripe only wait, they never conflict.
-const WRITE_LOCK_STRIPES: usize = 256;
+const WRITE_LOCK_STRIPES: usize = 1 << WRITE_LOCK_STRIPE_BITS;
+/// Mask selecting the low bits of the hash for the stripe index.
+const WRITE_LOCK_STRIPE_MASK: u64 = (1_u64 << WRITE_LOCK_STRIPE_BITS) - 1;
 
 /// A wait at or above this counts as contention worth reporting: the waiter
 /// almost certainly parked a worker thread rather than spinning briefly.
@@ -164,7 +169,7 @@ impl MtxdbStore {
 	) -> MutexGuard<'_, ()> {
 		let mut hasher = DefaultHasher::new();
 		(shard, collection).hash(&mut hasher);
-		let stripe = usize::try_from(hasher.finish() % WRITE_LOCK_STRIPES as u64).unwrap_or(0);
+		let stripe = usize::try_from(hasher.finish() & WRITE_LOCK_STRIPE_MASK).unwrap_or(0);
 		let started = Instant::now();
 		let guard = self.write_locks[stripe]
 			.lock()
