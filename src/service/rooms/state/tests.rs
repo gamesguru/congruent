@@ -1195,7 +1195,7 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 	services
 		.rooms
 		.pdu_metadata
-		.mark_event_soft_failed(&soft, SoftFailCode::Manual)
+		.mark_event_soft_failed_at(&soft, SoftFailCode::Manual, 9)
 		.unwrap();
 	services
 		.rooms
@@ -1253,9 +1253,11 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 	assert_eq!(field(&soft, "soft_fail_code").and_then(|v| v.as_u64()), Some(2));
 	assert_eq!(field(&rejected, "rejection_code").and_then(|v| v.as_u64()), Some(7));
 	assert_eq!(field(&soft, "soft_failed"), Some(true.into()));
+	assert_eq!(field(&soft, "arrival_ordering").and_then(|v| v.as_i64()), Some(9));
 	assert_eq!(field(&rejected, "rejected"), Some(true.into()));
 	assert_eq!(field(&ok, "rejected"), Some(false.into()));
 	assert!(field(&ok, "soft_fail_code").is_none() && field(&ok, "redacted_by").is_none());
+	assert!(field(&rejected, "arrival_ordering").is_none(), "rejected events have no arrival order");
 	assert_eq!(
 		field(&redacted, "redacted_by").and_then(|v| v.as_str().map(str::to_owned)),
 		Some(redaction.as_str().to_owned())

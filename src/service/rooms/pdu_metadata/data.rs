@@ -159,6 +159,33 @@ impl Data {
 		self.update_verdict(event_id, |v| v.soft_fail = Some(code.to_u8()))
 	}
 
+	/// Record when soft-fail finished, for events kept out of the timeline.
+	/// The value is the server's global counter, so it is comparable with the
+	/// timeline stream ordering. Only soft-failed events carry this.
+	pub(super) fn mark_event_soft_failed_at(
+		&self,
+		event_id: &EventId,
+		code: SoftFailCode,
+		ordering: u64,
+	) -> Result<()> {
+		self.update_verdict(event_id, |v| {
+			v.soft_fail = Some(code.to_u8());
+			v.arrival_ordering = Some(ordering);
+		})
+	}
+
+	pub(super) fn get_arrival_ordering(
+		&self,
+		event_id: &EventId,
+	) -> Result<Option<u64>> {
+		self.mtxdb_verdicts
+			.get(event_id.as_bytes())
+			.map(|verdict| verdict.and_then(|value| value.arrival_ordering))
+			.map_err(|error| {
+				err!(Database("Failed to read mtxdb arrival ordering for {event_id}: {error}"))
+			})
+	}
+
 	pub(super) fn is_event_soft_failed(&self, event_id: &EventId) -> Result<bool> {
 		Ok(self.get_soft_fail_code(event_id)?.is_some())
 	}

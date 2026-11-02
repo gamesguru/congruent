@@ -402,6 +402,22 @@ impl Service {
 		self.db.mark_event_soft_failed(event_id, code)
 	}
 
+	/// Mark the event soft-failed and record when soft-fail finished in one
+	/// verdict update.
+	#[inline]
+	pub fn mark_event_soft_failed_at(
+		&self,
+		event_id: &EventId,
+		code: SoftFailCode,
+		ordering: u64,
+	) -> Result<()> {
+		self.db.mark_event_soft_failed_at(event_id, code, ordering)
+	}
+
+	pub fn get_arrival_ordering(&self, event_id: &EventId) -> Result<Option<u64>> {
+		self.db.get_arrival_ordering(event_id)
+	}
+
 	pub fn get_soft_fail_reason(&self, event_id: &EventId) -> Result<Option<String>> {
 		self.db.get_soft_fail_reason(event_id)
 	}

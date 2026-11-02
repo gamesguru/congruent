@@ -629,9 +629,11 @@ where
 		.await?;
 
 		// Soft fail, we keep the event as an outlier but don't add it to the timeline
-		self.services.pdu_metadata.mark_event_soft_failed(
+		let arrival = self.services.globals.next_count()?;
+		self.services.pdu_metadata.mark_event_soft_failed_at(
 			incoming_pdu.event_id(),
 			crate::rooms::pdu_metadata::SoftFailCode::AuthCheckFailed,
+			arrival,
 		)?;
 
 		warn!(

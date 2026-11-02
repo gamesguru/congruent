@@ -4,10 +4,12 @@
 //! verdicts from mtxdb. Each line is one JSON object tagged by `"t"`, written
 //! in dependency order so an importer can apply it as it streams:
 //!
-//! 1. `header`: format, server, room.
+//! 1. `header`: format, server, room, and `timeline: true`.
 //! 2. `event`: `event_id`, the `pdu` as stored, `prev_events`,
-//!    `auth_events`, and the `outlier`, `soft_failed` and `rejected` flags.
-//!    Verdict codes and redaction metadata are included when present.
+//!    `auth_events`, the `outlier`, `soft_failed` and `rejected` flags, and
+//!    ordering: `stream_ordering` for timeline events, `arrival_ordering` for
+//!    soft-failed events kept out of the timeline. Verdict codes and redaction
+//!    metadata are included when present.
 //! 3. `end`: event count. A file without an `end` line was truncated.
 //!
 //! Locators, short ids and auth-chain closures are not exported: they are
@@ -15,7 +17,7 @@
 
 use std::{collections::HashSet, io::Write};
 
-use conduwuit::{Result, err, warn};
+use conduwuit::{PduCount, Result, err, warn};
 use conduwuit_mtxdb::export_schema::{self as schema, field, tag};
 use futures::StreamExt;
 use slipstream::{
@@ -66,14 +68,20 @@ impl Service {
 	) -> Result<ExportCounts> {
 		let mut counts = ExportCounts::default();
 
-		let mut events: Vec<(OwnedEventId, bool)> = self
+		let mut events: Vec<(OwnedEventId, bool, Option<PduCount>)> = self
 			.services
 			.timeline
 			.all_pdus(room_id)
-			.map(|(_, pdu)| (conduwuit::matrix::Event::event_id(&pdu).to_owned(), false))
+			.map(|(count, pdu)| {
+				(
+					conduwuit::matrix::Event::event_id(&pdu).to_owned(),
+					false,
+					Some(count),
+				)
+			})
 			.collect()
 			.await;
-		let mut seen: HashSet<OwnedEventId> = events.iter().map(|(id, _)| id.clone()).collect();
+		let mut seen: HashSet<OwnedEventId> = events.iter().map(|(id, _, _)| id.clone()).collect();
 		let outliers: Vec<OwnedEventId> = self
 			.services
 			.outlier
@@ -83,7 +91,7 @@ impl Service {
 			.await;
 		for id in outliers {
 			if seen.insert(id.clone()) {
-				events.push((id, true));
+				events.push((id, true, None));
 			}
 		}
 
@@ -92,9 +100,10 @@ impl Service {
 		header
 			.insert(field::SERVER.to_owned(), text(self.services.globals.server_name().as_str()));
 		header.insert(field::ROOM_ID.to_owned(), text(room_id.as_str()));
+		header.insert(field::TIMELINE.to_owned(), Value::Bool(true));
 		line(out, header)?;
 
-		for (event_id, outlier) in &events {
+		for (event_id, outlier, count) in &events {
 			let pdu = match self.services.timeline.get_pdu_json(event_id) {
 				| Ok(pdu) => pdu,
 				| Err(_) => match self.services.timeline.get_outlier_pdu_json(event_id) {
@@ -110,6 +119,23 @@ impl Service {
 			event.insert(field::PREV_EVENTS.to_owned(), id_list(&pdu, field::PREV_EVENTS));
 			event.insert(field::AUTH_EVENTS.to_owned(), id_list(&pdu, field::AUTH_EVENTS));
 			event.insert(field::OUTLIER.to_owned(), Value::Bool(*outlier));
+			if !*outlier {
+				if let Some(count) = count {
+					event.insert(
+						field::STREAM_ORDERING.to_owned(),
+						Value::from(count.into_signed()),
+					);
+				}
+			}
+			if let Some(arrival) = self.services.pdu_metadata.get_arrival_ordering(event_id)? {
+				let arrival = i64::try_from(arrival).map_err(|_| {
+					err!("event {event_id}: arrival ordering {arrival} does not fit in i64")
+				})?;
+				event.insert(
+					field::ARRIVAL_ORDERING.to_owned(),
+					Value::from(arrival),
+				);
+			}
 			event.insert(
 				field::SOFT_FAILED.to_owned(),
 				Value::Bool(self.services.pdu_metadata.is_event_soft_failed(event_id)?),
