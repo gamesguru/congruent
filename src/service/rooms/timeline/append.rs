@@ -268,25 +268,32 @@ where
 		"append_pdu: acquired insert_lock"
 	);
 
+	// A body that already exists means this is a redelivery, possibly with the
+	// timeline row committed but the duplicate gate not. Only then pay for the
+	// event-id lookup below; normal appends skip it.
+	let body_present = self.pdu_exists(pdu.event_id()).await;
+
 	// mtxdb is the authoritative event store for recovered history. Write the
 	// event before the timeline row, references, or pending-state marks, so a
 	// failed write leaves those structures untouched. The write is idempotent when the
 	// event already has a timeline row.
 	//
-	// A process crash is not a returned error: the body can commit and the
-	// process can die before any of the following are published:
-	//   - the timeline row and the legacy count/metadata batch
-	//   - forward extremities and the prev-event reference marks
-	//   - the partial-state pending mark
-	//   - the event's state root (`set_event_state_with_root`)
-	// Redelivery repairs that only while the legacy batch is missing. Once it
-	// lands, `handle_incoming_pdu` sees the event as an accepted duplicate and
-	// returns early, so the rest stays missing permanently. If the crash lands
-	// after the timeline row but before the batch, redelivery instead allocates
-	// a new count and appends a second entry for the same event. A repair must
-	// re-run the whole append, not just insert a missing row.
+	// A process crash is not a returned error. The body can commit and the
+	// process can die before the timeline row, the extremities, the prev-event
+	// reference marks, the partial-state pending mark, or the state root are
+	// published. The legacy count/metadata batch is applied last, after every
+	// one of those, because `get_pdu_id` reads it and `handle_incoming_pdu`
+	// drops a redelivery once it is visible.
+	//
+	// A crash anywhere before that final apply leaves the event unfinished, so
+	// redelivery runs the append again. If the timeline row is already there,
+	// the depth-bounded lookup below reuses its count and `append_room`
+	// deduplicates the identical entry; the missing legacy batch is rebuilt and
+	// applied last. A repair must re-run the whole append, not just insert a
+	// missing row.
 	self.db.write_event_to_mtxdb(pdu, &pdu_json).await?;
 
+	let mut needs_legacy_batch = false;
 	let existing_pdu = if self.non_outlier_pdu_exists(pdu.event_id()).await {
 		warn!(
 			target: "timeline_debug",
@@ -302,6 +309,25 @@ where
 		} else {
 			None
 		}
+	} else if body_present {
+		// The timeline row can exist while the legacy duplicate gate did not
+		// commit (a crash between the two). Reuse its count so redelivery
+		// continues the remaining writes instead of allocating a new count and
+		// appending a second row for the same event. The row also has to be
+		// regenerated through `append_pdu_prewritten` so the missing legacy
+		// batch is rebuilt; `append_room` deduplicates the identical entry.
+		self.db
+			.find_pending_timeline_entry(
+				room_id.as_bytes(),
+				pdu.event_id().as_bytes(),
+				pdu.depth().cast_signed(),
+			)?
+			.map(|entry| {
+				let pdu_count = PduCount::from_signed(entry.stream_ordering);
+				let pdu_id: RawPduId = PduId { shortroomid, shorteventid: pdu_count }.into();
+				needs_legacy_batch = true;
+				(pdu_id, pdu_count)
+			})
 	} else {
 		None
 	};
@@ -327,9 +353,17 @@ where
 	// Held (for a new PDU) until the state association below has run, so sync
 	// cannot snapshot a count whose membership change is not yet applied.
 	let mut sync_barrier = None;
+	let mut pending_batch = None;
 	let (pdu_id, pdu_count, private_read_count) = if let Some((existing_id, existing_count)) =
 		existing_pdu
 	{
+		if needs_legacy_batch {
+			let batch = self
+				.db
+				.append_pdu_prewritten(&existing_id, pdu, &pdu_json, existing_count)
+				.await?;
+			pending_batch = Some(batch);
+		}
 		(existing_id, existing_count, match existing_count {
 			| PduCount::Normal(count) => Some(count),
 			| PduCount::Backfilled(_) => None,
@@ -346,10 +380,13 @@ where
 		// TEMPORARY diagnostic only
 		info!(target: "timeline_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: about to insert");
 
-		// Write first, then publish the count
-		self.db
+		// Write the timeline row now, but hold the legacy batch until every
+		// other write has landed. See the apply below.
+		let batch = self
+			.db
 			.append_pdu_prewritten(&pdu_id, pdu, &pdu_json, pdu_count)
 			.await?;
+		pending_batch = Some(batch);
 		info!(target: "timeline_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: insert complete");
 
 		info!(
@@ -424,6 +461,16 @@ where
 		self.services
 			.state
 			.set_room_state_hamt(room_id, root_handle, state_lock)?;
+	}
+
+	// The duplicate gate is the last write. `get_pdu_id` reads this batch, and
+	// `handle_incoming_pdu` drops a redelivery once it is visible, so applying
+	// it earlier would let a crash publish an event that looks complete while
+	// its timeline row, extremities, reference marks or state root are missing.
+	// A crash before this point leaves the event unfinished and redelivery
+	// re-runs the append.
+	if let Some(batch) = pending_batch {
+		self.db.apply_batch(batch);
 	}
 	drop(cork);
 	let receipt_content = BTreeMap::from_iter([(

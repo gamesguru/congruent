@@ -1257,7 +1257,10 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 	assert_eq!(field(&rejected, "rejected"), Some(true.into()));
 	assert_eq!(field(&ok, "rejected"), Some(false.into()));
 	assert!(field(&ok, "soft_fail_code").is_none() && field(&ok, "redacted_by").is_none());
-	assert!(field(&rejected, "arrival_ordering").is_none(), "rejected events have no arrival order");
+	assert!(
+		field(&rejected, "arrival_ordering").is_none(),
+		"rejected events have no arrival order"
+	);
 	assert_eq!(
 		field(&redacted, "redacted_by").and_then(|v| v.as_str().map(str::to_owned)),
 		Some(redaction.as_str().to_owned())
@@ -1613,7 +1616,8 @@ async fn failed_timeline_insert_leaves_no_extremity_or_reference() {
 	let room_id = room_id.as_ref();
 	let event_id = event_id.as_ref();
 	let prev_id: &EventId = prev_id.as_ref();
-	let mut json = create_dummy_pdu(room_id, event_id, "m.room.message", "").to_canonical_object();
+	let mut json =
+		create_dummy_pdu(room_id, event_id, "m.room.message", "").to_canonical_object();
 	json.insert(
 		"prev_events".into(),
 		slipstream::CanonicalJsonValue::Array(vec![slipstream::CanonicalJsonValue::String(
@@ -1622,7 +1626,11 @@ async fn failed_timeline_insert_leaves_no_extremity_or_reference() {
 	);
 	let pdu = PduEvent::from_id_val(event_id, json.clone(), Some(room_id)).expect("pdu");
 
-	services.rooms.short.get_or_create_shortroomid(room_id).await;
+	services
+		.rooms
+		.short
+		.get_or_create_shortroomid(room_id)
+		.await;
 	services
 		.rooms
 		.short
@@ -1649,7 +1657,7 @@ async fn failed_timeline_insert_leaves_no_extremity_or_reference() {
 	let result = services
 		.rooms
 		.timeline
-		.append_pdu(&pdu, json, std::iter::once(event_id), false, AppendPduContext {
+		.append_pdu(&pdu, json.clone(), std::iter::once(event_id), false, AppendPduContext {
 			state_lock: &state_lock,
 			room_id,
 			state_root_handle: None,
@@ -1676,4 +1684,285 @@ async fn failed_timeline_insert_leaves_no_extremity_or_reference() {
 			.await,
 		"failed append marked its prev event as referenced"
 	);
+
+	// Repair the head and redeliver: the failed append must be completed, not
+	// duplicated. This is window 1, before the timeline row.
+	let tx = services.mtxdb.begin_transaction();
+	tx.remove(
+		conduwuit_mtxdb::ShardType::EventDag,
+		conduwuit_mtxdb::timeline::timeline_collection_id(room_id.as_str()),
+		conduwuit_mtxdb::timeline::TIMELINE_HEAD_ID,
+	)
+	.expect("remove corrupt head");
+	tx.commit().expect("commit head removal");
+
+	let root = empty_root_handle();
+	let result = services
+		.rooms
+		.timeline
+		.append_pdu(&pdu, json, std::iter::once(event_id), false, AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: Some(root),
+			pending_nodes: Vec::new(),
+			prev_state_root_handle: None,
+			advance_current_state: false,
+			was_joined_before_state_install: None,
+		})
+		.await;
+	assert!(result.is_ok(), "redelivery after the failed insert: {result:?}");
+
+	assert_single_timeline_row(&services, room_id, event_id);
+	assert_published(&services, room_id, event_id, prev_id).await;
+}
+
+/// A root handle with no state, sufficient for tests that only need a
+/// publishable state pointer.
+fn empty_root_handle() -> rezzy::hamt::RootHandle {
+	rezzy::hamt::RootHandle {
+		codec_version: rezzy::hamt::HAMT_CODEC_VERSION,
+		routing_version: rezzy::hamt::HAMT_ROUTING_VERSION,
+		routing_params: [0; 4],
+		structural_hash: [0; 32],
+		state_group_id: [0; 32],
+	}
+}
+
+fn assert_single_timeline_row(services: &Services, room_id: &RoomId, event_id: &EventId) {
+	let timeline = conduwuit_mtxdb::timeline::TimelineAdapter::new(services.mtxdb.clone());
+	let page = timeline
+		.page_room(room_id.as_bytes(), None, true, 256)
+		.expect("read timeline");
+	let rows = page
+		.entries
+		.iter()
+		.filter(|entry| {
+			entry.event_ref == conduwuit_mtxdb::timeline::event_id_ref(event_id.as_bytes())
+		})
+		.count();
+	assert_eq!(rows, 1, "expected exactly one timeline row for {event_id}");
+}
+
+async fn assert_published(
+	services: &Services,
+	room_id: &RoomId,
+	event_id: &EventId,
+	prev_id: &EventId,
+) {
+	use futures::StreamExt;
+
+	assert!(
+		services.rooms.timeline.get_pdu_id(event_id).await.is_ok(),
+		"the duplicate gate must be restored"
+	);
+	let extremities: Vec<_> = services
+		.rooms
+		.state
+		.get_forward_extremities(room_id)
+		.collect()
+		.await;
+	assert!(
+		extremities.iter().any(|extremity| extremity == event_id),
+		"forward extremity missing after redelivery: {extremities:?}"
+	);
+	assert!(
+		services
+			.rooms
+			.pdu_metadata
+			.is_event_referenced(room_id, prev_id)
+			.await,
+		"prev-event reference missing after redelivery"
+	);
+	let shorteventid = services
+		.rooms
+		.short
+		.get_or_create_shorteventid(event_id)
+		.await;
+	assert!(
+		services
+			.rooms
+			.state
+			.get_roothandle(shorteventid)
+			.await
+			.is_ok(),
+		"state root missing after redelivery"
+	);
+}
+
+/// A crash after the timeline row but before the legacy batch leaves the row
+/// and body without extremities, references or state. Redelivery must reuse the
+/// row, finish those writes, and keep exactly one row.
+#[conduwuit_macros::async_test]
+async fn redelivery_after_the_timeline_row_repairs_the_missing_writes() {
+	use crate::rooms::timeline::AppendPduContext;
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!window2:test.conduwuit.local").unwrap();
+	let event_id = slipstream::OwnedEventId::parse("$window2:test.conduwuit.local").unwrap();
+	let prev_id = slipstream::OwnedEventId::parse("$prev2:test.conduwuit.local").unwrap();
+	let room_id = room_id.as_ref();
+	let event_id = event_id.as_ref();
+	let prev_id: &EventId = prev_id.as_ref();
+	let mut json =
+		create_dummy_pdu(room_id, event_id, "m.room.message", "").to_canonical_object();
+	json.insert(
+		"prev_events".into(),
+		slipstream::CanonicalJsonValue::Array(vec![slipstream::CanonicalJsonValue::String(
+			prev_id.as_str().to_owned(),
+		)]),
+	);
+	let pdu = PduEvent::from_id_val(event_id, json.clone(), Some(room_id)).expect("pdu");
+
+	services
+		.rooms
+		.short
+		.get_or_create_shortroomid(room_id)
+		.await;
+	services
+		.rooms
+		.short
+		.set_room_version(room_id, &slipstream::RoomVersionId::V10)
+		.expect("room version");
+
+	// Simulate the crash: the body and timeline row committed, nothing else.
+	let events = conduwuit_mtxdb::events::EventAdapter::new(services.mtxdb.clone());
+	let body = slipstream::codec::to_string(&json);
+	let prev_refs: Vec<&[u8]> = pdu.prev_events().map(AsRef::as_ref).collect();
+	events
+		.write_event_with_edges(
+			room_id.as_bytes(),
+			event_id.as_bytes(),
+			body.as_bytes(),
+			&prev_refs,
+			&[],
+		)
+		.expect("write event body");
+	let timeline = conduwuit_mtxdb::timeline::TimelineAdapter::new(services.mtxdb.clone());
+	let entry = conduwuit_mtxdb::timeline::TimelineAdapter::make_entry(
+		room_id.as_bytes(),
+		pdu.depth().cast_signed(),
+		1,
+		event_id.as_bytes(),
+	);
+	timeline
+		.append_room(room_id.as_bytes(), &[entry])
+		.expect("write timeline row");
+	assert!(
+		!services
+			.rooms
+			.timeline
+			.non_outlier_pdu_exists(event_id)
+			.await,
+		"the legacy gate must not exist before redelivery"
+	);
+
+	let root = empty_root_handle();
+	let state_lock = services.rooms.state.mutex.lock(room_id).await;
+	let result = services
+		.rooms
+		.timeline
+		.append_pdu(&pdu, json, std::iter::once(event_id), false, AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: Some(root),
+			pending_nodes: Vec::new(),
+			prev_state_root_handle: None,
+			advance_current_state: false,
+			was_joined_before_state_install: None,
+		})
+		.await;
+	assert!(result.is_ok(), "redelivery after the row: {result:?}");
+
+	assert_single_timeline_row(&services, room_id, event_id);
+	assert_published(&services, room_id, event_id, prev_id).await;
+}
+
+/// A crash after every other write but before the legacy batch leaves the
+/// duplicate gate missing. Redelivery must restore it without adding a row.
+#[conduwuit_macros::async_test]
+async fn redelivery_after_the_state_root_restores_the_gate() {
+	use crate::rooms::timeline::AppendPduContext;
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!window3:test.conduwuit.local").unwrap();
+	let event_id = slipstream::OwnedEventId::parse("$window3:test.conduwuit.local").unwrap();
+	let prev_id = slipstream::OwnedEventId::parse("$prev3:test.conduwuit.local").unwrap();
+	let room_id = room_id.as_ref();
+	let event_id = event_id.as_ref();
+	let prev_id: &EventId = prev_id.as_ref();
+	let mut json =
+		create_dummy_pdu(room_id, event_id, "m.room.message", "").to_canonical_object();
+	json.insert(
+		"prev_events".into(),
+		slipstream::CanonicalJsonValue::Array(vec![slipstream::CanonicalJsonValue::String(
+			prev_id.as_str().to_owned(),
+		)]),
+	);
+	let pdu = PduEvent::from_id_val(event_id, json.clone(), Some(room_id)).expect("pdu");
+
+	services
+		.rooms
+		.short
+		.get_or_create_shortroomid(room_id)
+		.await;
+	services
+		.rooms
+		.short
+		.set_room_version(room_id, &slipstream::RoomVersionId::V10)
+		.expect("room version");
+
+	let root = empty_root_handle();
+	let state_lock = services.rooms.state.mutex.lock(room_id).await;
+	let result = services
+		.rooms
+		.timeline
+		.append_pdu(&pdu, json.clone(), std::iter::once(event_id), false, AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: Some(root.clone()),
+			pending_nodes: Vec::new(),
+			prev_state_root_handle: None,
+			advance_current_state: false,
+			was_joined_before_state_install: None,
+		})
+		.await;
+	assert!(result.is_ok(), "first append: {result:?}");
+
+	// Simulate a crash after the state root but before the batch: remove only
+	// the duplicate gate.
+	let pdu_id = services
+		.rooms
+		.timeline
+		.get_pdu_id(event_id)
+		.await
+		.expect("gate before the simulated crash");
+	services.db["eventid_pduid"].remove(event_id);
+	services.db["eventid_metadata"].remove(event_id.as_bytes());
+	services.db["room_pducount_eventid"].remove(&pdu_id);
+	assert!(
+		!services
+			.rooms
+			.timeline
+			.non_outlier_pdu_exists(event_id)
+			.await,
+		"the gate must be gone before redelivery"
+	);
+
+	let result = services
+		.rooms
+		.timeline
+		.append_pdu(&pdu, json, std::iter::once(event_id), false, AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: Some(root),
+			pending_nodes: Vec::new(),
+			prev_state_root_handle: None,
+			advance_current_state: false,
+			was_joined_before_state_install: None,
+		})
+		.await;
+	assert!(result.is_ok(), "redelivery after the state root: {result:?}");
+
+	assert_single_timeline_row(&services, room_id, event_id);
+	assert_published(&services, room_id, event_id, prev_id).await;
 }

@@ -225,6 +225,20 @@ impl Data {
 		self.room_pducount_eventid.apply_batch(batch);
 	}
 
+	/// Find the timeline row for an event whose legacy pdu mapping may not have
+	/// committed yet. Used to make a redelivery after a crash reuse the existing
+	/// row instead of allocating a second count.
+	pub(super) fn find_pending_timeline_entry(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+		depth: i64,
+	) -> Result<Option<conduwuit_mtxdb::timeline::TimelineEntry>> {
+		self.mtxdb_timeline
+			.find_entry_at_depth(room_id, event_id, depth)
+			.map_err(|error| err!(Database("Failed to find timeline entry: {error}")))
+	}
+
 	pub(super) fn fallback_prev_events(&self, event_id: &EventId) -> HashSet<OwnedEventId> {
 		let mut prevs = HashSet::new();
 		if let Ok((pdu, _)) = self.get_from_eventid_pdu(event_id) {
@@ -1427,18 +1441,23 @@ impl Data {
 
 	/// Like [`Self::append_pdu`], for a caller that already ran
 	/// [`Self::write_event_to_mtxdb`] for this event.
-	pub(super) async fn append_pdu_prewritten(
-		&self,
+	///
+	/// Returns the legacy batch instead of applying it. The batch carries
+	/// `eventid_pduid` and `eventid_metadata`, which `get_pdu_id` uses to drop a
+	/// redelivery as already done; the caller must apply it only after every
+	/// other write for the event has landed, or a crash leaves the duplicate
+	/// gate set and the rest missing.
+	pub(super) async fn append_pdu_prewritten<'a>(
+		&'a self,
 		pdu_id: &RawPduId,
 		pdu: &PduEvent,
 		json: &CanonicalJsonObject,
 		count: PduCount,
-	) -> Result {
+	) -> Result<database::Batch<'a>> {
 		let mut batch = database::Batch::new();
 		self.append_pdu_batch_rows(&mut batch, pdu_id, pdu, json, count)
 			.await?;
-		self.room_pducount_eventid.apply_batch(batch);
-		Ok(())
+		Ok(batch)
 	}
 
 	/// Write the event and edges to mtxdb, then stage timeline rows in `batch`.

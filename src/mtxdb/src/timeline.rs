@@ -5,11 +5,13 @@
 
 use std::sync::Arc;
 
-pub use mtxdb::timeline::{TIMELINE_HEAD_ID, event_id_ref, room_scope_id, timeline_collection_id};
+pub use mtxdb::timeline::{
+	TIMELINE_HEAD_ID, TimelineEntry, event_id_ref, room_scope_id, timeline_collection_id,
+};
 use mtxdb::{
 	ShardType,
 	interop::event_record_id,
-	timeline::{TimelineCursor, TimelineEntry, TimelineIndex, TimelinePage},
+	timeline::{TimelineCursor, TimelineIndex, TimelinePage},
 };
 
 use crate::{
@@ -112,6 +114,48 @@ impl TimelineAdapter {
 	pub fn latest_entry(&self, room_id: &[u8]) -> Result<Option<TimelineEntry>, StorageError> {
 		let page = self.page_room(room_id, None, false, 1)?;
 		Ok(page.entries.into_iter().next())
+	}
+
+	/// Find an event's timeline entry without an event-id index.
+	///
+	/// Scans backwards from the head. `depth` is the event's topological
+	/// ordering; entries older than it cannot be the target, so the scan stops
+	/// at the first page that ends below it. This is the recovery path for a
+	/// crash between the timeline row and the legacy duplicate gate, where the
+	/// row exists but the pdu mapping does not; it is not on the normal append
+	/// path.
+	pub fn find_entry_at_depth(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+		depth: i64,
+	) -> Result<Option<TimelineEntry>, StorageError> {
+		const PAGE: usize = 256;
+
+		let target = event_id_ref(event_id);
+		let mut cursor = None;
+		loop {
+			let page = self.page_room(room_id, cursor.as_ref(), false, PAGE)?;
+			if page.entries.is_empty() {
+				return Ok(None);
+			}
+			if let Some(entry) = page.entries.iter().find(|entry| entry.event_ref == target) {
+				return Ok(Some(*entry));
+			}
+			// Reverse order: once this page is entirely older than the event's
+			// depth, the event cannot appear in an older page.
+			if page
+				.entries
+				.last()
+				.is_some_and(|entry| entry.topological_ordering < depth)
+			{
+				return Ok(None);
+			}
+			cursor = page.next_cursor;
+			if cursor.is_none() {
+				return Ok(None);
+			}
+		}
 	}
 }
 
