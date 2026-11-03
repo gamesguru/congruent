@@ -685,6 +685,13 @@ mod tests {
 		adapter.put_node(room, &hash(2), b"n2").unwrap();
 		assert_eq!(adapter.roots_version(room).unwrap(), scanned.version);
 
+		// Nor does a rootless publish, the path `publish_nodes` takes. This is
+		// why a version pin alone cannot make a live sweep safe.
+		adapter
+			.publish_roots(room, &[(hash(3), b"n3".to_vec())], &[], None)
+			.unwrap();
+		assert_eq!(adapter.roots_version(room).unwrap(), scanned.version);
+
 		adapter
 			.publish(room, b"$b:example.com", &[], b"r2", true)
 			.unwrap();
