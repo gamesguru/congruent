@@ -8,6 +8,7 @@ use conduwuit::{
 		future::ReadyEqExt,
 		stream::{ReadyExt, WidebandExt as _},
 	},
+	warn,
 };
 use futures::{StreamExt, future::join};
 use service::{Services, rooms::lazy_loading::MemberSet};
@@ -125,61 +126,83 @@ pub(super) async fn load_left_room(
 			// we have this room in our DB, and can fetch the state and timeline from when
 			// the user left.
 
-			let leave_state_key = syncing_user;
-			debug_assert_eq!(
-				Some(leave_state_key.as_str()),
-				leave_membership_event.state_key(),
-				"leave PDU should be for the user requesting the sync"
-			);
+			let loaded = async {
+				let leave_state_key = syncing_user;
+				debug_assert_eq!(
+					Some(leave_state_key.as_str()),
+					leave_membership_event.state_key(),
+					"leave PDU should be for the user requesting the sync"
+				);
 
-			// `pdu_roothandle_after_event` resolves the state *after* a PDU, so the
-			// leave event's own root includes `leave_membership_event`. For the
-			// membership immediately before the user left we walk back one
-			// event to the pre-leave root.
-			let leave_root_handle = services
-				.rooms
-				.state_accessor
-				.pdu_roothandle_after_event(&leave_membership_event.event_id)
-				.await?;
+				// `pdu_roothandle_after_event` resolves the state *after* a PDU, so the
+				// leave event's own root includes `leave_membership_event`. For the
+				// membership immediately before the user left we walk back one
+				// event to the pre-leave root.
+				let leave_root_handle = services
+					.rooms
+					.state_accessor
+					.pdu_roothandle_after_event(&leave_membership_event.event_id)
+					.await?;
 
-			let before_leave_root_handle = services
-				.rooms
-				.state_accessor
-				.pdu_roothandle_before_event(&leave_membership_event.event_id)
-				.await
-				.unwrap_or_else(|_| leave_root_handle.clone());
+				let before_leave_root_handle = services
+					.rooms
+					.state_accessor
+					.pdu_roothandle_before_event(&leave_membership_event.event_id)
+					.await
+					.unwrap_or_else(|_| leave_root_handle.clone());
 
-			let prev_membership_event = services
-				.rooms
-				.state_accessor
-				.state_get_in_room_hamt(
+				let prev_membership_event = services
+					.rooms
+					.state_accessor
+					.state_get_in_room_hamt(
+						room_id,
+						&before_leave_root_handle,
+						&StateEventType::RoomMember,
+						leave_state_key.as_str(),
+					)
+					.await?;
+
+				let last_sync_end_root_handle = if last_sync_end_root_handle.is_none()
+					&& last_sync_end_count.is_some_and(|c| c >= left_count)
+				{
+					Some(leave_root_handle.clone())
+				} else {
+					last_sync_end_root_handle
+				};
+
+				let (timeline, state_events) = build_left_state_and_timeline(
+					services,
+					sync_context,
 					room_id,
-					&before_leave_root_handle,
-					&StateEventType::RoomMember,
-					leave_state_key.as_str(),
+					leave_membership_event,
+					&leave_root_handle,
+					&prev_membership_event,
+					last_sync_end_root_handle,
 				)
 				.await?;
 
-			let last_sync_end_root_handle = if last_sync_end_root_handle.is_none()
-				&& last_sync_end_count.is_some_and(|c| c >= left_count)
-			{
-				Some(leave_root_handle.clone())
-			} else {
-				last_sync_end_root_handle
-			};
+				Ok::<_, conduwuit::Error>((timeline, state_events, Some(leave_root_handle)))
+			}
+			.await;
 
-			let (timeline, state_events) = build_left_state_and_timeline(
-				services,
-				sync_context,
-				room_id,
-				leave_membership_event,
-				&leave_root_handle,
-				&prev_membership_event,
-				last_sync_end_root_handle,
-			)
-			.await?;
-
-			(timeline, state_events, Some(leave_root_handle))
+			match loaded {
+				| Ok(loaded) => loaded,
+				| Err(error) if error.is_not_found() && last_sync_end_count.is_some() => {
+					// The membership cache is updated before the leave event's timeline
+					// row and state root are visible (see the append path). A sync that
+					// wakes in that window must not drop the leave: the next_batch
+					// advances past left_count, so the client would never see the ban.
+					// Send the membership event we already have and let a later sync
+					// fill in the timeline/state.
+					warn!(
+						%room_id,
+						?error,
+						"leave event is not fully loadable yet; sending only the membership event"
+					);
+					(TimelinePdus::default(), vec![leave_membership_event.clone()], None)
+				},
+				| Err(error) => return Err(error),
+			}
 		},
 
 		| None => {
