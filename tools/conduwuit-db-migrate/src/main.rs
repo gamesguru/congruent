@@ -18,10 +18,12 @@ const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("conduwuit_met
 // formats, or are derived from those exports. Copying them into redb would
 // leave stale legacy indexes beside the newly imported mtxdb data.
 //
-// The legacy state maps are the exception: `mtxdb import` does not yet build
-// state groups for `mtxdb-export/v1` inputs, so the server's v20 migration
-// needs these maps to build its own HAMT roots. The root handles and HAMT node
-// maps stay out because that migration rewrites them.
+// The forward legacy short-ID maps are the exception: startup imports their
+// mappings into mtxdb before the server drops them. The server's v23 migration
+// rebuilds the HAMT roots from the timeline rather than the legacy statediff
+// history, so that map and the reverse lookups are skipped along with the
+// derived indexes. The root handles and HAMT node maps stay out because v23
+// rewrites them.
 const MTXDB_OWNED_MAPS: &[&str] = &[
 	"eventid_outlierpdu",
 	"eventid_pdu",
@@ -50,10 +52,27 @@ const MTXDB_OWNED_MAPS: &[&str] = &[
 	"statehash_shortstatehash",
 ];
 
+// Derived indexes and legacy inputs that are no longer needed. The mtxdb
+// import builds its own short-ID index from event identities, and v23 rebuilds
+// state HAMTs from the timeline rather than the legacy statediff history or
+// `roomid_shortstatehash` room selection.
+const SKIPPED_MAPS: &[&str] = &[
+	"eventid_shorteventid",
+	"roomid_shortstatehash",
+	"shorteventid_eventid",
+	"shortstatehash_statediff",
+	"shortstatekey_statekey",
+	"statekey_shortstatekey",
+	"tokenids",
+];
+
+fn skipped(name: &str) -> bool { MTXDB_OWNED_MAPS.contains(&name) || SKIPPED_MAPS.contains(&name) }
+
 fn usage() -> ! {
 	eprintln!("usage: conduwuit-db-migrate export <rocksdb> <bundle.jsonl> [map ...]");
 	eprintln!("       conduwuit-db-migrate export-mtxdb <rocksdb> <output-dir> [server-name]");
 	eprintln!("       conduwuit-db-migrate import <bundle.jsonl> <new-metadata.redb>");
+	eprintln!("       conduwuit-db-migrate compact <metadata.redb>");
 	eprintln!("       conduwuit-db-migrate list <rocksdb>");
 	std::process::exit(2);
 }
@@ -132,13 +151,16 @@ fn export(
 		names
 			.iter()
 			.filter(|name| name.as_str() != "default")
-			.filter(|name| !MTXDB_OWNED_MAPS.contains(&name.as_str()))
+			.filter(|name| !skipped(name))
 			.cloned()
 			.collect()
 	} else {
 		for name in requested {
 			if MTXDB_OWNED_MAPS.contains(&name.as_str()) {
 				return Err(format!("{name} is owned by the mtxdb room/key import").into());
+			}
+			if SKIPPED_MAPS.contains(&name.as_str()) {
+				return Err(format!("{name} is derived by the server, not migrated").into());
 			}
 			if !names.iter().any(|existing| existing == name) {
 				return Err(format!("column family does not exist: {name}").into());
@@ -208,6 +230,8 @@ fn list(rocks_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 			"skipped"
 		} else if MTXDB_OWNED_MAPS.contains(&name.as_str()) {
 			"mtxdb"
+		} else if SKIPPED_MAPS.contains(&name.as_str()) {
+			"skipped (derived)"
 		} else {
 			"redb candidate"
 		};
@@ -380,6 +404,23 @@ fn import(bundle_path: &Path, redb_path: &Path) -> Result<(), Box<dyn std::error
 	result
 }
 
+fn compact(redb_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+	let before = std::fs::metadata(redb_path)?.len();
+	let mut db = Database::open(redb_path)?;
+	let mut passes = 0_u64;
+	while db.compact()? {
+		passes = passes.saturating_add(1);
+	}
+	drop(db);
+	let after = std::fs::metadata(redb_path)?.len();
+	let reclaimed = before.saturating_sub(after);
+	eprintln!(
+		"Compacted {}: {before} -> {after} bytes (reclaimed {reclaimed}) in {passes} pass(es)",
+		redb_path.display()
+	);
+	Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let mut args = env::args().skip(1);
 	match args.next().as_deref() {
@@ -404,7 +445,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		| Some("import") => {
 			let bundle = args.next().unwrap_or_else(|| usage());
 			let redb = args.next().unwrap_or_else(|| usage());
+			if args.next().is_some() {
+				usage();
+			}
 			import(Path::new(&bundle), Path::new(&redb))
+		},
+		| Some("compact") => {
+			let redb = args.next().unwrap_or_else(|| usage());
+			if args.next().is_some() {
+				usage();
+			}
+			compact(Path::new(&redb))
 		},
 		| Some("list") => {
 			let rocks = args.next().unwrap_or_else(|| usage());
@@ -416,13 +467,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-	use super::MTXDB_OWNED_MAPS;
+	use super::{MTXDB_OWNED_MAPS, SKIPPED_MAPS};
 
 	#[test]
-	fn legacy_state_maps_are_exported_for_the_v20_migration() {
-		assert!(!MTXDB_OWNED_MAPS.contains(&"roomid_shortstatehash"));
-		assert!(!MTXDB_OWNED_MAPS.contains(&"shortstatehash_statediff"));
+	fn legacy_state_and_short_id_maps_are_rebuilt_or_skipped() {
+		assert!(SKIPPED_MAPS.contains(&"roomid_shortstatehash"));
+		assert!(SKIPPED_MAPS.contains(&"shortstatehash_statediff"));
 		assert!(MTXDB_OWNED_MAPS.contains(&"roomid_roothandle"));
 		assert!(MTXDB_OWNED_MAPS.contains(&"state_hamt_nodes"));
+		assert!(SKIPPED_MAPS.contains(&"eventid_shorteventid"));
+		assert!(SKIPPED_MAPS.contains(&"shortstatekey_statekey"));
 	}
 }

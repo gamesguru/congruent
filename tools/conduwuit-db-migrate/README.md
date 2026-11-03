@@ -12,17 +12,30 @@ record includes the row count; import rejects a truncated or malformed archive.
 redb records use the production table name and composite-key encoding from
 `src/database/engine/redb.rs`.
 
-Export defaults to every source column family except `default` and the
-mtxdb-owned event/DAG/signing-key families. Legacy state maps stay in the
-metadata archive: `mtxdb import` does not yet build state groups for
-`mtxdb-export/v1` inputs, so the server's v20 migration uses these maps to
-build its HAMT roots. The root-handle and HAMT-node maps remain excluded
-because v20 rewrites them. The `list` command shows the classification before
-export. Explicit map names can select a subset, but mtxdb-owned families are
-refused. The importer refuses to overwrite an existing redb destination and
-publishes the completed temporary database by rename. Stop the source
-homeserver before exporting so RocksDB is a stable read-only snapshot; the
-tool opens it read-only and never writes to it.
+Export defaults to every source column family except `default`, the mtxdb-owned
+event/DAG/signing-key families, and derived or obsolete maps. This includes the
+legacy short-ID maps: mtxdb import builds its own short-ID index from event
+identities, and v23 rebuilds state HAMTs from timeline events rather than the
+legacy `shortstatehash_statediff` history or `roomid_shortstatehash` room
+selection. Copying those maps would only inflate metadata.redb. Root-handle and
+HAMT-node maps remain excluded because v23 rewrites them. The `list` command
+shows the classification before export.
+Explicit map names can select a subset, but mtxdb-owned and skipped families
+are refused. The importer refuses to overwrite an existing redb destination
+and publishes the completed temporary database by rename. Stop the source
+homeserver before exporting so RocksDB is a stable read-only snapshot; the tool
+opens it read-only and never writes to it.
+
+To reclaim space in an existing metadata database after the server has cleared
+or dropped legacy maps, stop the server and run:
+
+```text
+cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
+  compact /path/to/database/metadata.redb
+```
+
+Compaction opens the redb file directly and may take a while on a large file.
+Do not run it while the server is using that database.
 
 `export-mtxdb` writes one `room-<hex room id>.jsonl` per room plus
 `server-keys.jsonl`. It understands both the legacy `pduid_pdu` /
@@ -55,8 +68,8 @@ cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
 
 # Import every room file and the keys file in one invocation. The import
 # marker is only written when the complete set succeeds. `--no-state-hamts`
-# leaves state to the server: congruent's v20 migration builds its short-ID
-# HAMTs from the legacy state maps in metadata.redb.
+# leaves state to the server: congruent's v23 migration rebuilds the room
+# HAMTs from the imported timeline events.
 mtxdb import --no-state-hamts --dir /path/to/new-database/mtxdb /tmp/wombatx-mtxdb-export/*.jsonl
 ```
 
