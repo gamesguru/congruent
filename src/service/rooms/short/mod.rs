@@ -2,7 +2,7 @@ use std::{borrow::Borrow, mem::size_of, str::FromStr, sync::Arc};
 
 pub use conduwuit::matrix::pdu::{ShortEventId, ShortId, ShortRoomId, ShortStateKey};
 use conduwuit::{
-	Result, err, implement,
+	Result, err, implement, info,
 	matrix::StateKey,
 	pair_of,
 	utils::{self, IterStream, ReadyExt, stream::TryIgnore},
@@ -175,6 +175,36 @@ fn import_legacy_short_ids(
 	reclaim.check(shortids, true)
 }
 
+/// Remove the legacy lookup maps after their mappings are durably imported to
+/// mtxdb. The v20 state migration continues to use those numeric IDs through
+/// `ShortIdAdapter`; it does not need the RocksDB/redb source maps afterward.
+fn clear_legacy_short_id_maps(db: &Arc<database::Database>) -> Result {
+	let cork = db.cork_and_sync();
+	for name in [
+		"eventid_shorteventid",
+		"shorteventid_eventid",
+		"shortstatekey_statekey",
+		"statekey_shortstatekey",
+	] {
+		let map = db
+			.deprecated(name)
+			.expect("legacy short-ID map is registered")
+			.clone();
+		let mut cleared = 0_usize;
+		for rows in map.raw_entries()?.chunks(10_000) {
+			let mut batch = database::Batch::new();
+			for (key, _) in rows {
+				map.batch_delete(&mut batch, key);
+				cleared = cleared.saturating_add(1);
+			}
+			map.apply_batch(batch);
+		}
+		info!(%name, ?cleared, "Cleared imported legacy short-ID map");
+	}
+	drop(cork);
+	Ok(())
+}
+
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let eventidshort_cap = utils::math::usize_from_f64(
@@ -223,6 +253,10 @@ impl crate::Service for Service {
 				err!(Database("Failed to sync the legacy short-ID import: {error}"))
 			})?;
 		}
+		// Also run when the import marker already exists: this makes cleanup
+		// recoverable if startup stopped after syncing the import but before
+		// clearing the legacy maps.
+		clear_legacy_short_id_maps(args.db)?;
 		let globals = args.depend::<globals::Service>("globals");
 		shortids
 			.advance_counter(globals.current_count().unwrap_or(0))

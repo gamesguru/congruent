@@ -22,6 +22,7 @@ const MAX_SHORT: u64 = 1 << 30;
 pub(super) struct DerivedIndexAudit {
 	pub counter: u64,
 	pub unverifiable: bool,
+	pub legacy_maps_cleared: bool,
 
 	pub event_rows_fwd: u64,
 	pub event_rows_rev: u64,
@@ -72,6 +73,15 @@ impl DerivedIndexAudit {
 	/// Format the legacy-index audit, including its validity and sample findings.
 	pub(super) fn report(&self) -> String {
 		let mut out = String::new();
+		if self.legacy_maps_cleared {
+			writeln!(
+				out,
+				"  legacy short-ID maps were cleared after import; mtxdb is authoritative, so \
+				 the legacy-map audit is unavailable."
+			)
+			.ok();
+			return out;
+		}
 		if self.unverifiable {
 			writeln!(
 				out,
@@ -195,6 +205,20 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 	let words = usize::try_from(counter / 64).unwrap_or(0).saturating_add(1);
 
 	let mut audit = DerivedIndexAudit { counter, ..Default::default() };
+	let event_map = services
+		.db
+		.deprecated("eventid_shorteventid")
+		.expect("deprecated short ID map");
+	let statekey_map = services
+		.db
+		.deprecated("shortstatekey_statekey")
+		.expect("deprecated short ID map");
+	if event_map.raw_entries().is_ok_and(|rows| rows.is_empty())
+		&& statekey_map.raw_entries().is_ok_and(|rows| rows.is_empty())
+	{
+		audit.legacy_maps_cleared = true;
+		return audit;
+	}
 
 	// Event short-ID bijection.
 	let (event_fwd, event_fwd_malformed) = forward_vals(
