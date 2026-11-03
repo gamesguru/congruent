@@ -288,7 +288,7 @@ impl Data {
 			return Ok(std::collections::HashSet::new());
 		}
 
-		let verdicts = self.get_verdicts(event_ids.iter().map(|id| &**id))?;
+		let verdicts = self.get_verdicts(event_ids)?;
 
 		let mut flagged = std::collections::HashSet::new();
 		for (event_id, verdict) in event_ids.iter().zip(verdicts) {

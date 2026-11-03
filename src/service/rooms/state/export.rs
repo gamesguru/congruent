@@ -105,7 +105,7 @@ impl Service {
 			let verdicts = self
 				.services
 				.pdu_metadata
-				.get_verdicts(chunk.iter().map(|(id, ..)| &**id))?;
+				.get_verdicts(chunk.iter().map(|(id, ..)| id))?;
 
 			for ((event_id, outlier, count), verdict) in chunk.iter().zip(verdicts) {
 				let pdu = match self.services.timeline.get_pdu_json(event_id) {
