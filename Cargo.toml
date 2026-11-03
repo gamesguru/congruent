@@ -398,9 +398,6 @@ features = ["std"]
 [workspace.dependencies.nonzero_ext]
 version = "0.3.0"
 
-[workspace.dependencies.roaring]
-version = "0.11"
-
 #
 # Patches
 #
@@ -818,6 +815,3 @@ collapsible_if = "allow"
 
 # TODO: break these apart
 cognitive_complexity = "allow"
-
-[patch."https://gitlab.com/wombat-foundation/mtxdb.git"]
-mtxdb = { path = "../mtxdb" }

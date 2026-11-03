@@ -1676,7 +1676,7 @@ async fn test_busted_dag_resolution() {
 	assert!(res.is_ok(), "import-pdus failed: {res:?}");
 	println!("yolo import-pdus took {:?}", start_import.elapsed());
 
-	// Build derived data (auth chain roaring bitmaps, short IDs, metadata)
+	// Build derived data (auth chain bitmaps, short IDs, metadata)
 	println!("Starting reindex-short...");
 	let start_reindex = std::time::Instant::now();
 	let res = services
@@ -1828,7 +1828,7 @@ async fn test_unredacted_room_dag_resolution() {
 	assert!(res.is_ok(), "import-pdus failed: {res:?}");
 	println!("import-pdus took {:?}", start_import.elapsed());
 
-	// Build derived data (auth chain roaring bitmaps)
+	// Build derived data (auth chain bitmaps)
 	println!("Starting reindex-short...");
 	let start_reindex = std::time::Instant::now();
 	let res = services
@@ -1973,7 +1973,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 	assert!(res.is_ok(), "import-pdus failed: {res:?}");
 	eprintln!("[LOUNGE] <<< import-pdus took {:?}", start_import.elapsed());
 
-	// Build derived data (auth chain roaring bitmaps)
+	// Build derived data (auth chain bitmaps)
 	eprintln!("[LOUNGE] >>> reindex-short");
 	let start_reindex = std::time::Instant::now();
 	let res = services
@@ -2183,7 +2183,7 @@ async fn test_nheko_dag_resolution() {
 	assert!(res.is_ok(), "import-pdus failed: {res:?}");
 	println!("import-pdus took {:?}", start_import.elapsed());
 
-	// Build derived data (auth chain roaring bitmaps)
+	// Build derived data (auth chain bitmaps)
 	println!("Starting reindex-short...");
 	let start_reindex = std::time::Instant::now();
 	let res = services
@@ -2620,7 +2620,7 @@ async fn test_knocking_dag_resolution() {
 		.await;
 	assert!(res.is_ok(), "import-pdus failed: {res:?}");
 
-	// Build derived data (auth chain roaring bitmaps)
+	// Build derived data (auth chain bitmaps)
 	println!("Starting reindex-short...");
 	let res = services
 		.admin

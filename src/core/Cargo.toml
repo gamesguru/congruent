@@ -78,7 +78,6 @@ smol.workspace = true
 tokio.workspace = true
 toml.workspace = true
 url.workspace = true
-roaring.workspace = true
 parking_lot.workspace = true
 lock_api.workspace = true
 moka.workspace = true

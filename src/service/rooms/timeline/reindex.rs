@@ -9,7 +9,7 @@ use conduwuit_core::{
 	warn,
 };
 use futures::StreamExt;
-use roaring::RoaringTreemap;
+use rezzy::bitmap::Bitmap64;
 use slipstream::{OwnedEventId, RoomId};
 
 use super::{Service, metadata::EventMetadata};
@@ -115,8 +115,8 @@ impl Service {
 			info!("reindex_short: cleared {cleared_topo} topo index rows for {room_id}");
 		}
 
-		// Auth chain cache for incremental computation (roaring bitmaps)
-		let mut auth_chain_cache: HashMap<ShortEventId, Arc<RoaringTreemap>> = HashMap::new();
+		// Auth chain cache for incremental computation (rezzy bitmaps)
+		let mut auth_chain_cache: HashMap<ShortEventId, Arc<Bitmap64>> = HashMap::new();
 
 		for (i, (count, event_id)) in events.iter().enumerate() {
 			if i.is_multiple_of(1000) {
@@ -276,7 +276,7 @@ impl Service {
 					.await
 					.is_err()
 			{
-				let mut full_chain = RoaringTreemap::new();
+				let mut full_chain = Bitmap64::new();
 				for &auth_short in &auth_shorts {
 					full_chain.insert(auth_short);
 					// Use our local cache (built during this sweep) for ancestors

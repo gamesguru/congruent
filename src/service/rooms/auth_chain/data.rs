@@ -3,13 +3,13 @@ use std::sync::Arc;
 use conduwuit::{Result, RuntimeHandle, SyncMutex, err, utils::math::usize_from_f64};
 use conduwuit_mtxdb::{events::EventAdapter, shortids::ShortIdAdapter};
 use lru_cache::LruCache;
-use roaring::RoaringTreemap;
+use rezzy::bitmap::Bitmap64;
 
 pub(super) struct Data {
 	events: EventAdapter,
 	shortids: ShortIdAdapter,
 	runtime: RuntimeHandle,
-	pub(super) auth_chain_cache: SyncMutex<LruCache<Vec<u64>, Arc<RoaringTreemap>>>,
+	pub(super) auth_chain_cache: SyncMutex<LruCache<Vec<u64>, Arc<Bitmap64>>>,
 }
 
 impl Data {
@@ -41,7 +41,7 @@ impl Data {
 		&self,
 		shortroomid: u64,
 		shorteventid: u64,
-	) -> Result<Arc<RoaringTreemap>> {
+	) -> Result<Arc<Bitmap64>> {
 		let key = [shortroomid, shorteventid];
 
 		// Check RAM cache
@@ -73,7 +73,7 @@ impl Data {
 				else {
 					return Err(err!(Request(NotFound("no persisted auth chain for event"))));
 				};
-				let mut bitmap = RoaringTreemap::new();
+				let mut bitmap = Bitmap64::new();
 				for ancestor in ancestors {
 					let short = shortids
 						.get_event(&ancestor)
@@ -102,7 +102,7 @@ impl Data {
 		&self,
 		shortroomid: u64,
 		shorteventid: u64,
-		auth_chain: Arc<RoaringTreemap>,
+		auth_chain: Arc<Bitmap64>,
 	) {
 		let key = [shortroomid, shorteventid];
 		// Cache in RAM

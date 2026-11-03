@@ -10,7 +10,7 @@ use conduwuit::{
 	},
 };
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
-use roaring::RoaringTreemap;
+use rezzy::bitmap::Bitmap64;
 use slipstream::{EventId, OwnedEventId, RoomId};
 
 use self::data::Data;
@@ -89,7 +89,7 @@ where
 		"start",
 	);
 
-	let mut full_auth_chain = RoaringTreemap::new();
+	let mut full_auth_chain = Bitmap64::new();
 	let mut uncached = Vec::new();
 
 	// Parallel check for starting events already in cache
@@ -159,7 +159,7 @@ pub async fn get_auth_chain_bitmap<'a, I>(
 	&'a self,
 	room_id: &RoomId,
 	starting_events: I,
-) -> Result<RoaringTreemap>
+) -> Result<Bitmap64>
 where
 	I: Iterator<Item = &'a EventId> + Clone + Debug + ExactSizeIterator + Send + 'a,
 {
@@ -179,7 +179,7 @@ where
 		"start",
 	);
 
-	let mut full_auth_chain = RoaringTreemap::new();
+	let mut full_auth_chain = Bitmap64::new();
 	let mut uncached = Vec::new();
 
 	// Parallel check for starting events already in cache
@@ -249,9 +249,9 @@ async fn get_auth_chain_inner(
 	shortroomid: ShortRoomId,
 	event_id: &EventId,
 	shortid: ShortEventId,
-) -> Result<(RoaringTreemap, bool)> {
+) -> Result<(Bitmap64, bool)> {
 	let mut todo = vec![shortid];
-	let mut found = RoaringTreemap::new();
+	let mut found = Bitmap64::new();
 	let mut is_complete = true;
 
 	let started = Instant::now();
@@ -323,7 +323,7 @@ async fn add_derived_create_event(
 	&self,
 	room_id: &RoomId,
 	exclude: Option<&EventId>,
-	chain: &mut RoaringTreemap,
+	chain: &mut Bitmap64,
 ) -> bool {
 	let Some(room_id_without_sigil) = room_id.as_str().strip_prefix('!') else {
 		return true;
@@ -357,7 +357,7 @@ pub async fn get_cached_eventid_authchain(
 	&self,
 	shortroomid: ShortRoomId,
 	shorteventid: ShortEventId,
-) -> Result<Arc<RoaringTreemap>> {
+) -> Result<Arc<Bitmap64>> {
 	self.db
 		.get_cached_eventid_authchain(shortroomid, shorteventid)
 		.await
@@ -368,7 +368,7 @@ pub fn cache_auth_chain_bitmap(
 	&self,
 	shortroomid: ShortRoomId,
 	shorteventid: ShortEventId,
-	auth_chain: &RoaringTreemap,
+	auth_chain: &Bitmap64,
 ) {
 	self.db
 		.cache_auth_chain(shortroomid, shorteventid, Arc::new(auth_chain.clone()));

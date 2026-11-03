@@ -11,6 +11,7 @@ use conduwuit_core::{
 	warn,
 };
 use futures::StreamExt;
+use rezzy::bitmap::Bitmap;
 use slipstream::{
 	OwnedEventId, RoomId, RoomVersionId,
 	events::{StateEventType, TimelineEventType},
@@ -34,7 +35,7 @@ type EventMeta = (
 	u64,
 );
 
-/// Safe u32 -> usize for Vec indexing of roaring bitmap indices.
+/// Safe u32 -> usize for Vec indexing of bitmap indices.
 #[inline]
 fn to_usize(v: u32) -> usize { usize::try_from(v).expect("u32 fits in usize") }
 
@@ -47,7 +48,7 @@ struct RebuildCtx {
 	event_set: HashSet<OwnedEventId>,
 	eid_to_idx: HashMap<OwnedEventId, u32>,
 	idx_to_eid: Vec<OwnedEventId>,
-	auth_chain_bitmaps: Vec<roaring::RoaringBitmap>,
+	auth_chain_bitmaps: Vec<Bitmap>,
 	/// State event PDUs indexed by the same u32 as eid_to_idx.
 	/// `None` for message events (never needed for resolution).
 	state_pdus: Vec<Option<rezzy::LeanEvent>>,
@@ -212,7 +213,7 @@ impl super::Service {
 
 	fn rebuild_auth_chains(
 		events_meta: &[EventMeta],
-	) -> (HashMap<OwnedEventId, u32>, Vec<OwnedEventId>, Vec<roaring::RoaringBitmap>) {
+	) -> (HashMap<OwnedEventId, u32>, Vec<OwnedEventId>, Vec<Bitmap>) {
 		let start = Instant::now();
 
 		// Pass 1: Index all events
@@ -229,7 +230,7 @@ impl super::Service {
 		// Pass 2: Iterative post-order traversal on auth DAG for transitive closures.
 		// Uses an explicit stack instead of recursion (Rust has no TCO).
 		let n = events_meta.len();
-		let mut bitmaps: Vec<Option<roaring::RoaringBitmap>> = vec![None; n];
+		let mut bitmaps: Vec<Option<Bitmap>> = vec![None; n];
 		let mut visiting = vec![false; n]; // Cycle detection
 
 		for i in 0..n {
@@ -263,7 +264,7 @@ impl super::Service {
 				}
 
 				if all_resolved {
-					let mut chain = roaring::RoaringBitmap::new();
+					let mut chain = Bitmap::new();
 					for auth_id in auth_events {
 						if let Some(&auth_idx) = eid_to_idx.get(auth_id) {
 							let auth_usize = to_usize(auth_idx);
@@ -281,7 +282,7 @@ impl super::Service {
 		}
 
 		// Unwrap all Options into final Vec
-		let final_bitmaps: Vec<roaring::RoaringBitmap> =
+		let final_bitmaps: Vec<Bitmap> =
 			bitmaps.into_iter().map(Option::unwrap_or_default).collect();
 
 		debug!(
@@ -719,7 +720,7 @@ impl super::Service {
 
 	/// Resolve a fork between multiple parent state sets using in-memory PDUs
 	/// and `rezzy`. Pre-separates unconflicted/conflicted, computes auth
-	/// difference via roaring bitmaps, then builds LeanEvents from the
+	/// difference via bitmap set operations, then builds LeanEvents from the
 	/// pre-cached state PDUs (zero RocksDB I/O).
 	fn resolve_fork_with_states(
 		ctx: &RebuildCtx,
@@ -807,12 +808,12 @@ impl super::Service {
 		);
 
 		// 3. Compute auth chains (needed for both V2 auth diff and V2_1+ context)
-		let mut union_auth = roaring::RoaringBitmap::new();
-		let mut intersect_auth = roaring::RoaringBitmap::new();
+		let mut union_auth = Bitmap::new();
+		let mut intersect_auth = Bitmap::new();
 		let mut first = true;
 
 		for map in fork_states {
-			let mut chain = roaring::RoaringBitmap::new();
+			let mut chain = Bitmap::new();
 			for eid in map.values() {
 				if let Some(&idx) = ctx.eid_to_idx.get(eid) {
 					chain.insert(idx);
@@ -832,7 +833,7 @@ impl super::Service {
 		// V2 only: auth chain diff events are also conflicted.
 		// V2_1+ (MSC4297): uses conflicted state subgraph instead.
 		if !is_v2_1_plus {
-			let auth_diff = std::ops::Sub::sub(&union_auth, &intersect_auth);
+			let auth_diff = std::ops::Sub::sub(union_auth.clone(), &intersect_auth);
 			for idx in auth_diff {
 				conflicted_eids.insert(ctx.idx_to_eid[to_usize(idx)].clone());
 			}
