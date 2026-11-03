@@ -16,14 +16,10 @@ const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("conduwuit_met
 
 // These records are exported through the room and signing-key mtxdb JSONL
 // formats, or are derived from those exports. Copying them into redb would
-// leave stale legacy indexes beside the newly imported mtxdb data.
-//
-// The forward legacy short-ID maps are the exception: startup imports their
-// mappings into mtxdb before the server drops them. The server's v23 migration
-// rebuilds the HAMT roots from the timeline rather than the legacy statediff
-// history, so that map and the reverse lookups are skipped along with the
-// derived indexes. The root handles and HAMT node maps stay out because v23
-// rewrites them.
+// leave stale legacy indexes beside the newly imported mtxdb data. The legacy
+// state history and short-ID maps are skipped for the same reason: v23
+// rebuilds the HAMT roots from the timeline, and mtxdb owns the short-ID index.
+// The root handles and HAMT node maps stay out because v23 rewrites them.
 const MTXDB_OWNED_MAPS: &[&str] = &[
 	"eventid_outlierpdu",
 	"eventid_pdu",

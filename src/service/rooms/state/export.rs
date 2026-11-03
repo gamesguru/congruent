@@ -1,8 +1,8 @@
 //! JSONL export of a room's durable state, for the mtxdb CLI to import.
 //!
-//! The export reads PDUs and timeline metadata from RocksDB, and authoritative
-//! verdicts from mtxdb. Each line is one JSON object tagged by `"t"`, written
-//! in dependency order so an importer can apply it as it streams:
+//! The export reads PDUs, timeline metadata, and authoritative verdicts from
+//! mtxdb. Each line is one JSON object tagged by `"t"`, written in dependency
+//! order so an importer can apply it as it streams:
 //!
 //! 1. `header`: format, server, room, and `timeline: true`.
 //! 2. `event`: `event_id`, the `pdu` as stored, `prev_events`,
