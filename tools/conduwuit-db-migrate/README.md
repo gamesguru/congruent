@@ -35,7 +35,9 @@ cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
 ```
 
 Compaction opens the redb file directly and may take a while on a large file.
-Do not run it while the server is using that database.
+It rewrites the file and can temporarily need roughly twice the database's size
+in free space, so check available space first. Do not run it while the server
+is using that database.
 
 `export-mtxdb` writes one `room-<hex room id>.jsonl` per room plus
 `server-keys.jsonl`. It understands both the legacy `pduid_pdu` /
