@@ -431,6 +431,17 @@ impl Service {
 		self.db.is_event_rejected(event_id)
 	}
 
+	/// Read authoritative mtxdb verdicts for multiple event IDs in one batch.
+	pub fn get_verdicts<'a, I>(
+		&self,
+		event_ids: I,
+	) -> Result<Vec<Option<conduwuit_mtxdb::verdicts::Verdict>>>
+	where
+		I: IntoIterator<Item = &'a EventId>,
+	{
+		self.db.get_verdicts(event_ids)
+	}
+
 	/// Returns the subset of `event_ids` carrying a rejection or soft-fail
 	/// marker. Batch-reads both verdict stores so callers scanning many
 	/// events (e.g. `recalculate_extremities` during monitor sweeps) don't

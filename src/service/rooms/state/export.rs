@@ -66,6 +66,8 @@ impl Service {
 		room_id: &RoomId,
 		out: &mut W,
 	) -> Result<ExportCounts> {
+		const BATCH_SIZE: usize = 1024;
+
 		let mut counts = ExportCounts::default();
 
 		let mut events: Vec<(OwnedEventId, bool, Option<PduCount>)> = self
@@ -99,67 +101,73 @@ impl Service {
 		header.insert(field::TIMELINE.to_owned(), Value::Bool(true));
 		line(out, header)?;
 
-		for (event_id, outlier, count) in &events {
-			let pdu = match self.services.timeline.get_pdu_json(event_id) {
-				| Ok(pdu) => pdu,
-				| Err(_) => match self.services.timeline.get_outlier_pdu_json(event_id) {
+		for chunk in events.chunks(BATCH_SIZE) {
+			let verdicts = self
+				.services
+				.pdu_metadata
+				.get_verdicts(chunk.iter().map(|(id, ..)| &**id))?;
+
+			for ((event_id, outlier, count), verdict) in chunk.iter().zip(verdicts) {
+				let pdu = match self.services.timeline.get_pdu_json(event_id) {
 					| Ok(pdu) => pdu,
-					| Err(error) => {
-						warn!(%room_id, %event_id, ?error, "skipping event with no stored PDU");
-						continue;
+					| Err(_) => match self.services.timeline.get_outlier_pdu_json(event_id) {
+						| Ok(pdu) => pdu,
+						| Err(error) => {
+							warn!(%room_id, %event_id, ?error, "skipping event with no stored PDU");
+							continue;
+						},
 					},
-				},
-			};
-			let mut event = record(tag::EVENT);
-			event.insert(field::EVENT_ID.to_owned(), text(event_id.as_str()));
-			event.insert(field::PREV_EVENTS.to_owned(), id_list(&pdu, field::PREV_EVENTS));
-			event.insert(field::AUTH_EVENTS.to_owned(), id_list(&pdu, field::AUTH_EVENTS));
-			event.insert(field::OUTLIER.to_owned(), Value::Bool(*outlier));
-			if !*outlier {
-				if let Some(count) = count {
+				};
+				let mut event = record(tag::EVENT);
+				event.insert(field::EVENT_ID.to_owned(), text(event_id.as_str()));
+				event.insert(field::PREV_EVENTS.to_owned(), id_list(&pdu, field::PREV_EVENTS));
+				event.insert(field::AUTH_EVENTS.to_owned(), id_list(&pdu, field::AUTH_EVENTS));
+				event.insert(field::OUTLIER.to_owned(), Value::Bool(*outlier));
+				if !*outlier {
+					if let Some(count) = count {
+						event.insert(
+							field::STREAM_ORDERING.to_owned(),
+							Value::from(count.into_signed()),
+						);
+					}
+				}
+				if let Some(arrival) = verdict.as_ref().and_then(|v| v.arrival_ordering) {
+					let arrival = i64::try_from(arrival).map_err(|_| {
+						err!("event {event_id}: arrival ordering {arrival} does not fit in i64")
+					})?;
+					event.insert(field::ARRIVAL_ORDERING.to_owned(), Value::from(arrival));
+				}
+				let soft_fail = verdict.as_ref().and_then(|v| v.soft_fail);
+				event.insert(field::SOFT_FAILED.to_owned(), Value::Bool(soft_fail.is_some()));
+				if let Some(code) = soft_fail {
+					let code = crate::rooms::pdu_metadata::SoftFailCode::from_u8(code);
 					event.insert(
-						field::STREAM_ORDERING.to_owned(),
-						Value::from(count.into_signed()),
+						field::SOFT_FAIL_CODE.to_owned(),
+						Value::from(u64::from(code.to_u8())),
 					);
 				}
+				let rejection = verdict.as_ref().and_then(|v| v.rejection);
+				event.insert(field::REJECTED.to_owned(), Value::Bool(rejection.is_some()));
+				if let Some(code) = rejection {
+					let code = crate::rooms::pdu_metadata::RejectionCode::from_u8(code);
+					event.insert(
+						field::REJECTION_CODE.to_owned(),
+						Value::from(u64::from(code.to_u8())),
+					);
+				}
+				if let Some(redacted_by) = verdict.as_ref().and_then(|v| v.redacted_by.as_ref()) {
+					let redacted_by = std::str::from_utf8(redacted_by).map_err(|error| {
+						err!("event {event_id}: invalid redaction event ID bytes: {error}")
+					})?;
+					let redacted_by = OwnedEventId::parse(redacted_by).map_err(|error| {
+						err!("event {event_id}: invalid redaction event ID: {error}")
+					})?;
+					event.insert(field::REDACTED_BY.to_owned(), text(redacted_by.as_str()));
+				}
+				event.insert(field::PDU.to_owned(), Value::Object(pdu));
+				line(out, event)?;
+				counts.events = counts.events.saturating_add(1);
 			}
-			if let Some(arrival) = self.services.pdu_metadata.get_arrival_ordering(event_id)? {
-				let arrival = i64::try_from(arrival).map_err(|_| {
-					err!("event {event_id}: arrival ordering {arrival} does not fit in i64")
-				})?;
-				event.insert(field::ARRIVAL_ORDERING.to_owned(), Value::from(arrival));
-			}
-			event.insert(
-				field::SOFT_FAILED.to_owned(),
-				Value::Bool(self.services.pdu_metadata.is_event_soft_failed(event_id)?),
-			);
-			let soft_fail_reason = self.services.pdu_metadata.get_soft_fail_reason(event_id)?;
-			if let Some(reason) = soft_fail_reason {
-				let code = crate::rooms::pdu_metadata::SoftFailCode::parse(&reason)
-					.unwrap_or(crate::rooms::pdu_metadata::SoftFailCode::Unknown);
-				event.insert(
-					field::SOFT_FAIL_CODE.to_owned(),
-					Value::from(u64::from(code.to_u8())),
-				);
-			}
-			event.insert(
-				field::REJECTED.to_owned(),
-				Value::Bool(self.services.pdu_metadata.is_event_rejected(event_id)?),
-			);
-			if let Some(reason) = self.services.pdu_metadata.get_rejection_reason(event_id)? {
-				let code = crate::rooms::pdu_metadata::RejectionCode::parse(&reason)
-					.unwrap_or(crate::rooms::pdu_metadata::RejectionCode::Unknown);
-				event.insert(
-					field::REJECTION_CODE.to_owned(),
-					Value::from(u64::from(code.to_u8())),
-				);
-			}
-			if let Some(redacted_by) = self.services.pdu_metadata.get_redacted_by(event_id)? {
-				event.insert(field::REDACTED_BY.to_owned(), text(redacted_by.as_str()));
-			}
-			event.insert(field::PDU.to_owned(), Value::Object(pdu));
-			line(out, event)?;
-			counts.events = counts.events.saturating_add(1);
 		}
 
 		let mut end = record(tag::END);

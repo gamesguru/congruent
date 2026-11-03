@@ -262,6 +262,23 @@ impl Data {
 			})
 	}
 
+	/// Read authoritative mtxdb verdicts for multiple event IDs in one batch.
+	pub(super) fn get_verdicts<'a, I>(
+		&self,
+		event_ids: I,
+	) -> Result<Vec<Option<conduwuit_mtxdb::verdicts::Verdict>>>
+	where
+		I: IntoIterator<Item = &'a EventId>,
+	{
+		let event_id_refs: Vec<&[u8]> = event_ids.into_iter().map(EventId::as_bytes).collect();
+		if event_id_refs.is_empty() {
+			return Ok(Vec::new());
+		}
+		self.mtxdb_verdicts
+			.get_many(&event_id_refs)
+			.map_err(|error| err!(Database("Failed to batch-read mtxdb verdicts: {error}")))
+	}
+
 	/// Returns the event IDs carrying a rejection or soft-fail marker.
 	pub(super) fn verdict_flagged_batch(
 		&self,
@@ -271,11 +288,7 @@ impl Data {
 			return Ok(std::collections::HashSet::new());
 		}
 
-		let event_id_refs: Vec<&[u8]> = event_ids.iter().map(OwnedEventId::as_bytes).collect();
-		let verdicts = self
-			.mtxdb_verdicts
-			.get_many(&event_id_refs)
-			.map_err(|error| err!(Database("Failed to batch-read mtxdb verdicts: {error}")))?;
+		let verdicts = self.get_verdicts(event_ids.iter().map(|id| &**id))?;
 
 		let mut flagged = std::collections::HashSet::new();
 		for (event_id, verdict) in event_ids.iter().zip(verdicts) {
