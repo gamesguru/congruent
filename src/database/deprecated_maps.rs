@@ -12,7 +12,10 @@ pub(super) type Maps = BTreeMap<&'static str, Arc<Map>>;
 
 const MAP_NAMES: &[&str] = &[
 	"eventid_pdu",
+	"eventid_rejections",
 	"eventid_shorteventid",
+	"eventid_softfailed",
+	"eventid_status",
 	"roomid_shortroomid",
 	"shorteventid_authchain",
 	"shorteventid_eventid",

@@ -33,15 +33,19 @@ use crate::{Services, media};
 /// - If database is opened at lesser version we apply migrations up to this.
 ///   Note that named-feature migrations may also be performed when opening at
 ///   equal or lesser version. These are expected to be backward-compatible.
-pub(crate) const DATABASE_VERSION: u64 = 26;
+pub(crate) const DATABASE_VERSION: u64 = 27;
 
 /// Column families explicitly dropped in migrations. These are included
 /// in the fingerprint hash (prefixed with '-') so that a branch which
 /// still has them as live CFs produces a different fingerprint.
 const DROPPED_CFS: &[&str] = &[
 	"eventid_receivecount",
+	"eventid_rejections",
 	"eventid_shorteventid",
+	"eventid_softfailed",
+	"eventid_status",
 	"rejectedeventids",
+	"room_pducount_eventid_backup",
 	"roomid_outliereventid",
 	"roomid_shortstatehash",
 	"roomuserid_lastprivatereadupdate",
@@ -53,6 +57,8 @@ const DROPPED_CFS: &[&str] = &[
 	"shortstatehash_statediff",
 	"shortstatekey_statekey",
 	"softfailedeventids",
+	"state_hamt_node_mtimes",
+	"state_hamt_nodes",
 	"statekey_shortstatekey",
 ];
 
@@ -77,6 +83,16 @@ const V26_RETIRED_CFS: &[&str] = &[
 	"shorteventid_eventid",
 	"shortstatekey_statekey",
 	"statekey_shortstatekey",
+];
+
+/// Redb maps retired after migration inputs have been consumed.
+const V27_RETIRED_CFS: &[&str] = &[
+	"eventid_rejections",
+	"eventid_softfailed",
+	"eventid_status",
+	"room_pducount_eventid_backup",
+	"state_hamt_node_mtimes",
+	"state_hamt_nodes",
 ];
 
 /// Compute schema fingerprint from the static column family name list,
@@ -418,7 +434,7 @@ async fn migrate(services: &Services) -> Result<()> {
 	// independent `eventid_rejections`/`eventid_softfailed` stores. `db_lt_21`
 	// folds the legacy `eventid_status` CF and any legacy `eventid_metadata.status`
 	// field into those stores and rewrites `eventid_metadata` rows status-less.
-	// (`eventid_status` stays as a live-but-unused CF for upgrade-path safety.)
+	// (`eventid_status` remains in the deprecated registry for older upgrades.)
 	if services.globals.db.database_version().await < 21 {
 		db_lt_21(services)
 			.await
@@ -467,6 +483,13 @@ async fn migrate(services: &Services) -> Result<()> {
 		db_lt_26(services)
 			.await
 			.map_err(|e| err!("Failed to run v26 migrations: {e}"))?;
+	}
+
+	// Version 27 - drop unused timeline and HAMT metadata maps.
+	if services.globals.db.database_version().await < 27 {
+		db_lt_27(services)
+			.await
+			.map_err(|e| err!("Failed to run v27 migrations: {e}"))?;
 	}
 
 	if services.globals.db.database_version().await != DATABASE_VERSION {
@@ -772,8 +795,8 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 	let eventid_pdu = db.deprecated("eventid_pdu")?.clone();
 	let room_pducount_eventid = db["room_pducount_eventid"].clone();
 	let eventid_metadata = db["eventid_metadata"].clone();
-	let eventid_rejections = db["eventid_rejections"].clone();
-	let eventid_softfailed = db["eventid_softfailed"].clone();
+	let eventid_rejections = db.deprecated("eventid_rejections")?.clone();
+	let eventid_softfailed = db.deprecated("eventid_softfailed")?.clone();
 	let roomid_topologicalorder_pducount = db["roomid_topologicalorder_pducount"].clone();
 
 	let cork = db.cork_and_sync();
@@ -887,11 +910,11 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 				eventid_metadata.insert(event_id_bytes, metadata_bytes);
 			}
 			if pdu.rejected()
-				&& db["eventid_rejections"]
+				&& eventid_rejections
 					.get_blocking(event_id_bytes)
 					.is_not_found()
 			{
-				db["eventid_rejections"].insert(event_id_bytes, [
+				eventid_rejections.insert(event_id_bytes, [
 					crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8(),
 				]);
 			}
@@ -945,11 +968,11 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 					eventid_metadata.insert(event_id_bytes, metadata_bytes);
 				}
 				if pdu.rejected()
-					&& db["eventid_rejections"]
+					&& eventid_rejections
 						.get_blocking(event_id_bytes)
 						.is_not_found()
 				{
-					db["eventid_rejections"].insert(event_id_bytes, [
+					eventid_rejections.insert(event_id_bytes, [
 						crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8(),
 					]);
 				}
@@ -1848,6 +1871,7 @@ async fn fix_local_invite_state(services: &Services) -> Result {
 async fn db_lt_19(services: &Services) -> Result<()> {
 	info!("Running v19 cleanup migration...");
 	let db = &services.db;
+	let eventid_status = db.deprecated("eventid_status")?.clone();
 	let cork = db.cork_and_sync();
 
 	if db.db.cf_exists("softfailedeventids") {
@@ -1866,8 +1890,7 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 				// verdict is preserved. Only `NotFound` / an empty record is
 				// treated as "absent"; any other read error is a real failure
 				// we must not paper over by synthesizing `Unknown`.
-				let already_has_status = match db["eventid_status"].get_blocking(&event_id_bytes)
-				{
+				let already_has_status = match eventid_status.get_blocking(&event_id_bytes) {
 					| Ok(bytes) => !bytes.is_empty(),
 					| Err(e) if e.is_not_found() => false,
 					| Err(e) => {
@@ -1902,19 +1925,19 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 					continue;
 				}
 
-				db["eventid_status"].batch_put(&mut batch, &event_id_bytes, [
+				eventid_status.batch_put(&mut batch, &event_id_bytes, [
 					1_u8,
 					crate::rooms::pdu_metadata::SoftFailCode::Unknown.to_u8(),
 				]);
 				batch_count = batch_count.saturating_add(1);
 
 				if batch_count >= 1000 {
-					db["eventid_status"].apply_batch(batch);
+					eventid_status.apply_batch(batch);
 					batch = database::Batch::new();
 					batch_count = 0;
 				}
 			}
-			db["eventid_status"].apply_batch(batch);
+			eventid_status.apply_batch(batch);
 		}
 
 		db.db
@@ -2060,21 +2083,20 @@ enum EventStatusV20 {
 async fn db_lt_21(services: &Services) -> Result<()> {
 	info!("Starting v21 migration (fold event status into independent stores)...");
 	let db = &services.db;
+	let eventid_status = db.deprecated("eventid_status")?.clone();
 	// Hold the cork for the whole migration so the per-record inserts and
 	// batched flushes below land in a single WAL flush instead of one per
 	// record (prohibitively slow on databases with many legacy verdicts).
 	let cork = db.cork_and_sync();
 
-	let eventid_rejections = db["eventid_rejections"].clone();
-	let eventid_softfailed = db["eventid_softfailed"].clone();
+	let eventid_rejections = db.deprecated("eventid_rejections")?.clone();
+	let eventid_softfailed = db.deprecated("eventid_softfailed")?.clone();
 	let eventid_metadata = db["eventid_metadata"].clone();
 
 	// Fold legacy `eventid_status` 2-byte records ([1, code] = soft-fail,
 	// [2, code] = rejected) into the independent stores, skipping any entry the
 	// independent store already records (fresh writes win).
 	if db.db.cf_exists("eventid_status") {
-		let eventid_status = database::Map::open(&db.db, "eventid_status")
-			.map_err(|e| err!("Failed to open legacy eventid_status CF for v21 folding: {e}"))?;
 		let stream = eventid_status.raw_stream();
 		pin_mut!(stream);
 		while let Some(item) = stream.next().await {
@@ -2228,9 +2250,8 @@ async fn db_lt_21(services: &Services) -> Result<()> {
 	eventid_metadata.apply_batch(batch);
 	info!("Rewrote eventid_metadata rows in status-less layout.");
 
-	// `eventid_status` stays a live (now-unused) CF: it must remain described
-	// so the `<19` upgrade path (`db_lt_19`) and restart-after-drop consistency
-	// keep working. Its contents were folded out above.
+	// `eventid_status` remains available through the deprecated-map registry so
+	// old upgrade paths can read it; its contents were folded out above.
 
 	drop(cork);
 
@@ -2461,6 +2482,25 @@ async fn db_lt_26(services: &Services) -> Result<()> {
 	Ok(())
 }
 
+/// Drop migration-only and unused metadata map prefixes after their inputs have
+/// been consumed.
+async fn db_lt_27(services: &Services) -> Result<()> {
+	info!("Running v27 migration (dropping retired metadata maps)...");
+
+	for name in V27_RETIRED_CFS {
+		if services.db.db.cf_exists(name) {
+			services
+				.db
+				.db
+				.drop_cf(name)
+				.map_err(|e| err!(Database("Failed to drop retired metadata map {name}: {e}")))?;
+		}
+	}
+
+	services.globals.db.bump_database_version(27);
+	Ok(())
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -2499,7 +2539,7 @@ mod tests {
 		// The hash includes DATABASE_VERSION.to_be_bytes() as first input.
 		// We can't easily test mutation, but we verify the constant is
 		// included by confirming it matches the expected value.
-		assert_eq!(DATABASE_VERSION, 26);
+		assert_eq!(DATABASE_VERSION, 27);
 	}
 
 	#[test]
