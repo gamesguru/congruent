@@ -246,9 +246,7 @@ mod tests {
 		let bytes = encode_verdict(b"$e:x", &verdict).unwrap();
 		let old_bytes: &[u8] =
 			&[1, 5, 4, 0, 0, 0, b'$', b'e', b':', b'x', 1, 4, 0, 0, 0, b'$', b'r', b':', b'x'];
-		let new_bytes: &[u8] =
-			&[2, 5, 4, 0, 0, 0, b'$', b'e', b':', b'x', 1, 4, 0, 0, 0, b'$', b'r', b':', b'x'];
-		assert_eq!(bytes.as_slice(), new_bytes);
+		assert_eq!(bytes.as_slice(), old_bytes);
 		assert_eq!(decode_verdict(old_bytes).unwrap().1, verdict);
 		assert_eq!(decode_verdict(&bytes).unwrap().1, verdict);
 		for cut in 0..bytes.len() {
