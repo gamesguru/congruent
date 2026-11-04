@@ -449,7 +449,6 @@ where
 		&pending_nodes,
 	))
 	.await?;
-	drop(sync_barrier);
 
 	// Recovered outlier timelines carry no state event of their own, so the batch
 	// above did not advance the room pointer for them. A state event already had
@@ -473,6 +472,11 @@ where
 		self.db.apply_batch(batch);
 	}
 	drop(cork);
+	// Keep sync snapshots behind the count until the legacy timeline batch and
+	// state association are both visible. Releasing after the state update but
+	// before this batch lets sync advance `next_batch` past a join whose timeline
+	// row is not readable yet.
+	drop(sync_barrier);
 	let receipt_content = BTreeMap::from_iter([(
 		slipstream::events::receipt::ReceiptEventId::from_opaque(pdu.event_id().as_str()),
 		BTreeMap::from_iter([(
