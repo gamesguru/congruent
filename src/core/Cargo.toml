@@ -80,7 +80,6 @@ toml.workspace = true
 url.workspace = true
 parking_lot.workspace = true
 lock_api.workspace = true
-moka.workspace = true
 dashmap.workspace = true
 rustc-hash.workspace = true
 

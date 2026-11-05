@@ -669,7 +669,6 @@ dependencies = [
  "log",
  "maplit",
  "mimalloc",
- "moka",
  "nix",
  "num-traits",
  "parking_lot",
@@ -748,7 +747,6 @@ dependencies = [
  "log",
  "mtxdb",
  "rezzy",
- "sha2",
 ]
 
 [[package]]
