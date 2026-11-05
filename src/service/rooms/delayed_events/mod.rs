@@ -262,6 +262,8 @@ pub struct ScheduledDelayedEvent {
 	pub room_id: OwnedRoomId,
 	pub running_since: SystemTime,
 	pub delay: Duration,
+	/// Event ID of an attempted send whose result is still being recovered.
+	pub pending_event_id: Option<OwnedEventId>,
 }
 
 /// Encodes a `Duration` like serde does: `{"secs":_,"nanos":_}`.
@@ -320,6 +322,9 @@ impl CodecSerialize for ScheduledDelayedEvent {
 		obj.insert("room_id".into(), self.room_id.to_json());
 		obj.insert("running_since".into(), system_time_to_json(&self.running_since));
 		obj.insert("delay".into(), duration_to_json(&self.delay));
+		if let Some(event_id) = &self.pending_event_id {
+			obj.insert("pending_event_id".into(), event_id.to_json());
+		}
 		slipstream::json::Value::Object(obj)
 	}
 }
@@ -340,6 +345,7 @@ impl CodecDeserialize for ScheduledDelayedEvent {
 			room_id: input.body("room_id")?,
 			running_since: system_time_from_json(field("running_since")?)?,
 			delay: duration_from_json(field("delay")?)?,
+			pending_event_id: input.body_or_default("pending_event_id")?,
 		})
 	}
 }
@@ -460,7 +466,7 @@ impl Service {
 	async fn finalize_delayed_event(
 		&self,
 		delay_id: &String,
-		event: ScheduledDelayedEvent,
+		mut event: ScheduledDelayedEvent,
 		action: UpdateAction,
 		leave_scheduled_on_error: bool,
 	) -> Result<()> {
@@ -483,32 +489,55 @@ impl Service {
 
 				let mut unsigned = BTreeMap::new();
 				unsigned.insert("delay_id".to_owned(), delay_id.clone().into());
+				let mut pending_event_id = event.pending_event_id.clone();
 
-				let result = match &event.state_key {
-					| Some(state_key) =>
-						Box::pin(self.services.timeline.send_state_event_for_key_helper(
-							&event.user_id,
-							&event.room_id,
+				let result = if let Some(event_id) = &pending_event_id {
+					let already_appended = match self.delayed_event_is_appended(event_id).await {
+						| Ok(already_appended) => already_appended,
+						| Err(error) => {
+							self.scheduled_events.lock().await.insert(delay_id.clone());
+							return Err(error);
+						},
+					};
+					if already_appended {
+						Ok(event_id.clone())
+					} else {
+						self.send_scheduled_event(
+							&event,
+							timestamp,
+							unsigned,
+							&mut pending_event_id,
 							&state_lock,
-							&event.event_type.to_string().into(),
-							&event.content.cast(),
-							state_key,
-							Some(timestamp),
-							Some(unsigned),
-						))
-						.await,
-					| None =>
-						Box::pin(self.services.timeline.send_message_event_helper(
-							&event.user_id,
-							&event.room_id,
-							&state_lock,
-							&event.event_type.to_string().into(),
-							&event.content.cast(),
-							None,
-							Some(timestamp),
-							Some(unsigned),
-						))
-						.await,
+						)
+						.await
+					}
+				} else {
+					self.send_scheduled_event(
+						&event,
+						timestamp,
+						unsigned,
+						&mut pending_event_id,
+						&state_lock,
+					)
+					.await
+				};
+
+				let result = match result {
+					| Err(error @ Error::Database(_)) => {
+						if let Some(event_id) = pending_event_id {
+							event.pending_event_id = Some(event_id.clone());
+							self.db
+								.delayid_scheduleddelayedevent
+								.put(delay_id, Json(event.clone()));
+							match self.delayed_event_is_appended(&event_id).await {
+								| Ok(true) => Ok(event_id),
+								| _ => Err(error),
+							}
+						} else {
+							Err(error)
+						}
+					},
+					| result => result,
 				};
 
 				match result {
@@ -581,6 +610,52 @@ impl Service {
 		self.db.userroomdelayid.del(&relation);
 
 		result
+	}
+
+	async fn send_scheduled_event(
+		&self,
+		event: &ScheduledDelayedEvent,
+		timestamp: MilliSecondsSinceUnixEpoch,
+		unsigned: BTreeMap<String, slipstream::json::Value>,
+		pending_event_id: &mut Option<OwnedEventId>,
+		state_lock: &rooms::state::RoomMutexGuard,
+	) -> Result<OwnedEventId> {
+		match &event.state_key {
+			| Some(state_key) =>
+				Box::pin(self.services.timeline.send_state_event_for_key_helper(
+					&event.user_id,
+					&event.room_id,
+					state_lock,
+					&event.event_type.to_string().into(),
+					&event.content.cast(),
+					state_key,
+					Some(timestamp),
+					Some(unsigned),
+					Some(pending_event_id),
+				))
+				.await,
+			| None =>
+				Box::pin(self.services.timeline.send_message_event_helper(
+					&event.user_id,
+					&event.room_id,
+					state_lock,
+					&event.event_type.to_string().into(),
+					&event.content.cast(),
+					None,
+					Some(timestamp),
+					Some(unsigned),
+					Some(pending_event_id),
+				))
+				.await,
+		}
+	}
+
+	async fn delayed_event_is_appended(&self, event_id: &OwnedEventId) -> Result<bool> {
+		match self.services.timeline.get_pdu_id(event_id).await {
+			| Ok(_) => Ok(true),
+			| Err(error @ Error::Database(_)) => Err(error),
+			| Err(_) => Ok(false),
+		}
 	}
 
 	/// Add a delayed event to the queue

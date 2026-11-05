@@ -154,6 +154,7 @@ pub(crate) async fn schedule_delayed_event_route(
 		room_id: room_id.clone(),
 		running_since: std::time::SystemTime::now(),
 		delay,
+		pending_event_id: None,
 	};
 	let delay_id = services
 		.rooms
