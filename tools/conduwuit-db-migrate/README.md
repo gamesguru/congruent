@@ -17,9 +17,10 @@ event/DAG/signing-key families, and derived or obsolete maps. This includes the
 legacy short-ID maps: mtxdb import builds its own short-ID index from event
 identities, and v23 rebuilds state HAMTs from timeline events rather than the
 legacy `shortstatehash_statediff` history or `roomid_shortstatehash` room
-selection. Copying those maps would only inflate metadata.redb. Root-handle and
-HAMT-node maps remain excluded because v23 rewrites them. The `list` command
-shows the classification before export.
+selection. The `tokenids` search index is also skipped; search scans event
+bodies directly and v28 drops the map. Copying those maps would only inflate
+metadata.redb. Root-handle and HAMT-node maps remain excluded because v23
+rewrites them. The `list` command shows the classification before export.
 Explicit map names can select a subset, but mtxdb-owned and skipped families
 are refused. The importer refuses to overwrite an existing redb destination
 and publishes the completed temporary database by rename. Stop the source

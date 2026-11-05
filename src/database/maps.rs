@@ -88,7 +88,6 @@ const MAP_NAMES: &[&str] = &[
 	"tofrom_relation",
 	"token_expiresat",
 	"token_userdeviceid",
-	"tokenids",
 	"url_previews",
 	"userdeviceid_metadata",
 	"userdeviceid_prevrefreshtoken",

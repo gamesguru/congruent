@@ -997,8 +997,6 @@ pub async fn backfill_pdu(
 
 	drop(insert_lock);
 
-	self.index_pdu_search(shortroomid, &pdu_id, &pdu_event);
-
 	debug!("Prepended backfill pdu");
 	Ok(())
 }
@@ -1164,8 +1162,6 @@ pub async fn promote_outlier_batch<'a>(
 		.await?;
 
 	drop(insert_lock);
-
-	self.index_pdu_search(shortroomid, &pdu_id, &pdu);
 
 	// Remove from outlier room index
 	self.clear_outlier_flag(event_id);
@@ -1409,8 +1405,8 @@ pub async fn promote_outliers_sorted(
 	Ok(promoted)
 }
 
-/// Repair derived data (topological index + search index) for events that
-/// are already in the timeline (non-outliers), scoped to an explicit list.
+/// Repair derived topological data for events that are already in the
+/// timeline (non-outliers), scoped to an explicit list.
 ///
 /// Used by `admin/yolo heal rescue-room --timeline-limit`, which passes a
 /// bounded window of recent timeline PDUs for re-processing. These events
@@ -1418,7 +1414,7 @@ pub async fn promote_outliers_sorted(
 /// deliberately skips anything already in the timeline), but the caller
 /// still wants their derived data repaired -- mirroring what the removed
 /// `heal_room` helper did for non-outlier events in its non-outlier branch
-/// (`clear_pdu_markers` + `reindex_topo` + `index_pdu_search`; marker
+/// (`clear_pdu_markers` + `reindex_topo`; marker
 /// clearing is handled separately by the caller's own `--force` handling).
 ///
 /// Events not already present as timeline (non-outlier) PDUs are silently
@@ -1431,7 +1427,6 @@ pub async fn reindex_timeline_events(
 ) -> Result<usize> {
 	use conduwuit_core::debug;
 
-	let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
 	let mut repaired = 0_usize;
 
 	// Fetch every non-outlier event up front. This lets us both build a
@@ -1484,8 +1479,6 @@ pub async fn reindex_timeline_events(
 				.reindex_topo_batch(&mut batch, pdu_id, &event_id, new_topo_depth);
 			self.db_apply_batch(batch);
 		}
-
-		self.index_pdu_search(shortroomid, pdu_id, pdu);
 		repaired = repaired.saturating_add(1);
 	}
 
@@ -1594,8 +1587,6 @@ pub async fn force_insert_pdu(
 
 	drop(insert_lock);
 
-	self.index_pdu_search(shortroomid, &pdu_id, pdu);
-
 	Ok(pdu_id)
 }
 
@@ -1622,8 +1613,6 @@ pub async fn force_insert_pdu_batch<'a>(
 	self.db
 		.append_pdu_batch(batch, &pdu_id, pdu, &value, pdu_count)
 		.await?;
-
-	self.index_pdu_search(shortroomid, &pdu_id, pdu);
 
 	Ok(pdu_id)
 }

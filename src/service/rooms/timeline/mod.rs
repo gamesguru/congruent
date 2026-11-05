@@ -238,7 +238,6 @@ struct Services {
 	users: Dep<users::Service>,
 	pusher: Dep<pusher::Service>,
 	threads: Dep<rooms::threads::Service>,
-	search: Dep<rooms::search::Service>,
 	spaces: Dep<rooms::spaces::Service>,
 	state_hamt: Dep<rooms::state_hamt::Service>,
 	event_handler: Dep<rooms::event_handler::Service>,
@@ -288,7 +287,6 @@ impl crate::Service for Service {
 				users: args.depend::<users::Service>("users"),
 				pusher: args.depend::<pusher::Service>("pusher"),
 				threads: args.depend::<rooms::threads::Service>("rooms::threads"),
-				search: args.depend::<rooms::search::Service>("rooms::search"),
 				spaces: args.depend::<rooms::spaces::Service>("rooms::spaces"),
 				outlier: args.depend::<rooms::outlier::Service>("rooms::outlier"),
 				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
@@ -348,24 +346,6 @@ impl Service {
 					&& verified_from == from
 					&& verified_limit >= scan_limit
 			})
-	}
-
-	/// Index a PDU's body for full-text search if it's a RoomMessage.
-	/// Encapsulates the pattern duplicated across append, backfill, and heal.
-	pub(super) fn index_pdu_search(
-		&self,
-		shortroomid: ShortRoomId,
-		pdu_id: &RawPduId,
-		pdu: &PduEvent,
-	) {
-		use slipstream::events::TimelineEventType;
-		if pdu.kind == TimelineEventType::RoomMessage {
-			if let Ok(content) = pdu.get_content::<ExtractBody>() {
-				if let Some(body) = &content.body {
-					self.services.search.index_pdu(shortroomid, pdu_id, body);
-				}
-			}
-		}
 	}
 
 	pub fn db_batch(&self) -> database::Batch<'_> { self.db.db_batch() }

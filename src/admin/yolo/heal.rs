@@ -755,9 +755,6 @@ pub(super) async fn reindex_short(
 					total_stats.repaired_references = total_stats
 						.repaired_references
 						.saturating_add(stats.repaired_references);
-					total_stats.repaired_search_index = total_stats
-						.repaired_search_index
-						.saturating_add(stats.repaired_search_index);
 				},
 				| Err(e) => {
 					self.write_str(&format!(

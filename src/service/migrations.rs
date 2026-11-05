@@ -33,7 +33,7 @@ use crate::{Services, media};
 /// - If database is opened at lesser version we apply migrations up to this.
 ///   Note that named-feature migrations may also be performed when opening at
 ///   equal or lesser version. These are expected to be backward-compatible.
-pub(crate) const DATABASE_VERSION: u64 = 27;
+pub(crate) const DATABASE_VERSION: u64 = 28;
 
 /// Column families explicitly dropped in migrations. These are included
 /// in the fingerprint hash (prefixed with '-') so that a branch which
@@ -60,6 +60,7 @@ const DROPPED_CFS: &[&str] = &[
 	"state_hamt_node_mtimes",
 	"state_hamt_nodes",
 	"statekey_shortstatekey",
+	"tokenids",
 ];
 
 /// Column families physically dropped by the v25 migration, after their
@@ -94,6 +95,9 @@ const V27_RETIRED_CFS: &[&str] = &[
 	"state_hamt_node_mtimes",
 	"state_hamt_nodes",
 ];
+
+/// Redb maps retired after the search index moved to direct event scans.
+const V28_RETIRED_CFS: &[&str] = &["tokenids"];
 
 /// Compute schema fingerprint from the static column family name list,
 /// explicitly dropped CFs, and the schema version number.
@@ -490,6 +494,13 @@ async fn migrate(services: &Services) -> Result<()> {
 		db_lt_27(services)
 			.await
 			.map_err(|e| err!("Failed to run v27 migrations: {e}"))?;
+	}
+
+	// Version 28 - drop the inverted search index; search scans event bodies.
+	if services.globals.db.database_version().await < 28 {
+		db_lt_28(services)
+			.await
+			.map_err(|e| err!("Failed to run v28 migrations: {e}"))?;
 	}
 
 	if services.globals.db.database_version().await != DATABASE_VERSION {
@@ -2501,6 +2512,24 @@ async fn db_lt_27(services: &Services) -> Result<()> {
 	Ok(())
 }
 
+/// Drop the inverted search index now that search reads event bodies directly.
+async fn db_lt_28(services: &Services) -> Result<()> {
+	info!("Running v28 migration (dropping the search token index)...");
+
+	for name in V28_RETIRED_CFS {
+		if services.db.db.cf_exists(name) {
+			services
+				.db
+				.db
+				.drop_cf(name)
+				.map_err(|e| err!(Database("Failed to drop retired search map {name}: {e}")))?;
+		}
+	}
+
+	services.globals.db.bump_database_version(28);
+	Ok(())
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -2539,7 +2568,7 @@ mod tests {
 		// The hash includes DATABASE_VERSION.to_be_bytes() as first input.
 		// We can't easily test mutation, but we verify the constant is
 		// included by confirming it matches the expected value.
-		assert_eq!(DATABASE_VERSION, 27);
+		assert_eq!(DATABASE_VERSION, 28);
 	}
 
 	#[test]

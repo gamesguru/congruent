@@ -29,7 +29,6 @@ pub struct ReindexStats {
 	pub repaired_topo_index: usize,
 	pub repaired_relations: usize,
 	pub repaired_references: usize,
-	pub repaired_search_index: usize,
 	pub extremities_updated: bool,
 	pub extremities_count: usize,
 }
@@ -40,7 +39,7 @@ impl std::fmt::Display for ReindexStats {
 			f,
 			"total={}, missing_pdu={}, hash_mismatches={}, short_ids={}, metadata={}, \
 			 prev_events={}, auth_events={}, auth_chains={}, topo_index={}, relations={}, \
-			 references={}, search={}, extremities={} (updated={})",
+			 references={}, extremities={} (updated={})",
 			self.total_events,
 			self.missing_pdu,
 			self.hash_mismatches,
@@ -52,7 +51,6 @@ impl std::fmt::Display for ReindexStats {
 			self.repaired_topo_index,
 			self.repaired_relations,
 			self.repaired_references,
-			self.repaired_search_index,
 			self.extremities_count,
 			self.extremities_updated,
 		)
@@ -122,14 +120,13 @@ impl Service {
 			if i.is_multiple_of(1000) {
 				info!(
 					"reindex_short: room={room_id} progress: {i}/{} events (hash_mismatches={}, \
-					 metadata={}, prev_events={}, auth_events={}, auth_chains={}, search={})",
+					 metadata={}, prev_events={}, auth_events={}, auth_chains={})",
 					stats.total_events,
 					stats.hash_mismatches,
 					stats.repaired_metadata,
 					stats.repaired_prev_events,
 					stats.repaired_auth_events,
 					stats.repaired_auth_chains,
-					stats.repaired_search_index,
 				);
 			}
 
@@ -321,10 +318,6 @@ impl Service {
 					.mark_as_referenced(room_id, prev_event_ids.iter().map(AsRef::as_ref));
 				stats.repaired_references = stats.repaired_references.saturating_add(1);
 			}
-
-			// --- tokenids (search index) ---
-			self.index_pdu_search(shortroomid, &pdu_id, &pdu);
-			stats.repaired_search_index = stats.repaired_search_index.saturating_add(1);
 		}
 
 		if rebuild_topo && topo_batch_len > 0 {

@@ -1214,16 +1214,11 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 	let create_pdu = PduEvent::from_id_val(&create, create_json, Some(&room_id)).unwrap();
 	persist_dummy_pdu(&services, &room_id, &create_pdu).await;
 
-	let shortroomid = services
-		.rooms
-		.short
-		.get_or_create_shortroomid(&room_id)
-		.await;
 	let reason = create_dummy_pdu(&room_id, &redaction, "m.room.redaction", "");
 	services
 		.rooms
 		.timeline
-		.redact_pdu(&redacted, &reason, shortroomid)
+		.redact_pdu(&redacted, &reason)
 		.await
 		.expect("redaction must be recorded");
 

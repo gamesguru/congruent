@@ -49,9 +49,10 @@ const MTXDB_OWNED_MAPS: &[&str] = &[
 ];
 
 // Derived indexes and legacy inputs that are no longer needed. The mtxdb
-// import builds its own short-ID index from event identities, and v23 rebuilds
+// import builds its own short-ID index from event identities, v23 rebuilds
 // state HAMTs from the timeline rather than the legacy statediff history or
-// `roomid_shortstatehash` room selection.
+// `roomid_shortstatehash` room selection, and search scans event bodies
+// instead of the `tokenids` inverted index.
 const SKIPPED_MAPS: &[&str] = &[
 	"eventid_shorteventid",
 	"roomid_shortstatehash",
@@ -473,5 +474,6 @@ mod tests {
 		assert!(MTXDB_OWNED_MAPS.contains(&"state_hamt_nodes"));
 		assert!(SKIPPED_MAPS.contains(&"eventid_shorteventid"));
 		assert!(SKIPPED_MAPS.contains(&"shortstatekey_statekey"));
+		assert!(SKIPPED_MAPS.contains(&"tokenids"));
 	}
 }

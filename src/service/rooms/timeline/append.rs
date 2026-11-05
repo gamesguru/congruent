@@ -631,7 +631,7 @@ where
 					.user_can_redact(&redact_id, pdu.sender(), room_id, false)
 					.await?
 				{
-					self.redact_pdu(&redact_id, pdu, shortroomid).await?;
+					self.redact_pdu(&redact_id, pdu).await?;
 				}
 			}
 		},
@@ -708,9 +708,6 @@ where
 					.await
 					.remove(room_id);
 			}
-		},
-		| TimelineEventType::RoomMessage => {
-			self.index_pdu_search(shortroomid, &pdu_id, pdu);
 		},
 		| _ => {},
 	}

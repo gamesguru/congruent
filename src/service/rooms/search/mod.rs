@@ -1,38 +1,21 @@
-use std::sync::Arc;
+use std::{collections::HashSet, ops::Bound, sync::Arc};
 
 use conduwuit::{
-	PduCount, PduEvent, Result,
-	arrayvec::ArrayVec,
-	debug_warn, implement,
+	PduEvent, Result, debug_warn, implement,
 	matrix::event::{Event, Matches},
-	utils::{
-		ArrayVecExt, IterStream, ReadyExt, set,
-		stream::{TryIgnore, WidebandExt},
-	},
 };
-use database::{Map, keyval::Val};
 use futures::{Stream, StreamExt};
-use slipstream::{RoomId, UserId, api::client::search::search_events::v3::Criteria};
-
-use crate::{
-	Dep, rooms,
-	rooms::{
-		short::ShortRoomId,
-		timeline::{PduId, RawPduId},
-	},
+use slipstream::{
+	RoomId, UserId, api::client::search::search_events::v3::Criteria, events::TimelineEventType,
 };
+
+use crate::{Dep, rooms};
 
 pub struct Service {
-	db: Data,
 	services: Services,
 }
 
-struct Data {
-	tokenids: Arc<Map>,
-}
-
 struct Services {
-	short: Dep<rooms::short::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	timeline: Dep<rooms::timeline::Service>,
 	pdu_metadata: Dep<rooms::pdu_metadata::Service>,
@@ -47,18 +30,12 @@ pub struct RoomQuery<'a> {
 	pub skip: usize,
 }
 
-type TokenId = ArrayVec<u8, TOKEN_ID_MAX_LEN>;
-
-const TOKEN_ID_MAX_LEN: usize =
-	size_of::<ShortRoomId>() + WORD_MAX_LEN + 1 + size_of::<RawPduId>();
 const WORD_MAX_LEN: usize = 50;
 
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
-			db: Data { tokenids: args.db["tokenids"].clone() },
 			services: Services {
-				short: args.depend::<rooms::short::Service>("rooms::short"),
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
@@ -71,73 +48,66 @@ impl crate::Service for Service {
 }
 
 #[implement(Service)]
-pub fn index_pdu(&self, shortroomid: ShortRoomId, pdu_id: &RawPduId, message_body: &str) {
-	let batch = tokenize(message_body)
-		.map(|word| {
-			let mut key = shortroomid.to_be_bytes().to_vec();
-			key.extend_from_slice(word.as_bytes());
-			key.push(0xFF);
-			key.extend_from_slice(pdu_id.as_ref()); // TODO: currently we save the room id a second time here
-			key
-		})
-		.collect::<Vec<_>>();
-
-	let mut db_batch = database::Batch::new();
-	for key in &batch {
-		self.db
-			.tokenids
-			.batch_put(&mut db_batch, key.as_slice(), []);
-	}
-	self.db.tokenids.apply_batch(db_batch);
-}
-
-#[implement(Service)]
-pub fn deindex_pdu(&self, shortroomid: ShortRoomId, pdu_id: &RawPduId, message_body: &str) {
-	let batch = tokenize(message_body).map(|word| {
-		let mut key = shortroomid.to_be_bytes().to_vec();
-		key.extend_from_slice(word.as_bytes());
-		key.push(0xFF);
-		key.extend_from_slice(pdu_id.as_ref()); // TODO: currently we save the room id a second time here
-		key
-	});
-
-	for token in batch {
-		self.db.tokenids.remove(&token);
-	}
-}
-
-#[implement(Service)]
 pub async fn search_pdus<'a>(
 	&'a self,
 	query: &'a RoomQuery<'a>,
 	sender_user: &'a UserId,
 ) -> Result<(usize, impl Stream<Item = PduEvent> + Send + 'a)> {
-	let pdu_ids: Vec<_> = self.search_pdu_ids(query).await?.collect().await;
-
+	let tokens: Vec<String> = tokenize(&query.criteria.search_term).collect();
 	let filter = &query.criteria.filter;
-	let count = pdu_ids.len();
-	let pdus = pdu_ids
-		.into_iter()
-		.stream()
-		.wide_filter_map(move |result_pdu_id: RawPduId| async move {
-			self.services
-				.timeline
-				.get_pdu_from_id(&result_pdu_id)
-				.await
-				.ok()
-		})
-		.ready_filter(|pdu| !pdu.is_redacted())
-		.ready_filter(move |pdu| filter.matches(pdu))
-		.wide_filter_map(move |pdu| async move {
-			let room_id = pdu.room_id_or_hash()?;
-			self.services
-				.state_accessor
-				.user_can_see_event(query.user_id?, &room_id, pdu.event_id())
-				.await
-				.then_some(pdu)
-		})
-		.skip(query.skip)
-		.take(query.limit)
+	let mut count = 0_usize;
+	let mut skipped = 0_usize;
+	let mut results = Vec::new();
+
+	let mut pdus = std::pin::pin!(
+		self.services
+			.timeline
+			.pdus_rev(query.room_id, Bound::Unbounded)
+	);
+
+	while let Some(item) = pdus.next().await {
+		let Ok((_pdu_count, pdu)) = item else {
+			continue;
+		};
+
+		if !matches_search(&pdu, &tokens) {
+			continue;
+		}
+
+		count = count.saturating_add(1);
+
+		if pdu.is_redacted() || !filter.matches(&pdu) {
+			continue;
+		}
+
+		let Some(room_id) = pdu.room_id_or_hash() else {
+			continue;
+		};
+		let Some(user_id) = query.user_id else {
+			continue;
+		};
+		if !self
+			.services
+			.state_accessor
+			.user_can_see_event(user_id, &room_id, pdu.event_id())
+			.await
+		{
+			continue;
+		}
+
+		if skipped < query.skip {
+			skipped = skipped.saturating_add(1);
+			continue;
+		}
+
+		if results.len() >= query.limit {
+			continue;
+		}
+
+		results.push(pdu);
+	}
+
+	let pdus = futures::stream::iter(results)
 		.map(move |mut pdu| {
 			pdu.set_unsigned(query.user_id);
 
@@ -158,81 +128,36 @@ pub async fn search_pdus<'a>(
 	Ok((count, pdus))
 }
 
-// result is modeled as a stream such that callers don't have to be refactored
-// though an additional async/wrap still exists for now
-#[implement(Service)]
-pub async fn search_pdu_ids<'a>(
-	&'a self,
-	query: &'a RoomQuery<'_>,
-) -> Result<impl Stream<Item = RawPduId> + Send + 'a + use<'a>> {
-	let shortroomid = self.services.short.get_shortroomid(query.room_id).await?;
-
-	let pdu_ids = self.search_pdu_ids_query_room(query, shortroomid).await;
-
-	let iters = pdu_ids.into_iter().map(IntoIterator::into_iter);
-
-	Ok(set::intersection(iters).stream())
-}
-
-#[implement(Service)]
-async fn search_pdu_ids_query_room(
-	&self,
-	query: &RoomQuery<'_>,
-	shortroomid: ShortRoomId,
-) -> Vec<Vec<RawPduId>> {
-	tokenize(&query.criteria.search_term)
-		.stream()
-		.wide_then(|word| async move {
-			self.search_pdu_ids_query_words(shortroomid, &word)
-				.collect::<Vec<_>>()
-				.await
-		})
-		.collect::<Vec<_>>()
-		.await
-}
-
-/// Iterate over PduId's containing a word
-#[implement(Service)]
-fn search_pdu_ids_query_words<'a>(
-	&'a self,
-	shortroomid: ShortRoomId,
-	word: &'a str,
-) -> impl Stream<Item = RawPduId> + Send + 'a {
-	self.search_pdu_ids_query_word(shortroomid, word)
-		.map(move |key| -> RawPduId {
-			let key = &key[prefix_len(word)..];
-			key.into()
-		})
-}
-
-/// Iterate over raw database results for a word
-#[implement(Service)]
-fn search_pdu_ids_query_word(
-	&self,
-	shortroomid: ShortRoomId,
-	word: &str,
-) -> impl Stream<Item = Val<'static>> + Send {
-	// rustc says const'ing this not yet stable
-	let end_id: RawPduId = PduId {
-		shortroomid,
-		shorteventid: PduCount::max(),
-	}
-	.into();
-
-	// Newest pdus first
-	let end = make_tokenid(shortroomid, word, &end_id);
-	let prefix = make_prefix(shortroomid, word);
-	self.db
-		.tokenids
-		.rev_raw_keys_from(&end)
-		.ignore_err()
-		.ready_take_while(move |key| key.starts_with(&prefix))
-}
-
-/// Splits a string into tokens used as keys in the search inverted index
+/// Test whether a PDU's message body contains every search token.
 ///
-/// This may be used to tokenize both message bodies (for indexing) or search
-/// queries (for querying).
+/// Search reads the event bodies directly, so there is no inverted index to
+/// keep in sync. Only room messages are searched, matching the old index's
+/// scope.
+fn matches_search(pdu: &PduEvent, tokens: &[String]) -> bool {
+	if tokens.is_empty() || pdu.kind != TimelineEventType::RoomMessage {
+		return false;
+	}
+
+	let content = pdu.get_content_as_value();
+	let Some(body) = content.get("body").and_then(|body| body.as_str()) else {
+		return false;
+	};
+
+	body_matches(body, tokens)
+}
+
+fn body_matches(body: &str, tokens: &[String]) -> bool {
+	if tokens.is_empty() {
+		return false;
+	}
+
+	let words: HashSet<String> = tokenize(body).collect();
+	tokens.iter().all(|token| words.contains(token))
+}
+
+/// Splits a string into tokens used for search.
+///
+/// This may be used to tokenize both message bodies and search queries.
 fn tokenize(body: &str) -> impl Iterator<Item = String> + Send + '_ {
 	body.split_terminator(|c: char| !c.is_alphanumeric())
 		.filter(|s| !s.is_empty())
@@ -240,22 +165,19 @@ fn tokenize(body: &str) -> impl Iterator<Item = String> + Send + '_ {
 		.map(str::to_lowercase)
 }
 
-fn make_tokenid(shortroomid: ShortRoomId, word: &str, pdu_id: &RawPduId) -> TokenId {
-	let mut key = make_prefix(shortroomid, word);
-	key.extend_from_slice(pdu_id.as_ref());
-	key
-}
+#[cfg(test)]
+mod tests {
+	use super::{body_matches, tokenize};
 
-fn make_prefix(shortroomid: ShortRoomId, word: &str) -> TokenId {
-	let mut key = TokenId::new();
-	key.extend_from_slice(&shortroomid.to_be_bytes());
-	key.extend_from_slice(word.as_bytes());
-	key.push(database::SEP);
-	key
-}
+	#[test]
+	fn search_requires_all_query_tokens() {
+		let tokens = tokenize("Hello World").collect::<Vec<_>>();
+		assert!(body_matches("hello, WORLD!", &tokens));
+		assert!(!body_matches("hello there", &tokens));
+	}
 
-fn prefix_len(word: &str) -> usize {
-	size_of::<ShortRoomId>()
-		.saturating_add(word.len())
-		.saturating_add(1)
+	#[test]
+	fn empty_query_matches_nothing() {
+		assert!(!body_matches("anything", &[]));
+	}
 }
