@@ -110,9 +110,10 @@ rejected.
 
 Rooms are imported after the signing-key export, so every event can be checked
 against the key catalog without a live key scan. A key is usable only when the
-event's `origin_server_ts` falls inside the key's validity window
-(`valid_until_ts` and `expired_ts`), following MSC4499. The outcomes are kept
-separate:
+event's `origin_server_ts` falls inside the key's validity window, following
+MSC4499. From room version 5 on, that window is bounded by both `valid_until_ts`
+and `expired_ts`; room versions 1 through 4 ignore `valid_until_ts` and honor
+only `expired_ts`. The outcomes are kept separate:
 
 | Outcome                                        | Events |
 | ---------------------------------------------- | -----: |

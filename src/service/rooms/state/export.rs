@@ -131,7 +131,10 @@ impl Service {
 						);
 					}
 				}
-				if let Some(arrival) = verdict.as_ref().and_then(|v| v.arrival_ordering) {
+				if let Some(arrival) = verdict
+					.as_ref()
+					.and_then(|v| v.soft_fail.and(v.arrival_ordering))
+				{
 					let arrival = i64::try_from(arrival).map_err(|_| {
 						err!("event {event_id}: arrival ordering {arrival} does not fit in i64")
 					})?;

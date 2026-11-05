@@ -213,9 +213,23 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 		.db
 		.deprecated("shortstatekey_statekey")
 		.expect("deprecated short ID map");
-	if event_map.raw_entries().is_ok_and(|rows| rows.is_empty())
-		&& statekey_map.raw_entries().is_ok_and(|rows| rows.is_empty())
-	{
+	// Skip the audit only once every imported legacy map is empty; a partly
+	// cleared database must still be audited.
+	let all_cleared = [
+		event_map,
+		statekey_map,
+		services
+			.db
+			.deprecated("shorteventid_eventid")
+			.expect("deprecated short ID map"),
+		services
+			.db
+			.deprecated("statekey_shortstatekey")
+			.expect("deprecated short ID map"),
+	]
+	.iter()
+	.all(|map| map.raw_entries().is_ok_and(|rows| rows.is_empty()));
+	if all_cleared {
 		audit.legacy_maps_cleared = true;
 		return audit;
 	}

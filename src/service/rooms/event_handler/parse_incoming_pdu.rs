@@ -142,12 +142,20 @@ pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
 		.and_then(CanonicalJsonValue::as_str)
 		.ok_or_else(|| err!(Request(InvalidParam("Missing or invalid type in pdu"))))?;
 
-	let room_id = match conduwuit::matrix::event::room_id_from_pdu(&value, None) {
-		| Ok(room_id) => room_id,
-		| Err(_) => {
-			// V12 non-create event without room_id
-			// Try to find it from auth_events, but do not allow untrusted input to
-			// trigger an unbounded number of sequential DB lookups.
+	let room_id = match value.get("room_id") {
+		// A present but malformed room_id is an invalid PDU, not permission to
+		// route it using an unrelated auth event.
+		| Some(room_id) if room_id.as_str().is_none() => {
+			return Err!(Request(BadJson("Invalid room_id in pdu")));
+		},
+		| Some(_) => conduwuit::matrix::event::room_id_from_pdu(&value, None)?,
+		// Create events can derive their room ID from the event ID in v12+;
+		// their invalid content/version errors must not be hidden by fallback.
+		| None if event_type == "m.room.create" =>
+			conduwuit::matrix::event::room_id_from_pdu(&value, None)?,
+		// v12 non-create events omit room_id. Resolve a known room from auth
+		// events, but bound sequential database lookups for untrusted input.
+		| None => {
 			let auth_events = value
 				.get("auth_events")
 				.and_then(|v| v.as_array())

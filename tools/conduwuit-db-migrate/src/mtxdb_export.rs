@@ -27,6 +27,11 @@ struct Event {
 	auth: Value,
 	stream_ordering: Option<i64>,
 	depth: Option<i64>,
+	/// Read from `eventid_outlierpdu`: never part of the timeline.
+	outlier: bool,
+	/// Legacy verdict codes are migration metadata, not facts inferred from the PDU.
+	rejection_code: Option<u8>,
+	soft_fail_code: Option<u8>,
 }
 
 fn rows(db: &DB, name: &str) -> ExportResult<Vec<DbRow>> {
@@ -37,6 +42,23 @@ fn rows(db: &DB, name: &str) -> ExportResult<Vec<DbRow>> {
 		.map(|row| {
 			let (key, value) = row?;
 			Ok((key.to_vec(), value.to_vec()))
+		})
+		.collect()
+}
+
+fn event_codes(db: &DB, name: &str) -> ExportResult<HashMap<Vec<u8>, u8>> {
+	rows(db, name)?
+		.into_iter()
+		.map(|(event_id, value)| {
+			let [code] = value.as_slice() else {
+				return Err(format!(
+					"{name} record for {} has invalid length {} (expected one byte)",
+					String::from_utf8_lossy(&event_id),
+					value.len()
+				)
+				.into());
+			};
+			Ok((event_id, *code))
 		})
 		.collect()
 }
@@ -105,12 +127,12 @@ fn parse_pdu(
 		.to_owned();
 	let is_create = object.get("type").and_then(Value::as_str) == Some("m.room.create");
 	let room = match object.get("room_id").and_then(Value::as_str) {
-		Some(r) => {
+		| Some(r) => {
 			let room = r.to_owned();
 			event_to_room.insert(event_id.clone(), room.clone());
 			room
 		},
-		None => {
+		| None => {
 			let inferred = event_to_room
 				.get(&event_id)
 				.cloned()
@@ -144,11 +166,11 @@ fn parse_pdu(
 					None
 				});
 			match inferred {
-				Some(r) => {
+				| Some(r) => {
 					event_to_room.insert(event_id.clone(), r.clone());
 					r
 				},
-				None => {
+				| None => {
 					eprintln!("Unresolvable PDU {event_id}: {}", String::from_utf8_lossy(raw));
 					return Err("PDU has no string room_id and room could not be inferred".into());
 				},
@@ -174,23 +196,29 @@ fn parse_pdu(
 	let depth = object
 		.get("depth")
 		.and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|d| d as i64)));
-	Ok((Event {
-		id: event_id,
-		room,
-		prev: object
-			.get("prev_events")
-			.filter(|v| v.is_array())
-			.cloned()
-			.unwrap_or_else(|| Value::Array(Vec::new())),
-		auth: object
-			.get("auth_events")
-			.filter(|v| v.is_array())
-			.cloned()
-			.unwrap_or_else(|| Value::Array(Vec::new())),
-		pdu,
-		stream_ordering: None,
-		depth,
-	}, id_mismatch))
+	Ok((
+		Event {
+			id: event_id,
+			room,
+			prev: object
+				.get("prev_events")
+				.filter(|v| v.is_array())
+				.cloned()
+				.unwrap_or_else(|| Value::Array(Vec::new())),
+			auth: object
+				.get("auth_events")
+				.filter(|v| v.is_array())
+				.cloned()
+				.unwrap_or_else(|| Value::Array(Vec::new())),
+			pdu,
+			stream_ordering: None,
+			depth,
+			outlier: false,
+			rejection_code: None,
+			soft_fail_code: None,
+		},
+		id_mismatch,
+	))
 }
 
 fn safe_name(room_id: &str) -> String {
@@ -217,6 +245,17 @@ fn event_line(out: &mut impl Write, event: &Event) -> Result<(), Box<dyn std::er
 	record.insert("event_id".into(), Value::String(event.id.clone()));
 	record.insert("prev_events".into(), event.prev.clone());
 	record.insert("auth_events".into(), event.auth.clone());
+	if event.outlier {
+		record.insert("outlier".into(), Value::Bool(true));
+	}
+	if let Some(code) = event.rejection_code {
+		record.insert("rejected".into(), Value::Bool(true));
+		record.insert("rejection_code".into(), codec::to_value(&code));
+	}
+	if let Some(code) = event.soft_fail_code {
+		record.insert("soft_failed".into(), Value::Bool(true));
+		record.insert("soft_fail_code".into(), codec::to_value(&code));
+	}
 	if let Some(stream_ordering) = event.stream_ordering {
 		record.insert("stream_ordering".into(), codec::to_value(&stream_ordering));
 	}
@@ -337,10 +376,10 @@ fn pad_base64(encoded: &str) -> Result<String, String> {
 	}
 	let body = encoded.trim_end_matches('=');
 	let padding = match body.len() % 4 {
-		0 => 0,
-		2 => 2,
-		3 => 1,
-		_ => return Err(format!("signing key {encoded:?} has an impossible base64 length")),
+		| 0 => 0,
+		| 2 => 2,
+		| 3 => 1,
+		| _ => return Err(format!("signing key {encoded:?} has an impossible base64 length")),
 	};
 	if encoded.len() != body.len() && encoded.len() != body.len().saturating_add(padding) {
 		return Err(format!("signing key {encoded:?} has malformed base64 padding"));
@@ -422,10 +461,9 @@ fn write_keys(
 				// A key present in several maps or rows keeps its retired entry so
 				// the recorded retirement time is never lost; otherwise first wins.
 				let id = (origin.to_owned(), key_id.to_owned());
-				if records
-					.get(&id)
-					.is_some_and(|existing| existing.contains_key("expired_ts") || retired.is_none())
-				{
+				if records.get(&id).is_some_and(|existing| {
+					existing.contains_key("expired_ts") || retired.is_none()
+				}) {
 					continue;
 				}
 				let mut record = Object::new();
@@ -523,6 +561,8 @@ pub fn export(
 
 	let mut event_to_room: HashMap<String, String> = HashMap::new();
 	let mut event_to_stream_order: HashMap<String, i64> = HashMap::new();
+	let rejection_codes = event_codes(&db, "eventid_rejections")?;
+	let soft_fail_codes = event_codes(&db, "eventid_softfailed")?;
 	for (event_id, pdu_id) in rows(&db, "eventid_pduid")? {
 		if let Ok(event_id_str) = std::str::from_utf8(&event_id) {
 			if pdu_id.len() >= 8 {
@@ -554,6 +594,8 @@ pub fn export(
 	let mut events: BTreeMap<String, BTreeMap<String, Event>> = BTreeMap::new();
 	let mut id_mismatches = 0usize;
 	let mut add = |mut event: Event| {
+		event.rejection_code = rejection_codes.get(event.id.as_bytes()).copied();
+		event.soft_fail_code = soft_fail_codes.get(event.id.as_bytes()).copied();
 		if event.stream_ordering.is_none() {
 			if let Some(&stream_ord) = event_to_stream_order.get(&event.id) {
 				event.stream_ordering = Some(stream_ord);
@@ -568,14 +610,10 @@ pub fn export(
 	// Current layout: eventid_pdu is the source of truth.
 	for (event_id, raw) in rows(&db, "eventid_pdu")? {
 		let fallback = std::str::from_utf8(&event_id).ok();
-		let (event, mismatch) = parse_pdu(
-			&raw,
-			fallback,
-			&mut event_to_room,
-		)
-		.map_err(|error| {
-			format!("bad eventid_pdu row {}: {error}", String::from_utf8_lossy(&event_id))
-		})?;
+		let (event, mismatch) =
+			parse_pdu(&raw, fallback, &mut event_to_room).map_err(|error| {
+				format!("bad eventid_pdu row {}: {error}", String::from_utf8_lossy(&event_id))
+			})?;
 		id_mismatches += usize::from(mismatch);
 		add(event);
 	}
@@ -585,12 +623,8 @@ pub fn export(
 		// room_pducount_eventid indexes can be stale in old databases, so never
 		// use a secondary index as the fallback identity. These rows are
 		// timeline PDUs, so pass the fallback as None.
-		let (mut event, mismatch) = parse_pdu(
-			&raw,
-			None,
-			&mut event_to_room,
-		)
-		.map_err(|error| format!("bad pduid_pdu row {}: {error}", hex(&pdu_id)))?;
+		let (mut event, mismatch) = parse_pdu(&raw, None, &mut event_to_room)
+			.map_err(|error| format!("bad pduid_pdu row {}: {error}", hex(&pdu_id)))?;
 		if event.stream_ordering.is_none() {
 			event.stream_ordering = decode_stream_ordering(&pdu_id);
 		}
@@ -599,23 +633,21 @@ pub fn export(
 	}
 	for (event_id, raw) in rows(&db, "eventid_outlierpdu")? {
 		let fallback = std::str::from_utf8(&event_id).ok();
-		let (event, mismatch) = parse_pdu(
-			&raw,
-			fallback,
-			&mut event_to_room,
-		)
-		.map_err(|error| {
-			format!(
-				"bad eventid_outlierpdu row {}: {error}",
-				String::from_utf8_lossy(&event_id)
-			)
-		})?;
+		let (mut event, mismatch) =
+			parse_pdu(&raw, fallback, &mut event_to_room).map_err(|error| {
+				format!(
+					"bad eventid_outlierpdu row {}: {error}",
+					String::from_utf8_lossy(&event_id)
+				)
+			})?;
+		event.outlier = true;
 		id_mismatches += usize::from(mismatch);
 		add(event);
 	}
 	if id_mismatches > 0 {
 		eprintln!(
-			"warning: {id_mismatches} PDU event IDs disagreed with their map keys; used the PDU event ID"
+			"warning: {id_mismatches} PDU event IDs disagreed with their map keys; used the PDU \
+			 event ID"
 		);
 	}
 	let missing_stream_ordering = events
@@ -625,7 +657,8 @@ pub fn export(
 		.count();
 	if missing_stream_ordering > 0 {
 		eprintln!(
-			"warning: {missing_stream_ordering} exported events have no stream ordering and will be omitted from the timeline index"
+			"warning: {missing_stream_ordering} exported events have no stream ordering and \
+			 will be omitted from the timeline index"
 		);
 	}
 	if events.is_empty() {
@@ -647,12 +680,7 @@ pub fn export(
 			.duration_since(std::time::UNIX_EPOCH)?
 			.as_millis()
 			.try_into()?;
-		let keys = write_keys(
-			&db,
-			&stage.join("server-keys.jsonl"),
-			&observed,
-			exported_at_ms,
-		)?;
+		let keys = write_keys(&db, &stage.join("server-keys.jsonl"), &observed, exported_at_ms)?;
 		fs::rename(&stage, out_dir)?;
 		eprintln!(
 			"Exported {total} room events and {keys} signing-key records to {}",
@@ -701,6 +729,51 @@ mod tests {
 	}
 
 	#[test]
+	fn event_verdict_codes_are_exported() {
+		let dir =
+			std::env::temp_dir().join(format!("mtxdb-export-verdicts-{}", std::process::id()));
+		let _ = fs::remove_dir_all(&dir);
+		let mut options = Options::default();
+		options.create_if_missing(true);
+		options.create_missing_column_families(true);
+		let db =
+			DB::open_cf(&options, &dir, ["eventid_rejections", "eventid_softfailed"]).unwrap();
+		db.put_cf(db.cf_handle("eventid_rejections").unwrap(), "$event", [7])
+			.unwrap();
+		db.put_cf(db.cf_handle("eventid_softfailed").unwrap(), "$event", [2])
+			.unwrap();
+		let rejections = event_codes(&db, "eventid_rejections").unwrap();
+		let soft_fails = event_codes(&db, "eventid_softfailed").unwrap();
+		drop(db);
+		let _ = fs::remove_dir_all(&dir);
+
+		assert_eq!(rejections.get(b"$event".as_slice()), Some(&7));
+		assert_eq!(soft_fails.get(b"$event".as_slice()), Some(&2));
+
+		let event = Event {
+			id: "$event".to_owned(),
+			room: "!room:example.org".to_owned(),
+			pdu: Value::Object(Object::new()),
+			prev: Value::Array(Vec::new()),
+			auth: Value::Array(Vec::new()),
+			stream_ordering: None,
+			depth: None,
+			outlier: false,
+			rejection_code: rejections.get(b"$event".as_slice()).copied(),
+			soft_fail_code: soft_fails.get(b"$event".as_slice()).copied(),
+		};
+		let mut line = Vec::new();
+		event_line(&mut line, &event).unwrap();
+		let Value::Object(record) = Value::parse_bytes(&line).unwrap() else {
+			panic!("event record is not an object");
+		};
+		assert_eq!(record.get("rejected").and_then(Value::as_bool), Some(true));
+		assert_eq!(record.get("rejection_code").and_then(Value::as_u64), Some(7));
+		assert_eq!(record.get("soft_failed").and_then(Value::as_bool), Some(true));
+		assert_eq!(record.get("soft_fail_code").and_then(Value::as_u64), Some(2));
+	}
+
+	#[test]
 	fn a_v1_event_id_stays_in_the_exported_pdu() {
 		let raw = br#"{"event_id":"$opaque:example.org","room_id":"!room:example.org","type":"m.room.message","content":{},"prev_events":[],"auth_events":[]}"#;
 		let mut rooms = HashMap::new();
@@ -712,12 +785,7 @@ mod tests {
 	fn stored_pdu_id_wins_over_stale_index() {
 		let raw = br#"{"event_id":"$stored","room_id":"!room:example.org","prev_events":[],"auth_events":[]}"#;
 		let mut rooms = HashMap::new();
-		let (event, mismatch) = parse_pdu(
-			raw,
-			Some("$stale"),
-			&mut rooms,
-		)
-		.unwrap();
+		let (event, mismatch) = parse_pdu(raw, Some("$stale"), &mut rooms).unwrap();
 		assert!(mismatch);
 		assert_eq!(event.id, "$stored");
 		assert!(!event.pdu.as_object().unwrap().contains_key("event_id"));
@@ -752,20 +820,15 @@ mod tests {
 		// A v3+ event ID is not part of the hashed event, while every event
 		// except a v12+ create keeps its room ID. The legacy store may drop
 		// either; export the wire form so the content hash still verifies.
-		let raw =
-			r##"{"type":"m.room.create","content":{"room_version":"11"},"prev_events":[],"auth_events":[]}"##;
+		let raw = r##"{"type":"m.room.create","content":{"room_version":"11"},"prev_events":[],"auth_events":[]}"##;
 		let mut rooms = HashMap::new();
-		let (event, mismatch) =
-			parse_pdu(raw.as_bytes(), Some("$create"), &mut rooms).unwrap();
+		let (event, mismatch) = parse_pdu(raw.as_bytes(), Some("$create"), &mut rooms).unwrap();
 		assert!(!mismatch);
 		assert_eq!(event.id, "$create");
 		assert_eq!(event.room, "!create");
 		let pdu = event.pdu.as_object().unwrap();
 		assert!(!pdu.contains_key("event_id"));
-		assert_eq!(
-			pdu.get("room_id").and_then(Value::as_str),
-			Some("!create")
-		);
+		assert_eq!(pdu.get("room_id").and_then(Value::as_str), Some("!create"));
 	}
 
 	#[test]
@@ -773,18 +836,14 @@ mod tests {
 		// Conduwuit omitted `room_id` from some v12 non-create PDUs even
 		// though the hashed event includes it. Without restoring it the
 		// importer redacts every such event.
-		let raw =
-			r##"{"type":"m.room.message","content":{"body":"hi"},"prev_events":[],"auth_events":["$create"]}"##;
+		let raw = r##"{"type":"m.room.message","content":{"body":"hi"},"prev_events":[],"auth_events":["$create"]}"##;
 		let mut rooms = HashMap::new();
 		rooms.insert("$create".to_owned(), "!room:example.org".to_owned());
 		let (event, _) = parse_pdu(raw.as_bytes(), Some("$msg"), &mut rooms).unwrap();
 		assert_eq!(event.room, "!room:example.org");
 		let pdu = event.pdu.as_object().unwrap();
 		assert!(!pdu.contains_key("event_id"));
-		assert_eq!(
-			pdu.get("room_id").and_then(Value::as_str),
-			Some("!room:example.org")
-		);
+		assert_eq!(pdu.get("room_id").and_then(Value::as_str), Some("!room:example.org"));
 	}
 
 	#[test]
@@ -795,7 +854,12 @@ mod tests {
 			"iFaAxYzZKymlSEzVmtMeHbHJDWqFvC8g1yFQGbsLO5g="
 		);
 		// The standard alphabet's `/` and `+` are kept.
-		assert_eq!(pad_base64("CRmyAAbmuKI6tAj6/uq/DBFMGtBbmPFg4BsOSFyEMfE").unwrap().len(), 44);
+		assert_eq!(
+			pad_base64("CRmyAAbmuKI6tAj6/uq/DBFMGtBbmPFg4BsOSFyEMfE")
+				.unwrap()
+				.len(),
+			44
+		);
 		assert_eq!(pad_base64("QUI").unwrap(), "QUI=");
 		assert_eq!(pad_base64("QQ").unwrap(), "QQ==");
 		assert_eq!(pad_base64("QUJD").unwrap(), "QUJD");

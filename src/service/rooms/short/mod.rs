@@ -170,6 +170,46 @@ fn import_legacy_short_ids(
 		}
 	}
 
+	// The legacy writer stored the forward row (`type 0xFF state_key -> short`)
+	// before the reverse row, so a crash between them leaves a forward-only row.
+	// Import the forward rows as well: the import writes whichever direction is
+	// missing and ignores rows that already match, so nothing is lost when the
+	// legacy maps are cleared.
+	let forward_map = db
+		.deprecated("statekey_shortstatekey")
+		.expect("legacy forward state-key map is registered")
+		.clone();
+	for (batch, rows) in forward_map.raw_entries()?.chunks(IMPORT_BATCH).enumerate() {
+		let mut mappings = Vec::with_capacity(rows.len());
+		for (key, value) in rows {
+			let short = u64::from_be_bytes(
+				value
+					.as_slice()
+					.try_into()
+					.map_err(|_| err!(Database("Malformed legacy state-key short ID")))?,
+			);
+			let separator = key
+				.iter()
+				.position(|byte| *byte == 0xFF)
+				.ok_or_else(|| err!(Database("Malformed legacy forward state-key row")))?;
+			let (event_type, state_key) = key.split_at(separator);
+			let event_type = utils::string::str_from_bytes(event_type)?;
+			let state_key = utils::string::str_from_bytes(&state_key[1..])?;
+			mappings.push((event_type.to_owned(), state_key.to_owned(), short));
+		}
+		shortids
+			.import_state_key_mappings(&mappings)
+			.map_err(|error| {
+				err!(Database("Failed to import legacy forward state-key short IDs: {error}"))
+			})?;
+		if batch
+			.saturating_add(1)
+			.is_multiple_of(RECLAIM_CHECK_BATCHES)
+		{
+			reclaim.check(shortids, false)?;
+		}
+	}
+
 	// Do not leave a nearly full segment behind when the last batch did not
 	// land on a reclaim-check boundary.
 	reclaim.check(shortids, true)

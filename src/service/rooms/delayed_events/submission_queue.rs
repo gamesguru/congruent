@@ -107,6 +107,10 @@ async fn load_scheduled_events(service: &Service, queue: &mut SubmissionQueue) {
 		return;
 	}
 
+	// The database is the source of truth. Rescanning on a restarted worker
+	// must not append to entries that are already in the heap.
+	queue.queue.clear();
+
 	let mut stream = service
 		.db
 		.delayid_scheduleddelayedevent

@@ -1737,6 +1737,7 @@ async fn test_busted_dag_resolution() {
 		.rooms
 		.state
 		.set_room_state_hamt(&room_id, &root_handle, &state_lock)
+		.await
 		.expect("set room state root");
 	drop(state_lock);
 
@@ -1889,6 +1890,7 @@ async fn test_unredacted_room_dag_resolution() {
 		.rooms
 		.state
 		.set_room_state_hamt(&room_id, &root_handle, &state_lock)
+		.await
 		.expect("set room state root");
 	drop(state_lock);
 
@@ -2244,6 +2246,7 @@ async fn test_nheko_dag_resolution() {
 		.rooms
 		.state
 		.set_room_state_hamt(&room_id, &root_handle, &state_lock)
+		.await
 		.expect("set room state root");
 	drop(state_lock);
 

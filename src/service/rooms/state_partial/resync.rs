@@ -1223,7 +1223,8 @@ impl Service {
 			.await?;
 		self.services
 			.state
-			.set_room_state_hamt_with_nodes(room_id, &new_root, &pending_nodes)?;
+			.set_room_state_hamt_with_nodes(room_id, &new_root, &pending_nodes)
+			.await?;
 		self.reconcile_tracking(room_id, &old, &current).await;
 		for key in covered_keys {
 			self.db.state_partial_pending_events.remove(key);

@@ -14,7 +14,7 @@ use slipstream::{
 	events::StateEventType,
 };
 
-use crate::rooms::short::ShortStateKey;
+use crate::rooms::{pdu_metadata::RejectionCode, short::ShortStateKey};
 
 const SIGNATURE_VERIFICATION_CONCURRENCY: usize = 64;
 
@@ -337,15 +337,13 @@ where
 								);
 								if let Err(error) = prepared {
 									conduwuit::warn!("Redaction failed for {eid}: {error}");
-									if let Err(error) = self
-										.services
-										.pdu_metadata
-										.mark_event_rejected(
+									if let Err(error) =
+										self.services.pdu_metadata.mark_event_rejected(
 											&eid,
-											&crate::rooms::pdu_metadata::RejectionCode::InvalidPduFormat
-												.with_detail("redaction failed after hash mismatch"),
-										)
-									{
+											&RejectionCode::InvalidPduFormat.with_detail(
+												"redaction failed after hash mismatch",
+											),
+										) {
 										conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
 									}
 									self.services
@@ -359,15 +357,11 @@ where
 							| _ => {
 								// Event sig failed; persist as rejected outlier so we don't
 								// re-fetch
-								if let Err(error) = self
-									.services
-									.pdu_metadata
-									.mark_event_rejected(
+								if let Err(error) =
+									self.services.pdu_metadata.mark_event_rejected(
 										&eid,
-										crate::rooms::pdu_metadata::RejectionCode::SignatureVerificationFailed
-											.tag(),
-									)
-								{
+										RejectionCode::SignatureVerificationFailed.tag(),
+									) {
 									conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
 								}
 								val.insert(
@@ -413,6 +407,14 @@ where
 		.filter_map(|eid| verified_events.get(eid))
 		.map(|(pdu, val)| (pdu, val))
 		.collect::<Vec<_>>();
+	// Bodies become visible in mtxdb before their sequential auth checks. Mark
+	// them retryably first so an interrupted fetch cannot make a later caller
+	// mistake a prewritten, unchecked body for an already-validated outlier.
+	for (pdu, _) in &verified_batch {
+		self.services
+			.pdu_metadata
+			.mark_event_rejected(pdu.event_id(), RejectionCode::MissingAuthEvent.tag())?;
+	}
 	if let Err(error) = self
 		.services
 		.timeline

@@ -215,7 +215,10 @@ impl Data {
 	}
 
 	pub(super) fn unmark_event_soft_failed(&self, event_id: &EventId) -> Result<()> {
-		self.update_verdict(event_id, |v| v.soft_fail = None)
+		self.update_verdict(event_id, |v| {
+			v.soft_fail = None;
+			v.arrival_ordering = None;
+		})
 	}
 
 	pub(super) fn mark_event_rejected(&self, event_id: &EventId, reason: &str) -> Result<()> {

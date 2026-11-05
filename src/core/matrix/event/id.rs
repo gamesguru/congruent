@@ -90,20 +90,12 @@ pub fn room_id_from_pdu(
 			.unwrap_or("1"),
 	)
 	.map_err(|e| err!(Request(BadJson("Invalid room_version in pdu: {e}"))))?;
-	if matches!(
-		room_version,
-		RoomVersionId::V1
-			| RoomVersionId::V2
-			| RoomVersionId::V3
-			| RoomVersionId::V4
-			| RoomVersionId::V5
-			| RoomVersionId::V6
-			| RoomVersionId::V7
-			| RoomVersionId::V8
-			| RoomVersionId::V9
-			| RoomVersionId::V10
-			| RoomVersionId::V11
-	) {
+	// Only versions whose rules derive the room ID from the create event may
+	// omit it. Ask the rules rather than listing versions, so custom versions
+	// that still require `room_id` are handled correctly.
+	let rules = crate::matrix::state_res::RoomVersion::new(&room_version)
+		.map_err(|e| err!(Request(BadJson("Unsupported room_version in pdu: {e}"))))?;
+	if !rules.room_ids_as_hashes {
 		return Err(err!(Request(BadJson("Missing room_id in pdu"))));
 	}
 

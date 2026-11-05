@@ -581,11 +581,8 @@ async fn knock_room_helper_remote(
 		| Some(value) => value.as_str().ok_or_else(|| {
 			err!(BadServerResponse("send_knock create event has invalid room_version"))
 		})?,
-		| None => {
-			return Err!(BadServerResponse(
-				"send_knock create event lacks room_version; conduwuit doesn't support v1 rooms"
-			));
-		},
+		// The protocol defaults an omitted create-event room_version to v1.
+		| None => "1",
 	};
 	if create_room_version != room_version_id.as_str() {
 		return Err!(BadServerResponse(
@@ -678,7 +675,8 @@ async fn knock_room_helper_remote(
 	services
 		.rooms
 		.state
-		.set_room_state_hamt_with_nodes(room_id, &root_handle, &pending_nodes)?;
+		.set_room_state_hamt_with_nodes(room_id, &root_handle, &pending_nodes)
+		.await?;
 
 	// We append to state before appending the pdu, so we never have the pdu
 	// without its state.

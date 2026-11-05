@@ -585,6 +585,7 @@ async fn join_room_by_id_helper_remote(
 async fn persist_send_join_create_event(
 	services: &Services,
 	room_id: &RoomId,
+	expected_version: &RoomVersionId,
 	state: &[(slipstream::OwnedEventId, CanonicalJsonObject)],
 	auth_chain: &[(slipstream::OwnedEventId, CanonicalJsonObject)],
 ) -> Result<Option<slipstream::OwnedEventId>> {
@@ -605,6 +606,21 @@ async fn persist_send_join_create_event(
 		}
 		return Ok(None);
 	};
+
+	// The create event fixes the room version for every later outlier, so it
+	// must agree with the version `make_join` told us to build the join with.
+	let claimed = value
+		.get("content")
+		.and_then(|content| content.as_object())
+		.and_then(|content| content.get("room_version"))
+		.and_then(|version| version.as_str())
+		.unwrap_or("1");
+	if claimed != expected_version.as_str() {
+		return Err!(BadServerResponse(
+			"send_join create event claims room version {claimed}, but make_join returned \
+			 {expected_version}"
+		));
+	}
 
 	services
 		.rooms
@@ -682,9 +698,14 @@ async fn join_room_by_id_helper_remote_process(
 		.boxed()
 		.await;
 
-	let prewritten_create_event =
-		persist_send_join_create_event(services, room_id, &validated_state, &validated_auth)
-			.await?;
+	let prewritten_create_event = persist_send_join_create_event(
+		services,
+		room_id,
+		&room_version_id,
+		&validated_state,
+		&validated_auth,
+	)
+	.await?;
 	let prewritten_create_event = prewritten_create_event.as_ref();
 
 	info!("Going through send_join response room_state");
@@ -879,6 +900,11 @@ async fn join_room_by_id_helper_remote_process(
 		.state_cache
 		.is_joined(sender_user, room_id)
 		.await;
+	services
+		.rooms
+		.state
+		.ensure_room_state_rebuilt(room_id)
+		.await?;
 
 	debug!("Registering joined members for new room");
 	// Register the room's joined members/servers (including remote users such as
@@ -899,7 +925,8 @@ async fn join_room_by_id_helper_remote_process(
 	services
 		.rooms
 		.state
-		.set_room_state_hamt(room_id, &root_handle, &state_lock)?;
+		.set_room_state_hamt(room_id, &root_handle, &state_lock)
+		.await?;
 
 	// Promote auth chain + state outliers to the backfilled timeline.
 	// This makes the room's origin events (create, initial joins, power

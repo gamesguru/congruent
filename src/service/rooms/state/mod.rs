@@ -139,6 +139,8 @@ struct Data {
 	roomid_roothandle: Arc<Map>,
 	shorteventid_roothandle: Arc<Map>,
 	state_hamt_root_lattices: Arc<Map>,
+	/// Durable blocks for rooms whose v23 state rebuild failed.
+	state_rebuild_pending: Arc<Map>,
 	/// Bounded cache of encoded root lattices, keyed by structural hash.
 	/// Lattices are immutable and content-addressed, so entries never go
 	/// stale.
@@ -147,6 +149,7 @@ struct Data {
 
 /// Encoded length of a persisted `LtHash` lattice.
 const LATTICE_LEN: usize = 2048;
+const STATE_REBUILD_PENDING_PREFIX: &[u8] = b"state_rebuild_pending_v23:";
 
 type RoomMutexMap = MutexMap<OwnedRoomId, ()>;
 pub type RoomMutexGuard = MutexMapGuard<OwnedRoomId, ()>;
@@ -172,6 +175,7 @@ impl crate::Service for Service {
 				roomid_roothandle: args.db["roomid_roothandle"].clone(),
 				shorteventid_roothandle: args.db["shorteventid_roothandle"].clone(),
 				state_hamt_root_lattices: args.db["state_hamt_root_lattices"].clone(),
+				state_rebuild_pending: args.db["global"].clone(),
 				lattice_cache: moka::sync::Cache::builder()
 					.max_capacity(u64::from(args.server.config.lthash_cache_capacity))
 					.build(),
@@ -190,6 +194,34 @@ impl crate::Service for Service {
 }
 
 impl Service {
+	fn state_rebuild_pending_key(room_id: &RoomId) -> Vec<u8> {
+		[STATE_REBUILD_PENDING_PREFIX, room_id.as_bytes()].concat()
+	}
+
+	pub(crate) fn mark_state_rebuild_pending(&self, room_id: &RoomId) {
+		self.db
+			.state_rebuild_pending
+			.insert(&Self::state_rebuild_pending_key(room_id), []);
+	}
+
+	pub(crate) fn clear_state_rebuild_pending(&self, room_id: &RoomId) {
+		self.db
+			.state_rebuild_pending
+			.remove(&Self::state_rebuild_pending_key(room_id));
+	}
+
+	pub async fn ensure_room_state_rebuilt(&self, room_id: &RoomId) -> Result<()> {
+		let key = Self::state_rebuild_pending_key(room_id);
+		match self.db.state_rebuild_pending.get(&key).await {
+			| Ok(_) => Err(err!(Request(Unknown(
+				"Room state is blocked after a failed v23 rebuild; run `yolo rebuild-state` \
+				 first"
+			)))),
+			| Err(error) if error.is_not_found() => Ok(()),
+			| Err(error) => Err(error),
+		}
+	}
+
 	/// Set the room to the given state root and update caches.
 	pub async fn force_state(
 		&self,
@@ -197,6 +229,7 @@ impl Service {
 		new_root_handle: &rezzy::hamt::RootHandle,
 		state_lock: &RoomMutexGuard,
 	) -> Result<()> {
+		self.ensure_room_state_rebuilt(room_id).await?;
 		let current_root = match self.get_room_state_hamt(room_id).await {
 			| Ok(root) => Some(root),
 			| Err(error) if error.is_not_found() => None,
@@ -211,6 +244,7 @@ impl Service {
 		.await?;
 
 		self.set_room_state_hamt(room_id, new_root_handle, state_lock)
+			.await
 	}
 
 	/// Computes the HAMT delta between `from_root` (default: empty state) and
@@ -385,6 +419,7 @@ impl Service {
 		prev_root_handle: Option<&rezzy::hamt::RootHandle>,
 		pre_persisted_nodes: &[rooms::state_hamt::store::PendingNode],
 	) -> Result<rezzy::hamt::RootHandle> {
+		self.ensure_room_state_rebuilt(room_id).await?;
 		let shorteventid = self
 			.services
 			.short
@@ -482,6 +517,7 @@ impl Service {
 		Arc<rezzy::hamt::HamtNode<u64, u64>>,
 		Vec<rooms::state_hamt::store::PendingNode>,
 	)> {
+		self.ensure_room_state_rebuilt(room_id).await?;
 		let Some(state_key) = new_pdu.state_key() else {
 			return Err(err!(Request(InvalidParam("append_to_state called on non-state event"))));
 		};
@@ -795,7 +831,7 @@ impl Service {
 	}
 
 	/// Set the state HAMT RootHandle to a new version.
-	pub fn set_room_state_hamt(
+	pub async fn set_room_state_hamt(
 		&self,
 		room_id: &RoomId,
 		root_handle: &rezzy::hamt::RootHandle,
@@ -803,11 +839,34 @@ impl Service {
 		_mutex_lock: &RoomMutexGuard,
 	) -> Result<()> {
 		self.set_room_state_hamt_with_nodes(room_id, root_handle, &[])
+			.await
 	}
 
 	/// Set the current room root, publishing any nodes created while building it
 	/// in the same mtxdb transaction.
-	pub fn set_room_state_hamt_with_nodes(
+	pub async fn set_room_state_hamt_with_nodes(
+		&self,
+		room_id: &RoomId,
+		root_handle: &rezzy::hamt::RootHandle,
+		nodes: &[rooms::state_hamt::store::PendingNode],
+	) -> Result<()> {
+		self.ensure_room_state_rebuilt(room_id).await?;
+		self.publish_room_state_hamt_with_nodes(room_id, root_handle, nodes)
+	}
+
+	/// Publish a root after a successful rebuild, which is the operation that
+	/// repairs and clears a pending v23 rebuild block.
+	pub(crate) fn set_room_state_hamt_after_rebuild(
+		&self,
+		room_id: &RoomId,
+		root_handle: &rezzy::hamt::RootHandle,
+		_mutex_lock: &RoomMutexGuard,
+		nodes: &[rooms::state_hamt::store::PendingNode],
+	) -> Result<()> {
+		self.publish_room_state_hamt_with_nodes(room_id, root_handle, nodes)
+	}
+
+	fn publish_room_state_hamt_with_nodes(
 		&self,
 		room_id: &RoomId,
 		root_handle: &rezzy::hamt::RootHandle,

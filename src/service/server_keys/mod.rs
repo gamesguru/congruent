@@ -77,7 +77,7 @@ pub type PubKeyMap = PublicKeyMap;
 pub type PubKeys = PublicKeySet;
 
 /// Build the active and retired key view, excluding evicted records.
-/// Uses the greatest retained validity timestamp, or zero for no retained keys;
+/// Uses the greatest validity timestamp among active keys, or zero for none;
 /// signatures are not reconstructed. Invalid key IDs return database errors.
 fn signing_keys_from_native(
 	origin: &ServerName,
@@ -92,8 +92,6 @@ fn signing_keys_from_native(
 			.map_err(|error| err!(Database("Invalid signing-key id in mtxdb: {error}")))?;
 		let key_id = OwnedServerSigningKeyId::parse(key_id)
 			.map_err(|error| err!(Database("Invalid signing-key id in mtxdb: {error}")))?;
-		out.valid_until_ts =
-			MilliSecondsSinceUnixEpoch(out.valid_until_ts.0.max(key.valid_until_ts));
 		if let Some(expired_ts) = key.retirement_ts() {
 			out.old_verify_keys.insert(
 				key_id,
@@ -103,6 +101,10 @@ fn signing_keys_from_native(
 				),
 			);
 		} else {
+			// Only active keys set the validity window: a retired key's later
+			// timestamp must not stop a refresh of the keys still in use.
+			out.valid_until_ts =
+				MilliSecondsSinceUnixEpoch(out.valid_until_ts.0.max(key.valid_until_ts));
 			out.verify_keys
 				.insert(key_id, VerifyKey::new(slipstream::sswire::Base64::new(key.key.clone())));
 		}

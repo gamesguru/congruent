@@ -36,9 +36,9 @@ cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
 ```
 
 Compaction opens the redb file directly and may take a while on a large file.
-It rewrites the file and can temporarily need roughly twice the database's size
-in free space, so check available space first. Do not run it while the server
-is using that database.
+It rewrites the file and can temporarily grow to roughly twice the database's
+size, so ensure about one database-size of free space is available. Do not run
+it while the server is using that database.
 
 `export-mtxdb` writes one `room-<hex room id>.jsonl` per room plus
 `server-keys.jsonl`. It understands both the legacy `pduid_pdu` /
@@ -48,9 +48,10 @@ those IDs to agree. Federated user rows can make that ambiguous; pass the
 configured server name as the optional third argument in that case. The PDU
 body's own `event_id` is authoritative if a legacy index disagrees.
 
-Room event records contain the PDU and its graph references. Rejection,
-soft-fail, and outlier flags are not exported; the importer derives its stored
-verdicts from the event data and available checks. Legacy cached keys are
+Room event records contain the PDU and its graph references. The exporter
+preserves outlier, rejection, and soft-fail metadata where the source database
+has it; the importer derives rejection verdicts from event data and available
+checks, while retaining source soft-fail verdicts. Legacy cached keys are
 exported as permanent keys; no notary payload is synthesized.
 
 ```text

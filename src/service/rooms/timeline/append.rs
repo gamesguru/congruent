@@ -52,6 +52,21 @@ pub(super) struct PduPushEval<'a> {
 	pub soft_fail: bool,
 }
 
+/// Removes a room's cached last timeline count on drop while armed.
+struct CountCacheGuard<'a> {
+	cache: &'a moka::sync::Cache<slipstream::OwnedRoomId, PduCount>,
+	room_id: &'a slipstream::RoomId,
+	armed: bool,
+}
+
+impl Drop for CountCacheGuard<'_> {
+	fn drop(&mut self) {
+		if self.armed {
+			self.cache.invalidate(&self.room_id.to_owned());
+		}
+	}
+}
+
 /// Append the incoming event setting the state snapshot to the state from
 /// the server that sent the event.
 #[implement(super::Service)]
@@ -190,6 +205,14 @@ where
 		advance_current_state,
 		was_joined_before_state_install,
 	} = ctx;
+
+	// A failed v23 rebuild leaves this room without a trustworthy current-state
+	// root. Do not append an event that could publish a root derived from empty
+	// state; a successful `yolo rebuild-state` clears the durable block.
+	self.services
+		.state
+		.ensure_room_state_rebuilt(room_id)
+		.await?;
 
 	// Coalesce timeline writes; flush before pub'ing receipt changes / waking sync.
 	let cork = self.db.db.cork_and_flush();
@@ -354,6 +377,10 @@ where
 	// cannot snapshot a count whose membership change is not yet applied.
 	let mut sync_barrier = None;
 	let mut pending_batch = None;
+	// Un-publishes the cached count if a later step fails before the legacy
+	// batch lands. Safe under `insert_lock`: no other append in this room can
+	// have published a newer count meanwhile.
+	let mut count_cache_guard: Option<CountCacheGuard<'_>> = None;
 	let (pdu_id, pdu_count, private_read_count) = if let Some((existing_id, existing_count)) =
 		existing_pdu
 	{
@@ -396,20 +423,14 @@ where
 		);
 		self.last_timeline_count_cache
 			.insert(room_id.to_owned(), pdu_count);
+		count_cache_guard = Some(CountCacheGuard {
+			cache: &self.last_timeline_count_cache,
+			room_id,
+			armed: true,
+		});
 
 		(pdu_id, pdu_count, Some(count))
 	};
-
-	// Only after the timeline row exists: a failed insert must not leave a
-	// reference or forward extremity naming an event with no row. A retry takes
-	// the `existing_pdu` path and reaches this again.
-	// We must keep track of all events that have been referenced.
-	// EXCEPT for soft-failed events, which are invisible to DAG tips.
-	if !soft_fail {
-		self.services
-			.pdu_metadata
-			.mark_as_referenced(room_id, pdu.prev_events().map(AsRef::as_ref));
-	}
 
 	trace!("setting forward extremities");
 	self.services
@@ -421,6 +442,17 @@ where
 			state_lock,
 		)
 		.await?;
+
+	// Only after the timeline row exists and the extremities are stored: a
+	// failure above must not leave a reference mark on a leaf that is still a
+	// stored tip. A retry takes the `existing_pdu` path and reaches this again.
+	// We must keep track of all events that have been referenced.
+	// EXCEPT for soft-failed events, which are invisible to DAG tips.
+	if !soft_fail {
+		self.services
+			.pdu_metadata
+			.mark_as_referenced(room_id, pdu.prev_events().map(AsRef::as_ref));
+	}
 
 	// An event accepted while the room's state is partial is outside every
 	// re-authorised window until a resync has seen it, so record it under the
@@ -459,7 +491,8 @@ where
 	{
 		self.services
 			.state
-			.set_room_state_hamt(room_id, root_handle, state_lock)?;
+			.set_room_state_hamt(room_id, root_handle, state_lock)
+			.await?;
 	}
 
 	// The duplicate gate is the last write. `get_pdu_id` reads this batch, and
@@ -470,6 +503,9 @@ where
 	// re-runs the append.
 	if let Some(batch) = pending_batch {
 		self.db.apply_batch(batch);
+	}
+	if let Some(guard) = count_cache_guard.as_mut() {
+		guard.armed = false;
 	}
 	drop(cork);
 	// Keep sync snapshots behind the count until the legacy timeline batch and

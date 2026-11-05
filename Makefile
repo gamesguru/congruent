@@ -580,6 +580,9 @@ migrate/export: _migrate_vars ##H Export the old RocksDB to MIGRATE_OUT/export (
 	$(MIGRATE_BIN) export-mtxdb "$(MIGRATE_SRC)" "$(MIGRATE_OUT)/export/mtxdb" $(MIGRATE_SERVER) && \
 	$(MIGRATE_BIN) export "$(MIGRATE_SRC)" "$(MIGRATE_OUT)/export/metadata.jsonl"
 
+.PHONY: migrate/import
+migrate/import: migrate/import-meta migrate/import-rooms ##H Import metadata, then rooms and signing keys
+
 .PHONY: migrate/import-meta
 migrate/import-meta: _migrate_vars ##H Import metadata.jsonl into MIGRATE_NEWDB/metadata.redb
 	mkdir -p "$(MIGRATE_NEWDB)"
@@ -606,7 +609,7 @@ migrate/import-rooms: _migrate_vars ##H Import the room export and signing keys 
 .PHONY: migrate/clean
 migrate/clean: _migrate_vars ##H Delete MIGRATE_OUT/export and MIGRATE_OUT/new (never the source)
 	@echo "Delete $(MIGRATE_OUT)/export and $(MIGRATE_OUT)/new?"
-	@$(MAKE) _confirm
+	@$(MAKE) _confirm PROFILE=migrate
 	rm -rf "$(MIGRATE_OUT)/export" "$(MIGRATE_OUT)/new"
 
 

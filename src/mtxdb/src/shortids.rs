@@ -286,11 +286,12 @@ impl ShortIdAdapter {
 		room_id: &[u8],
 		legacy_short: Option<u64>,
 	) -> Result<u64, StorageError> {
+		// Take the counter lock first: `remove_room` holds it too, so a lookup
+		// result cannot be invalidated by a removal before we return it.
+		let mut counter = self.counter.lock().unwrap_or_else(PoisonError::into_inner);
 		if let Some(short) = self.get_room(room_id)? {
 			return Ok(short);
 		}
-
-		let mut counter = self.counter.lock().unwrap_or_else(PoisonError::into_inner);
 		let node = derive_id(b"short-room", room_id);
 		if let Some(bytes) = self.read(Map::RoomForward, node)? {
 			let (short, stored) = split_prefix(&bytes)?;

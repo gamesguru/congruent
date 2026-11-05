@@ -76,6 +76,12 @@ pub async fn search_pdus<'a>(
 
 		count = count.saturating_add(1);
 
+		// The page is full and the skip is satisfied: later matches only add to
+		// the total, so don't pay for filter/visibility checks on them.
+		if skipped >= query.skip && results.len() >= query.limit {
+			continue;
+		}
+
 		if pdu.is_redacted() || !filter.matches(&pdu) {
 			continue;
 		}
@@ -97,10 +103,6 @@ pub async fn search_pdus<'a>(
 
 		if skipped < query.skip {
 			skipped = skipped.saturating_add(1);
-			continue;
-		}
-
-		if results.len() >= query.limit {
 			continue;
 		}
 

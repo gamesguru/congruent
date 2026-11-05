@@ -18,7 +18,7 @@ mod redact;
 pub mod reindex;
 mod reorder;
 mod repair_unsigned;
-mod retry;
+pub(crate) mod retry;
 
 use std::{fmt::Write, ops::Bound, sync::Arc};
 

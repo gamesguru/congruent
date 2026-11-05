@@ -219,6 +219,20 @@ impl MtxdbStore {
 			.collect()
 	}
 
+	/// The first live record of a collection, without materializing the rest.
+	pub fn first_record(
+		&self,
+		shard: ShardType,
+		collection: &CollectionId,
+	) -> Result<Option<(NodeId, Vec<u8>)>, StorageError> {
+		self.db
+			.pool(shard)
+			.scan_collection(collection)?
+			.next()
+			.transpose()
+			.map(|entry| entry.map(|(node, data)| (node, data.bytes.to_vec())))
+	}
+
 	/// Whether a collection has any live records, without materializing them.
 	pub fn has_records(
 		&self,

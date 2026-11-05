@@ -129,10 +129,14 @@ impl super::Service {
 		// events that only exist as outliers). Callers that need the derived
 		// membership cache rebuilt run `reconcile_membership` afterwards.
 		let state_lock = self.services.state.mutex.lock(room_id).await;
-		self.services
-			.state
-			.set_room_state_hamt(room_id, &current_root, &state_lock)?;
+		self.services.state.set_room_state_hamt_after_rebuild(
+			room_id,
+			&current_root,
+			&state_lock,
+			&[],
+		)?;
 		self.services.state_cache.update_joined_count(room_id).await;
+		self.services.state.clear_state_rebuild_pending(room_id);
 
 		eprintln!("[rebuild_state] Phase 6 done: state applied");
 		Ok(())

@@ -164,7 +164,8 @@ pub async fn build_and_append_pdu(
 	if !crate::rooms::state::is_state_event(&pdu) {
 		self.services
 			.state
-			.set_room_state_hamt(&room_id, &state_root_handle, state_lock)?;
+			.set_room_state_hamt(&room_id, &state_root_handle, state_lock)
+			.await?;
 	}
 
 	let mut servers: HashSet<OwnedServerName> = self

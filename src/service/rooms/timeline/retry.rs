@@ -18,7 +18,7 @@ use std::{
 use conduwuit_mtxdb::StorageError;
 
 /// Attempts for one logical write, including the first.
-pub(super) const MAX_ATTEMPTS: u32 = 8;
+pub(crate) const MAX_ATTEMPTS: u32 = 8;
 
 /// First backoff. Conflicts are rare behind the adapters' write locks, so this stays
 /// small; it exists to break up retry storms, not to wait out a long writer.
@@ -34,7 +34,7 @@ static RETRIES: AtomicU64 = AtomicU64::new(0);
 
 /// Number of conflicts retried so far.
 #[must_use]
-pub(super) fn retry_count() -> u64 { RETRIES.load(Ordering::Relaxed) }
+pub(crate) fn retry_count() -> u64 { RETRIES.load(Ordering::Relaxed) }
 
 /// Run `op`, retrying only [`StorageError::StaleRead`] with bounded exponential
 /// backoff and jitter. Every other error, and an exhausted conflict, is
@@ -51,6 +51,34 @@ pub(super) async fn retry_stale<T>(
 				// Tests run on smol with no tokio reactor; smol's timer works
 				// under either runtime.
 				smol::Timer::after(backoff(attempt)).await;
+			},
+			| result => {
+				if let Err(error) = &result
+					&& error.is_stale_read()
+				{
+					conduwuit::warn!(
+						retries = retry_count(),
+						"mtxdb write exhausted its StaleRead retry budget: {error}"
+					);
+				}
+				return result;
+			},
+		}
+	}
+}
+
+/// Blocking twin of [`retry_stale`] for synchronous write paths. Same bound,
+/// backoff and exhaustion behaviour; the sleep is at most [`MAX_BACKOFF`].
+pub(crate) fn retry_stale_blocking<T>(
+	mut op: impl FnMut() -> Result<T, StorageError>,
+) -> Result<T, StorageError> {
+	let mut attempt = 0_u32;
+	loop {
+		match op() {
+			| Err(error) if error.is_stale_read() && attempt < MAX_ATTEMPTS.saturating_sub(1) => {
+				attempt = attempt.saturating_add(1);
+				RETRIES.fetch_add(1, Ordering::Relaxed);
+				std::thread::sleep(backoff(attempt));
 			},
 			| result => {
 				if let Err(error) = &result

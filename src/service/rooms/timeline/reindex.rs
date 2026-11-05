@@ -256,10 +256,12 @@ impl Service {
 
 			let stored_auth_shorts = self.db.get_shortauthevents(short_eid).await.ok();
 			let auth_events_repaired = stored_auth_shorts.as_ref() != Some(&auth_shorts);
+			// The mtxdb closure is written together with the event's edges.
+			let mut closure_persisted = false;
 			if auth_events_repaired {
-				if let Ok(json) = self.db.get_pdu_json(event_id) {
-					self.db.write_event_to_mtxdb(&pdu, &json).await?;
-				}
+				let json = self.db.get_pdu_json(event_id)?;
+				self.db.write_event_to_mtxdb(&pdu, &json).await?;
+				closure_persisted = true;
 				stats.repaired_auth_events = stats.repaired_auth_events.saturating_add(1);
 			}
 
@@ -282,14 +284,23 @@ impl Service {
 					}
 				}
 
+				// Edges matched but no closure exists: persist it before counting
+				// the chain as repaired, so the RAM cache never diverges from mtxdb.
+				if !closure_persisted && let Ok(json) = self.db.get_pdu_json(event_id) {
+					self.db.write_event_to_mtxdb(&pdu, &json).await?;
+					closure_persisted = true;
+				}
+
 				let chain_arc = Arc::new(full_chain);
-				self.services.auth_chain.cache_auth_chain_bitmap(
-					shortroomid,
-					short_eid,
-					&chain_arc,
-				);
-				auth_chain_cache.insert(short_eid, chain_arc);
-				stats.repaired_auth_chains = stats.repaired_auth_chains.saturating_add(1);
+				auth_chain_cache.insert(short_eid, Arc::clone(&chain_arc));
+				if closure_persisted {
+					self.services.auth_chain.cache_auth_chain_bitmap(
+						shortroomid,
+						short_eid,
+						&chain_arc,
+					);
+					stats.repaired_auth_chains = stats.repaired_auth_chains.saturating_add(1);
+				}
 			} else if let Ok(existing) = self
 				.services
 				.auth_chain

@@ -331,13 +331,15 @@ fn add_pdu_outlier_batch_impl<'a>(
 			.event_matches_with_edges(room_id.as_bytes(), event_id.as_bytes(), json.as_bytes())
 			.unwrap_or(false);
 		if !already_stored {
-			if let Err(error) = self.db.mtxdb_events.write_event_with_edges(
-				room_id.as_bytes(),
-				event_id.as_bytes(),
-				json.as_bytes(),
-				&prev,
-				&auth,
-			) {
+			if let Err(error) = rooms::timeline::retry::retry_stale_blocking(|| {
+				self.db.mtxdb_events.write_event_with_edges(
+					room_id.as_bytes(),
+					event_id.as_bytes(),
+					json.as_bytes(),
+					&prev,
+					&auth,
+				)
+			}) {
 				warn!(
 					?error,
 					%room_id,

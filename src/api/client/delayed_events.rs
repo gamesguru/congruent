@@ -88,6 +88,10 @@ pub(crate) async fn schedule_delayed_event_route(
 			&ScheduleDelayedEventRequest::METADATA,
 		)
 		.await?;
+	if services.users.is_suspended(&sender_user).await? {
+		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")))
+			.map_err(Into::into);
+	}
 	let body = std::str::from_utf8(&body)
 		.map_err(|_| conduwuit::err!(Request(NotJson("Request body is not valid UTF-8"))))?;
 	let body = slipstream::canonical_json::from_json_str(body)

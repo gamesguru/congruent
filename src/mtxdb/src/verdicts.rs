@@ -100,6 +100,23 @@ impl VerdictAdapter {
 	where
 		F: FnMut(&mut Verdict),
 	{
+		// The per-store write lock does not cover other stores or processes, so
+		// a commit can still lose to a concurrent writer: re-read and redo.
+		const MAX_ATTEMPTS: u32 = 8;
+		let mut attempt = 1;
+		loop {
+			match self.update_once(event_id, &mut change) {
+				| Err(error) if error.is_stale_read() && attempt < MAX_ATTEMPTS =>
+					attempt = attempt.saturating_add(1),
+				| result => return result,
+			}
+		}
+	}
+
+	fn update_once<F>(&self, event_id: &[u8], change: &mut F) -> Result<(), StorageError>
+	where
+		F: FnMut(&mut Verdict),
+	{
 		let node = event_record_id(event_id);
 		let collection = event_verdict_collection_id(&node);
 		let _write_lock = self.store.write_lock(ShardType::EventDag, collection);

@@ -721,16 +721,22 @@ impl Service {
 			return None;
 		}
 
-		let event = self
-			.db
-			.delayid_scheduleddelayedevent
-			.get(&delay_id)
-			.await
-			.inspect_err(|err| {
-				debug_warn!(%delay_id, "Event was not found (database error: {err}).\
-					If the event was updated via the management endpoint, this is probably normal.");
-			})
-			.ok()?;
+		let event = match self.db.delayid_scheduleddelayedevent.get(&delay_id).await {
+			| Ok(event) => event,
+			| Err(err) if err.is_not_found() => {
+				debug_warn!(%delay_id, "Event was not found. If the event was updated via \
+					the management endpoint, this is probably normal.");
+				return None;
+			},
+			| Err(err) => {
+				// A transient read failure must not drop the queue item while the
+				// event is still scheduled in the database.
+				error!(%delay_id, %err, "Failed to read delayed event; will retry.");
+				return SystemTime::now()
+					.checked_add(DATABASE_FAILURE_RETRY_DELAY)
+					.map(|retry_at| (retry_at, delay_id));
+			},
+		};
 		let event: ScheduledDelayedEvent = event
 			.deserialized()
 			.inspect_err(

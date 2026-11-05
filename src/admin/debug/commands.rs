@@ -948,11 +948,11 @@ pub(crate) async fn force_set_state(
 		info!("Forcing new room state (quiet mode)");
 	}
 
-	self.services.rooms.state.set_room_state_hamt_with_nodes(
-		room_id.as_ref(),
-		&new_room_state,
-		&pending_nodes,
-	)?;
+	self.services
+		.rooms
+		.state
+		.set_room_state_hamt_with_nodes(room_id.as_ref(), &new_room_state, &pending_nodes)
+		.await?;
 
 	// Update joined count from state snapshot
 	self.services

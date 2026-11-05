@@ -1521,7 +1521,7 @@ impl Data {
 		self.roomid_topologicalorder_pducount
 			.batch_put(batch, &topo_key, event_id_bytes);
 
-		if let Some(room_id) = pdu.room_id() {
+		if let Some(room_id) = pdu.room_id_or_hash() {
 			let entry = conduwuit_mtxdb::timeline::TimelineAdapter::make_entry(
 				room_id.as_bytes(),
 				pdu.depth().cast_signed(),

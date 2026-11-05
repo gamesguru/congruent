@@ -155,6 +155,10 @@ pub(super) async fn load_left_room(
 
 	let does_not_exist = services.rooms.metadata.exists(room_id).eq(&false).await;
 
+	// Set when only the bare membership event could be loaded. It is the one
+	// thing that must reach the client, so the state filter may not drop it.
+	let mut force_membership_event = false;
+
 	let (timeline, state_events, leave_root_handle) = match leave_membership_event {
 		| Some(ref leave_membership_event) if does_not_exist => {
 			/*
@@ -171,6 +175,7 @@ pub(super) async fn load_left_room(
 				return Ok(None);
 			}
 
+			force_membership_event = true;
 			trace!("syncing remote-assisted leave PDU");
 			(TimelinePdus::default(), vec![leave_membership_event.clone()], None)
 		},
@@ -245,15 +250,15 @@ pub(super) async fn load_left_room(
 				{
 					// The membership cache is updated before the leave event's timeline
 					// row and state root are visible (see the append path). A sync that
-					// wakes in that window must not drop the leave: the next_batch
-					// advances past left_count, so the client would never see the ban.
-					// Send the membership event we already have and let a later sync
-					// fill in the timeline/state.
+					// wakes in that window must not drop the leave: next_batch advances
+					// past left_count, so this response is the only chance to deliver
+					// it. The timeline/state are omitted, not filled in on a later sync.
 					warn!(
 						%room_id,
 						?error,
 						"leave event is not fully loadable yet; sending only the membership event"
 					);
+					force_membership_event = true;
 					(TimelinePdus::default(), vec![leave_membership_event.clone()], None)
 				},
 				| Err(error) => return Err(error),
@@ -273,6 +278,7 @@ pub(super) async fn load_left_room(
 			}
 
 			trace!("syncing dummy leave event");
+			force_membership_event = true;
 			(
 				TimelinePdus::default(),
 				vec![create_dummy_leave_event(services, sync_context, room_id)],
@@ -370,7 +376,10 @@ pub(super) async fn load_left_room(
 		.filter(|pdu: &PduEvent| !timeline_ids.contains(&*pdu.event_id))
 		.filter(|pdu: &PduEvent| {
 			let filter = &filter.room.state;
-			filter.matches(pdu)
+			(force_membership_event
+				&& *pdu.event_type() == TimelineEventType::RoomMember
+				&& pdu.state_key() == Some(syncing_user.as_str()))
+				|| filter.matches(pdu)
 		})
 		.map(Event::into_format)
 		.collect();

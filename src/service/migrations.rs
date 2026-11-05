@@ -101,11 +101,11 @@ const V28_RETIRED_CFS: &[&str] = &["tokenids"];
 
 /// Compute schema fingerprint from the static column family name list,
 /// explicitly dropped CFs, and the schema version number.
-fn compute_schema_fingerprint() -> [u8; 32] {
+fn compute_schema_fingerprint(version: u64) -> [u8; 32] {
 	let mut hasher = Sha256::new();
 
 	// Include version so (v19, CFs) != (v20, same CFs)
-	hasher.update(DATABASE_VERSION.to_be_bytes());
+	hasher.update(version.to_be_bytes());
 
 	// MAPS is already in alphabetical order (static slice)
 	for name in database::maps::column_family_names() {
@@ -155,7 +155,7 @@ async fn fresh(services: &Services) -> Result<()> {
 	services
 		.globals
 		.db
-		.set_schema_fingerprint(&compute_schema_fingerprint());
+		.set_schema_fingerprint(&compute_schema_fingerprint(DATABASE_VERSION));
 
 	db["global"].insert(b"feat_sha256_media", []);
 	db["global"].insert(b"fix_bad_double_separator_in_state_cache", []);
@@ -515,7 +515,7 @@ async fn migrate(services: &Services) -> Result<()> {
 	// to differ because the schema version is part of the hash. Only retain the
 	// hard-fail behavior for databases that were already current when opened;
 	// successful versioned migrations are the compatibility boundary for upgrades.
-	let expected = compute_schema_fingerprint();
+	let expected = compute_schema_fingerprint(DATABASE_VERSION);
 	if let Some(stored) = services.globals.db.schema_fingerprint().await {
 		if stored != expected {
 			if db_version >= DATABASE_VERSION {
@@ -2382,8 +2382,8 @@ async fn db_lt_22(services: &Services) -> Result<()> {
 /// `shortstatehash_statediff` history is therefore not needed to seed the HAMT
 /// cutover, which lets the export omit it and keeps the migrated redb small.
 ///
-/// A room that fails to rebuild is logged and skipped so one bad room cannot
-/// keep the server from starting; run `yolo rebuild-state <room>` to retry it.
+/// A room that fails to rebuild is recorded and remains blocked from timeline
+/// writes until `yolo rebuild-state <room>` successfully restores its state.
 async fn db_lt_23(services: &Services) -> Result<()> {
 	info!("Running v23 migration (rebuilding room state HAMTs from the timeline)...");
 
@@ -2400,6 +2400,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 					"Failed to read the timeline for room {room_id} in v23 migration: {e}; run \
 					 `yolo rebuild-state {room_id}` to retry"
 				);
+				services.rooms.state.mark_state_rebuild_pending(&room_id);
 			}
 			continue;
 		}
@@ -2409,6 +2410,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 				"Failed to rebuild state HAMTs for room {room_id} in v23 migration: {e}; run \
 				 `yolo rebuild-state {room_id}` to retry"
 			);
+			services.rooms.state.mark_state_rebuild_pending(&room_id);
 		}
 	}
 
@@ -2536,14 +2538,14 @@ mod tests {
 
 	#[test]
 	fn test_schema_fingerprint_deterministic() {
-		let a = compute_schema_fingerprint();
-		let b = compute_schema_fingerprint();
+		let a = compute_schema_fingerprint(DATABASE_VERSION);
+		let b = compute_schema_fingerprint(DATABASE_VERSION);
 		assert_eq!(a, b, "fingerprint must be deterministic");
 	}
 
 	#[test]
 	fn test_schema_fingerprint_not_empty() {
-		let fp = compute_schema_fingerprint();
+		let fp = compute_schema_fingerprint(DATABASE_VERSION);
 		assert_ne!(fp, [0_u8; 32], "fingerprint must not be all zeros");
 	}
 
@@ -2565,10 +2567,12 @@ mod tests {
 
 	#[test]
 	fn test_schema_fingerprint_includes_version() {
-		// The hash includes DATABASE_VERSION.to_be_bytes() as first input.
-		// We can't easily test mutation, but we verify the constant is
-		// included by confirming it matches the expected value.
 		assert_eq!(DATABASE_VERSION, 28);
+		assert_ne!(
+			compute_schema_fingerprint(DATABASE_VERSION - 1),
+			compute_schema_fingerprint(DATABASE_VERSION),
+			"fingerprint must change when the schema version changes"
+		);
 	}
 
 	#[test]

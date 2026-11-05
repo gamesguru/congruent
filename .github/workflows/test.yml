@@ -32,9 +32,6 @@ jobs:
           fetch-tags: true
           fetch-depth: 0
 
-      - name: Checkout mtxdb path-patched dependency
-        uses: ./.github/actions/checkout-mtxdb
-
       - name: Fetch tags and origin/main for comparison
         run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" origin/main -- tests/test_results/complement/test_results.jsonl
 

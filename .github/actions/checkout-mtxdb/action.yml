@@ -1,7 +1,0 @@
-name: Checkout mtxdb path-patched dependency
-description: Place the mtxdb dev branch at the sibling path used by Cargo.toml
-runs:
-  using: composite
-  steps:
-    - shell: bash
-      run: git clone --depth 1 --branch dev https://gitlab.com/wombat-foundation/mtxdb.git ../mtxdb
