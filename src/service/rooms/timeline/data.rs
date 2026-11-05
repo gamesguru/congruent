@@ -1086,11 +1086,35 @@ impl Data {
 			.mtxdb_events
 			.get_events(room_id.as_bytes(), &event_id_bytes)
 			.map_err(|error| err!(Database("mtxdb auth-context lookup failed: {error}")))?;
-		Ok(pdus
-			.into_iter()
-			.flatten()
-			.filter_map(|bytes| database::from_json_slice(&bytes).ok())
-			.collect())
+		let verdicts = if event_id_bytes.is_empty() {
+			Vec::new()
+		} else {
+			self.mtxdb_verdicts
+				.get_many(&event_id_bytes)
+				.map_err(|error| {
+					err!(Database("mtxdb auth-context verdict lookup failed: {error}"))
+				})?
+		};
+
+		let mut auth_context = Vec::with_capacity(event_ids.len());
+		for (event_id, (bytes, verdict)) in event_ids.iter().zip(pdus.into_iter().zip(verdicts)) {
+			let Some(bytes) = bytes else {
+				continue;
+			};
+			// A body can be pre-persisted before its auth check (fetched state
+			// batches) and only marked with a retryable "pending" rejection.
+			// Such an event has no validated auth verdict yet, and a permanently
+			// rejected event must never be trusted as auth context either.
+			if verdict.is_some_and(|verdict| verdict.rejection.is_some()) {
+				continue;
+			}
+			let pdu: PduEvent = database::from_json_slice(&bytes).map_err(|error| {
+				err!(Database("failed to decode mtxdb auth-context event {event_id}: {error}"))
+			})?;
+			auth_context.push(pdu);
+		}
+
+		Ok(auth_context)
 	}
 
 	pub(super) async fn get_pdus_in_room_batch(

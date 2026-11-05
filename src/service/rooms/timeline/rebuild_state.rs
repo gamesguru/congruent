@@ -166,9 +166,20 @@ impl super::Service {
 			.unwrap_or(RoomVersionId::V1);
 
 		for eid in sorted {
-			let (pdu, _json) = self.db.get_from_eventid_pdu(&eid).map_err(|e| {
-				conduwuit::err!(Database("rebuild_state: missing PDU {eid}: {e}"))
-			})?;
+			let db = self.db.clone();
+			let runtime = self.services.server.runtime().clone();
+			let lookup_id = eid.clone();
+			let (pdu, _json) = runtime
+				.spawn_blocking(move || db.get_from_eventid_pdu(&lookup_id))
+				.await
+				.map_err(|e| {
+					conduwuit::err!(Database(
+						"rebuild_state: blocking PDU read failed for {eid}: {e}"
+					))
+				})?
+				.map_err(|e| {
+					conduwuit::err!(Database("rebuild_state: missing PDU {eid}: {e}"))
+				})?;
 			let prev: Vec<OwnedEventId> = pdu.prev_events().map(ToOwned::to_owned).collect();
 			let auth: Vec<OwnedEventId> = pdu.auth_events().map(ToOwned::to_owned).collect();
 			let is_state = pdu.state_key().is_some();

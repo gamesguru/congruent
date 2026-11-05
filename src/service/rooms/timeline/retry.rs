@@ -102,7 +102,9 @@ fn backoff(attempt: u32) -> Duration {
 	let base = BASE_BACKOFF.saturating_mul(1_u32 << shift).min(MAX_BACKOFF);
 	let span = base.checked_div(2).unwrap_or(Duration::ZERO);
 	let half_span = span.checked_div(2).unwrap_or(Duration::ZERO);
-	base.saturating_sub(half_span).saturating_add(jitter(span))
+	base.saturating_sub(half_span)
+		.saturating_add(jitter(span))
+		.min(MAX_BACKOFF)
 }
 
 fn jitter(span: Duration) -> Duration {

@@ -376,6 +376,9 @@ impl Map {
 		materialized(self.raw_items(crate::util::IteratorMode::Start))
 	}
 
+	/// Whether the map has no rows, without materializing the whole map.
+	pub fn is_empty(&self) -> Result<bool> { self.db.is_empty(self.name) }
+
 	/// Read the map's raw key/value rows synchronously for startup migrations.
 	pub fn raw_entries(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
 		self.raw_items(crate::util::IteratorMode::Start)

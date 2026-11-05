@@ -363,6 +363,18 @@ pub async fn get_cached_eventid_authchain(
 		.await
 }
 
+/// Reload the persisted closure for an event, replacing any RAM entry.
+#[implement(Service)]
+pub async fn reload_persisted_eventid_authchain(
+	&self,
+	shortroomid: ShortRoomId,
+	shorteventid: ShortEventId,
+) -> Result<Arc<Bitmap64>> {
+	self.db
+		.load_persisted_authchain(shortroomid, shorteventid)
+		.await
+}
+
 #[implement(Service)]
 pub fn cache_auth_chain_bitmap(
 	&self,

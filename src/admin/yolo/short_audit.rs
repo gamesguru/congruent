@@ -228,7 +228,7 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 			.expect("deprecated short ID map"),
 	]
 	.iter()
-	.all(|map| map.raw_entries().is_ok_and(|rows| rows.is_empty()));
+	.all(|map| map.is_empty().is_ok_and(|empty| empty));
 	if all_cleared {
 		audit.legacy_maps_cleared = true;
 		return audit;

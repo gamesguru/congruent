@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use conduwuit_core::{
-	Event, Result, err,
+	Event, Result, Server, err,
 	matrix::pdu::{PduCount, PduEvent, PduId, RawPduId},
 	utils::{
 		ReadyExt,
@@ -31,6 +31,7 @@ struct Services {
 	globals: Dep<globals::Service>,
 	short: Dep<rooms::short::Service>,
 	timeline: Dep<rooms::timeline::Service>,
+	server: Arc<Server>,
 }
 
 pub(super) struct Data {
@@ -110,6 +111,7 @@ impl crate::Service for Service {
 				globals: args.depend::<globals::Service>("globals"),
 				short: args.depend::<rooms::short::Service>("rooms::short"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
+				server: args.server.clone(),
 			},
 		}))
 	}
@@ -145,9 +147,57 @@ impl Service {
 		None
 	}
 
+	/// Async equivalent of [`Self::get_thread_id`] for async callers. The
+	/// per-hop PDU reads run on the blocking pool so executor workers are not
+	/// stalled by synchronous mtxdb lookups.
+	pub async fn get_thread_id_async<E>(&self, event: &E) -> Option<OwnedEventId>
+	where
+		E: Event + Sync,
+	{
+		let mut relates_to = event
+			.get_content::<ExtractThreadRelation>()
+			.ok()?
+			.relates_to;
+
+		for _ in 0..MAX_THREAD_HOPS {
+			if relates_to.rel_type == RelationType::Thread {
+				return Some(relates_to.event_id);
+			}
+
+			let event_id = relates_to.event_id.clone();
+			let timeline = self.services.timeline.clone();
+			let runtime = self.services.server.runtime().clone();
+			let pdu = runtime
+				.spawn_blocking(move || timeline.get_pdu(&event_id))
+				.await
+				.ok()?
+				.ok()?;
+			relates_to = pdu.get_content::<ExtractThreadRelation>().ok()?.relates_to;
+		}
+
+		None
+	}
+
 	pub fn get_thread_id_for_event(&self, event_id: &EventId) -> Option<OwnedEventId> {
 		let pdu = self.services.timeline.get_pdu(event_id).ok()?;
 		self.get_thread_id(&pdu)
+	}
+
+	/// Async equivalent of [`Self::get_thread_id_for_event`], with the PDU
+	/// lookup and any thread-hop traversal on the blocking pool.
+	pub async fn get_thread_id_for_event_async(
+		&self,
+		event_id: &EventId,
+	) -> Option<OwnedEventId> {
+		let event_id = event_id.to_owned();
+		let timeline = self.services.timeline.clone();
+		let runtime = self.services.server.runtime().clone();
+		let pdu = runtime
+			.spawn_blocking(move || timeline.get_pdu(&event_id))
+			.await
+			.ok()?
+			.ok()?;
+		self.get_thread_id_async(&pdu).await
 	}
 
 	pub async fn thread_event_count(&self, event_id: &EventId) -> Result<PduCount> {

@@ -122,15 +122,23 @@ where
 	let Ok(extremity_roothandles) = incoming_pdu
 		.prev_events()
 		.try_stream()
-		.broad_and_then(|prev_eventid| async move {
-			let prev_event = self
-				.services
-				.timeline
-				.get_pdu_in_room(Some(room_id), prev_eventid)?;
-			if prev_event.room_id() != Some(room_id) {
-				return Err(err!(Database("prev_event is not in the same room")));
+		.broad_and_then(|prev_eventid| {
+			let timeline = self.services.timeline.clone();
+			let runtime = self.services.server.runtime().clone();
+			let lookup_room_id = room_id.to_owned();
+			async move {
+				let lookup_id = prev_eventid.clone();
+				let prev_event = runtime
+					.spawn_blocking(move || {
+						timeline.get_pdu_in_room(Some(&lookup_room_id), &lookup_id)
+					})
+					.await
+					.map_err(|e| err!(Database("blocking prev_event lookup failed: {e}")))??;
+				if prev_event.room_id() != Some(room_id) {
+					return Err(err!(Database("prev_event is not in the same room")));
+				}
+				Ok((prev_eventid, prev_event))
 			}
-			Ok((prev_eventid, prev_event))
 		})
 		.broad_and_then(|(prev_eventid, prev_event)| {
 			self.services

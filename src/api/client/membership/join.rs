@@ -628,6 +628,16 @@ async fn persist_send_join_create_event(
 		.add_pdu_outlier(event_id, value, Some(room_id))
 		.await;
 
+	// `add_pdu_outlier` stages the body and metadata without returning an error.
+	// Only skip re-adding the create event later if it was actually persisted;
+	// a missing room version or mtxdb write would otherwise leave the new room
+	// without its create event.
+	if let Err(error) = services.rooms.outlier.get_outlier_pdu_json(event_id) {
+		return Err!(BadServerResponse(
+			"Failed to persist send_join create event {event_id}: {error}"
+		));
+	}
+
 	Ok(Some(event_id.clone()))
 }
 

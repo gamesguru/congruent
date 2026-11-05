@@ -460,6 +460,16 @@ impl Service {
 		self.db.mark_event_rejected(event_id, reason)
 	}
 
+	/// Batch variant of [`Self::mark_event_rejected`]: same verdict merge
+	/// semantics, but the markers are staged in one transaction per verdict
+	/// bucket instead of one per event.
+	pub fn mark_events_rejected(&self, event_ids: &[&EventId], reason: &str) -> Result<()> {
+		for &event_id in event_ids {
+			self.services.short.leanevent_cache.invalidate(event_id);
+		}
+		self.db.mark_events_rejected(event_ids, reason)
+	}
+
 	/// Directly marks an event as rejected, bypassing timeline checks.
 	pub fn mark_event_rejected_skip_visibility_check(
 		&self,

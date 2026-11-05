@@ -137,7 +137,8 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 		if services
 			.rooms
 			.threads
-			.get_thread_id_for_event(cause_event_id)
+			.get_thread_id_for_event_async(cause_event_id)
+			.await
 			.as_deref()
 			!= Some(&thread_id)
 		{

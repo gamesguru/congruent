@@ -7,8 +7,7 @@ use std::{
 use conduwuit::{Err, Result, debug_error, debug_warn, err, implement, trace, warn};
 use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedServerName, RoomVersionId, ServerName,
-	ServerSigningKeyId,
-	api::federation::discovery::{ServerSigningKeys, VerifyKey},
+	ServerSigningKeyId, api::federation::discovery::VerifyKey, sswire::Base64,
 };
 
 use super::{PubKeyMap, PubKeys, extract_key};
@@ -33,17 +32,17 @@ fn validity_policy_for_version(version: &RoomVersionId) -> ValidUntilPolicy {
 	}
 }
 
-fn missing_key_record_is_allowed(error: &conduwuit::Error) -> bool { error.is_not_found() }
-
 /// Signing-key metadata read once for every signing server in a fetched state
 /// batch. Per-event timestamp checks then run against this immutable snapshot.
 #[derive(Clone, Default)]
 pub(crate) struct EventKeyMetadataCache {
-	records: Arc<HashMap<OwnedServerName, ServerSigningKeys>>,
+	records: Arc<HashMap<OwnedServerName, Vec<conduwuit_mtxdb::server_keys::ServerKey>>>,
 }
 
 impl EventKeyMetadataCache {
-	fn get(&self, origin: &ServerName) -> Option<&ServerSigningKeys> { self.records.get(origin) }
+	fn get(&self, origin: &ServerName) -> Option<&[conduwuit_mtxdb::server_keys::ServerKey]> {
+		self.records.get(origin).map(Vec::as_slice)
+	}
 }
 
 #[implement(super::Service)]
@@ -67,14 +66,14 @@ pub(crate) async fn event_key_metadata_for_events(
 		.spawn_blocking(move || {
 			origins
 				.into_iter()
-				.filter_map(|origin| {
-					match super::merged_signing_keys_from_adapter(&adapter, &origin) {
-						| Ok(keys) => Some((origin, keys)),
-						| Err(error) => {
-							debug_warn!(%origin, "Failed to preload signing-key metadata: {error}");
-							None
-						},
-					}
+				.filter_map(|origin| match adapter.read_keys(origin.as_bytes()) {
+					| Ok(keys) if keys.iter().any(|key| !key.is_evicted()) =>
+						Some((origin, keys)),
+					| Ok(_) => None,
+					| Err(error) => {
+						debug_warn!(%origin, "Failed to preload signing-key metadata: {error}");
+						None
+					},
 				})
 				.collect()
 		})
@@ -174,27 +173,34 @@ pub(crate) async fn get_event_keys_with_metadata(
 }
 
 fn pubkeys_from_metadata(
-	server_keys: &ServerSigningKeys,
+	server_keys: &[conduwuit_mtxdb::server_keys::ServerKey],
 	key_ids: &[slipstream::OwnedServerSigningKeyId],
 	event_ts: MilliSecondsSinceUnixEpoch,
 	validity_policy: ValidUntilPolicy,
 ) -> Option<PubKeys> {
 	let mut keys = PubKeys::new();
 	for key_id in key_ids {
-		if let Some(old_key) = server_keys.old_verify_keys.get(key_id) {
-			if old_key.expired_ts > event_ts {
-				keys.insert(key_id.clone(), old_key.key.clone());
+		let key = server_keys
+			.iter()
+			.find(|key| !key.is_evicted() && key.key_id == key_id.as_str().as_bytes())?;
+
+		if let Some(expired_ts) = key.retirement_ts() {
+			if expired_ts <= event_ts.0 {
+				return None;
 			}
+			keys.insert(key_id.clone(), Base64::new(key.key.clone()));
 			continue;
 		}
 
-		let verify_key = server_keys.verify_keys.get(key_id)?;
-		if validity_policy == ValidUntilPolicy::Enforce && server_keys.valid_until_ts < event_ts {
+		// MSC4499: each key record carries its own validity window. The
+		// reconstructed payload's top-level `valid_until_ts` is only the
+		// newest of them and must not make an older, expired key look valid.
+		if validity_policy == ValidUntilPolicy::Enforce && key.valid_until_ts < event_ts.0 {
 			// Preserve the normal path's one-time refresh when a cached key record
 			// does not cover this event timestamp.
 			return None;
 		}
-		keys.insert(key_id.clone(), verify_key.key.clone());
+		keys.insert(key_id.clone(), Base64::new(key.key.clone()));
 	}
 
 	Some(keys)
@@ -293,15 +299,23 @@ async fn is_key_valid_for_event(
 	key_id: &ServerSigningKeyId,
 	event_ts: MilliSecondsSinceUnixEpoch,
 ) -> bool {
-	let cached = match self.merged_signing_keys_for(origin).await {
-		| Ok(cached) => cached,
-		| Err(error) if missing_key_record_is_allowed(&error) => return true,
+	let stale = match self
+		.db
+		.mtxdb_keys
+		.read_key(origin.as_bytes(), key_id.as_str().as_bytes())
+	{
+		| Ok(Some(key)) => {
+			// A retired key is judged by its `expired_ts` instead.
+			key.retirement_ts().is_none() && key.valid_until_ts < event_ts.0
+		},
+		// An origin without a stored record has no validity window to enforce.
+		| Ok(None) => return true,
 		| Err(error) => {
 			warn!(%origin, "Failed to read cached signing-key validity; refusing key: {error}");
 			return false;
 		},
 	};
-	if cached.old_verify_keys.contains_key(key_id) || cached.valid_until_ts >= event_ts {
+	if !stale {
 		return true;
 	}
 
@@ -319,11 +333,22 @@ async fn is_key_valid_for_event(
 		return false;
 	}
 
-	self.merged_signing_keys_for(origin)
-		.await
-		.is_ok_and(|fresh| {
-			fresh.old_verify_keys.contains_key(key_id) || fresh.valid_until_ts >= event_ts
-		})
+	match self
+		.db
+		.mtxdb_keys
+		.read_key(origin.as_bytes(), key_id.as_str().as_bytes())
+	{
+		| Ok(Some(key)) => {
+			// MSC4499: use this key's own validity timestamp, not the newest
+			// timestamp among all of the origin's keys.
+			key.retirement_ts().is_some() || key.valid_until_ts >= event_ts.0
+		},
+		| Ok(None) => true,
+		| Err(error) => {
+			warn!(%origin, "Failed to read refreshed signing-key validity; refusing key: {error}");
+			false
+		},
+	}
 }
 
 /// Checks if a key from old_verify_keys has an expired_ts that is at or before
@@ -569,15 +594,7 @@ async fn get_active_verify_key_from_origin(
 mod tests {
 	use slipstream::RoomVersionId;
 
-	use super::{ValidUntilPolicy, missing_key_record_is_allowed, validity_policy_for_version};
-
-	#[test]
-	fn missing_key_record_is_allowed_but_storage_errors_are_not() {
-		let missing = conduwuit::err!(Request(NotFound("No signing-key record")));
-		let storage = conduwuit::err!(Database("signing-key read failed"));
-		assert!(missing_key_record_is_allowed(&missing));
-		assert!(!missing_key_record_is_allowed(&storage));
-	}
+	use super::{ValidUntilPolicy, validity_policy_for_version};
 
 	#[test]
 	fn valid_until_policy_matches_room_version_rules() {

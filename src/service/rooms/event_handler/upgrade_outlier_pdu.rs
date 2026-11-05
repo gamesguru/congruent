@@ -245,6 +245,11 @@ where
 		let mut v = Vec::new();
 		for id in incoming_pdu.auth_events() {
 			if let Ok(pdu) = self.services.timeline.get_pdu(id) {
+				// A rejected (including pre-persisted/pending) event has no
+				// validated auth verdict and must not be trusted as auth context.
+				if self.services.pdu_metadata.is_event_rejected(id)? {
+					continue;
+				}
 				v.push(pdu);
 			}
 		}

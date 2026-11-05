@@ -111,6 +111,20 @@ impl Data {
 			.insert(key.to_vec(), auth_chain);
 	}
 
+	/// Drop any RAM entry and load the closure mtxdb actually persisted.
+	/// `NotFound` means no complete closure exists (an auth ancestor lacks one),
+	/// so callers must not cache a locally assembled chain for the event.
+	pub(super) async fn load_persisted_authchain(
+		&self,
+		shortroomid: u64,
+		shorteventid: u64,
+	) -> Result<Arc<Bitmap64>> {
+		let key = [shortroomid, shorteventid];
+		self.auth_chain_cache.lock().remove(key.as_slice());
+		self.get_cached_eventid_authchain(shortroomid, shorteventid)
+			.await
+	}
+
 	/// Clear the RAM auth-chain cache, leaving persisted mtxdb closures intact.
 	pub(super) async fn clear_db_cache(&self) { self.auth_chain_cache.lock().clear(); }
 }

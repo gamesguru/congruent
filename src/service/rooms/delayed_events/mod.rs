@@ -3,6 +3,7 @@ mod submission_queue;
 use std::{
 	collections::{BTreeMap, HashSet},
 	fmt::Write,
+	iter::once,
 	sync::{
 		Arc,
 		atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -13,6 +14,7 @@ use std::{
 use async_trait::async_trait;
 use conduwuit::{
 	Err, Error, Result, debug_warn, err, error, info,
+	matrix::{Event, PduEvent},
 	utils::{self, stream::WidebandExt},
 };
 use database::{Deserialized, Json, Map};
@@ -502,14 +504,24 @@ impl Service {
 					if already_appended {
 						Ok(event_id.clone())
 					} else {
-						self.send_scheduled_event(
-							&event,
-							timestamp,
-							unsigned,
-							&mut pending_event_id,
-							&state_lock,
-						)
-						.await
+						// The body is written before the timeline row. If a previous
+						// attempt got that far, retrying by building a new PDU would
+						// append a second event; resume the persisted PDU instead.
+						match self.services.timeline.get_pdu_json(event_id) {
+							| Ok(_) =>
+								self.resume_persisted_event(&event, event_id, &state_lock)
+									.await,
+							| Err(error @ Error::Database(_)) => Err(error),
+							| Err(_) =>
+								self.send_scheduled_event(
+									&event,
+									timestamp,
+									unsigned,
+									&mut pending_event_id,
+									&state_lock,
+								)
+								.await,
+						}
 					}
 				} else {
 					self.send_scheduled_event(
@@ -648,6 +660,72 @@ impl Service {
 				))
 				.await,
 		}
+	}
+
+	/// Re-run the append for a PDU whose body was persisted by a previous
+	/// attempt. `append_pdu` is idempotent for this case: it finds the existing
+	/// row (or creates the missing one) instead of assigning a new event ID, so
+	/// an interrupted delayed send cannot be duplicated.
+	async fn resume_persisted_event(
+		&self,
+		event: &ScheduledDelayedEvent,
+		event_id: &OwnedEventId,
+		state_lock: &rooms::state::RoomMutexGuard,
+	) -> Result<OwnedEventId> {
+		let pdu_json = self.services.timeline.get_pdu_json(event_id)?;
+		let pdu = PduEvent::from_id_val(event_id, pdu_json.clone(), Some(&event.room_id))
+			.map_err(|error| {
+				err!(Database("Failed to parse persisted delayed event {event_id}: {error}"))
+			})?;
+		let previous_root_handle = self
+			.services
+			.state
+			.get_room_state_hamt(&event.room_id)
+			.await
+			.ok();
+
+		// Mirror the normal build path: state events stage their new state root
+		// with the timeline write, while non-state events reuse the current one.
+		let (state_root_handle, pending_nodes) = if pdu.state_key().is_some() {
+			self.services
+				.state
+				.append_to_state(&pdu, &event.room_id, state_lock, None)
+				.await
+				.map(|(handle, _node, nodes)| (handle, nodes))?
+		} else {
+			let root = previous_root_handle
+				.clone()
+				.ok_or_else(|| err!(Request(NotFound("Room has no state to append"))))?;
+			(root, Vec::new())
+		};
+
+		self.services
+			.timeline
+			.append_pdu(
+				&pdu,
+				pdu_json,
+				once(pdu.event_id()),
+				false,
+				rooms::timeline::AppendPduContext {
+					state_lock,
+					room_id: &event.room_id,
+					state_root_handle: Some(state_root_handle.clone()),
+					pending_nodes,
+					prev_state_root_handle: previous_root_handle,
+					advance_current_state: false,
+					was_joined_before_state_install: None,
+				},
+			)
+			.await?;
+
+		if pdu.state_key().is_none() {
+			self.services
+				.state
+				.set_room_state_hamt(&event.room_id, &state_root_handle, state_lock)
+				.await?;
+		}
+
+		Ok(event_id.clone())
 	}
 
 	async fn delayed_event_is_appended(&self, event_id: &OwnedEventId) -> Result<bool> {

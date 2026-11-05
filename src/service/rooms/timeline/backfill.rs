@@ -901,7 +901,7 @@ pub async fn backfill_pdu(
 		value.clone(),
 		false,
 		false,
-		false,
+		true,
 		&room_version_id,
 		crate::rooms::event_handler::AuthRecoveryStage::AfterStateIds,
 	))

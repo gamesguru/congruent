@@ -156,7 +156,12 @@ impl Data {
 		event_id: &EventId,
 		code: SoftFailCode,
 	) -> Result<()> {
-		self.update_verdict(event_id, |v| v.soft_fail = Some(code.to_u8()))
+		self.update_verdict(event_id, |v| {
+			v.soft_fail = Some(code.to_u8());
+			// A previous soft-fail with an arrival ordering must not leave that
+			// ordering attached when the event is marked again without one.
+			v.arrival_ordering = None;
+		})
 	}
 
 	/// Record when soft-fail finished, for events kept out of the timeline.
@@ -231,6 +236,34 @@ impl Data {
 			}
 			verdict.rejection = Some(new_code.to_u8());
 		})
+	}
+
+	/// Batch variant of [`Self::mark_event_rejected`]. Stages the markers in
+	/// one transaction per verdict bucket instead of one per event, while
+	/// preserving the "don't overwrite a non-retryable rejection with a
+	/// retryable one" rule.
+	pub(super) fn mark_events_rejected(
+		&self,
+		event_ids: &[&EventId],
+		reason: &str,
+	) -> Result<()> {
+		let new_code = RejectionCode::parse(reason).unwrap_or(RejectionCode::Unknown);
+		let ids: Vec<&[u8]> = event_ids
+			.iter()
+			.map(|event_id| event_id.as_bytes())
+			.collect();
+		self.mtxdb_verdicts
+			.update_many(&ids, |_event_id, verdict| {
+				if verdict.rejection.is_some_and(|old| {
+					!RejectionCode::from_u8(old).is_retryable() && new_code.is_retryable()
+				}) {
+					return;
+				}
+				verdict.rejection = Some(new_code.to_u8());
+			})
+			.map_err(|error| {
+				err!(Database("Failed to batch persist mtxdb rejection verdicts: {error}"))
+			})
 	}
 
 	pub(super) fn is_event_rejected(&self, event_id: &EventId) -> Result<bool> {
@@ -312,6 +345,7 @@ impl Data {
 	pub(super) fn clear_pdu_markers(&self, event_id: &EventId) -> Result<()> {
 		self.update_verdict(event_id, |v| {
 			v.soft_fail = None;
+			v.arrival_ordering = None;
 			v.rejection = None;
 		})
 	}

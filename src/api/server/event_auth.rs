@@ -34,10 +34,13 @@ pub(crate) async fn get_event_authorization_route(
 		"Serving event_auth request"
 	);
 
-	let event = services
-		.rooms
-		.timeline
-		.get_pdu(&body.event_id)
+	let services_for_read = services.services();
+	let reply_event_id = body.event_id.clone();
+	let runtime = services.server.runtime().clone();
+	let event = runtime
+		.spawn_blocking(move || services_for_read.rooms.timeline.get_pdu(&reply_event_id))
+		.await
+		.map_err(|_| Error::BadRequest(ErrorKind::NotFound, "Event not found."))?
 		.map_err(|_| Error::BadRequest(ErrorKind::NotFound, "Event not found."))?;
 
 	if event.room_id_or_hash().as_deref() != Some(body.room_id.as_ref()) {
@@ -50,7 +53,17 @@ pub(crate) async fn get_event_authorization_route(
 		.event_ids_iter(&body.room_id, once(body.event_id.borrow()))
 		.ready_filter_map(Result::ok)
 		.ready_filter(|id| id != &body.event_id)
-		.filter_map(|id| async move { services.rooms.timeline.get_pdu_json(&id).ok() })
+		.filter_map(|id| {
+			let services = services.services();
+			let runtime = services.server.runtime().clone();
+			async move {
+				runtime
+					.spawn_blocking(move || services.rooms.timeline.get_pdu_json(&id))
+					.await
+					.ok()?
+					.ok()
+			}
+		})
 		.then(|pdu| services.sending.convert_to_outgoing_federation_event(pdu))
 		.collect()
 		.await;

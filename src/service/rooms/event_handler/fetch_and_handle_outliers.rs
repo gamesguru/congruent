@@ -555,7 +555,7 @@ where
 				value.clone(),
 				true,
 				skip_sig_verify,
-				false,
+				true,
 				room_version,
 				super::AuthRecoveryStage::BeforeStateIds,
 			))

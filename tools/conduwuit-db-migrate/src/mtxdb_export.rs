@@ -549,14 +549,21 @@ pub fn export(
 	}
 
 	let decode_stream_ordering = |pdu_id: &[u8]| -> Option<i64> {
-		if pdu_id.len() >= 16 {
-			let mut count_bytes = [0u8; 8];
-			count_bytes.copy_from_slice(&pdu_id[8..16]);
+		// Normal ids are shortroomid(8) + offset-binary count(8); backfilled
+		// ids insert an 8-byte zero marker and store the count as a plain
+		// two's-complement i64, so only the 16-byte form needs the offset
+		// removed.
+		let (range, offset_binary) = match pdu_id.len() {
+			| 16 => (8..16, true),
+			| 24 => (16..24, false),
+			| _ => return None,
+		};
+		let mut count_bytes = [0u8; 8];
+		count_bytes.copy_from_slice(&pdu_id[range]);
+		if offset_binary {
 			count_bytes[0] ^= 0x80;
-			Some(i64::from_be_bytes(count_bytes))
-		} else {
-			None
 		}
+		Some(i64::from_be_bytes(count_bytes))
 	};
 
 	let mut event_to_room: HashMap<String, String> = HashMap::new();

@@ -98,8 +98,18 @@ pub(crate) async fn get_backfill_route(
 					// In particular: Redaction?
 					pdu
 				})
-				.try_filter_map(|pdu| async move {
-					Ok(services.rooms.timeline.get_pdu_json(&pdu.event_id).ok())
+				.try_filter_map(|pdu| {
+					let services = services.services();
+					async move {
+						let event_id = pdu.event_id;
+						let runtime = services.server.runtime().clone();
+						let json = runtime
+							.spawn_blocking(move || {
+								services.rooms.timeline.get_pdu_json(&event_id)
+							})
+							.await;
+						Ok(json.ok().and_then(Result::ok))
+					}
 				})
 				.and_then(|pdu| {
 					services

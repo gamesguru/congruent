@@ -428,9 +428,25 @@ impl ShortIdAdapter {
 		let mut next = *counter;
 		let tx = self.store.begin_transaction();
 		let mut changed = false;
+		let mut seen_short: HashMap<u64, &[u8]> = HashMap::new();
+		let mut seen_event: HashMap<&[u8], u64> = HashMap::new();
 		for &(event_id, short) in mappings {
 			if short == 0 {
 				return Err(StorageError::Corrupt("short event id zero is invalid".to_owned()));
+			}
+			if let Some(previous) = seen_short.insert(short, event_id)
+				&& previous != event_id
+			{
+				return Err(StorageError::Corrupt(
+					"duplicate legacy event short ID for different events".to_owned(),
+				));
+			}
+			if let Some(previous) = seen_event.insert(event_id, short)
+				&& previous != short
+			{
+				return Err(StorageError::Corrupt(
+					"legacy event has conflicting short IDs in one import".to_owned(),
+				));
 			}
 			let forward = forward_event_node(event_id);
 			let reverse = reverse_node(b"short-eid-rev", short);
@@ -514,9 +530,26 @@ impl ShortIdAdapter {
 		let mut next = *counter;
 		let tx = self.store.begin_transaction();
 		let mut changed = false;
+		let mut seen_short: HashMap<u64, (&str, &str)> = HashMap::new();
+		let mut seen_key: HashMap<(&str, &str), u64> = HashMap::new();
 		for (event_type, state_key, short) in mappings {
 			if *short == 0 {
 				return Err(StorageError::Corrupt("short state key zero is invalid".to_owned()));
+			}
+			let key = (event_type.as_str(), state_key.as_str());
+			if let Some(previous) = seen_short.insert(*short, key)
+				&& previous != key
+			{
+				return Err(StorageError::Corrupt(
+					"duplicate legacy state-key short ID for different keys".to_owned(),
+				));
+			}
+			if let Some(previous) = seen_key.insert(key, *short)
+				&& previous != *short
+			{
+				return Err(StorageError::Corrupt(
+					"legacy state key has conflicting short IDs in one import".to_owned(),
+				));
 			}
 			let encoded = encode_state_key_v1(event_type, state_key)
 				.map_err(|error| StorageError::Corrupt(error.to_owned()))?;

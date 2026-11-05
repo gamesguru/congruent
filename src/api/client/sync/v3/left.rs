@@ -183,7 +183,7 @@ pub(super) async fn load_left_room(
 			// we have this room in our DB, and can fetch the state and timeline from when
 			// the user left.
 
-			let loaded = async {
+			let load = || async {
 				let leave_state_key = syncing_user;
 				debug_assert_eq!(
 					Some(leave_state_key.as_str()),
@@ -224,7 +224,7 @@ pub(super) async fn load_left_room(
 				{
 					Some(leave_root_handle.clone())
 				} else {
-					last_sync_end_root_handle
+					last_sync_end_root_handle.clone()
 				};
 
 				let (timeline, state_events) = build_left_state_and_timeline(
@@ -239,8 +239,19 @@ pub(super) async fn load_left_room(
 				.await?;
 
 				Ok::<_, conduwuit::Error>((timeline, state_events, Some(leave_root_handle)))
+			};
+
+			// The leave's timeline row and state root can land just after the
+			// membership cache update. Retry briefly before giving up, since
+			// next_batch advances past this leave once we respond.
+			let mut loaded = load().await;
+			for _ in 0..5 {
+				if !loaded.as_ref().is_err_and(conduwuit::Error::is_not_found) {
+					break;
+				}
+				tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+				loaded = load().await;
 			}
-			.await;
 
 			match loaded {
 				| Ok(loaded) => loaded,
@@ -252,7 +263,8 @@ pub(super) async fn load_left_room(
 					// row and state root are visible (see the append path). A sync that
 					// wakes in that window must not drop the leave: next_batch advances
 					// past left_count, so this response is the only chance to deliver
-					// it. The timeline/state are omitted, not filled in on a later sync.
+					// it. Loading was retried above; if it still fails, the timeline and
+					// state are omitted from this response.
 					warn!(
 						%room_id,
 						?error,

@@ -117,16 +117,19 @@ only `expired_ts`. The outcomes are kept separate:
 
 | Outcome                                        | Events |
 | ---------------------------------------------- | -----: |
-| No usable in-window key (stored as accepted)   | 201,944 |
-| No signature material to check (stored as accepted) | 27 |
+| No usable in-window key (stored accepted but unverified) | 201,944 |
+| No signature material to check (stored accepted but unverified) | 27 |
 | Invalid signature (stored as rejected)         |    148 |
 | Verified by an in-window key                   | 834,488 |
 
 The verified total is the remainder of the 1,036,607 imported events after the
-three unverified outcomes. The no-key total reflects coverage, not a decision: an event with no usable key
-is stored accepted because there is nothing to verify against, and the key
-remains uncorroborated. The 148 invalid signatures are derived refusals, not
-exported verdicts, and use `m.signature_verification_failed`.
+three unverified outcomes. The no-key total reflects coverage, not a decision:
+the current importer stores an event with no usable key as accepted because
+there is nothing it can verify against, but that is not evidence of validity.
+These events (and the 27 with no signature material) should be treated as
+unverified/rejected until key recovery or a later re-import verifies them; the
+key remains uncorroborated. The 148 invalid signatures are derived refusals,
+not exported verdicts, and use `m.signature_verification_failed`.
 
 Verified observations replace the key's candidate times: `first_seen_ms` and
 `last_active_ms` come only from events that actually verified,

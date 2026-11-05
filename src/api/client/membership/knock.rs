@@ -591,6 +591,25 @@ async fn knock_room_helper_remote(
 		));
 	}
 
+	// The create event is unauthenticated stripped state until its signature is
+	// checked. Do not let it pin the room version (and thus every later outlier
+	// write) unless it is a valid, signed event.
+	let create_event_id = gen_event_id(create_event, &room_version_id)?;
+	let mut signed_create_event = create_event.clone();
+	signed_create_event.insert(
+		"event_id".to_owned(),
+		CanonicalJsonValue::String(create_event_id.as_str().to_owned()),
+	);
+	services
+		.server_keys
+		.verify_event(&signed_create_event, Some(&room_version_id))
+		.await
+		.map_err(|error| {
+			err!(BadServerResponse(
+				"send_knock create event failed signature verification: {error}"
+			))
+		})?;
+
 	// The response's create event now confirms the make_knock room version.
 	// Persist it before adding any stripped-state outliers to mtxdb.
 	services

@@ -1,5 +1,3 @@
-use std::{collections::HashMap, sync::Arc};
-
 use conduwuit_core::{
 	Result, info,
 	matrix::{
@@ -9,7 +7,6 @@ use conduwuit_core::{
 	warn,
 };
 use futures::StreamExt;
-use rezzy::bitmap::Bitmap64;
 use slipstream::{OwnedEventId, RoomId};
 
 use super::{Service, metadata::EventMetadata};
@@ -112,9 +109,6 @@ impl Service {
 		if rebuild_topo {
 			info!("reindex_short: cleared {cleared_topo} topo index rows for {room_id}");
 		}
-
-		// Auth chain cache for incremental computation (rezzy bitmaps)
-		let mut auth_chain_cache: HashMap<ShortEventId, Arc<Bitmap64>> = HashMap::new();
 
 		for (i, (count, event_id)) in events.iter().enumerate() {
 			if i.is_multiple_of(1000) {
@@ -275,15 +269,6 @@ impl Service {
 					.await
 					.is_err()
 			{
-				let mut full_chain = Bitmap64::new();
-				for &auth_short in &auth_shorts {
-					full_chain.insert(auth_short);
-					// Use our local cache (built during this sweep) for ancestors
-					if let Some(ancestor_chain) = auth_chain_cache.get(&auth_short) {
-						full_chain |= ancestor_chain.as_ref();
-					}
-				}
-
 				// Edges matched but no closure exists: persist it before counting
 				// the chain as repaired, so the RAM cache never diverges from mtxdb.
 				if !closure_persisted && let Ok(json) = self.db.get_pdu_json(event_id) {
@@ -291,24 +276,21 @@ impl Service {
 					closure_persisted = true;
 				}
 
-				let chain_arc = Arc::new(full_chain);
-				auth_chain_cache.insert(short_eid, Arc::clone(&chain_arc));
-				if closure_persisted {
-					self.services.auth_chain.cache_auth_chain_bitmap(
-						shortroomid,
-						short_eid,
-						&chain_arc,
-					);
+				// A write does not guarantee a persisted closure: mtxdb omits it when
+				// an auth ancestor lacks one. Count and cache the chain only if the
+				// persisted closure is actually readable.
+				let persisted = if closure_persisted {
+					self.services
+						.auth_chain
+						.reload_persisted_eventid_authchain(shortroomid, short_eid)
+						.await
+						.ok()
+				} else {
+					None
+				};
+				if persisted.is_some() {
 					stats.repaired_auth_chains = stats.repaired_auth_chains.saturating_add(1);
 				}
-			} else if let Ok(existing) = self
-				.services
-				.auth_chain
-				.get_cached_eventid_authchain(shortroomid, short_eid)
-				.await
-			{
-				// Populate local cache for descendants
-				auth_chain_cache.insert(short_eid, existing);
 			}
 
 			// --- tofrom_relation ---

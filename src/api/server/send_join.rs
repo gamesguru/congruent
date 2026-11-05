@@ -4,7 +4,7 @@ use std::{borrow::Borrow, time::Instant, vec};
 
 use conduwuit::{
 	Err, Event, Result, at, debug, err, info, trace,
-	utils::stream::{BroadbandExt, IterStream, TryBroadbandExt, TryReadyExt},
+	utils::stream::{BroadbandExt, IterStream, TryBroadbandExt},
 	warn,
 };
 use conduwuit_service::Services;
@@ -175,11 +175,20 @@ async fn create_join_event(
 		.try_stream::<conduwuit::Error>()
 		.broad_filter_map(|event_id| {
 			let heroes = &heroes;
+			let timeline = services.rooms.timeline.clone();
+			let runtime = services.server.runtime().clone();
+			let room_id = room_id.to_owned();
 			async move {
 				if omit_members {
 					if let Ok(e) = event_id.as_ref() {
-						let pdu = services.rooms.timeline.get_pdu_in_room(Some(room_id), e);
-						if let Ok(p) = pdu {
+						let lookup_id: OwnedEventId = (*e).clone();
+						let lookup_room_id = room_id.clone();
+						let pdu = runtime
+							.spawn_blocking(move || {
+								timeline.get_pdu_in_room(Some(&lookup_room_id), &lookup_id)
+							})
+							.await;
+						if let Ok(Ok(p)) = pdu {
 							if p.kind().to_cow_str() == "m.room.member"
 								&& !p.state_key().is_some_and(|sk| heroes.contains(sk))
 							{
@@ -199,7 +208,17 @@ async fn create_join_event(
 	let state = retained_state_ids
 		.iter()
 		.try_stream()
-		.ready_and_then(|event_id| services.rooms.timeline.get_pdu_json(event_id))
+		.and_then(|event_id| {
+			let timeline = services.rooms.timeline.clone();
+			let runtime = services.server.runtime().clone();
+			let event_id = event_id.clone();
+			async move {
+				runtime
+					.spawn_blocking(move || timeline.get_pdu_json(&event_id))
+					.await
+					.map_err(|e| err!(Database("blocking PDU lookup failed: {e}")))?
+			}
+		})
 		.broad_and_then(|pdu| {
 			services
 				.sending
@@ -231,7 +250,16 @@ async fn create_join_event(
 				}
 			}
 		})
-		.broad_and_then(|event_id| async move { services.rooms.timeline.get_pdu_json(&event_id) })
+		.broad_and_then(|event_id| {
+			let timeline = services.rooms.timeline.clone();
+			let runtime = services.server.runtime().clone();
+			async move {
+				runtime
+					.spawn_blocking(move || timeline.get_pdu_json(&event_id))
+					.await
+					.map_err(|e| err!(Database("blocking PDU lookup failed: {e}")))?
+			}
+		})
 		.broad_and_then(|pdu| {
 			services
 				.sending

@@ -162,9 +162,11 @@ impl ServerKeysAdapter {
 		// clear that one too or the record would reappear.
 		let legacy_node = legacy_server_key_record_id(kind, origin);
 		if legacy_node != node {
-			if let Some(existing) =
-				self.store
-					.get(ShardType::ServerInfo, &collection, legacy_node)?
+			if let Some(existing) = tx
+				.get_many(ShardType::ServerInfo, collection, &[legacy_node])?
+				.into_iter()
+				.next()
+				.flatten()
 			{
 				if decode_server_key(&existing)?.0 == origin {
 					tx.remove(ShardType::ServerInfo, collection, legacy_node)?;

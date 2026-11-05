@@ -304,6 +304,32 @@ impl RedbEngine {
 		Ok(entries)
 	}
 
+	/// Whether `map_name` has no rows, reading only the first row.
+	pub(crate) fn is_empty(&self, map_name: &str) -> Result<bool> {
+		let prefix = composite_key(map_name, &[]);
+		let end = prefix_end(&prefix);
+		let transaction = self
+			.db
+			.begin_read()
+			.map_err(|error| err!(Database("failed to begin redb read: {error}")))?;
+		let table = transaction
+			.open_table(TABLE)
+			.map_err(|error| err!(Database("failed to open redb metadata table: {error}")))?;
+		let mut iter = match end {
+			| Some(end) => table.range::<&[u8]>(prefix.as_slice()..end.as_slice()),
+			| None => table.range::<&[u8]>(prefix.as_slice()..),
+		}
+		.map_err(|error| err!(Database("failed to iterate redb metadata: {error}")))?;
+
+		match iter.next() {
+			| Some(item) => {
+				item.map_err(|error| err!(Database("failed to read redb metadata: {error}")))?;
+				Ok(false)
+			},
+			| None => Ok(true),
+		}
+	}
+
 	/// Entries of `map_name` whose key starts with `prefix`, in key order,
 	/// seeking directly to the prefix range instead of reading the whole map.
 	pub(crate) fn scan_prefix(

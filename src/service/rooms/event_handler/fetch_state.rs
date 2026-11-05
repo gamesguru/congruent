@@ -146,8 +146,22 @@ where
 					vec![false; all_ids.len()]
 				},
 			};
-			for (id, exists) in all_ids.into_iter().zip(present) {
-				if exists {
+			// A body may exist in mtxdb without a validated verdict (the
+			// pre-persisted batch below, or an interrupted earlier fetch). Only
+			// an accepted verdict makes the stored body safe to treat as known;
+			// otherwise refetch it so this attempt validates the event.
+			let accepted = match self.services.pdu_metadata.get_verdicts(all_ids.iter()) {
+				| Ok(verdicts) => verdicts
+					.into_iter()
+					.map(|verdict| verdict.is_none_or(|verdict| verdict.rejection.is_none()))
+					.collect(),
+				| Err(error) => {
+					debug_warn!("fetch_state: batched event verdict check failed: {error}");
+					vec![false; all_ids.len()]
+				},
+			};
+			for ((id, exists), accepted) in all_ids.into_iter().zip(present).zip(accepted) {
+				if exists && accepted {
 					known_count = known_count.saturating_add(1);
 				} else {
 					missing_ids.push(id);
@@ -251,24 +265,25 @@ where
 	};
 
 	let room_version_id = self.services.state.get_room_version(room_id).await?;
-	self.services
-		.server_keys
-		.acquire_events_pubkeys(fetched_unknown_events.iter().map(|(_, raw_json)| raw_json))
-		.await;
-
 	// Reconstruct unknown_events
 	let mut unknown_events = Vec::new();
+	let mut validated_raw_events = Vec::new();
 	for (eid, raw_json) in fetched_unknown_events {
 		if let Ok((parsed_eid, val)) =
 			conduwuit::matrix::event::gen_event_id_canonical_json(&raw_json, &room_version_id)
 		{
 			if parsed_eid == eid {
 				unknown_events.push((eid, val));
+				validated_raw_events.push(raw_json);
 			} else {
 				warn!("Event ID mismatch for fetched event: expected {eid}, got {parsed_eid}");
 			}
 		}
 	}
+	self.services
+		.server_keys
+		.acquire_events_pubkeys(validated_raw_events.iter())
+		.await;
 
 	debug!(
 		"fetch_state: {} newly missing events fetched successfully",
@@ -410,11 +425,13 @@ where
 	// Bodies become visible in mtxdb before their sequential auth checks. Mark
 	// them retryably first so an interrupted fetch cannot make a later caller
 	// mistake a prewritten, unchecked body for an already-validated outlier.
-	for (pdu, _) in &verified_batch {
-		self.services
-			.pdu_metadata
-			.mark_event_rejected(pdu.event_id(), RejectionCode::MissingAuthEvent.tag())?;
-	}
+	let pending_event_ids: Vec<&EventId> = verified_batch
+		.iter()
+		.map(|(pdu, _)| pdu.event_id())
+		.collect();
+	self.services
+		.pdu_metadata
+		.mark_events_rejected(&pending_event_ids, RejectionCode::MissingAuthEvent.tag())?;
 	if let Err(error) = self
 		.services
 		.timeline

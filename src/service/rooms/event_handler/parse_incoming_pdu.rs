@@ -153,7 +153,7 @@ pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
 		// their invalid content/version errors must not be hidden by fallback.
 		| None if event_type == "m.room.create" =>
 			conduwuit::matrix::event::room_id_from_pdu(&value, None)?,
-		// v12 non-create events omit room_id. Resolve a known room from auth
+		// room_id is missing or non-conforming. Resolve a known room from auth
 		// events, but bound sequential database lookups for untrusted input.
 		| None => {
 			let auth_events = value
@@ -166,9 +166,27 @@ pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
 				if let Some(auth_event_id) = auth_event_id.as_str() {
 					if let Ok(auth_event_id) = OwnedEventId::parse(auth_event_id) {
 						if let Ok(pdu) = self.services.timeline.get_pdu(&auth_event_id) {
-							if let Some(room_id) = pdu.room_id_or_hash() {
-								found_room_id = Some(room_id);
-								break;
+							// Only a locally accepted event is trustworthy enough
+							// to derive the PDU's room from: a pre-persisted or
+							// rejected body has no validated verdict yet.
+							if self
+								.services
+								.pdu_metadata
+								.is_event_rejected(&auth_event_id)?
+							{
+								continue;
+							}
+							let Some(room_id) = pdu.room_id_or_hash() else {
+								continue;
+							};
+							match &found_room_id {
+								| Some(found) if *found != room_id => {
+									return Err!(Request(InvalidParam(
+										"Auth events reference multiple rooms in PDU"
+									)));
+								},
+								| Some(_) => {},
+								| None => found_room_id = Some(room_id),
 							}
 						}
 					}
