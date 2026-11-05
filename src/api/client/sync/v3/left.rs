@@ -58,6 +58,25 @@ fn leave_is_ban_or_kick(
 	})
 }
 
+/// Whether a left room belongs in this sync response.
+///
+/// `last_sync_end_count` is `None` on an initial sync. Without `include_leave`,
+/// an initial sync still reports bans and kicks (a client's only chance to see
+/// them), and an incremental sync reports a leave only until its `left_count`
+/// has been delivered.
+fn should_sync_left_room(
+	last_sync_end_count: Option<u64>,
+	left_count: u64,
+	include_leave: bool,
+	is_forgotten: bool,
+	is_ban_or_kick: bool,
+) -> bool {
+	match last_sync_end_count {
+		| None => !is_forgotten && (include_leave || is_ban_or_kick),
+		| Some(last_sync_end_count) => last_sync_end_count < left_count || include_leave,
+	}
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn load_left_room(
 	services: &Services,
@@ -106,16 +125,14 @@ pub(super) async fn load_left_room(
 	// leave is not repeated on every sync.
 	let is_ban_or_kick = leave_is_ban_or_kick(leave_membership_event.as_ref(), syncing_user);
 
-	match last_sync_end_count {
-		| None =>
-			if is_forgotten || (!filter.room.include_leave && !is_ban_or_kick) {
-				return Ok(None);
-			},
-		| Some(last_sync_end_count) => {
-			if last_sync_end_count >= left_count && !filter.room.include_leave {
-				return Ok(None);
-			}
-		},
+	if !should_sync_left_room(
+		last_sync_end_count,
+		left_count,
+		filter.room.include_leave,
+		is_forgotten,
+		is_ban_or_kick,
+	) {
+		return Ok(None);
 	}
 
 	if let Some(ref leave_membership_event) = leave_membership_event {
@@ -576,7 +593,46 @@ fn create_dummy_leave_event(
 mod tests {
 	use slipstream::{events::room::member::MembershipState, user_id};
 
-	use super::ban_or_kick;
+	use super::{ban_or_kick, should_sync_left_room};
+
+	#[test]
+	fn initial_sync_reports_ban_or_kick_without_include_leave() {
+		assert!(should_sync_left_room(None, 478, false, false, true));
+	}
+
+	#[test]
+	fn initial_sync_omits_self_leave_without_include_leave() {
+		assert!(!should_sync_left_room(None, 478, false, false, false));
+	}
+
+	#[test]
+	fn initial_sync_reports_self_leave_with_include_leave() {
+		assert!(should_sync_left_room(None, 478, true, false, false));
+	}
+
+	#[test]
+	fn initial_sync_omits_forgotten_rooms_even_for_a_ban() {
+		assert!(!should_sync_left_room(None, 478, false, true, true));
+		assert!(!should_sync_left_room(None, 478, true, true, true));
+	}
+
+	#[test]
+	fn incremental_sync_reports_a_leave_after_the_token() {
+		assert!(should_sync_left_room(Some(477), 478, false, false, false));
+		assert!(should_sync_left_room(Some(477), 478, false, false, true));
+	}
+
+	#[test]
+	fn incremental_sync_does_not_repeat_a_delivered_leave() {
+		// The regression: a token at or past `left_count` must not resurface a ban.
+		assert!(!should_sync_left_room(Some(478), 478, false, false, true));
+		assert!(!should_sync_left_room(Some(480), 478, false, false, true));
+	}
+
+	#[test]
+	fn incremental_sync_repeats_a_delivered_leave_with_include_leave() {
+		assert!(should_sync_left_room(Some(480), 478, true, false, false));
+	}
 
 	#[test]
 	fn ban_and_kick_are_reported_without_include_leave() {
