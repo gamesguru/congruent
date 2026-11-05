@@ -13,9 +13,12 @@ use conduwuit::{
 use futures::{StreamExt, future::join};
 use service::{Services, rooms::lazy_loading::MemberSet};
 use slipstream::{
-	EventId, OwnedRoomId, RoomId,
+	EventId, OwnedRoomId, RoomId, UserId,
 	api::client::sync::sync_events::v3::{LeftRoom, RoomAccountData, State, Timeline},
-	events::{AnySyncStateEvent, StateEventType, TimelineEventType},
+	events::{
+		AnySyncStateEvent, StateEventType, TimelineEventType,
+		room::member::{MembershipState, RoomMemberEventContent},
+	},
 	sswire::Raw,
 	uint,
 };
@@ -30,6 +33,30 @@ use crate::client::{
 		},
 	},
 };
+
+/// Whether the leave membership event is a ban or a kick by another user.
+///
+/// A ban or a kick is always reported on an initial sync, even when the filter
+/// does not set `include_leave`; only a self-leave is suppressed. This mirrors
+/// Synapse and is required for a client to observe a remote ban on its first
+/// sync.
+fn ban_or_kick(membership: &MembershipState, sender: &UserId, syncing_user: &UserId) -> bool {
+	match membership {
+		| MembershipState::Ban => true,
+		| MembershipState::Leave => sender != syncing_user,
+		| _ => false,
+	}
+}
+
+fn leave_is_ban_or_kick(
+	leave_membership_event: Option<&PduEvent>,
+	syncing_user: &UserId,
+) -> bool {
+	leave_membership_event.is_some_and(|pdu| {
+		pdu.get_content::<RoomMemberEventContent>()
+			.is_ok_and(|content| ban_or_kick(&content.membership, pdu.sender(), syncing_user))
+	})
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn load_left_room(
@@ -72,9 +99,16 @@ pub(super) async fn load_left_room(
 		.is_forgotten(syncing_user, room_id)
 		.await;
 
+	// Bans and kicks are reported even without `include_leave`. On an initial
+	// sync that is the only chance the client gets: the next sync starts from a
+	// token past `left_count` and would treat the leave as already delivered.
+	// Incremental syncs keep the normal `left_count` gate so an already-delivered
+	// leave is not repeated on every sync.
+	let is_ban_or_kick = leave_is_ban_or_kick(leave_membership_event.as_ref(), syncing_user);
+
 	match last_sync_end_count {
 		| None =>
-			if is_forgotten || !filter.room.include_leave {
+			if is_forgotten || (!filter.room.include_leave && !is_ban_or_kick) {
 				return Ok(None);
 			},
 		| Some(last_sync_end_count) => {
@@ -112,10 +146,11 @@ pub(super) async fn load_left_room(
 			which is all we can send to the client.
 
 			if this is an initial sync, don't include this room at all to keep the client from asking for
-			state that we don't have.
+			state that we don't have. bans and kicks are the exception: they must reach the client on its
+			first sync, and the membership event alone is enough.
 			*/
 
-			if last_sync_end_count.is_none() {
+			if last_sync_end_count.is_none() && !is_ban_or_kick {
 				return Ok(None);
 			}
 
@@ -187,7 +222,10 @@ pub(super) async fn load_left_room(
 
 			match loaded {
 				| Ok(loaded) => loaded,
-				| Err(error) if error.is_not_found() && last_sync_end_count.is_some() => {
+				| Err(error)
+					if error.is_not_found()
+						&& (last_sync_end_count.is_some() || is_ban_or_kick) =>
+				{
 					// The membership cache is updated before the leave event's timeline
 					// row and state root are visible (see the append path). A sync that
 					// wakes in that window must not drop the leave: the next_batch
@@ -531,5 +569,32 @@ fn create_dummy_leave_event(
 		hashes: EventHash { sha256: String::new() },
 		signatures: None,
 		rejected: false,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use slipstream::{events::room::member::MembershipState, user_id};
+
+	use super::ban_or_kick;
+
+	#[test]
+	fn ban_and_kick_are_reported_without_include_leave() {
+		let alice = user_id!("@alice:example.org");
+		let bob = user_id!("@bob:example.org");
+
+		// A ban is a leave caused by someone else; it must reach an initial sync.
+		assert!(ban_or_kick(&MembershipState::Ban, &bob, &alice));
+
+		// A kick is a plain leave caused by someone else.
+		assert!(ban_or_kick(&MembershipState::Leave, &bob, &alice));
+
+		// A self-leave is only reported with `include_leave`.
+		assert!(!ban_or_kick(&MembershipState::Leave, &alice, &alice));
+
+		// Other membership states are not "left" rooms.
+		assert!(!ban_or_kick(&MembershipState::Join, &alice, &alice));
+		assert!(!ban_or_kick(&MembershipState::Invite, &bob, &alice));
+		assert!(!ban_or_kick(&MembershipState::Knock, &alice, &alice));
 	}
 }
