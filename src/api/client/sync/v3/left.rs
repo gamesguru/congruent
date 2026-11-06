@@ -249,7 +249,7 @@ pub(super) async fn load_left_room(
 				if !loaded.as_ref().is_err_and(conduwuit::Error::is_not_found) {
 					break;
 				}
-				tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+				smol::Timer::after(std::time::Duration::from_millis(20)).await;
 				loaded = load().await;
 			}
 
