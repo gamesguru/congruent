@@ -586,8 +586,40 @@ where
 	}
 
 	let state_provider =
-		crate::rooms::auth_adapter::PduStateProvider::from_ruma_map(&auth_events_by_key)
-			.with_create_event(create_event);
+		crate::rooms::auth_adapter::PduStateProvider::from_ruma_map(&auth_events_by_key);
+	let state_provider = if let Some(create_event) = create_event {
+		state_provider.with_create_event(Some(create_event))
+	} else if pdu_event.kind == TimelineEventType::RoomCreate {
+		// The create event is its own create context when validating the room
+		// root. This also lets auth checks run when callers omit that argument.
+		state_provider.with_create_event(Some(&pdu_event))
+	} else {
+		// Room versions 12+ omit m.room.create from auth_events, but auth
+		// checking still needs the accepted create event as context. Read it
+		// from current state; never trust an unchecked body from the outlier
+		// store for this role.
+		match self
+			.services
+			.state_accessor
+			.room_state_get(room_id, &StateEventType::RoomCreate, "")
+			.await
+		{
+			| Ok(create_event) => state_provider.with_create_event(Some(&create_event)),
+			| Err(error) => {
+				self.services.pdu_metadata.mark_event_rejected(
+					event_id,
+					&RejectionCode::MissingAuthEvent.with_detail("m.room.create"),
+				)?;
+				self.services
+					.outlier
+					.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+					.await;
+				return Err!(Request(InvalidParam(
+					"Could not resolve m.room.create for auth check: {error}"
+				)));
+			},
+		}
+	};
 	let auth_check = crate::rooms::auth_adapter::rezzy_auth_check(
 		&pdu_event,
 		&state_provider,
