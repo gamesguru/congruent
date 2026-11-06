@@ -8,8 +8,8 @@ use std::{
 
 use bytes::Bytes;
 use conduwuit::{
-	Config, Error, Result, config::proxy::ProxyConfig, implement, rt::TimeoutError, timeout,
-	timeout_at, utils::IpCidr,
+	Config, Error, Result, Server, config::proxy::ProxyConfig, implement, rt::TimeoutError,
+	timeout, timeout_at, utils::IpCidr,
 };
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_rustls::{
@@ -51,6 +51,12 @@ mod proxy;
 
 #[derive(Clone)]
 pub struct HttpClient {
+	server: Option<Arc<Server>>,
+	/// Whether this client's connection lifecycle feeds the outbound
+	/// federation connect/TLS counters. Only the federation-facing clients
+	/// set this; media, preview, and appservice traffic would otherwise
+	/// inflate the numbers.
+	track_outbound: bool,
 	default_headers: HeaderMap,
 	user_agent: Option<String>,
 	tls: Arc<ClientConfig>,
@@ -217,6 +223,14 @@ impl HttpClient {
 		self
 	}
 
+	/// Feed this client's connects and TLS handshakes into the outbound
+	/// federation counters.
+	#[must_use]
+	pub fn track_outbound(mut self) -> Self {
+		self.track_outbound = true;
+		self
+	}
+
 	async fn execute_hops(
 		&self,
 		mut request: Request<Bytes>,
@@ -275,14 +289,20 @@ impl HttpClient {
 						timeout(self.connect_timeout, self.connect(url, &target, tls)).await;
 					match connected {
 						| Ok(result) => result?,
-						| Err(TimeoutError) =>
+						| Err(TimeoutError) => {
+							if self.track_outbound {
+								if let Some(server) = &self.server {
+									server.metrics.outbound.record_connect_failure();
+								}
+							}
 							return Err(Error::HttpClientConnect(
 								format!(
 									"connection to {authority} timed out after {:?}",
 									self.connect_timeout
 								)
 								.into(),
-							)),
+							));
+						},
 					}
 				},
 			};
@@ -347,14 +367,15 @@ impl HttpClient {
 					}
 					return Err(error);
 				},
-				| Err(TimeoutError) =>
+				| Err(TimeoutError) => {
 					return Err(Error::HttpClientTimeout(
 						format!(
 							"response from {authority} exceeded read timeout of {:?}",
 							self.read_timeout
 						)
 						.into(),
-					)),
+					));
+				},
 			}
 		}
 	}
@@ -431,11 +452,21 @@ impl HttpClient {
 		if !tls {
 			return Ok(Stream::Plain(stream));
 		}
+		if self.track_outbound {
+			if let Some(server) = &self.server {
+				server.metrics.outbound.record_tls_handshake();
+			}
+		}
 
 		let stream = TlsConnector::from(self.tls.clone())
 			.connect(server_name(&target.host)?, stream)
 			.await
 			.map_err(|error| {
+				if self.track_outbound {
+					if let Some(server) = &self.server {
+						server.metrics.outbound.record_tls_handshake_failure();
+					}
+				}
 				Error::HttpClient(
 					format!("TLS handshake with {} failed: {error}", target.host).into(),
 				)
@@ -453,9 +484,19 @@ impl HttpClient {
 		let address = self
 			.resolve_host(&target.host, target.port, validate)
 			.await?;
+		if self.track_outbound {
+			if let Some(server) = &self.server {
+				server.metrics.outbound.record_connect_attempt();
+			}
+		}
 		let stream = async_net::TcpStream::connect(address)
 			.await
 			.map_err(|error| {
+				if self.track_outbound {
+					if let Some(server) = &self.server {
+						server.metrics.outbound.record_connect_failure();
+					}
+				}
 				Error::HttpClientConnect(
 					format!("failed to connect to {}: {error}", target.authority()).into(),
 				)
@@ -464,6 +505,11 @@ impl HttpClient {
 		// Without TCP_NODELAY, Nagle's algorithm and delayed ACKs stall any message
 		// written in more than one segment on a reused connection by ~40ms.
 		stream.set_nodelay(true).map_err(|error| {
+			if self.track_outbound {
+				if let Some(server) = &self.server {
+					server.metrics.outbound.record_connect_failure();
+				}
+			}
 			Error::HttpClientConnect(
 				format!("failed to set TCP_NODELAY for {}: {error}", target.authority()).into(),
 			)
@@ -664,7 +710,7 @@ impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let config = &args.server.config;
 		let resolver = args.require::<resolver::Service>("resolver");
-		let base = || base(config, &resolver);
+		let base = || base(args.server, config, &resolver);
 		Ok(Arc::new(Self {
 			default: Arc::new(base()?),
 			url_preview: Arc::new(
@@ -692,7 +738,8 @@ impl crate::Service for Service {
 							.saturating_add(config.federation_conn_timeout),
 					))
 					.redirect_limit(3)
-					.denylist_validation(true),
+					.denylist_validation(true)
+					.track_outbound(),
 			),
 			synapse: Arc::new({
 				let synapse_timeout = config.federation_timeout.saturating_mul(6);
@@ -704,6 +751,7 @@ impl crate::Service for Service {
 					))
 					.redirect_limit(3)
 					.denylist_validation(true)
+					.track_outbound()
 			}),
 			sender: Arc::new(
 				base()?
@@ -711,7 +759,8 @@ impl crate::Service for Service {
 					.read_timeout(Duration::from_secs(config.sender_timeout))
 					.total_timeout(Duration::from_secs(config.sender_timeout))
 					.redirect_limit(2)
-					.denylist_validation(true),
+					.denylist_validation(true)
+					.track_outbound(),
 			),
 			appservice: Arc::new(
 				base()?
@@ -737,7 +786,11 @@ impl crate::Service for Service {
 	fn name(&self) -> &str { service::make_name(std::module_path!()) }
 }
 
-fn base(config: &Config, resolver: &Arc<ResolverService>) -> Result<HttpClient> {
+fn base(
+	server: &Arc<Server>,
+	config: &Config,
+	resolver: &Arc<ResolverService>,
+) -> Result<HttpClient> {
 	let mut roots = RootCertStore::empty();
 	roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().map(|root| {
 		rustls::pki_types::TrustAnchor {
@@ -763,6 +816,8 @@ fn base(config: &Config, resolver: &Arc<ResolverService>) -> Result<HttpClient> 
 	}
 
 	Ok(HttpClient {
+		server: Some(Arc::clone(server)),
+		track_outbound: false,
 		default_headers: HeaderMap::new(),
 		user_agent: Some(config.user_agent.clone()),
 		tls: Arc::new(tls),
@@ -1318,6 +1373,8 @@ mod pool_tests {
 			.with_no_client_auth();
 
 		HttpClient {
+			server: None,
+			track_outbound: false,
 			default_headers: HeaderMap::new(),
 			user_agent: None,
 			tls: Arc::new(tls),

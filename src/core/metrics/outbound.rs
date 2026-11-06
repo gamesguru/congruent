@@ -115,6 +115,15 @@ pub struct OutboundMetrics {
 	/// the destination-selection path are not included.
 	pub sender_path_db_calls: AtomicU64,
 
+	/// TCP connection attempts made by the federation HTTP clients.
+	pub connect_attempts: AtomicU64,
+	/// Connection attempts that failed before a stream was established.
+	pub connect_failures: AtomicU64,
+	/// TLS handshakes attempted by the federation HTTP clients.
+	pub tls_handshakes: AtomicU64,
+	/// TLS handshakes that failed.
+	pub tls_handshake_failures: AtomicU64,
+
 	/// Destination selections performed (`select_events` entries).
 	pub selections: AtomicU64,
 	/// Accessor calls made while selecting what to send, by source. Counted
@@ -140,6 +149,10 @@ pub struct OutboundSnapshot {
 	pub time_max_us: u64,
 	pub latency: [u64; LATENCY_BUCKETS],
 	pub sender_path_db_calls: u64,
+	pub connect_attempts: u64,
+	pub connect_failures: u64,
+	pub tls_handshakes: u64,
+	pub tls_handshake_failures: u64,
 	pub selections: u64,
 	pub selection_calls: [u64; SELECTION_SOURCES],
 }
@@ -163,6 +176,12 @@ impl OutboundSnapshot {
 			sender_path_db_calls: self
 				.sender_path_db_calls
 				.saturating_sub(prev.sender_path_db_calls),
+			connect_attempts: self.connect_attempts.saturating_sub(prev.connect_attempts),
+			connect_failures: self.connect_failures.saturating_sub(prev.connect_failures),
+			tls_handshakes: self.tls_handshakes.saturating_sub(prev.tls_handshakes),
+			tls_handshake_failures: self
+				.tls_handshake_failures
+				.saturating_sub(prev.tls_handshake_failures),
 			selections: self.selections.saturating_sub(prev.selections),
 			selection_calls: std::array::from_fn(|i| {
 				self.selection_calls[i].saturating_sub(prev.selection_calls[i])
@@ -216,6 +235,28 @@ impl OutboundMetrics {
 		self.sender_path_db_calls.fetch_add(n, Ordering::Relaxed);
 	}
 
+	/// Count a TCP connection attempt by a tracked federation client.
+	#[inline]
+	pub fn record_connect_attempt(&self) {
+		self.connect_attempts.fetch_add(1, Ordering::Relaxed);
+	}
+
+	/// Count a TCP connection attempt that failed.
+	#[inline]
+	pub fn record_connect_failure(&self) {
+		self.connect_failures.fetch_add(1, Ordering::Relaxed);
+	}
+
+	/// Count a TLS handshake attempted by a tracked federation client.
+	#[inline]
+	pub fn record_tls_handshake(&self) { self.tls_handshakes.fetch_add(1, Ordering::Relaxed); }
+
+	/// Count a TLS handshake that failed.
+	#[inline]
+	pub fn record_tls_handshake_failure(&self) {
+		self.tls_handshake_failures.fetch_add(1, Ordering::Relaxed);
+	}
+
 	/// Count one destination selection.
 	#[inline]
 	pub fn record_selection(&self) { self.selections.fetch_add(1, Ordering::Relaxed); }
@@ -263,6 +304,10 @@ impl OutboundMetrics {
 			time_max_us: load(&self.time_max_us),
 			latency: std::array::from_fn(|i| load(&self.latency[i])),
 			sender_path_db_calls: load(&self.sender_path_db_calls),
+			connect_attempts: load(&self.connect_attempts),
+			connect_failures: load(&self.connect_failures),
+			tls_handshakes: load(&self.tls_handshakes),
+			tls_handshake_failures: load(&self.tls_handshake_failures),
 			selections: load(&self.selections),
 			selection_calls: std::array::from_fn(|i| load(&self.selection_calls[i])),
 		}

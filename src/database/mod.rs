@@ -35,6 +35,7 @@ pub use self::{
 	dbkey::from_json_slice,
 	de::{Ignore, IgnoreAll},
 	deserialized::Deserialized,
+	engine::redb::StatsSnapshot,
 	handle::Handle,
 	keyval::{KeyVal, Slice, serialize_key, serialize_val},
 	map::{Batch, Get, Map, Qry, RecursiveGetOutput, compact},
@@ -69,6 +70,10 @@ impl Database {
 
 	/// Logs cumulative write-path counters (commits, operations, commit time).
 	pub fn log_write_stats(&self) { self.db.log_stats(); }
+
+	/// Returns logical read and write-operation totals since startup.
+	#[must_use]
+	pub fn stats_snapshot(&self) -> StatsSnapshot { self.db.stats_snapshot() }
 
 	#[inline]
 	pub fn get(&self, name: &str) -> Result<&Arc<Map>> {

@@ -529,13 +529,16 @@ fn write_outbound_metrics(
 		"**Outcomes:** ok {}, timeout {}, connect {}, remote error {}, other {}, aborted {}",
 		snap.ok, snap.timeout, snap.connect, snap.remote, snap.other, snap.aborted
 	)?;
+	writeln!(
+		info,
+		"**Connection setup:** TCP dials {} ({} failed), TLS handshakes {} ({} failed)",
+		snap.connect_attempts,
+		snap.connect_failures,
+		snap.tls_handshakes,
+		snap.tls_handshake_failures
+	)?;
 
-	let timed = snap
-		.ok
-		.saturating_add(snap.timeout)
-		.saturating_add(snap.connect)
-		.saturating_add(snap.remote)
-		.saturating_add(snap.other);
+	let timed = snap.timed();
 	if timed > 0 {
 		// Tenths of a millisecond, as integers: this report is rendered on the
 		// admin path and does not need float conversions.
@@ -712,6 +715,21 @@ pub(super) async fn diagnostics(&self) -> Result {
 		&mut info,
 		&metrics.outbound.snapshot(),
 		&metrics.outbound.last_minute(),
+	)?;
+	let mtxdb = self.services.mtxdb.operation_stats();
+	let redb = self.services.db.stats_snapshot();
+	writeln!(info, "\n## Database Operations (since start)")?;
+	writeln!(
+		info,
+		"**mtxdb store calls:** reads {}, scans {}, writes {}, commits {} (logical API calls; \
+		 not physical I/O)",
+		mtxdb.reads, mtxdb.scans, mtxdb.writes, mtxdb.commits
+	)?;
+	writeln!(
+		info,
+		"**redb metadata calls:** reads {}, commits {}, write operations {} (logical \
+		 operations; not physical I/O)",
+		redb.reads, redb.commits, redb.write_operations
 	)?;
 
 	writeln!(info, "\n## Background Tasks")?;

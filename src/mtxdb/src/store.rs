@@ -56,6 +56,37 @@ struct WriteLockStats {
 	max_wait_nanos: AtomicU64,
 }
 
+#[derive(Debug, Default)]
+struct OperationStats {
+	reads: AtomicU64,
+	scans: AtomicU64,
+	writes: AtomicU64,
+	commits: AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OperationSnapshot {
+	/// Calls to the store's single or batched read accessors.
+	pub reads: u64,
+	/// Calls that enumerate or probe collection records.
+	pub scans: u64,
+	/// Staged put/remove accessor calls.
+	pub writes: u64,
+	/// Transaction commit attempts.
+	pub commits: u64,
+}
+
+impl OperationStats {
+	fn snapshot(&self) -> OperationSnapshot {
+		OperationSnapshot {
+			reads: self.reads.load(Ordering::Relaxed),
+			scans: self.scans.load(Ordering::Relaxed),
+			writes: self.writes.load(Ordering::Relaxed),
+			commits: self.commits.load(Ordering::Relaxed),
+		}
+	}
+}
+
 impl WriteLockStats {
 	fn record(&self, waited: Duration) {
 		let nanos = u64::try_from(waited.as_nanos()).unwrap_or(u64::MAX);
@@ -97,6 +128,7 @@ pub struct MtxdbStore {
 	maintenance: Mutex<Option<Maintenance>>,
 	write_locks: Box<[Mutex<()>]>,
 	write_lock_counters: WriteLockStats,
+	operation_counters: OperationStats,
 }
 
 struct Maintenance {
@@ -131,6 +163,7 @@ impl MtxdbStore {
 			maintenance: Mutex::new(None),
 			write_locks: (0..WRITE_LOCK_STRIPES).map(|_| Mutex::new(())).collect(),
 			write_lock_counters: WriteLockStats::default(),
+			operation_counters: OperationStats::default(),
 		}
 	}
 
@@ -186,6 +219,11 @@ impl MtxdbStore {
 	#[must_use]
 	pub fn write_lock_stats(&self) -> WriteLockSnapshot { self.write_lock_counters.snapshot() }
 
+	/// Logical store API call totals since opening the database. These are not
+	/// counts of physical reads, returned records, or disk I/O.
+	#[must_use]
+	pub fn operation_stats(&self) -> OperationSnapshot { self.operation_counters.snapshot() }
+
 	pub fn get(
 		&self,
 		shard: ShardType,
@@ -202,6 +240,9 @@ impl MtxdbStore {
 		shard: ShardType,
 		collection: &CollectionId,
 	) -> Result<Option<mtxdb::template::CollectionMetadata>, StorageError> {
+		self.operation_counters
+			.reads
+			.fetch_add(1, Ordering::Relaxed);
 		self.db.pool(shard).get_collection_metadata(collection)
 	}
 
@@ -212,6 +253,9 @@ impl MtxdbStore {
 		shard: ShardType,
 		collection: &CollectionId,
 	) -> Result<Vec<(NodeId, Vec<u8>)>, StorageError> {
+		self.operation_counters
+			.scans
+			.fetch_add(1, Ordering::Relaxed);
 		self.db
 			.pool(shard)
 			.scan_collection(collection)?
@@ -225,6 +269,9 @@ impl MtxdbStore {
 		shard: ShardType,
 		collection: &CollectionId,
 	) -> Result<Option<(NodeId, Vec<u8>)>, StorageError> {
+		self.operation_counters
+			.scans
+			.fetch_add(1, Ordering::Relaxed);
 		self.db
 			.pool(shard)
 			.scan_collection(collection)?
@@ -239,6 +286,9 @@ impl MtxdbStore {
 		shard: ShardType,
 		collection: &CollectionId,
 	) -> Result<bool, StorageError> {
+		self.operation_counters
+			.scans
+			.fetch_add(1, Ordering::Relaxed);
 		let mut records = self.db.pool(shard).scan_collection(collection)?;
 		match records.next() {
 			| Some(record) => record.map(|_| true),
@@ -255,6 +305,9 @@ impl MtxdbStore {
 		shard: ShardType,
 		collection: &CollectionId,
 	) -> Result<u64, StorageError> {
+		self.operation_counters
+			.reads
+			.fetch_add(1, Ordering::Relaxed);
 		self.db
 			.pool(shard)
 			.get_with_collection_version(collection, &[[0; 16]])
@@ -267,6 +320,9 @@ impl MtxdbStore {
 		collection: &CollectionId,
 		nodes: &[NodeId],
 	) -> Result<Vec<Option<Vec<u8>>>, StorageError> {
+		self.operation_counters
+			.reads
+			.fetch_add(1, Ordering::Relaxed);
 		Ok(self
 			.db
 			.pool(shard)
@@ -278,7 +334,10 @@ impl MtxdbStore {
 
 	#[must_use]
 	pub fn begin_transaction(&self) -> MtxdbTransaction<'_> {
-		MtxdbTransaction { tx: self.db.begin_transaction() }
+		MtxdbTransaction {
+			tx: self.db.begin_transaction(),
+			counters: &self.operation_counters,
+		}
 	}
 
 	pub fn sync(&self, shard: ShardType) -> Result<(), StorageError> {
@@ -418,6 +477,7 @@ impl Drop for MtxdbStore {
 
 pub struct MtxdbTransaction<'a> {
 	tx: DatabaseTransaction<'a>,
+	counters: &'a OperationStats,
 }
 
 impl<'a> MtxdbTransaction<'a> {
@@ -430,6 +490,7 @@ impl<'a> MtxdbTransaction<'a> {
 		collection: CollectionId,
 		nodes: &[NodeId],
 	) -> Result<VersionedRead, StorageError> {
+		self.counters.reads.fetch_add(1, Ordering::Relaxed);
 		let (values, version) = self
 			.tx
 			.get_with_collection_version(shard, &collection, nodes)?;
@@ -450,6 +511,7 @@ impl<'a> MtxdbTransaction<'a> {
 		collection: CollectionId,
 		nodes: &[NodeId],
 	) -> Result<Vec<Option<Vec<u8>>>, StorageError> {
+		self.counters.reads.fetch_add(1, Ordering::Relaxed);
 		Ok(self
 			.tx
 			.get(shard, &collection, nodes)?
@@ -465,6 +527,7 @@ impl<'a> MtxdbTransaction<'a> {
 		node: NodeId,
 		data: &[u8],
 	) -> Result<(), StorageError> {
+		self.counters.writes.fetch_add(1, Ordering::Relaxed);
 		self.tx
 			.put(shard, collection, node, &mtxdb::storage::NodeData::from_slice(data))?;
 		Ok(())
@@ -482,6 +545,7 @@ impl<'a> MtxdbTransaction<'a> {
 		collection: CollectionId,
 		node: NodeId,
 	) -> Result<(), StorageError> {
+		self.counters.writes.fetch_add(1, Ordering::Relaxed);
 		self.tx.remove(shard, collection, node)?;
 		Ok(())
 	}
@@ -496,6 +560,7 @@ impl<'a> MtxdbTransaction<'a> {
 		collection: CollectionId,
 		nodes: &[NodeId],
 	) -> Result<(), StorageError> {
+		self.counters.writes.fetch_add(1, Ordering::Relaxed);
 		self.tx.remove_many(shard, collection, nodes)?;
 		Ok(())
 	}
@@ -516,7 +581,10 @@ impl<'a> MtxdbTransaction<'a> {
 
 	pub fn as_database_transaction(&self) -> &DatabaseTransaction<'a> { &self.tx }
 
-	pub fn commit(self) -> Result<(), StorageError> { self.tx.commit() }
+	pub fn commit(self) -> Result<(), StorageError> {
+		self.counters.commits.fetch_add(1, Ordering::Relaxed);
+		self.tx.commit()
+	}
 }
 
 #[cfg(test)]
