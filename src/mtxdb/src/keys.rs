@@ -7,8 +7,8 @@
 pub use mtxdb::interop::{
 	EVENT_LOCATOR_BUCKETS, derive_id, event_locator_collection_id, event_record_id,
 	event_state_root_node_id as event_root_node_id, event_verdict_collection_id,
-	room_auth_collection_id, room_event_collection_id, room_prev_collection_id,
-	room_state_root_node_id as room_root_node_id, server_keys_collection_id,
+	room_event_collection_id, room_state_root_node_id as room_root_node_id,
+	server_keys_collection_id,
 };
 use mtxdb::{
 	MEMBER_NAMESPACE_STAT, MEMBER_NAMESPACE_STGP, derive_group_full_id,
@@ -121,8 +121,6 @@ mod tests {
 		assert_eq!(room_state_collection_id(room), room_state_collection_id(room));
 		assert_eq!(room_roots_collection_id(room), room_roots_collection_id(room));
 		assert_eq!(room_event_collection_id(room), room_event_collection_id(room));
-		assert_eq!(room_prev_collection_id(room), room_prev_collection_id(room));
-		assert_eq!(room_auth_collection_id(room), room_auth_collection_id(room));
 	}
 
 	#[test]
@@ -132,8 +130,6 @@ mod tests {
 			room_state_collection_id(room),
 			room_roots_collection_id(room),
 			room_event_collection_id(room),
-			room_prev_collection_id(room),
-			room_auth_collection_id(room),
 		];
 		for (i, a) in ids.iter().enumerate() {
 			for b in ids.iter().skip(i + 1) {
@@ -149,8 +145,6 @@ mod tests {
 		assert_ne!(room_state_collection_id(a), room_state_collection_id(b));
 		assert_ne!(room_roots_collection_id(a), room_roots_collection_id(b));
 		assert_ne!(room_event_collection_id(a), room_event_collection_id(b));
-		assert_ne!(room_prev_collection_id(a), room_prev_collection_id(b));
-		assert_ne!(room_auth_collection_id(a), room_auth_collection_id(b));
 	}
 
 	#[test]
