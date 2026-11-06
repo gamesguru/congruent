@@ -52,10 +52,13 @@ const MTXDB_OWNED_MAPS: &[&str] = &[
 // import builds its own short-ID index from event identities, v23 rebuilds
 // state HAMTs from the timeline rather than the legacy statediff history or
 // `roomid_shortstatehash` room selection, and search scans event bodies
-// instead of the `tokenids` inverted index.
+// instead of the `tokenids` inverted index. `roomsynctoken_shortstatehash` is a
+// sync-token cache keyed by legacy short IDs; v24 clears it, so copying it
+// would only import stale entries.
 const SKIPPED_MAPS: &[&str] = &[
 	"eventid_shorteventid",
 	"roomid_shortstatehash",
+	"roomsynctoken_shortstatehash",
 	"shorteventid_eventid",
 	"shortstatehash_statediff",
 	"shortstatekey_statekey",
@@ -232,7 +235,7 @@ fn list(rocks_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 		} else {
 			"redb candidate"
 		};
-		println!("{ownership}\t{name}");
+		println!("{ownership:<17}  {name}");
 	}
 	Ok(())
 }
