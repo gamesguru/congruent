@@ -7,6 +7,7 @@ use conduwuit::{
 	utils::stream::{IterStream, ReadyExt, WidebandExt},
 	warn,
 };
+use conduwuit_mtxdb::lattice::LatticeDelta;
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use parking_lot::RwLock;
 use slipstream::{OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
@@ -115,8 +116,10 @@ pub async fn resolve_state(
 
 	let mut lattice = rezzy::incremental::LtHash::default();
 	// Only the changed leaves become mutations, so this stays proportional to
-	// the state delta rather than the state size.
+	// the state delta rather than the state size. The same changes become the
+	// lattice delta used to avoid writing a full checkpoint on every event.
 	let mut mutations: Vec<(ShortStateKey, Option<ShortEventId>)> = Vec::new();
+	let mut deltas: Vec<LatticeDelta> = Vec::new();
 
 	for ((ty, sk), id) in &state {
 		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
@@ -128,7 +131,20 @@ pub async fn resolve_state(
 			.await;
 		let shorteventid = self.services.short.get_or_create_shorteventid(id).await;
 
-		if previous_statemap.get(&(ty.clone(), sk.clone())) != Some(id) {
+		let previous = previous_statemap.get(&(ty.clone(), sk.clone()));
+		if previous != Some(id) {
+			if let Some(previous_id) = previous {
+				deltas.push(LatticeDelta::Remove {
+					event_type: ty.to_string(),
+					state_key: sk.to_string(),
+					event_id: previous_id.to_string(),
+				});
+			}
+			deltas.push(LatticeDelta::Insert {
+				event_type: ty.to_string(),
+				state_key: sk.to_string(),
+				event_id: id.to_string(),
+			});
 			mutations.push((shortstatekey, Some(shorteventid)));
 		}
 	}
@@ -136,7 +152,7 @@ pub async fn resolve_state(
 	// Resolution picks a winner per `(type, state_key)` from the union of the
 	// forks, so it should not drop a key the previous root carried. Handle it
 	// anyway rather than silently leaving a stale leaf behind.
-	for (ty, sk) in previous_statemap.keys() {
+	for ((ty, sk), previous_id) in previous_statemap {
 		if !state.contains_key(&(ty.clone(), sk.clone())) {
 			let shortstatekey = self
 				.services
@@ -144,6 +160,11 @@ pub async fn resolve_state(
 				.get_or_create_shortstatekey(ty, sk)
 				.await;
 			mutations.push((shortstatekey, None));
+			deltas.push(LatticeDelta::Remove {
+				event_type: ty.to_string(),
+				state_key: sk.to_string(),
+				event_id: previous_id.to_string(),
+			});
 		}
 	}
 
@@ -151,6 +172,14 @@ pub async fn resolve_state(
 		&self.services.globals.server_secret,
 		room_id,
 	);
+
+	// Warm the lattice cache so the mutation can chain from the base root's
+	// record instead of falling back to a full checkpoint.
+	let _ = self
+		.services
+		.state
+		.get_root_lattice(&current_root_handle)
+		.await;
 
 	// Copy-on-write from the current root: only the changed spines are written.
 	// Materializing the whole tree here would rewrite every node on every
@@ -162,6 +191,7 @@ pub async fn resolve_state(
 			&current_root_handle,
 			mutations,
 			&lattice,
+			&deltas,
 		)
 	})
 }

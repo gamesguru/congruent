@@ -2421,9 +2421,19 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 		// Skip when there is no root at all: an imported room that failed to
 		// rebuild has nothing to reconcile against, and running anyway would
 		// evict the imported per-user invite state.
-		if services.rooms.state.get_room_state_hamt(&room_id).await.is_ok() {
+		if services
+			.rooms
+			.state
+			.get_room_state_hamt(&room_id)
+			.await
+			.is_ok()
+		{
 			let _state_lock = services.rooms.state.mutex.lock(&room_id).await;
-			services.rooms.state_cache.reconcile_membership(&room_id).await;
+			services
+				.rooms
+				.state_cache
+				.reconcile_membership(&room_id)
+				.await;
 		}
 
 		if !rebuilt {

@@ -211,15 +211,14 @@ impl super::Service {
 			if *pdu.kind() == TimelineEventType::RoomMember {
 				if let Some(Ok(user_id)) = pdu.state_key().map(OwnedUserId::parse) {
 					if pdu
-						.get_content::<
-							slipstream::events::room::member::RoomMemberEventContent,
-						>()
+						.get_content::<slipstream::events::room::member::RoomMemberEventContent>()
 						.is_ok_and(|content| {
 							content.membership
 								== slipstream::events::room::member::MembershipState::Join
-						})
-					{
-						self.services.state_cache.mark_as_once_joined(&user_id, room_id);
+						}) {
+						self.services
+							.state_cache
+							.mark_as_once_joined(&user_id, room_id);
 					}
 				}
 			}
@@ -229,7 +228,9 @@ impl super::Service {
 					if let Ok(related_count) =
 						self.get_pdu_count(&content.relates_to.event_id).await
 					{
-						self.services.pdu_metadata.add_relation(count, related_count);
+						self.services
+							.pdu_metadata
+							.add_relation(count, related_count);
 					}
 				}
 			}
@@ -369,6 +370,9 @@ impl super::Service {
 			.store
 			.persist_node_recursive(room_id.as_bytes(), root_node)?;
 
+		// Rebuild materializes every root it computes, so it writes the legacy
+		// redb mirror rather than a live chain record. Only the final room root
+		// is re-published to mtxdb by `set_room_state_hamt_after_rebuild`.
 		let encoded = lattice.to_bytes();
 		self.db.db["state_hamt_root_lattices"].insert(&root_handle.structural_hash, &encoded);
 

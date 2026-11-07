@@ -431,6 +431,89 @@ async fn seed_membership_state(
 	root
 }
 
+/// Roots after the first one store a lattice delta chain rather than repeating
+/// the full 2 KiB checkpoint, and replaying the chain yields the root's state
+/// group id.
+#[conduwuit_macros::async_test]
+async fn test_root_lattice_chain_replays_to_state_group_id() {
+	use conduwuit_mtxdb::lattice::{
+		LatticeRecord, RECORD_CHAIN, RECORD_CHECKPOINT, decode_record,
+	};
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
+	let mutex = services.rooms.state.mutex.lock(&room_id).await;
+	let root = seed_membership_state(&services, &room_id, &mutex, 3).await;
+
+	let raw = services
+		.rooms
+		.state_hamt
+		.store
+		.root_lattice(&root.structural_hash)
+		.expect("read lattice record")
+		.expect("chain root must have a lattice record");
+	assert_eq!(raw.first(), Some(&RECORD_CHAIN), "later roots must store a delta chain");
+
+	let chain = match decode_record(&raw).expect("decode chain record") {
+		| LatticeRecord::Chain(chain) => chain,
+		| LatticeRecord::Checkpoint(_) => panic!("expected a chain record"),
+	};
+	assert_eq!(chain.hops, 3, "create plus three members is three hops from the checkpoint");
+
+	let base = services
+		.rooms
+		.state_hamt
+		.store
+		.root_lattice(&chain.base)
+		.expect("read base record")
+		.expect("chain base must be persisted");
+	assert_eq!(
+		base.first(),
+		Some(&RECORD_CHECKPOINT),
+		"a chain must point at a full checkpoint"
+	);
+
+	let lattice = services
+		.rooms
+		.state
+		.get_root_lattice(&root)
+		.await
+		.expect("replay chain lattice");
+	assert_eq!(
+		lattice.digest(),
+		root.state_group_id,
+		"replayed lattice must match the root's state-group id"
+	);
+
+	// Extending from a root whose chain was just replayed must link to it and
+	// keep the original checkpoint rather than starting over.
+	let next_id = EventId::parse("$seed-member-3:test.conduwuit.local").unwrap();
+	let next =
+		create_dummy_pdu(&room_id, &next_id, "m.room.member", "@user3:test.conduwuit.local");
+	persist_dummy_pdu(&services, &room_id, &next).await;
+	let next_root = services
+		.rooms
+		.state
+		.set_event_state(&room_id, &next, &mutex)
+		.await
+		.expect("append after chain replay");
+
+	let next_raw = services
+		.rooms
+		.state_hamt
+		.store
+		.root_lattice(&next_root.structural_hash)
+		.expect("read next lattice record")
+		.expect("next root must have a lattice record");
+	let next_chain = match decode_record(&next_raw).expect("decode next chain") {
+		| LatticeRecord::Chain(chain) => chain,
+		| LatticeRecord::Checkpoint(_) => panic!("expected a chain record"),
+	};
+	assert_eq!(next_chain.hops, 4);
+	assert_eq!(next_chain.parent, root.structural_hash);
+	assert_eq!(next_chain.base, chain.base);
+}
+
 /// A bulk state update must copy only the changed spines, not re-emit the tree.
 ///
 /// `resolve_state` used to call `build_hamt_root_handle` +
@@ -495,6 +578,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 			&root,
 			vec![(target_key, Some(target_value))],
 			&lattice,
+			&[],
 		)
 		.expect("bulk mutation failed");
 	// Deferred nodes are not cached before publication, so they must be
@@ -546,6 +630,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 			&new_root,
 			vec![(target_key, Some(target_value))],
 			&lattice,
+			&[],
 		)
 		.expect("repeat bulk mutation failed");
 	let (rewritten_after, _) = services.rooms.state_hamt.store.write_stats().snapshot();
@@ -629,7 +714,14 @@ async fn test_bulk_state_update_insert_remove_and_mixed() {
 			let (handle, nodes) = services
 				.rooms
 				.state
-				.persist_state_hamt_mutations(room_id, structural_key, &prev, mutations, lattice)
+				.persist_state_hamt_mutations(
+					room_id,
+					structural_key,
+					&prev,
+					mutations,
+					lattice,
+					&[],
+				)
 				.expect("bulk mutation failed");
 			services
 				.rooms

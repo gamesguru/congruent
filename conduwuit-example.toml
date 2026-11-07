@@ -223,7 +223,9 @@
 #stateinfo_cache_capacity = varies by system
 
 # Maximum entries in the LtHash lattice cache (MSC4500).
-# Each entry is 2 KiB; default 512 ≈ 1 MiB.
+# Each entry holds the 2 KiB lattice plus its checkpoint or delta record;
+# most records are small, and full checkpoints are written every 500
+# roots. Default 512 ≈ 1 MiB plus delta records.
 #
 #lthash_cache_capacity = 512
 

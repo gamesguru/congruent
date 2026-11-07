@@ -335,7 +335,9 @@ pub struct Config {
 	pub stateinfo_cache_capacity: u32,
 
 	/// Maximum entries in the LtHash lattice cache (MSC4500).
-	/// Each entry is 2 KiB; default 512 ≈ 1 MiB.
+	/// Each entry holds the 2 KiB lattice plus its checkpoint or delta record;
+	/// most records are small, and full checkpoints are written every 500
+	/// roots. Default 512 ≈ 1 MiB plus delta records.
 	///
 	/// default: 512
 	#[serde(default = "default_lthash_cache_capacity")]

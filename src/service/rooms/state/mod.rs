@@ -12,6 +12,10 @@ use conduwuit_core::{
 	warn,
 };
 use conduwuit_database::{Batch, Ignore, Interfix, Map, serialize_to_vec};
+use conduwuit_mtxdb::lattice::{
+	CHECKPOINT_INTERVAL, CachedLattice, LatticeDelta, LatticeRecord, decode_record, encode_chain,
+	encode_checkpoint, extend_chain,
+};
 
 /// A (add, rem) pair of `(shortstatekey, shorteventid)` from a HAMT delta.
 type HamtDelta = (Vec<(u64, u64)>, Vec<(u64, u64)>);
@@ -141,14 +145,17 @@ struct Data {
 	state_hamt_root_lattices: Arc<Map>,
 	/// Durable blocks for rooms whose v23 state rebuild failed.
 	state_rebuild_pending: Arc<Map>,
-	/// Bounded cache of encoded root lattices, keyed by structural hash.
-	/// Lattices are immutable and content-addressed, so entries never go
-	/// stale.
-	lattice_cache: moka::sync::Cache<[u8; 32], Arc<[u8]>>,
+	/// Bounded cache of root lattices and their checkpoint/chain records,
+	/// keyed by structural hash. Lattices are immutable and content-addressed,
+	/// so entries never go stale.
+	lattice_cache: moka::sync::Cache<[u8; 32], CachedLattice>,
+	/// Records staged between [`Service::persist_root_lattice`] and the mtxdb
+	/// transaction that publishes the root. This map must not evict: losing a
+	/// record here would make the root's lattice unrecoverable until the HAMT
+	/// is rebuilt, because the legacy redb mirror is no longer written.
+	pending_lattice_records: parking_lot::Mutex<HashMap<[u8; 32], Arc<[u8]>>>,
 }
 
-/// Encoded length of a persisted `LtHash` lattice.
-const LATTICE_LEN: usize = 2048;
 const STATE_REBUILD_PENDING_PREFIX: &[u8] = b"state_rebuild_pending_v23:";
 
 type RoomMutexMap = MutexMap<OwnedRoomId, ()>;
@@ -179,6 +186,7 @@ impl crate::Service for Service {
 				lattice_cache: moka::sync::Cache::builder()
 					.max_capacity(u64::from(args.server.config.lthash_cache_capacity))
 					.build(),
+				pending_lattice_records: parking_lot::Mutex::new(HashMap::new()),
 			},
 		}))
 	}
@@ -450,7 +458,7 @@ impl Service {
 		// One mtxdb transaction for the new nodes and both roots, committed
 		// before the RocksDB index batch below, so a failure leaves at worst
 		// unreferenced nodes and never an index entry pointing at nothing.
-		let lattice = self.db.lattice_cache.get(&root_handle.structural_hash);
+		let lattice = self.lattice_record_for_publish(&root_handle.structural_hash);
 		self.services.state_hamt.store.publish_roots_with_short(
 			room_id.as_bytes(),
 			&deferred_nodes,
@@ -460,7 +468,7 @@ impl Service {
 			is_state.then_some(serialized.as_slice()),
 			lattice
 				.as_ref()
-				.map(|bytes| (&root_handle.structural_hash, bytes.as_ref())),
+				.map(|record| (&root_handle.structural_hash, record.as_ref())),
 		)?;
 
 		let mut batch = Batch::new();
@@ -556,12 +564,23 @@ impl Service {
 					&mut resolver,
 				)
 				.map_err(|e| err!(error!("HAMT mutation failed: {e:?}")))?;
+				let mut deltas = Vec::with_capacity(2);
 				if let Some(old) = displaced {
 					let old_id = self
 						.services
 						.short
 						.get_eventid_from_short::<OwnedEventId>(old)
 						.await?;
+					deltas.push(LatticeDelta::Remove {
+						event_type: event_type.as_ref().to_owned(),
+						state_key: state_key.to_owned(),
+						event_id: old_id.to_string(),
+					});
+					deltas.push(LatticeDelta::Insert {
+						event_type: event_type.as_ref().to_owned(),
+						state_key: state_key.to_owned(),
+						event_id: new_pdu.event_id().to_string(),
+					});
 					lattice.replace(
 						event_type.as_ref(),
 						state_key,
@@ -569,6 +588,11 @@ impl Service {
 						new_pdu.event_id().as_str(),
 					);
 				} else {
+					deltas.push(LatticeDelta::Insert {
+						event_type: event_type.as_ref().to_owned(),
+						state_key: state_key.to_owned(),
+						event_id: new_pdu.event_id().to_string(),
+					});
 					lattice.insert(event_type.as_ref(), state_key, new_pdu.event_id().as_str());
 				}
 				let mut deferred_nodes = Vec::with_capacity(created.len());
@@ -586,7 +610,7 @@ impl Service {
 					.state_hamt
 					.store
 					.root_handle(new_node.structural_hash, &lattice);
-				self.persist_root_lattice(&handle, &lattice);
+				self.persist_root_lattice(&handle, &lattice, Some(&base), &deltas);
 				return Ok((handle, new_node, deferred_nodes));
 			}
 		}
@@ -642,7 +666,7 @@ impl Service {
 		let (root_handle, root_node) =
 			rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 				.map_err(|e| err!(error!("Failed to build HAMT in append_to_state: {e:?}")))?;
-		self.persist_root_lattice(&root_handle, &lattice);
+		self.persist_root_lattice(&root_handle, &lattice, None, &[]);
 
 		let deferred_nodes = self
 			.services
@@ -670,6 +694,7 @@ impl Service {
 		prev: &rezzy::hamt::RootHandle,
 		mutations: Vec<(ShortStateKey, Option<ShortEventId>)>,
 		lattice: &rezzy::incremental::LtHash,
+		deltas: &[LatticeDelta],
 	) -> Result<(rezzy::hamt::RootHandle, Vec<rooms::state_hamt::store::PendingNode>)> {
 		let store = &self.services.state_hamt.store;
 		let old = store.get_node(room_id.as_bytes(), structural_key, &prev.structural_hash)?;
@@ -696,24 +721,88 @@ impl Service {
 			.state_hamt
 			.store
 			.root_handle(new_node.structural_hash, lattice);
-		self.persist_root_lattice(&handle, lattice);
+		self.persist_root_lattice(&handle, lattice, Some(prev), deltas);
 
 		Ok((handle, deferred_nodes))
 	}
 
-	/// Persists the lattice for a root and populates the lattice cache.
+	/// Persists the lattice record for a root and populates the lattice cache.
+	///
+	/// `base` is the root this state was derived from and `deltas` are the
+	/// lattice operations that connect them. When the chain is still below
+	/// [`conduwuit_mtxdb::lattice::CHECKPOINT_INTERVAL`], only a small delta
+	/// record is staged; at the interval the full 2 KiB lattice is written
+	/// instead. A missing base or an empty delta list falls back to a
+	/// checkpoint, so the record is always self-sufficient from the previous
+	/// durable checkpoint.
 	pub fn persist_root_lattice(
 		&self,
 		root_handle: &rezzy::hamt::RootHandle,
 		lattice: &rezzy::incremental::LtHash,
+		base: Option<&rezzy::hamt::RootHandle>,
+		deltas: &[LatticeDelta],
 	) {
-		let encoded = lattice.to_bytes();
+		let encoded = Arc::<[u8]>::from(&*lattice.to_bytes());
+		let record = base
+			.and_then(|base| self.build_lattice_chain(base, deltas))
+			.unwrap_or_else(|| {
+				encode_checkpoint(&encoded).expect("an LtHash lattice is always 2048 bytes")
+			});
+		let record = Arc::<[u8]>::from(&*record);
 		self.db
-			.state_hamt_root_lattices
-			.insert(&root_handle.structural_hash, &encoded);
+			.pending_lattice_records
+			.lock()
+			.insert(root_handle.structural_hash, Arc::clone(&record));
 		self.db
 			.lattice_cache
-			.insert(root_handle.structural_hash, Arc::from(&*encoded));
+			.insert(root_handle.structural_hash, CachedLattice::new(encoded, record));
+	}
+
+	/// Takes the staged record for a root, falling back to the bounded cache.
+	///
+	/// Publication must see the exact record staged with the root even if the
+	/// cache evicted the entry in the meantime, so the pending map is the
+	/// primary source and is consumed by the first publication.
+	fn lattice_record_for_publish(&self, structural_hash: &[u8; 32]) -> Option<Arc<[u8]>> {
+		self.db
+			.pending_lattice_records
+			.lock()
+			.remove(structural_hash)
+			.or_else(|| {
+				self.db
+					.lattice_cache
+					.get(structural_hash)
+					.map(|entry| entry.record)
+			})
+	}
+
+	/// Builds a delta record against `base`'s checkpoint, or `None` when the
+	/// chain should be compacted into a full checkpoint.
+	fn build_lattice_chain(
+		&self,
+		base: &rezzy::hamt::RootHandle,
+		deltas: &[LatticeDelta],
+	) -> Option<Vec<u8>> {
+		let base_record = self.cached_lattice_record(&base.structural_hash)?;
+		let chain = extend_chain(Some(&base_record), base.structural_hash, deltas)?;
+		encode_chain(&chain)
+	}
+
+	/// Reads a root's encoded record from the cache or mtxdb without waiting
+	/// on the legacy redb mirror. Callers that need the redb fallback use the
+	/// async [`Self::get_root_lattice`] path, which also warms this cache.
+	fn cached_lattice_record(&self, structural_hash: &[u8; 32]) -> Option<LatticeRecord> {
+		if let Some(entry) = self.db.lattice_cache.get(structural_hash) {
+			return decode_record(&entry.record);
+		}
+		let raw = self
+			.services
+			.state_hamt
+			.store
+			.root_lattice(structural_hash)
+			.ok()
+			.flatten()?;
+		decode_record(&raw)
 	}
 
 	/// Returns the lattice persisted for a root, if any. Served from the
@@ -722,41 +811,94 @@ impl Service {
 		&self,
 		root_handle: &rezzy::hamt::RootHandle,
 	) -> Option<rezzy::incremental::LtHash> {
-		if let Some(raw) = self.db.lattice_cache.get(&root_handle.structural_hash) {
-			return rezzy::incremental::LtHash::from_bytes(&raw);
+		if let Some(entry) = self.db.lattice_cache.get(&root_handle.structural_hash) {
+			return rezzy::incremental::LtHash::from_bytes(&entry.lattice);
+		}
+		self.get_lattice_by_hash(&root_handle.structural_hash).await
+	}
+
+	/// Resolves a lattice by structural hash, caching the full lattice and the
+	/// record that would be staged on the next write.
+	///
+	/// A chain is a linked list of one-transition links. Walk it back to the
+	/// checkpoint, then replay the links forward. The walk is bounded by
+	/// [`CHECKPOINT_INTERVAL`], so a corrupt cycle cannot spin forever.
+	async fn get_lattice_by_hash(
+		&self,
+		structural_hash: &[u8; 32],
+	) -> Option<rezzy::incremental::LtHash> {
+		if let Some(entry) = self.db.lattice_cache.get(structural_hash) {
+			return rezzy::incremental::LtHash::from_bytes(&entry.lattice);
 		}
 
-		if let Ok(Some(raw)) = self
-			.services
-			.state_hamt
-			.store
-			.root_lattice(&root_handle.structural_hash)
-		{
-			if raw.len() == LATTICE_LEN {
-				if let Some(lattice) = rezzy::incremental::LtHash::from_bytes(&raw) {
-					self.db
-						.lattice_cache
-						.insert(root_handle.structural_hash, Arc::from(&*raw));
-					return Some(lattice);
-				}
+		let mut links = Vec::new();
+		let mut current = *structural_hash;
+		let mut target_record = None;
+		let checkpoint = loop {
+			if let Some(entry) = self.db.lattice_cache.get(&current) {
+				break rezzy::incremental::LtHash::from_bytes(&entry.lattice)?;
 			}
+
+			let raw = self.read_lattice_record(&current).await?;
+			if target_record.is_none() {
+				target_record = Some(raw.clone());
+			}
+
+			match decode_record(&raw)? {
+				| LatticeRecord::Checkpoint(lattice) => {
+					let lattice = rezzy::incremental::LtHash::from_bytes(&lattice)?;
+					let encoded = lattice.to_bytes();
+					let record = encode_checkpoint(&encoded)?;
+					self.db.lattice_cache.insert(
+						current,
+						CachedLattice::new(
+							Arc::<[u8]>::from(&*encoded),
+							Arc::<[u8]>::from(&*record),
+						),
+					);
+					break lattice;
+				},
+				| LatticeRecord::Chain(chain) => {
+					if links.len() >= usize::try_from(CHECKPOINT_INTERVAL).ok()? {
+						return None;
+					}
+					current = chain.parent;
+					links.push(chain);
+				},
+			}
+		};
+
+		let mut lattice = checkpoint;
+		for link in links.iter().rev() {
+			lattice = link.apply(&lattice);
 		}
 
-		let raw = self
-			.db
-			.state_hamt_root_lattices
-			.get(&root_handle.structural_hash)
-			.await
-			.ok()?;
-		if raw.len() != LATTICE_LEN {
-			return None;
-		}
-
-		let lattice = rezzy::incremental::LtHash::from_bytes(&raw)?;
-		self.db
-			.lattice_cache
-			.insert(root_handle.structural_hash, Arc::from(&*raw));
+		let encoded = lattice.to_bytes();
+		let record = target_record.unwrap_or_else(|| {
+			encode_checkpoint(&encoded).expect("an LtHash lattice is always 2048 bytes")
+		});
+		self.db.lattice_cache.insert(
+			*structural_hash,
+			CachedLattice::new(Arc::<[u8]>::from(&*encoded), Arc::<[u8]>::from(&*record)),
+		);
 		Some(lattice)
+	}
+
+	/// Reads one root's encoded lattice record from the cache, mtxdb, or the
+	/// legacy redb mirror.
+	async fn read_lattice_record(&self, structural_hash: &[u8; 32]) -> Option<Vec<u8>> {
+		if let Some(entry) = self.db.lattice_cache.get(structural_hash) {
+			return Some(entry.record.to_vec());
+		}
+		if let Ok(Some(raw)) = self.services.state_hamt.store.root_lattice(structural_hash) {
+			return Some(raw);
+		}
+		self.db
+			.state_hamt_root_lattices
+			.get(structural_hash)
+			.await
+			.ok()
+			.map(|raw| raw.to_vec())
 	}
 
 	async fn load_state_map_from_root_handle(
@@ -873,7 +1015,7 @@ impl Service {
 		nodes: &[rooms::state_hamt::store::PendingNode],
 	) -> Result<()> {
 		let data = root_handle_to_bytes(root_handle);
-		let lattice = self.db.lattice_cache.get(&root_handle.structural_hash);
+		let lattice = self.lattice_record_for_publish(&root_handle.structural_hash);
 		self.services.state_hamt.store.publish_roots_with_lattice(
 			room_id.as_bytes(),
 			nodes,
@@ -881,7 +1023,7 @@ impl Service {
 			Some(&data),
 			lattice
 				.as_ref()
-				.map(|bytes| (&root_handle.structural_hash, bytes.as_ref())),
+				.map(|record| (&root_handle.structural_hash, record.as_ref())),
 		)?;
 		self.db
 			.roomid_roothandle
@@ -1020,7 +1162,7 @@ impl Service {
 			.get_or_create_shorteventid(event_id)
 			.await;
 		let data = root_handle_to_bytes(root_handle);
-		let lattice = self.db.lattice_cache.get(&root_handle.structural_hash);
+		let lattice = self.lattice_record_for_publish(&root_handle.structural_hash);
 		self.services.state_hamt.store.publish_roots_with_short(
 			room_id.as_bytes(),
 			nodes,
@@ -1030,7 +1172,7 @@ impl Service {
 			None,
 			lattice
 				.as_ref()
-				.map(|bytes| (&root_handle.structural_hash, bytes.as_ref())),
+				.map(|record| (&root_handle.structural_hash, record.as_ref())),
 		)?;
 		self.db
 			.shorteventid_roothandle
@@ -1053,7 +1195,7 @@ impl Service {
 			.get_or_create_shorteventid(event_id)
 			.await;
 		let data = root_handle_to_bytes(root_handle);
-		let lattice = self.db.lattice_cache.get(&root_handle.structural_hash);
+		let lattice = self.lattice_record_for_publish(&root_handle.structural_hash);
 		self.services.state_hamt.store.publish_roots_with_short(
 			room_id.as_bytes(),
 			nodes,
@@ -1063,7 +1205,7 @@ impl Service {
 			Some(&data),
 			lattice
 				.as_ref()
-				.map(|bytes| (&root_handle.structural_hash, bytes.as_ref())),
+				.map(|record| (&root_handle.structural_hash, record.as_ref())),
 		)?;
 		let mut batch = Batch::new();
 		self.db
