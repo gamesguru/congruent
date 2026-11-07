@@ -958,9 +958,11 @@ impl Service {
 		let mut links: Vec<([u8; 32], LatticeChain)> = Vec::new();
 		let mut current = *structural_hash;
 		let mut target_record = None;
-		let (checkpoint_hash, checkpoint) = loop {
+		// `stored_checkpoint` distinguishes stopping at a real checkpoint record
+		// from stopping at an already-cached intermediate root.
+		let (checkpoint_hash, checkpoint, stored_checkpoint) = loop {
 			if let Some(entry) = self.db.lattice_cache.get(&current) {
-				break (current, rezzy::incremental::LtHash::from_bytes(&entry.lattice)?);
+				break (current, rezzy::incremental::LtHash::from_bytes(&entry.lattice)?, false);
 			}
 
 			let raw = self.read_lattice_record(&current).await?;
@@ -980,7 +982,7 @@ impl Service {
 							Arc::<[u8]>::from(&*record),
 						),
 					);
-					break (current, lattice);
+					break (current, lattice, true);
 				},
 				| LatticeRecord::Chain(chain) => {
 					if links.len() >= usize::try_from(CHECKPOINT_INTERVAL).ok()? {
@@ -996,12 +998,25 @@ impl Service {
 		// Replay forward, caching every intermediate lattice. A later read of
 		// any root on this chain then hits the cache instead of walking the
 		// whole prefix again.
+		let declared_base = links.last().map(|(_, link)| link.base);
+		if stored_checkpoint {
+			if let Some(base) = declared_base {
+				if base != checkpoint_hash {
+					warn!(
+						target: "rooms",
+						"state lattice chain names a different checkpoint; discarding it"
+					);
+					return None;
+				}
+			}
+		}
+
 		let mut lattice = checkpoint;
 		for (hash, link) in links.iter().rev() {
-			if link.base != checkpoint_hash {
+			if Some(link.base) != declared_base {
 				warn!(
 					target: "rooms",
-					"state lattice chain names a different checkpoint; discarding it"
+					"state lattice chain links disagree on their checkpoint; discarding it"
 				);
 				return None;
 			}

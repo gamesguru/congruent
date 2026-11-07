@@ -616,6 +616,87 @@ async fn test_lattice_chain_compacts_and_replays_at_five_hundred_hops() {
 			"replayed lattice must match the root's state-group id"
 		);
 	}
+
+	// Evict only the tip: the replay stops at a cached intermediate root
+	// instead of walking all the way back to the checkpoint.
+	services
+		.rooms
+		.state
+		.db
+		.lattice_cache
+		.invalidate(&roots[499].0.structural_hash);
+	services.rooms.state.db.lattice_cache.run_pending_tasks();
+	let (root, expected) = &roots[499];
+	let replayed = services
+		.rooms
+		.state
+		.get_root_lattice(root)
+		.await
+		.expect("replay from a cached intermediate root");
+	assert_eq!(replayed, *expected);
+}
+
+/// A caller that supplies deltas which do not reproduce the lattice gets a
+/// self-contained checkpoint instead of a chain that describes a different
+/// state.
+#[conduwuit_macros::async_test]
+async fn test_lattice_chain_falls_back_on_mismatched_deltas() {
+	use conduwuit_mtxdb::lattice::{
+		LatticeDelta, LatticeRecord, RECORD_CHECKPOINT, decode_record,
+	};
+	use rezzy::{hamt::RootHandle, incremental::LtHash};
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let mut base_lattice = LtHash::default();
+	base_lattice.insert("m.room.create", "", "$create");
+	let base = RootHandle::from_lthash([1; 32], &base_lattice);
+	services
+		.rooms
+		.state
+		.persist_root_lattice(&base, &base_lattice, None, &[]);
+	let base_record = services
+		.rooms
+		.state
+		.lattice_record_for_publish(&base.structural_hash)
+		.expect("base record");
+	services
+		.rooms
+		.state_hamt
+		.store
+		.put_root_lattice(&base.structural_hash, &base_record)
+		.expect("publish base record");
+	services
+		.rooms
+		.state
+		.finish_lattice_publish(&base.structural_hash);
+
+	let mut lattice = base_lattice;
+	lattice.insert("m.room.member", "@a:test.conduwuit.local", "$a");
+	let root = RootHandle::from_lthash([2; 32], &lattice);
+	let wrong_delta = LatticeDelta::Insert {
+		event_type: "m.room.member".to_owned(),
+		state_key: "@b:test.conduwuit.local".to_owned(),
+		event_id: "$b".to_owned(),
+	};
+	services
+		.rooms
+		.state
+		.persist_root_lattice(&root, &lattice, Some(&base), &[wrong_delta]);
+	let record = services
+		.rooms
+		.state
+		.lattice_record_for_publish(&root.structural_hash)
+		.expect("root record");
+
+	assert_eq!(
+		record.first(),
+		Some(&RECORD_CHECKPOINT),
+		"mismatched deltas must not produce a chain"
+	);
+	assert!(
+		matches!(decode_record(&record), Some(LatticeRecord::Checkpoint(_))),
+		"the fallback record must decode as a checkpoint"
+	);
 }
 
 /// A bulk state update must copy only the changed spines, not re-emit the tree.
