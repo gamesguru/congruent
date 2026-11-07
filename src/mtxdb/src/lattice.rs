@@ -10,11 +10,9 @@
 //! records are the raw 2 KiB lattice written before tagging; decoding accepts
 //! both so an upgrade does not need a migration.
 //!
-//! The codec lives at the integration boundary because congruent pins mtxdb to
-//! a released revision. mtxdb exposes [`CHECKPOINT_INTERVAL`]'s shared value as
-//! `STATE_LATTICE_KEYFRAME_HOPS`; when the dependency is next bumped, this
-//! module should move into the mtxdb Matrix layer so the importer and live
-//! server share one implementation.
+//! The codec lives at the integration boundary; the interval itself comes from
+//! mtxdb's `STATE_LATTICE_KEYFRAME_HOPS` so the live server, the importer, and
+//! the measurement harness all agree on the same checkpoint cadence.
 
 use std::sync::Arc;
 
@@ -26,8 +24,9 @@ pub const LATTICE_BYTES: usize = 2048;
 /// Number of chain hops between full-lattice checkpoints.
 ///
 /// A checkpoint is written when a chain would otherwise reach this many hops,
-/// so a reader replays at most `CHECKPOINT_INTERVAL - 1` deltas.
-pub const CHECKPOINT_INTERVAL: u32 = 500;
+/// so a reader replays at most `CHECKPOINT_INTERVAL - 1` deltas. mtxdb owns the
+/// shared value so the storage layer and the server cannot drift apart.
+pub const CHECKPOINT_INTERVAL: u32 = mtxdb::STATE_LATTICE_KEYFRAME_HOPS as u32;
 
 /// Tag byte for a full lattice record.
 pub const RECORD_CHECKPOINT: u8 = 0x01;
