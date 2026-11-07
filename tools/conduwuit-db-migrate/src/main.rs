@@ -148,6 +148,46 @@ fn json_line(writer: &mut impl Write, line: &str) -> io::Result<()> {
 	writer.write_all(b"\n")
 }
 
+/// RocksDB opened as a secondary instance, removing its scratch directory on
+/// drop.
+///
+/// The read-only open replays WALs through a recovery path that dereferences a
+/// null context on some legacy stores and crashes. A secondary instance reads
+/// the same files without entering that path.
+struct SecondaryDb {
+	db: DB,
+	dir: PathBuf,
+}
+
+impl SecondaryDb {
+	fn open(
+		options: &Options,
+		rocks_path: &Path,
+		names: &[String],
+	) -> Result<Self, Box<dyn std::error::Error>> {
+		let dir = std::env::temp_dir().join(format!(
+			"conduwuit-db-migrate-secondary-{}",
+			std::process::id()
+		));
+		if dir.exists() {
+			std::fs::remove_dir_all(&dir)?;
+		}
+		std::fs::create_dir_all(&dir)?;
+		let db = DB::open_cf_as_secondary(options, rocks_path, dir.as_path(), names)?;
+		Ok(Self { db, dir })
+	}
+}
+
+impl std::ops::Deref for SecondaryDb {
+	type Target = DB;
+
+	fn deref(&self) -> &Self::Target { &self.db }
+}
+
+impl Drop for SecondaryDb {
+	fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.dir); }
+}
+
 fn export(
 	rocks_path: &Path,
 	bundle_path: &Path,
@@ -199,7 +239,7 @@ fn export(
 		}
 	}
 
-	let db = DB::open_cf_for_read_only(&options, rocks_path, &selected, false)?;
+	let db = SecondaryDb::open(&options, rocks_path, &selected)?;
 	let output = OpenOptions::new()
 		.write(true)
 		.create_new(true)
@@ -340,19 +380,7 @@ fn print_distribution(label: &str, mut values: Vec<u64>) {
 fn stats(rocks_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 	let options = Options::default();
 	let all = DB::list_cf(&options, rocks_path)?;
-	let all_names: Vec<&str> = all.iter().map(String::as_str).collect();
-	// Read-only open replays WALs and crashes on some legacy stores (the
-	// upstream read-only recovery path dereferences a null context). A
-	// secondary instance reads the same files without that path.
-	let secondary = std::env::temp_dir().join(format!(
-		"conduwuit-db-stats-secondary-{}",
-		std::process::id()
-	));
-	if secondary.exists() {
-		std::fs::remove_dir_all(&secondary)?;
-	}
-	std::fs::create_dir_all(&secondary)?;
-	let db = DB::open_cf_as_secondary(&options, rocks_path, &secondary, &all_names)?;
+	let db = SecondaryDb::open(&options, rocks_path, &all)?;
 
 	let current = count_keys(&db, "roomuserid_joined", false)?;
 	let once = count_keys(&db, "roomuseroncejoinedids", true)?;
@@ -421,9 +449,6 @@ fn stats(rocks_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 			ever.saturating_sub(*joined),
 		);
 	}
-
-	drop(db);
-	std::fs::remove_dir_all(&secondary).ok();
 
 	Ok(())
 }

@@ -510,7 +510,8 @@ fn write_keys(
 }
 
 /// Exports legacy room events and cached remote signing keys as importer-ready
-/// files. The RocksDB is opened read-only; the output directory must not exist.
+/// files. The RocksDB is opened as a secondary instance and never written; the
+/// output directory must not exist.
 pub fn export(
 	rocks_path: &Path,
 	out_dir: &Path,
@@ -525,7 +526,7 @@ pub fn export(
 	options.create_if_missing(false);
 	options.set_track_and_verify_wals_in_manifest(true);
 	let names = DB::list_cf(&options, rocks_path)?;
-	let db = DB::open_cf_for_read_only(&options, rocks_path, &names, false)?;
+	let db = crate::SecondaryDb::open(&options, rocks_path, &names)?;
 	let inferred_server = if server_override.is_none() {
 		Some(infer_server_name(&db)?)
 	} else {

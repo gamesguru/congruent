@@ -29,8 +29,10 @@ before export.
 Explicit map names can select a subset, but mtxdb-owned and skipped families
 are refused. The importer refuses to overwrite an existing redb destination
 and publishes the completed temporary database by rename. Stop the source
-homeserver before exporting so RocksDB is a stable read-only snapshot; the tool
-opens it read-only and never writes to it.
+homeserver before exporting so RocksDB is a stable snapshot; the tool opens it
+through a secondary RocksDB instance and never writes to it. `stats` reports
+the room membership, once-joined and server-list row counts of a source store
+without exporting it.
 
 To reclaim space in an existing metadata database after the server has cleared
 or dropped legacy maps, stop the server and run:
