@@ -114,7 +114,6 @@ pub async fn resolve_state(
 	// for deciding which leaves actually changed.
 	let previous_statemap = &forkstates[0];
 
-	let mut lattice = rezzy::incremental::LtHash::default();
 	// Only the changed leaves become mutations, so this stays proportional to
 	// the state delta rather than the state size. The same changes become the
 	// lattice delta used to avoid writing a full checkpoint on every event.
@@ -122,7 +121,10 @@ pub async fn resolve_state(
 	let mut deltas: Vec<LatticeDelta> = Vec::new();
 
 	for ((ty, sk), id) in &state {
-		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
+		let previous = previous_statemap.get(&(ty.clone(), sk.clone()));
+		if previous == Some(id) {
+			continue;
+		}
 
 		let shortstatekey = self
 			.services
@@ -131,22 +133,19 @@ pub async fn resolve_state(
 			.await;
 		let shorteventid = self.services.short.get_or_create_shorteventid(id).await;
 
-		let previous = previous_statemap.get(&(ty.clone(), sk.clone()));
-		if previous != Some(id) {
-			if let Some(previous_id) = previous {
-				deltas.push(LatticeDelta::Remove {
-					event_type: ty.to_string(),
-					state_key: sk.to_string(),
-					event_id: previous_id.to_string(),
-				});
-			}
-			deltas.push(LatticeDelta::Insert {
+		if let Some(previous_id) = previous {
+			deltas.push(LatticeDelta::Remove {
 				event_type: ty.to_string(),
 				state_key: sk.to_string(),
-				event_id: id.to_string(),
+				event_id: previous_id.to_string(),
 			});
-			mutations.push((shortstatekey, Some(shorteventid)));
 		}
+		deltas.push(LatticeDelta::Insert {
+			event_type: ty.to_string(),
+			state_key: sk.to_string(),
+			event_id: id.to_string(),
+		});
+		mutations.push((shortstatekey, Some(shorteventid)));
 	}
 
 	// Resolution picks a winner per `(type, state_key)` from the union of the
@@ -173,13 +172,30 @@ pub async fn resolve_state(
 		room_id,
 	);
 
-	// Warm the lattice cache so the mutation can chain from the base root's
-	// record instead of falling back to a full checkpoint.
-	let _ = self
+	// Start from the current root's lattice and apply only the changed entries.
+	// Re-hashing the full resolved state would make every state event O(S) even
+	// though the tree mutation itself is only O(D log32 S).
+	let base_lattice = self
 		.services
 		.state
 		.get_root_lattice(&current_root_handle)
 		.await;
+	let lattice = match base_lattice {
+		| Some(mut lattice) => {
+			for delta in &deltas {
+				delta.apply(&mut lattice);
+			}
+			lattice
+		},
+		| None => {
+			// No usable base lattice: rebuild from the resolved state.
+			let mut lattice = rezzy::incremental::LtHash::default();
+			for ((ty, sk), id) in &state {
+				lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
+			}
+			lattice
+		},
+	};
 
 	// Copy-on-write from the current root: only the changed spines are written.
 	// Materializing the whole tree here would rewrite every node on every

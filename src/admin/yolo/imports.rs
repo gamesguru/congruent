@@ -6,6 +6,19 @@ use slipstream::{
 
 use crate::admin_command;
 
+/// One parsed PDU plus its imported soft-fail/outlier/rejection markers.
+type ParsedPdu = (
+	OwnedEventId,
+	std::collections::BTreeMap<String, slipstream::CanonicalJsonValue>,
+	conduwuit::Pdu,
+	bool,
+	bool,
+	bool,
+);
+
+/// Rows parsed per streaming batch. Import never holds the whole file in RAM.
+const IMPORT_CHUNK: usize = 5_000;
+
 #[admin_command]
 pub(super) async fn import_pdus(
 	&self,
@@ -97,62 +110,82 @@ pub(super) async fn import_pdus(
 	let room_version_ref = room_version.clone();
 
 	let room_id_ref = room_id.clone();
-	let parsed_pdus: Vec<_> = self
+	let total = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+	let total_parse = total.clone();
+	let (tx, rx) = smol::channel::bounded::<Vec<ParsedPdu>>(8);
+	let parse_task = self
 		.services
 		.server
 		.runtime()
 		.spawn_blocking(move || {
 			use std::io::BufRead;
-			let file = std::fs::File::open(&path).expect("Failed to open file for parsing");
+			let file = match std::fs::File::open(&path) {
+				| Ok(file) => file,
+				| Err(e) => {
+					warn!("Failed to open file for parsing: {e}");
+					return;
+				},
+			};
 			let reader = std::io::BufReader::new(file);
+			let mut chunk = Vec::with_capacity(IMPORT_CHUNK);
+			let mut count = 0_usize;
 
-			reader
-				.lines()
-				.map_while(Result::ok)
-				.filter(|line| !line.trim().is_empty())
-				.filter_map(|line| {
-					let value: CanonicalJsonObject = match slipstream::codec::from_str(&line) {
+			for line in reader.lines().map_while(Result::ok) {
+				if line.trim().is_empty() {
+					continue;
+				}
+
+				let value: CanonicalJsonObject = match slipstream::codec::from_str(&line) {
+					| Ok(v) => v,
+					| Err(e) => {
+						warn!("Failed to parse JSON: {e}");
+						continue;
+					},
+				};
+
+				let is_outlier = value
+					.get("__outlier")
+					.and_then(slipstream::CanonicalJsonValue::as_bool)
+					.unwrap_or(false);
+				let is_soft_failed = value
+					.get("__soft_failed")
+					.and_then(slipstream::CanonicalJsonValue::as_bool)
+					.unwrap_or(false);
+				let is_rejected = value
+					.get("__rejected")
+					.and_then(slipstream::CanonicalJsonValue::as_bool)
+					.unwrap_or(false);
+
+				let (eid, value, pdu_event) =
+					match conduwuit::utils::pdu_parser::parse_and_clean_pdu(
+						value,
+						room_id_ref.as_ref(),
+						&room_version_ref,
+					) {
 						| Ok(v) => v,
 						| Err(e) => {
-							warn!("Failed to parse JSON: {e}");
-							return None;
+							warn!("Failed to parse_and_clean_pdu: {e}");
+							continue;
 						},
 					};
 
-					let is_outlier = value
-						.get("__outlier")
-						.and_then(slipstream::CanonicalJsonValue::as_bool)
-						.unwrap_or(false);
-					let is_soft_failed = value
-						.get("__soft_failed")
-						.and_then(slipstream::CanonicalJsonValue::as_bool)
-						.unwrap_or(false);
-					let is_rejected = value
-						.get("__rejected")
-						.and_then(slipstream::CanonicalJsonValue::as_bool)
-						.unwrap_or(false);
+				chunk.push((eid, value, pdu_event, is_outlier, is_soft_failed, is_rejected));
+				count = count.saturating_add(1);
 
-					let (eid, value, pdu_event) =
-						match conduwuit::utils::pdu_parser::parse_and_clean_pdu(
-							value,
-							room_id_ref.as_ref(),
-							&room_version_ref,
-						) {
-							| Ok(v) => v,
-							| Err(e) => {
-								warn!("Failed to parse_and_clean_pdu: {e}");
-								return None;
-							},
-						};
+				if chunk.len() >= IMPORT_CHUNK {
+					let ready =
+						std::mem::replace(&mut chunk, Vec::with_capacity(IMPORT_CHUNK));
+					if tx.send_blocking(ready).is_err() {
+						return;
+					}
+				}
+			}
 
-					Some((eid, value, pdu_event, is_outlier, is_soft_failed, is_rejected))
-				})
-				.collect()
-		})
-		.await
-		.unwrap();
-
-	let total = parsed_pdus.len();
+			if !chunk.is_empty() {
+				let _ = tx.send_blocking(chunk);
+			}
+			total_parse.store(count, std::sync::atomic::Ordering::Relaxed);
+		});
 
 	// Cork database writes to batch and sync efficiently on drop
 	let _cork = self.services.db.cork();
@@ -166,26 +199,16 @@ pub(super) async fn import_pdus(
 			.ok(),
 	);
 
-	let chunks: Vec<Vec<_>> = parsed_pdus
-		.chunks(5000)
-		.map(
-			<[(
-				OwnedEventId,
-				std::collections::BTreeMap<String, slipstream::CanonicalJsonValue>,
-				conduwuit::Pdu,
-				bool,
-				bool,
-				bool,
-			)]>::to_vec,
-		)
-		.collect();
-
 	let inserted = std::sync::atomic::AtomicUsize::new(0);
 	let rejected = std::sync::atomic::AtomicUsize::new(0);
 	let failed = std::sync::atomic::AtomicUsize::new(0);
 
-	futures::stream::iter(chunks)
-		.for_each_concurrent(16, |chunk| async {
+	// Consume the parser's bounded batches as they arrive, keeping at most a
+	// handful of chunks resident instead of the entire JSONL file.
+	futures::stream::unfold(rx, |rx| async move {
+		rx.recv().await.ok().map(|chunk| (chunk, rx))
+	})
+	.for_each_concurrent(16, |chunk| async {
 			let mut chunk_inserted: usize = 0;
 			let mut chunk_rejected: usize = 0;
 			let mut chunk_failed: usize = 0;
@@ -373,6 +396,11 @@ pub(super) async fn import_pdus(
 			failed.fetch_add(chunk_failed, std::sync::atomic::Ordering::Relaxed);
 		})
 		.await;
+
+	if let Err(error) = parse_task.await {
+		warn!("PDU import parser task failed: {error}");
+	}
+	let total = total.load(std::sync::atomic::Ordering::Relaxed);
 
 	let inserted = inserted.load(std::sync::atomic::Ordering::Relaxed);
 	let rejected = rejected.load(std::sync::atomic::Ordering::Relaxed);

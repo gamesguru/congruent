@@ -5,7 +5,7 @@ use conduwuit::{
 	matrix::{Event, StateKey},
 	utils::stream::{IterStream, ReadyExt, TryIgnore},
 };
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, pin_mut};
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, pin_mut};
 use slipstream::{
 	EventId, OwnedEventId, RoomId, UserId,
 	events::{
@@ -286,17 +286,23 @@ pub fn state_full_ids_hamt<'a>(
 	room_id: &'a RoomId,
 	root_handle: &'a rezzy::hamt::RootHandle,
 ) -> futures::stream::BoxStream<'a, Result<(ShortStateKey, OwnedEventId)>> {
-	self.state_full_shortids_hamt(room_id, root_handle.clone())
-		.map(move |result| async move {
-			let (ssk, seid): (ShortStateKey, ShortEventId) = result?;
-			let event_id = self
-				.services
-				.short
-				.get_eventid_from_short::<OwnedEventId>(seid)
-				.await?;
-			Ok::<_, conduwuit::Error>((ssk, event_id))
-		})
-		.buffer_unordered(self.services.server.concurrency_scaled(32))
+	let shortids = self.state_full_shortids_hamt(room_id, root_handle.clone());
+	let load = async move {
+		let pairs: Vec<(ShortStateKey, ShortEventId)> = shortids.try_collect().await?;
+		let (shortstatekeys, shorteventids): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+		let eventids = self
+			.services
+			.short
+			.multi_get_eventid_from_short(shorteventids.into_iter().stream())
+			.try_collect::<Vec<OwnedEventId>>()
+			.await?;
+
+		Ok::<_, conduwuit::Error>(shortstatekeys.into_iter().zip(eventids).collect::<Vec<_>>())
+	};
+
+	load.map_ok(Vec::into_iter)
+		.map_ok(IterStream::try_stream)
+		.try_flatten_stream()
 		.boxed()
 }
 
@@ -430,13 +436,30 @@ pub fn state_added_hamt(
 	room_id: &RoomId,
 	root_handles: (&rezzy::hamt::RootHandle, &rezzy::hamt::RootHandle),
 ) -> Result<Vec<(ShortStateKey, ShortEventId)>> {
-	let full_state_a = self.load_full_state_hamt(room_id, root_handles.0)?;
-	let full_state_b = self.load_full_state_hamt(room_id, root_handles.1)?;
+	let structural_key = crate::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		room_id,
+	);
+	let store = &self.services.state_hamt.store;
+	let root_a =
+		store.get_node(room_id.as_bytes(), &structural_key, &root_handles.0.structural_hash)?;
+	let root_b =
+		store.get_node(room_id.as_bytes(), &structural_key, &root_handles.1.structural_hash)?;
+	let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
+	let (added, _removed) = rezzy::hamt::delta::diff_hamt_nodes::<
+		ShortStateKey,
+		ShortEventId,
+		_,
+		conduwuit::Error,
+	>(&root_a, &root_b, &mut resolver)
+	.map_err(|e| match e {
+		| rezzy::hamt::delta::HamtTraversalError::Resolve(inner) => inner,
+		| rezzy::hamt::delta::HamtTraversalError::MaxDepthExceeded { depth } => {
+			err!(error!("HAMT diff exceeded max depth at {depth}"))
+		},
+	})?;
 
-	Ok(full_state_b
-		.into_iter()
-		.filter(|(k, v)| full_state_a.get(k) != Some(v))
-		.collect())
+	Ok(added)
 }
 
 #[implement(super::Service)]

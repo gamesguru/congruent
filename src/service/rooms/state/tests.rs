@@ -966,6 +966,116 @@ async fn test_bulk_state_update_insert_remove_and_mixed() {
 	}
 }
 
+/// The incremental-sync state diff must use the HAMT structural diff, not
+/// materialize both full states and filter. This pins the result to the same
+/// set the full-state comparison would produce.
+#[conduwuit_macros::async_test]
+async fn test_state_added_hamt_matches_full_state_difference() {
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
+	let mutex = services.rooms.state.mutex.lock(&room_id).await;
+	let old_root = seed_membership_state(&services, &room_id, &mutex, 64).await;
+
+	let old_state = services
+		.rooms
+		.state_accessor
+		.load_full_state_hamt(&room_id, &old_root)
+		.expect("failed to load old state");
+
+	// Replace one membership and add another. Both are additions relative to
+	// the old root; neither touches the rest of the tree.
+	let replaced = create_dummy_pdu(
+		&room_id,
+		&slipstream::OwnedEventId::parse("$replaced-member:test.conduwuit.local").unwrap(),
+		"m.room.member",
+		"@user7:test.conduwuit.local",
+	);
+	persist_dummy_pdu(&services, &room_id, &replaced).await;
+	services
+		.rooms
+		.state
+		.set_event_state(&room_id, &replaced, &mutex)
+		.await
+		.expect("replace state event failed");
+
+	let added = create_dummy_pdu(
+		&room_id,
+		&slipstream::OwnedEventId::parse("$added-member:test.conduwuit.local").unwrap(),
+		"m.room.member",
+		"@added:test.conduwuit.local",
+	);
+	persist_dummy_pdu(&services, &room_id, &added).await;
+	let new_root = services
+		.rooms
+		.state
+		.set_event_state(&room_id, &added, &mutex)
+		.await
+		.expect("add state event failed");
+
+	let new_state = services
+		.rooms
+		.state_accessor
+		.load_full_state_hamt(&room_id, &new_root)
+		.expect("failed to load new state");
+
+	let mut expected: Vec<_> = new_state
+		.iter()
+		.filter(|(key, value)| old_state.get(key) != Some(value))
+		.map(|(key, value)| (*key, *value))
+		.collect();
+	expected.sort_unstable();
+
+	let mut actual = services
+		.rooms
+		.state_accessor
+		.state_added_hamt(&room_id, (&old_root, &new_root))
+		.expect("state_added_hamt failed");
+	actual.sort_unstable();
+
+	assert_eq!(actual, expected, "structural diff must match the full-state difference");
+}
+
+/// Full-state ID resolution must resolve short event IDs in one batched call
+/// and preserve the same key/id pairing as per-entry resolution.
+#[conduwuit_macros::async_test]
+async fn test_state_full_ids_hamt_batches_short_id_resolution() {
+	use futures::TryStreamExt;
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
+	let mutex = services.rooms.state.mutex.lock(&room_id).await;
+	let root = seed_membership_state(&services, &room_id, &mutex, 16).await;
+
+	let short_state = services
+		.rooms
+		.state_accessor
+		.load_full_state_hamt(&room_id, &root)
+		.expect("failed to load short state");
+
+	let mut expected = Vec::with_capacity(short_state.len());
+	for (shortstatekey, shorteventid) in &short_state {
+		let event_id = services
+			.rooms
+			.short
+			.get_eventid_from_short::<slipstream::OwnedEventId>(*shorteventid)
+			.await
+			.expect("short event ID must resolve");
+		expected.push((*shortstatekey, event_id));
+	}
+	expected.sort_unstable_by_key(|(key, _)| *key);
+
+	let mut actual: Vec<_> = services
+		.rooms
+		.state_accessor
+		.state_full_ids_hamt(&room_id, &root)
+		.try_collect()
+		.await
+		.expect("state_full_ids_hamt failed");
+	actual.sort_unstable_by_key(|(key, _)| *key);
+
+	assert_eq!(actual, expected, "batched resolution must preserve every key/id pair");
+}
+
 /// Nodes are stored in mtxdb under their canonical encoding, and reads reject
 /// bytes selected through a colliding 16-byte node ID when the full hash does
 /// not match.

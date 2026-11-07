@@ -346,6 +346,41 @@ impl super::Service {
 }
 
 impl super::Service {
+	/// Applies a set of mutations to an existing root and persists only the
+	/// changed spines.
+	///
+	/// This is the incremental counterpart to [`Self::store_hamt_root`]: a
+	/// single-parent state event changes exactly one entry, so rebuilding the
+	/// whole tree only to hash and re-emit every unchanged node is wasted work.
+	/// The supplied `lattice` is the already-computed full lattice for the
+	/// post-mutation state; it is recorded as a checkpoint, matching the
+	/// rebuild path's existing lattice records.
+	fn store_hamt_mutation(
+		&self,
+		room_id: &RoomId,
+		prev: &rezzy::hamt::RootHandle,
+		mutations: Vec<(ShortStateKey, Option<ShortEventId>)>,
+		lattice: &rezzy::incremental::LtHash,
+	) -> Result<rezzy::hamt::RootHandle> {
+		let structural_key =
+			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
+		let (root_handle, deferred_nodes) = self.services.state.persist_state_hamt_mutations(
+			room_id,
+			&structural_key,
+			prev,
+			mutations,
+			lattice,
+			&[],
+		)?;
+
+		self.services
+			.state_hamt
+			.store
+			.publish_nodes(room_id.as_bytes(), &deferred_nodes)?;
+
+		Ok(root_handle)
+	}
+
 	/// Builds and persists a HAMT root for `entries`, using the supplied
 	/// pre-computed state lattice.
 	///
@@ -696,29 +731,69 @@ impl super::Service {
 							n_new_deduped = n_new_deduped.saturating_add(1);
 							existing_root.clone()
 						} else {
-							// Build the (shortstatekey, shorteventid) entries for
-							// storage from the resolved state and pre-cached short IDs.
-							let tc0 = Instant::now();
-							let mut entries = Vec::with_capacity(state.len());
-							for (key, ev_id_str) in &state {
+							// A state event with at most one parent changes exactly
+							// one logical entry. Apply that entry to the parent's
+							// already-persisted root and write only its changed
+							// spines, instead of rebuilding and re-hashing the whole
+							// state tree.
+							let incremental = if state_key.is_some() && prev.len() <= 1 {
+								// A missing parent root means this room has a gap;
+								// only the full resolved state can be trusted.
+								let parent = match prev.first() {
+									| Some(parent) => event_root.get(parent).cloned(),
+									| None => Some(empty_root.clone()),
+								};
+								let (ty, sk) =
+									state_key.as_ref().expect("state_key checked above");
 								let ssk = ssk_cache
-									.get(&key.0)
-									.and_then(|keys| keys.get(&key.1))
-									.copied()
-									.unwrap_or(0);
-								let sei = sei_str_cache.get(ev_id_str).copied().unwrap_or(0);
-								entries.push((ssk, sei));
-							}
-							t_compress = t_compress.saturating_add(tc0.elapsed());
+									.get(&ty.as_str().into())
+									.and_then(|keys| keys.get(sk))
+									.copied();
+								let sei = sei_cache.get(eid).copied();
+								match (parent, ssk, sei) {
+									| (Some(parent), Some(ssk), Some(sei)) => self
+										.store_hamt_mutation(
+											room_id,
+											&parent,
+											vec![(ssk, Some(sei))],
+											&hash,
+										)
+										.ok(),
+									| _ => None,
+								}
+							} else {
+								None
+							};
 
-							let ts0 = Instant::now();
-							// `hash` is rezzy's incrementally-maintained lattice
-							// for this exact state, so reuse it directly as the
-							// root's state-group lattice.
-							let root = self.store_hamt_root(room_id, entries, &hash)?;
+							let root = if let Some(root) = incremental {
+								root
+							} else {
+								// Fork resolution or a missing short-ID cache entry:
+								// fall back to building the complete tree.
+								let tc0 = Instant::now();
+								let mut entries = Vec::with_capacity(state.len());
+								for (key, ev_id_str) in &state {
+									let ssk = ssk_cache
+										.get(&key.0)
+										.and_then(|keys| keys.get(&key.1))
+										.copied()
+										.unwrap_or(0);
+									let sei = sei_str_cache.get(ev_id_str).copied().unwrap_or(0);
+									entries.push((ssk, sei));
+								}
+								t_compress = t_compress.saturating_add(tc0.elapsed());
+
+								let ts0 = Instant::now();
+								// `hash` is rezzy's incrementally-maintained lattice
+								// for this exact state, so reuse it directly as the
+								// root's state-group lattice.
+								let root = self.store_hamt_root(room_id, entries, &hash)?;
+								t_save = t_save.saturating_add(ts0.elapsed());
+								root
+							};
+
 							lthash_to_root.insert(*hash, root.clone());
 							groups_compressed = groups_compressed.saturating_add(1);
-							t_save = t_save.saturating_add(ts0.elapsed());
 							root
 						}
 					},
