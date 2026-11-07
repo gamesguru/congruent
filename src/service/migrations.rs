@@ -2389,6 +2389,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 
 	let mut room_stream = services.rooms.metadata.iter_ids();
 	while let Some(room_id) = room_stream.next().await {
+		let mut rebuilt = false;
 		if let Err(e) = services.rooms.timeline.latest_pdu_in_room(&room_id).await {
 			if e.is_not_found() {
 				debug_warn!(
@@ -2402,15 +2403,35 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 				);
 				services.rooms.state.mark_state_rebuild_pending(&room_id);
 			}
-			continue;
-		}
-
-		if let Err(e) = services.rooms.timeline.rebuild_state(&room_id).await {
+		} else if let Err(e) = services.rooms.timeline.rebuild_state(&room_id).await {
 			error!(
 				"Failed to rebuild state HAMTs for room {room_id} in v23 migration: {e}; run \
 				 `yolo rebuild-state {room_id}` to retry"
 			);
 			services.rooms.state.mark_state_rebuild_pending(&room_id);
+		} else {
+			rebuilt = true;
+		}
+
+		// Reconcile against whatever state root is current, including rooms
+		// whose rebuild failed. `reconcile_membership` fails closed when the
+		// state snapshot is incomplete, so a failed room keeps a consistent
+		// cache instead of being silently left with no members; the retry
+		// path (`yolo rebuild-state`) reconciles again after it succeeds.
+		// Skip when there is no root at all: an imported room that failed to
+		// rebuild has nothing to reconcile against, and running anyway would
+		// evict the imported per-user invite state.
+		if services.rooms.state.get_room_state_hamt(&room_id).await.is_ok() {
+			let _state_lock = services.rooms.state.mutex.lock(&room_id).await;
+			services.rooms.state_cache.reconcile_membership(&room_id).await;
+		}
+
+		if !rebuilt {
+			debug_warn!(
+				"Room {room_id} was not rebuilt in v23; membership was reconciled only if a \
+				 state root was available and must be rebuilt after `yolo rebuild-state \
+				 {room_id}`"
+			);
 		}
 	}
 

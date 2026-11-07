@@ -55,15 +55,29 @@ const MTXDB_OWNED_MAPS: &[&str] = &[
 // instead of the `tokenids` inverted index. `roomsynctoken_shortstatehash` is a
 // sync-token cache keyed by legacy short IDs; v24 clears it, so copying it
 // would only import stale entries.
+//
+// The room caches below are derived after v23 rebuilds state: membership,
+// counts and server lists come from the state HAMT via
+// `reconcile_membership`, while the DAG indexes and once-joined markers are
+// derived from the event bodies during the same rebuild pass.
 const SKIPPED_MAPS: &[&str] = &[
 	"eventid_shorteventid",
+	"referencedevents",
+	"roomid_invitedcount",
+	"roomid_joinedcount",
 	"roomid_shortstatehash",
 	"roomsynctoken_shortstatehash",
+	"roomserverids",
+	"roomuserid_joined",
+	"roomuseroncejoinedids",
+	"serverroomids",
 	"shorteventid_eventid",
 	"shortstatehash_statediff",
 	"shortstatekey_statekey",
 	"statekey_shortstatekey",
+	"tofrom_relation",
 	"tokenids",
+	"userroomid_joined",
 ];
 
 fn skipped(name: &str) -> bool { MTXDB_OWNED_MAPS.contains(&name) || SKIPPED_MAPS.contains(&name) }
@@ -478,5 +492,18 @@ mod tests {
 		assert!(SKIPPED_MAPS.contains(&"eventid_shorteventid"));
 		assert!(SKIPPED_MAPS.contains(&"shortstatekey_statekey"));
 		assert!(SKIPPED_MAPS.contains(&"tokenids"));
+	}
+
+	#[test]
+	fn derived_room_caches_are_skipped() {
+		assert!(SKIPPED_MAPS.contains(&"roomid_joinedcount"));
+		assert!(SKIPPED_MAPS.contains(&"roomid_invitedcount"));
+		assert!(SKIPPED_MAPS.contains(&"roomserverids"));
+		assert!(SKIPPED_MAPS.contains(&"serverroomids"));
+		assert!(SKIPPED_MAPS.contains(&"roomuserid_joined"));
+		assert!(SKIPPED_MAPS.contains(&"userroomid_joined"));
+		assert!(SKIPPED_MAPS.contains(&"roomuseroncejoinedids"));
+		assert!(SKIPPED_MAPS.contains(&"tofrom_relation"));
+		assert!(SKIPPED_MAPS.contains(&"referencedevents"));
 	}
 }

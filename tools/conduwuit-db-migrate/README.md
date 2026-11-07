@@ -20,7 +20,12 @@ legacy `shortstatehash_statediff` history or `roomid_shortstatehash` room
 selection. The `tokenids` search index is also skipped; search scans event
 bodies directly and v28 drops the map. Copying those maps would only inflate
 metadata.redb. Root-handle and HAMT-node maps remain excluded because v23
-rewrites them. The `list` command shows the classification before export.
+rewrites them. The membership cache, join/invite counts, server lists,
+once-joined markers, relation index and referenced-event index are also
+excluded: v23 rebuilds state HAMTs from the imported timeline, then
+reconciles membership from that state and derives the DAG indexes from the
+event bodies in the same pass. The `list` command shows the classification
+before export.
 Explicit map names can select a subset, but mtxdb-owned and skipped families
 are refused. The importer refuses to overwrite an existing redb destination
 and publishes the completed temporary database by rename. Stop the source

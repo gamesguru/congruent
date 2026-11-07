@@ -13,7 +13,7 @@ use conduwuit_core::{
 use futures::StreamExt;
 use rezzy::bitmap::Bitmap;
 use slipstream::{
-	OwnedEventId, RoomId, RoomVersionId,
+	OwnedEventId, OwnedUserId, RoomId, RoomVersionId,
 	events::{StateEventType, TimelineEventType},
 };
 
@@ -166,6 +166,7 @@ impl super::Service {
 			.unwrap_or(RoomVersionId::V1);
 
 		for eid in sorted {
+			let count = entries.get(&eid).map(|entry| entry.0);
 			let db = self.db.clone();
 			let runtime = self.services.server.runtime().clone();
 			let lookup_id = eid.clone();
@@ -203,6 +204,40 @@ impl super::Service {
 						 version; using cached room version {room_version}"
 					);
 				}
+			}
+
+			// Derive the DAG-only caches in the same pass. These are pure
+			// functions of the event bodies, so imports can omit them.
+			if *pdu.kind() == TimelineEventType::RoomMember {
+				if let Some(Ok(user_id)) = pdu.state_key().map(OwnedUserId::parse) {
+					if pdu
+						.get_content::<
+							slipstream::events::room::member::RoomMemberEventContent,
+						>()
+						.is_ok_and(|content| {
+							content.membership
+								== slipstream::events::room::member::MembershipState::Join
+						})
+					{
+						self.services.state_cache.mark_as_once_joined(&user_id, room_id);
+					}
+				}
+			}
+
+			if let Some(count) = count {
+				if let Ok(content) = pdu.get_content::<super::ExtractRelatesToEventId>() {
+					if let Ok(related_count) =
+						self.get_pdu_count(&content.relates_to.event_id).await
+					{
+						self.services.pdu_metadata.add_relation(count, related_count);
+					}
+				}
+			}
+
+			if !prev.is_empty() {
+				self.services
+					.pdu_metadata
+					.mark_as_referenced(room_id, prev.iter().map(AsRef::as_ref));
 			}
 
 			events_meta.push((eid.clone(), prev, auth, state_key, depth));
