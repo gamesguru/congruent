@@ -26,7 +26,7 @@ pub const LATTICE_BYTES: usize = 2048;
 /// A checkpoint is written when a chain would otherwise reach this many hops,
 /// so a reader replays at most `CHECKPOINT_INTERVAL - 1` deltas. mtxdb owns the
 /// shared value so the storage layer and the server cannot drift apart.
-pub const CHECKPOINT_INTERVAL: u32 = mtxdb::STATE_LATTICE_KEYFRAME_HOPS as u32;
+pub const CHECKPOINT_INTERVAL: u32 = mtxdb::STATE_LATTICE_KEYFRAME_HOPS;
 
 /// Tag byte for a full lattice record.
 pub const RECORD_CHECKPOINT: u8 = 0x01;
