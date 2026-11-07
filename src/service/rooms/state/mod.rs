@@ -1,5 +1,5 @@
 use std::{
-	collections::{HashMap, VecDeque},
+	collections::{BTreeMap, HashMap},
 	fmt::Write,
 	iter::once,
 	sync::Arc,
@@ -175,37 +175,52 @@ const MAX_PENDING_LATTICE_RECORDS: usize = 8_192;
 /// [`MAX_PENDING_LATTICE_RECORDS`].
 #[derive(Default)]
 struct PendingLatticeRecords {
-	entries: HashMap<[u8; 32], Arc<[u8]>>,
-	/// Insertion order. Removals are left in place and skipped lazily so the
-	/// hot path stays O(1).
-	order: VecDeque<[u8; 32]>,
+	entries: HashMap<[u8; 32], (u64, Arc<[u8]>)>,
+	/// Monotonic insertion sequence to entry hash. Removing from both maps
+	/// keeps the order structure proportional to the live entries rather than
+	/// to every publication since startup.
+	order: BTreeMap<u64, [u8; 32]>,
+	next_sequence: u64,
 }
 
 impl PendingLatticeRecords {
 	fn insert(&mut self, structural_hash: [u8; 32], record: Arc<[u8]>) {
-		if self.entries.insert(structural_hash, record).is_none() {
-			self.order.push_back(structural_hash);
+		if let Some((_, slot)) = self.entries.get_mut(&structural_hash) {
+			*slot = record;
+			return;
 		}
+
+		let sequence = self.next_sequence;
+		self.next_sequence = self.next_sequence.saturating_add(1);
+		self.entries.insert(structural_hash, (sequence, record));
+		self.order.insert(sequence, structural_hash);
+
 		while self.entries.len() > MAX_PENDING_LATTICE_RECORDS {
-			let Some(oldest) = self.order.pop_front() else {
+			let Some((&oldest_sequence, &oldest)) = self.order.iter().next() else {
 				break;
 			};
-			if self.entries.remove(&oldest).is_some() {
-				warn!(
-					target: "rooms",
-					?oldest,
-					"dropping unpublished state lattice record; a persist path is not \
-					 publishing its root"
-				);
-			}
+			self.order.remove(&oldest_sequence);
+			self.entries.remove(&oldest);
+			warn!(
+				target: "rooms",
+				?oldest,
+				"dropping unpublished state lattice record; a persist path is not \
+				 publishing its root"
+			);
 		}
 	}
 
 	fn get(&self, structural_hash: &[u8; 32]) -> Option<Arc<[u8]>> {
-		self.entries.get(structural_hash).cloned()
+		self.entries
+			.get(structural_hash)
+			.map(|(_, record)| Arc::clone(record))
 	}
 
-	fn remove(&mut self, structural_hash: &[u8; 32]) { self.entries.remove(structural_hash); }
+	fn remove(&mut self, structural_hash: &[u8; 32]) {
+		if let Some((sequence, _)) = self.entries.remove(structural_hash) {
+			self.order.remove(&sequence);
+		}
+	}
 }
 
 const STATE_REBUILD_PENDING_PREFIX: &[u8] = b"state_rebuild_pending_v23:";
@@ -873,18 +888,19 @@ impl Service {
 		let base_record = decode_record(&entry.record)?;
 		let chain = extend_chain(Some(&base_record), base.structural_hash, deltas)?;
 
-		// A chain must name a checkpoint that is already in mtxdb. Accepting a
-		// base that exists only in the legacy redb mirror would create a chain
-		// that cannot survive redb's retirement.
-		let checkpoint_in_mtxdb = self
-			.services
-			.state_hamt
-			.store
-			.root_lattice(&chain.base)
-			.ok()
-			.flatten()
-			.is_some();
-		if !checkpoint_in_mtxdb {
+		// Both links must already be durable in mtxdb. Accepting a checkpoint
+		// that exists only in the legacy redb mirror, or a parent that has not
+		// been published yet, would create a chain that cannot be replayed.
+		let durable = |structural_hash: &[u8; 32]| {
+			self.services
+				.state_hamt
+				.store
+				.root_lattice(structural_hash)
+				.ok()
+				.flatten()
+				.is_some()
+		};
+		if !durable(&chain.base) || !durable(&chain.parent) {
 			return None;
 		}
 
