@@ -514,6 +514,110 @@ async fn test_root_lattice_chain_replays_to_state_group_id() {
 	assert_eq!(next_chain.base, chain.base);
 }
 
+/// A chain compacts into a checkpoint exactly at the 500-hop boundary, and a
+/// cold read of the last linked root replays the whole chain from mtxdb.
+#[conduwuit_macros::async_test]
+async fn test_lattice_chain_compacts_and_replays_at_five_hundred_hops() {
+	use conduwuit_mtxdb::lattice::{
+		CHECKPOINT_INTERVAL, LatticeDelta, LatticeRecord, RECORD_CHECKPOINT, decode_record,
+	};
+	use rezzy::{hamt::RootHandle, incremental::LtHash};
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let mut lattice = LtHash::default();
+	let mut roots = Vec::new();
+	let mut previous: Option<RootHandle> = None;
+
+	for index in 0..=CHECKPOINT_INTERVAL {
+		let event_type = "m.room.member";
+		let state_key = format!("@user{index}:test.conduwuit.local");
+		let event_id = format!("$chain-{index}:test.conduwuit.local");
+		lattice.insert(event_type, &state_key, &event_id);
+
+		let mut structural_hash = [0_u8; 32];
+		structural_hash[..8].copy_from_slice(&u64::from(index).to_be_bytes());
+		let root = RootHandle::from_lthash(structural_hash, &lattice);
+
+		let delta = LatticeDelta::Insert {
+			event_type: event_type.to_owned(),
+			state_key: state_key.clone(),
+			event_id: event_id.clone(),
+		};
+		let (base, deltas) = match &previous {
+			| Some(base) => (Some(base), std::slice::from_ref(&delta)),
+			| None => (None, &[][..]),
+		};
+		services
+			.rooms
+			.state
+			.persist_root_lattice(&root, &lattice, base, deltas);
+
+		// Publish the record the way the live path would, so the chain is
+		// durable in mtxdb and the staged entry is retired.
+		let record = services
+			.rooms
+			.state
+			.lattice_record_for_publish(&root.structural_hash)
+			.expect("persisted root must stage a lattice record");
+		services
+			.rooms
+			.state_hamt
+			.store
+			.put_root_lattice(&root.structural_hash, &record)
+			.expect("publish lattice record");
+		services
+			.rooms
+			.state
+			.finish_lattice_publish(&root.structural_hash);
+
+		previous = Some(root.clone());
+		roots.push((root, lattice));
+	}
+
+	let record_at = |index: usize| {
+		services
+			.rooms
+			.state_hamt
+			.store
+			.root_lattice(&roots[index].0.structural_hash)
+			.expect("read lattice record")
+			.expect("root must have a lattice record")
+	};
+
+	assert_eq!(record_at(0).first(), Some(&RECORD_CHECKPOINT), "the first root is a checkpoint");
+	let last_chain = match decode_record(&record_at(499)).expect("decode hop 499") {
+		| LatticeRecord::Chain(chain) => chain,
+		| LatticeRecord::Checkpoint(_) => panic!("hop 499 must still be a chain"),
+	};
+	assert_eq!(last_chain.hops, 499);
+	assert_eq!(last_chain.base, roots[0].0.structural_hash);
+	assert_eq!(
+		record_at(500).first(),
+		Some(&RECORD_CHECKPOINT),
+		"hop 500 must compact into a checkpoint"
+	);
+
+	// Drop every cached lattice so the next read must walk the durable chain.
+	services.rooms.state.db.lattice_cache.invalidate_all();
+	services.rooms.state.db.lattice_cache.run_pending_tasks();
+
+	for index in [499_usize, 500] {
+		let (root, expected) = &roots[index];
+		let replayed = services
+			.rooms
+			.state
+			.get_root_lattice(root)
+			.await
+			.unwrap_or_else(|| panic!("replay hop {index}"));
+		assert_eq!(replayed, *expected, "replayed lattice must equal the accumulated lattice");
+		assert_eq!(
+			replayed.digest(),
+			root.state_group_id,
+			"replayed lattice must match the root's state-group id"
+		);
+	}
+}
+
 /// A bulk state update must copy only the changed spines, not re-emit the tree.
 ///
 /// `resolve_state` used to call `build_hamt_root_handle` +

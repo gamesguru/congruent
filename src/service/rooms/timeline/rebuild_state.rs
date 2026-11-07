@@ -370,11 +370,18 @@ impl super::Service {
 			.store
 			.persist_node_recursive(room_id.as_bytes(), root_node)?;
 
-		// Rebuild materializes every root it computes, so it writes the legacy
-		// redb mirror rather than a live chain record. Only the final room root
-		// is re-published to mtxdb by `set_room_state_hamt_after_rebuild`.
+		// Rebuild materializes a complete lattice for every root it computes,
+		// so each one is a checkpoint rather than a chain. Write it directly to
+		// mtxdb; the redb lattice mirror is now read-only compatibility for
+		// data written before this path existed.
 		let encoded = lattice.to_bytes();
-		self.db.db["state_hamt_root_lattices"].insert(&root_handle.structural_hash, &encoded);
+		let record = conduwuit_mtxdb::lattice::encode_checkpoint(&encoded).ok_or_else(|| {
+			err!(Database(error!("rebuild_state: failed to encode root lattice checkpoint")))
+		})?;
+		self.services
+			.state_hamt
+			.store
+			.put_root_lattice(&root_handle.structural_hash, &record)?;
 
 		Ok(root_handle)
 	}
