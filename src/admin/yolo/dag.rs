@@ -106,8 +106,8 @@ pub(super) async fn get_room_dag(
 			}
 		}
 		if i >= actual_start {
-			if let Ok(pdu_json) = self.services.rooms.timeline.get_pdu_json(&event_id).await {
-				let pdu_result = self.services.rooms.timeline.get_pdu(&event_id).await;
+			if let Ok(pdu_json) = self.services.rooms.timeline.get_pdu_json(&event_id) {
+				let pdu_result = self.services.rooms.timeline.get_pdu(&event_id);
 				if let Ok(ref pdu) = pdu_result {
 					let ts: u64 = pdu.origin_server_ts().0;
 					let depth: u64 = pdu.depth;
@@ -194,14 +194,8 @@ pub(super) async fn get_room_dag(
 			.await;
 
 		for event_id in outlier_ids {
-			if let Ok(pdu_json) = self
-				.services
-				.rooms
-				.outlier
-				.get_outlier_pdu_json(&event_id)
-				.await
-			{
-				let pdu_result = self.services.rooms.outlier.get_pdu_outlier(&event_id).await;
+			if let Ok(pdu_json) = self.services.rooms.outlier.get_outlier_pdu_json(&event_id) {
+				let pdu_result = self.services.rooms.outlier.get_pdu_outlier(&event_id);
 				if let Err(e) = stats
 					.process_and_write_pdu(
 						self,
@@ -942,9 +936,9 @@ pub(super) async fn dag_merge_base(
 	macro_rules! get_pdu_any {
 		($event_id:expr) => {{
 			let eid: &EventId = $event_id;
-			if let Ok(pdu) = self.services.rooms.timeline.get_pdu(eid).await {
+			if let Ok(pdu) = self.services.rooms.timeline.get_pdu(eid) {
 				Some(pdu)
-			} else if let Ok(pdu) = self.services.rooms.outlier.get_pdu_outlier(eid).await {
+			} else if let Ok(pdu) = self.services.rooms.outlier.get_pdu_outlier(eid) {
 				Some(pdu)
 			} else {
 				None
@@ -1487,13 +1481,13 @@ pub(super) async fn audit_auth_chain(
 				.is_event_soft_failed(&event_id)
 				.unwrap_or(false);
 
-			if let Ok(pdu) = self.services.rooms.timeline.get_pdu(&event_id).await {
+			if let Ok(pdu) = self.services.rooms.timeline.get_pdu(&event_id) {
 				conduwuit::utils::dag_walker::FetchResult::Timeline(
 					pdu,
 					is_rejected,
 					is_soft_failed,
 				)
-			} else if let Ok(pdu) = self.services.rooms.outlier.get_pdu_outlier(&event_id).await {
+			} else if let Ok(pdu) = self.services.rooms.outlier.get_pdu_outlier(&event_id) {
 				if verbose {
 					let _ = self.write_str(&format!("  OUTLIER: {event_id}\n")).await;
 				}
@@ -1711,7 +1705,6 @@ pub(super) async fn fetch_missing_events(
 								.rooms
 								.outlier
 								.get_pdu_outlier(&event_id)
-								.await
 								.is_err() && !self
 								.services
 								.rooms
@@ -1739,7 +1732,6 @@ pub(super) async fn fetch_missing_events(
 											.rooms
 											.outlier
 											.get_pdu_outlier(prev)
-											.await
 											.is_err() && !self
 											.services
 											.rooms
@@ -1830,13 +1822,7 @@ pub(super) async fn dedup_room(&self, room_id: OwnedRoomId, dry_run: bool) -> Re
 		}
 
 		// Load the raw JSON to recompute the correct content-hash event_id
-		let Ok(json) = self
-			.services
-			.rooms
-			.timeline
-			.get_pdu_json(stored_event_id)
-			.await
-		else {
+		let Ok(json) = self.services.rooms.timeline.get_pdu_json(stored_event_id) else {
 			continue;
 		};
 

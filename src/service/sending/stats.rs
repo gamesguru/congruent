@@ -31,7 +31,16 @@ impl FederationStats {
 		let presence = self.outgoing_presence.swap(0, Ordering::Relaxed);
 		let errors = self.outgoing_errors.swap(0, Ordering::Relaxed);
 
-		if txns == 0 && pdus == 0 && edus == 0 {
+		if txns == 0
+			&& pdus == 0
+			&& edus == 0
+			&& receipts == 0
+			&& device_lists == 0
+			&& to_device == 0
+			&& typing == 0
+			&& presence == 0
+			&& errors == 0
+		{
 			return false;
 		}
 
@@ -43,5 +52,22 @@ impl FederationStats {
 		);
 
 		true
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn activity_outside_primary_counts_is_reported_before_reset() {
+		let stats = FederationStats::default();
+		stats.outgoing_presence.store(1, Ordering::Relaxed);
+		assert!(stats.report_and_reset());
+		assert!(!stats.report_and_reset());
+
+		stats.outgoing_errors.store(1, Ordering::Relaxed);
+		assert!(stats.report_and_reset());
+		assert!(!stats.report_and_reset());
 	}
 }

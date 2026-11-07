@@ -906,7 +906,7 @@ pub fn unforget(&self, room_id: &RoomId, user_id: &UserId) {
 }
 
 #[implement(super::Service)]
-fn mark_as_once_joined(&self, user_id: &UserId, room_id: &RoomId) {
+pub fn mark_as_once_joined(&self, user_id: &UserId, room_id: &RoomId) {
 	let key = (user_id, room_id);
 	self.db.roomuseroncejoinedids.put_raw(key, []);
 }

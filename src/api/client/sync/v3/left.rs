@@ -8,13 +8,17 @@ use conduwuit::{
 		future::ReadyEqExt,
 		stream::{ReadyExt, WidebandExt as _},
 	},
+	warn,
 };
 use futures::{StreamExt, future::join};
 use service::{Services, rooms::lazy_loading::MemberSet};
 use slipstream::{
-	EventId, OwnedRoomId, RoomId,
+	EventId, OwnedRoomId, RoomId, UserId,
 	api::client::sync::sync_events::v3::{LeftRoom, RoomAccountData, State, Timeline},
-	events::{AnySyncStateEvent, StateEventType, TimelineEventType},
+	events::{
+		AnySyncStateEvent, StateEventType, TimelineEventType,
+		room::member::{MembershipState, RoomMemberEventContent},
+	},
 	sswire::Raw,
 	uint,
 };
@@ -29,6 +33,49 @@ use crate::client::{
 		},
 	},
 };
+
+/// Whether the leave membership event is a ban or a kick by another user.
+///
+/// A ban or a kick is always reported on an initial sync, even when the filter
+/// does not set `include_leave`; only a self-leave is suppressed. This mirrors
+/// Synapse and is required for a client to observe a remote ban on its first
+/// sync.
+fn ban_or_kick(membership: &MembershipState, sender: &UserId, syncing_user: &UserId) -> bool {
+	match membership {
+		| MembershipState::Ban => true,
+		| MembershipState::Leave => sender != syncing_user,
+		| _ => false,
+	}
+}
+
+fn leave_is_ban_or_kick(
+	leave_membership_event: Option<&PduEvent>,
+	syncing_user: &UserId,
+) -> bool {
+	leave_membership_event.is_some_and(|pdu| {
+		pdu.get_content::<RoomMemberEventContent>()
+			.is_ok_and(|content| ban_or_kick(&content.membership, pdu.sender(), syncing_user))
+	})
+}
+
+/// Whether a left room belongs in this sync response.
+///
+/// `last_sync_end_count` is `None` on an initial sync. Without `include_leave`,
+/// an initial sync still reports bans and kicks (a client's only chance to see
+/// them), and an incremental sync reports a leave only until its `left_count`
+/// has been delivered.
+fn should_sync_left_room(
+	last_sync_end_count: Option<u64>,
+	left_count: u64,
+	include_leave: bool,
+	is_forgotten: bool,
+	is_ban_or_kick: bool,
+) -> bool {
+	match last_sync_end_count {
+		| None => !is_forgotten && (include_leave || is_ban_or_kick),
+		| Some(last_sync_end_count) => last_sync_end_count < left_count || include_leave,
+	}
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn load_left_room(
@@ -71,16 +118,21 @@ pub(super) async fn load_left_room(
 		.is_forgotten(syncing_user, room_id)
 		.await;
 
-	match last_sync_end_count {
-		| None =>
-			if is_forgotten || !filter.room.include_leave {
-				return Ok(None);
-			},
-		| Some(last_sync_end_count) => {
-			if last_sync_end_count >= left_count && !filter.room.include_leave {
-				return Ok(None);
-			}
-		},
+	// Bans and kicks are reported even without `include_leave`. On an initial
+	// sync that is the only chance the client gets: the next sync starts from a
+	// token past `left_count` and would treat the leave as already delivered.
+	// Incremental syncs keep the normal `left_count` gate so an already-delivered
+	// leave is not repeated on every sync.
+	let is_ban_or_kick = leave_is_ban_or_kick(leave_membership_event.as_ref(), syncing_user);
+
+	if !should_sync_left_room(
+		last_sync_end_count,
+		left_count,
+		filter.room.include_leave,
+		is_forgotten,
+		is_ban_or_kick,
+	) {
+		return Ok(None);
 	}
 
 	if let Some(ref leave_membership_event) = leave_membership_event {
@@ -103,6 +155,10 @@ pub(super) async fn load_left_room(
 
 	let does_not_exist = services.rooms.metadata.exists(room_id).eq(&false).await;
 
+	// Set when only the bare membership event could be loaded. It is the one
+	// thing that must reach the client, so the state filter may not drop it.
+	let mut force_membership_event = false;
+
 	let (timeline, state_events, leave_root_handle) = match leave_membership_event {
 		| Some(ref leave_membership_event) if does_not_exist => {
 			/*
@@ -111,13 +167,15 @@ pub(super) async fn load_left_room(
 			which is all we can send to the client.
 
 			if this is an initial sync, don't include this room at all to keep the client from asking for
-			state that we don't have.
+			state that we don't have. bans and kicks are the exception: they must reach the client on its
+			first sync, and the membership event alone is enough.
 			*/
 
-			if last_sync_end_count.is_none() {
+			if last_sync_end_count.is_none() && !is_ban_or_kick {
 				return Ok(None);
 			}
 
+			force_membership_event = true;
 			trace!("syncing remote-assisted leave PDU");
 			(TimelinePdus::default(), vec![leave_membership_event.clone()], None)
 		},
@@ -125,61 +183,98 @@ pub(super) async fn load_left_room(
 			// we have this room in our DB, and can fetch the state and timeline from when
 			// the user left.
 
-			let leave_state_key = syncing_user;
-			debug_assert_eq!(
-				Some(leave_state_key.as_str()),
-				leave_membership_event.state_key(),
-				"leave PDU should be for the user requesting the sync"
-			);
+			let load = || async {
+				let leave_state_key = syncing_user;
+				debug_assert_eq!(
+					Some(leave_state_key.as_str()),
+					leave_membership_event.state_key(),
+					"leave PDU should be for the user requesting the sync"
+				);
 
-			// `pdu_roothandle_after_event` resolves the state *after* a PDU, so the
-			// leave event's own root includes `leave_membership_event`. For the
-			// membership immediately before the user left we walk back one
-			// event to the pre-leave root.
-			let leave_root_handle = services
-				.rooms
-				.state_accessor
-				.pdu_roothandle_after_event(&leave_membership_event.event_id)
-				.await?;
+				// `pdu_roothandle_after_event` resolves the state *after* a PDU, so the
+				// leave event's own root includes `leave_membership_event`. For the
+				// membership immediately before the user left we walk back one
+				// event to the pre-leave root.
+				let leave_root_handle = services
+					.rooms
+					.state_accessor
+					.pdu_roothandle_after_event(&leave_membership_event.event_id)
+					.await?;
 
-			let before_leave_root_handle = services
-				.rooms
-				.state_accessor
-				.pdu_roothandle_before_event(&leave_membership_event.event_id)
-				.await
-				.unwrap_or_else(|_| leave_root_handle.clone());
+				let before_leave_root_handle = services
+					.rooms
+					.state_accessor
+					.pdu_roothandle_before_event(&leave_membership_event.event_id)
+					.await
+					.unwrap_or_else(|_| leave_root_handle.clone());
 
-			let prev_membership_event = services
-				.rooms
-				.state_accessor
-				.state_get_in_room_hamt(
+				let prev_membership_event = services
+					.rooms
+					.state_accessor
+					.state_get_in_room_hamt(
+						room_id,
+						&before_leave_root_handle,
+						&StateEventType::RoomMember,
+						leave_state_key.as_str(),
+					)
+					.await?;
+
+				let last_sync_end_root_handle = if last_sync_end_root_handle.is_none()
+					&& last_sync_end_count.is_some_and(|c| c >= left_count)
+				{
+					Some(leave_root_handle.clone())
+				} else {
+					last_sync_end_root_handle.clone()
+				};
+
+				let (timeline, state_events) = build_left_state_and_timeline(
+					services,
+					sync_context,
 					room_id,
-					&before_leave_root_handle,
-					&StateEventType::RoomMember,
-					leave_state_key.as_str(),
+					leave_membership_event,
+					&leave_root_handle,
+					&prev_membership_event,
+					last_sync_end_root_handle,
 				)
 				.await?;
 
-			let last_sync_end_root_handle = if last_sync_end_root_handle.is_none()
-				&& last_sync_end_count.is_some_and(|c| c >= left_count)
-			{
-				Some(leave_root_handle.clone())
-			} else {
-				last_sync_end_root_handle
+				Ok::<_, conduwuit::Error>((timeline, state_events, Some(leave_root_handle)))
 			};
 
-			let (timeline, state_events) = build_left_state_and_timeline(
-				services,
-				sync_context,
-				room_id,
-				leave_membership_event,
-				&leave_root_handle,
-				&prev_membership_event,
-				last_sync_end_root_handle,
-			)
-			.await?;
+			// The leave's timeline row and state root can land just after the
+			// membership cache update. Retry briefly before giving up, since
+			// next_batch advances past this leave once we respond.
+			let mut loaded = load().await;
+			for _ in 0..5 {
+				if !loaded.as_ref().is_err_and(conduwuit::Error::is_not_found) {
+					break;
+				}
+				smol::Timer::after(std::time::Duration::from_millis(20)).await;
+				loaded = load().await;
+			}
 
-			(timeline, state_events, Some(leave_root_handle))
+			match loaded {
+				| Ok(loaded) => loaded,
+				| Err(error)
+					if error.is_not_found()
+						&& (last_sync_end_count.is_some() || is_ban_or_kick) =>
+				{
+					// The membership cache is updated before the leave event's timeline
+					// row and state root are visible (see the append path). A sync that
+					// wakes in that window must not drop the leave: next_batch advances
+					// past left_count, so this response is the only chance to deliver
+					// it. Loading was retried above; if it still fails, the timeline and
+					// state are omitted from this response.
+					warn!(
+						%room_id,
+						?error,
+						"leave event is not fully loadable yet; sending only the membership event"
+					);
+					force_membership_event = true;
+					(TimelinePdus::default(), vec![leave_membership_event.clone()], None)
+				},
+				| Err(error) => return Err(error),
+			}
 		},
 
 		| None => {
@@ -195,6 +290,7 @@ pub(super) async fn load_left_room(
 			}
 
 			trace!("syncing dummy leave event");
+			force_membership_event = true;
 			(
 				TimelinePdus::default(),
 				vec![create_dummy_leave_event(services, sync_context, room_id)],
@@ -292,7 +388,10 @@ pub(super) async fn load_left_room(
 		.filter(|pdu: &PduEvent| !timeline_ids.contains(&*pdu.event_id))
 		.filter(|pdu: &PduEvent| {
 			let filter = &filter.room.state;
-			filter.matches(pdu)
+			(force_membership_event
+				&& *pdu.event_type() == TimelineEventType::RoomMember
+				&& pdu.state_key() == Some(syncing_user.as_str()))
+				|| filter.matches(pdu)
 		})
 		.map(Event::into_format)
 		.collect();
@@ -508,5 +607,71 @@ fn create_dummy_leave_event(
 		hashes: EventHash { sha256: String::new() },
 		signatures: None,
 		rejected: false,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use slipstream::{events::room::member::MembershipState, user_id};
+
+	use super::{ban_or_kick, should_sync_left_room};
+
+	#[test]
+	fn initial_sync_reports_ban_or_kick_without_include_leave() {
+		assert!(should_sync_left_room(None, 478, false, false, true));
+	}
+
+	#[test]
+	fn initial_sync_omits_self_leave_without_include_leave() {
+		assert!(!should_sync_left_room(None, 478, false, false, false));
+	}
+
+	#[test]
+	fn initial_sync_reports_self_leave_with_include_leave() {
+		assert!(should_sync_left_room(None, 478, true, false, false));
+	}
+
+	#[test]
+	fn initial_sync_omits_forgotten_rooms_even_for_a_ban() {
+		assert!(!should_sync_left_room(None, 478, false, true, true));
+		assert!(!should_sync_left_room(None, 478, true, true, true));
+	}
+
+	#[test]
+	fn incremental_sync_reports_a_leave_after_the_token() {
+		assert!(should_sync_left_room(Some(477), 478, false, false, false));
+		assert!(should_sync_left_room(Some(477), 478, false, false, true));
+	}
+
+	#[test]
+	fn incremental_sync_does_not_repeat_a_delivered_leave() {
+		// The regression: a token at or past `left_count` must not resurface a ban.
+		assert!(!should_sync_left_room(Some(478), 478, false, false, true));
+		assert!(!should_sync_left_room(Some(480), 478, false, false, true));
+	}
+
+	#[test]
+	fn incremental_sync_repeats_a_delivered_leave_with_include_leave() {
+		assert!(should_sync_left_room(Some(480), 478, true, false, false));
+	}
+
+	#[test]
+	fn ban_and_kick_are_reported_without_include_leave() {
+		let alice = user_id!("@alice:example.org");
+		let bob = user_id!("@bob:example.org");
+
+		// A ban is a leave caused by someone else; it must reach an initial sync.
+		assert!(ban_or_kick(&MembershipState::Ban, &bob, &alice));
+
+		// A kick is a plain leave caused by someone else.
+		assert!(ban_or_kick(&MembershipState::Leave, &bob, &alice));
+
+		// A self-leave is only reported with `include_leave`.
+		assert!(!ban_or_kick(&MembershipState::Leave, &alice, &alice));
+
+		// Other membership states are not "left" rooms.
+		assert!(!ban_or_kick(&MembershipState::Join, &alice, &alice));
+		assert!(!ban_or_kick(&MembershipState::Invite, &bob, &alice));
+		assert!(!ban_or_kick(&MembershipState::Knock, &alice, &alice));
 	}
 }

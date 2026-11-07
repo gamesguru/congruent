@@ -301,6 +301,31 @@ impl crate::Service for Service {
 				.space_hierarchy_workers_active
 				.load(std::sync::atomic::Ordering::Relaxed);
 
+			let outbound = self.server.metrics.outbound.roll_minute();
+			if outbound.attempts > 0 || outbound.selections > 0 {
+				let timed = outbound.timed();
+				let avg_us = outbound.time_us.checked_div(timed).unwrap_or(0);
+				let [queue, device_lists, receipts, presence_calls] = outbound.selection_calls;
+				conduwuit::info!(
+					target: "stats",
+					"Outbound stats: (Last 1m) - Sends: {} (ok {}, timeout {}, connect {}, remote {}, \
+					 other {}, aborted {}), {}.{}ms avg | Selections: {} (DB-accessor calls: queue \
+					 {queue}, device lists {device_lists}, receipts {receipts}, presence \
+					 {presence_calls}; PDU fetches {})",
+					outbound.attempts,
+					outbound.ok,
+					outbound.timeout,
+					outbound.connect,
+					outbound.remote,
+					outbound.other,
+					outbound.aborted,
+					avg_us / 1000,
+					(avg_us % 1000) / 100,
+					outbound.selections,
+					outbound.sender_path_db_calls,
+				);
+			}
+
 			conduwuit::info!(
 				target: "stats",
 				"Network stats: (Last 1m) - HTTP Router: {} reqs ({:.2}% fail, {:.2}ms avg \

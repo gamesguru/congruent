@@ -15,7 +15,10 @@ use http_body_util::{BodyExt, Full};
 
 use self::handler::{RouterExt, any, delete, get, post, put};
 pub(super) use self::{
-	args::{Args as Ruma, authenticate_user, authenticate_user_with_body},
+	args::{
+		Args as Ruma, authenticate_user, authenticate_user_with_body,
+		authenticate_user_with_body_and_device,
+	},
 	response::{ApiError, IntoResponse, Response, RumaResponse},
 };
 use crate::{admin, client, server};
@@ -285,6 +288,10 @@ pub fn build(
 		.route(
 			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}/{action}",
 			post(client::update_delayed_event_route),
+		)
+		.route(
+			"/_matrix/client/unstable/org.matrix.msc4140/rooms/{room_id}/delayed_event/{event_type}/{txn_id}",
+			put(client::schedule_delayed_event_route),
 		)
 		.ruma_route(&client::get_tags_route)
 		.ruma_route(&client::update_tag_route)

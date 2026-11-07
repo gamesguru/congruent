@@ -44,7 +44,7 @@ pub(super) async fn delete(
 		let mut mxc_urls = Vec::with_capacity(4);
 
 		// parsing the PDU for any MXC URLs begins here
-		match self.services.rooms.timeline.get_pdu_json(&event_id).await {
+		match self.services.rooms.timeline.get_pdu_json(&event_id) {
 			| Ok(event_json) => {
 				if let Some(content_key) = event_json.get("content") {
 					debug!("Event ID has \"content\".");

@@ -156,7 +156,36 @@ impl Data {
 		event_id: &EventId,
 		code: SoftFailCode,
 	) -> Result<()> {
-		self.update_verdict(event_id, |v| v.soft_fail = Some(code.to_u8()))
+		self.update_verdict(event_id, |v| {
+			v.soft_fail = Some(code.to_u8());
+			// A previous soft-fail with an arrival ordering must not leave that
+			// ordering attached when the event is marked again without one.
+			v.arrival_ordering = None;
+		})
+	}
+
+	/// Record when soft-fail finished, for events kept out of the timeline.
+	/// The value is the server's global counter, so it is comparable with the
+	/// timeline stream ordering. Only soft-failed events carry this.
+	pub(super) fn mark_event_soft_failed_at(
+		&self,
+		event_id: &EventId,
+		code: SoftFailCode,
+		ordering: u64,
+	) -> Result<()> {
+		self.update_verdict(event_id, |v| {
+			v.soft_fail = Some(code.to_u8());
+			v.arrival_ordering = Some(ordering);
+		})
+	}
+
+	pub(super) fn get_arrival_ordering(&self, event_id: &EventId) -> Result<Option<u64>> {
+		self.mtxdb_verdicts
+			.get(event_id.as_bytes())
+			.map(|verdict| verdict.and_then(|value| value.arrival_ordering))
+			.map_err(|error| {
+				err!(Database("Failed to read mtxdb arrival ordering for {event_id}: {error}"))
+			})
 	}
 
 	pub(super) fn is_event_soft_failed(&self, event_id: &EventId) -> Result<bool> {
@@ -191,7 +220,10 @@ impl Data {
 	}
 
 	pub(super) fn unmark_event_soft_failed(&self, event_id: &EventId) -> Result<()> {
-		self.update_verdict(event_id, |v| v.soft_fail = None)
+		self.update_verdict(event_id, |v| {
+			v.soft_fail = None;
+			v.arrival_ordering = None;
+		})
 	}
 
 	pub(super) fn mark_event_rejected(&self, event_id: &EventId, reason: &str) -> Result<()> {
@@ -204,6 +236,34 @@ impl Data {
 			}
 			verdict.rejection = Some(new_code.to_u8());
 		})
+	}
+
+	/// Batch variant of [`Self::mark_event_rejected`]. Stages the markers in
+	/// one transaction per verdict bucket instead of one per event, while
+	/// preserving the "don't overwrite a non-retryable rejection with a
+	/// retryable one" rule.
+	pub(super) fn mark_events_rejected(
+		&self,
+		event_ids: &[&EventId],
+		reason: &str,
+	) -> Result<()> {
+		let new_code = RejectionCode::parse(reason).unwrap_or(RejectionCode::Unknown);
+		let ids: Vec<&[u8]> = event_ids
+			.iter()
+			.map(|event_id| event_id.as_bytes())
+			.collect();
+		self.mtxdb_verdicts
+			.update_many(&ids, |_event_id, verdict| {
+				if verdict.rejection.is_some_and(|old| {
+					!RejectionCode::from_u8(old).is_retryable() && new_code.is_retryable()
+				}) {
+					return;
+				}
+				verdict.rejection = Some(new_code.to_u8());
+			})
+			.map_err(|error| {
+				err!(Database("Failed to batch persist mtxdb rejection verdicts: {error}"))
+			})
 	}
 
 	pub(super) fn is_event_rejected(&self, event_id: &EventId) -> Result<bool> {
@@ -238,6 +298,23 @@ impl Data {
 			})
 	}
 
+	/// Read authoritative mtxdb verdicts for multiple event IDs in one batch.
+	pub(super) fn get_verdicts<'a, I>(
+		&self,
+		event_ids: I,
+	) -> Result<Vec<Option<conduwuit_mtxdb::verdicts::Verdict>>>
+	where
+		I: IntoIterator<Item = &'a EventId>,
+	{
+		let event_id_refs: Vec<&[u8]> = event_ids.into_iter().map(EventId::as_bytes).collect();
+		if event_id_refs.is_empty() {
+			return Ok(Vec::new());
+		}
+		self.mtxdb_verdicts
+			.get_many(&event_id_refs)
+			.map_err(|error| err!(Database("Failed to batch-read mtxdb verdicts: {error}")))
+	}
+
 	/// Returns the event IDs carrying a rejection or soft-fail marker.
 	pub(super) fn verdict_flagged_batch(
 		&self,
@@ -247,11 +324,7 @@ impl Data {
 			return Ok(std::collections::HashSet::new());
 		}
 
-		let event_id_refs: Vec<&[u8]> = event_ids.iter().map(OwnedEventId::as_bytes).collect();
-		let verdicts = self
-			.mtxdb_verdicts
-			.get_many(&event_id_refs)
-			.map_err(|error| err!(Database("Failed to batch-read mtxdb verdicts: {error}")))?;
+		let verdicts = self.get_verdicts(event_ids)?;
 
 		let mut flagged = std::collections::HashSet::new();
 		for (event_id, verdict) in event_ids.iter().zip(verdicts) {
@@ -272,6 +345,7 @@ impl Data {
 	pub(super) fn clear_pdu_markers(&self, event_id: &EventId) -> Result<()> {
 		self.update_verdict(event_id, |v| {
 			v.soft_fail = None;
+			v.arrival_ordering = None;
 			v.rejection = None;
 		})
 	}

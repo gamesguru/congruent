@@ -439,14 +439,8 @@ pub(super) async fn fetch_state_ids(
 		.chain(response.pdu_ids.iter())
 	{
 		total_events = total_events.saturating_add(1);
-		let in_timeline = self.services.rooms.timeline.get_pdu(id).await.is_ok();
-		let in_outlier = self
-			.services
-			.rooms
-			.outlier
-			.get_outlier_pdu_json(id)
-			.await
-			.is_ok();
+		let in_timeline = self.services.rooms.timeline.get_pdu(id).is_ok();
+		let in_outlier = self.services.rooms.outlier.get_outlier_pdu_json(id).is_ok();
 
 		if !in_timeline && !in_outlier {
 			missing_events.push(id.clone());

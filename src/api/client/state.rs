@@ -68,6 +68,7 @@ pub(crate) async fn send_state_event_for_key_route(
 			room_id: body.room_id.clone(),
 			running_since: std::time::SystemTime::now(),
 			delay,
+			pending_event_id: None,
 		};
 		let delay_id = services
 			.rooms

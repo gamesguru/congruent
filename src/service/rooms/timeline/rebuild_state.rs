@@ -11,8 +11,9 @@ use conduwuit_core::{
 	warn,
 };
 use futures::StreamExt;
+use rezzy::bitmap::Bitmap;
 use slipstream::{
-	OwnedEventId, RoomId, RoomVersionId,
+	OwnedEventId, OwnedUserId, RoomId, RoomVersionId,
 	events::{StateEventType, TimelineEventType},
 };
 
@@ -34,7 +35,7 @@ type EventMeta = (
 	u64,
 );
 
-/// Safe u32 -> usize for Vec indexing of roaring bitmap indices.
+/// Safe u32 -> usize for Vec indexing of bitmap indices.
 #[inline]
 fn to_usize(v: u32) -> usize { usize::try_from(v).expect("u32 fits in usize") }
 
@@ -47,7 +48,7 @@ struct RebuildCtx {
 	event_set: HashSet<OwnedEventId>,
 	eid_to_idx: HashMap<OwnedEventId, u32>,
 	idx_to_eid: Vec<OwnedEventId>,
-	auth_chain_bitmaps: Vec<roaring::RoaringBitmap>,
+	auth_chain_bitmaps: Vec<Bitmap>,
 	/// State event PDUs indexed by the same u32 as eid_to_idx.
 	/// `None` for message events (never needed for resolution).
 	state_pdus: Vec<Option<rezzy::LeanEvent>>,
@@ -128,10 +129,14 @@ impl super::Service {
 		// events that only exist as outliers). Callers that need the derived
 		// membership cache rebuilt run `reconcile_membership` afterwards.
 		let state_lock = self.services.state.mutex.lock(room_id).await;
-		self.services
-			.state
-			.set_room_state_hamt(room_id, &current_root, &state_lock)?;
+		self.services.state.set_room_state_hamt_after_rebuild(
+			room_id,
+			&current_root,
+			&state_lock,
+			&[],
+		)?;
 		self.services.state_cache.update_joined_count(room_id).await;
+		self.services.state.clear_state_rebuild_pending(room_id);
 
 		eprintln!("[rebuild_state] Phase 6 done: state applied");
 		Ok(())
@@ -161,9 +166,21 @@ impl super::Service {
 			.unwrap_or(RoomVersionId::V1);
 
 		for eid in sorted {
-			let (pdu, _json) = self.db.get_from_eventid_pdu(&eid).await.map_err(|e| {
-				conduwuit::err!(Database("rebuild_state: missing PDU {eid}: {e}"))
-			})?;
+			let count = entries.get(&eid).map(|entry| entry.0);
+			let db = self.db.clone();
+			let runtime = self.services.server.runtime().clone();
+			let lookup_id = eid.clone();
+			let (pdu, _json) = runtime
+				.spawn_blocking(move || db.get_from_eventid_pdu(&lookup_id))
+				.await
+				.map_err(|e| {
+					conduwuit::err!(Database(
+						"rebuild_state: blocking PDU read failed for {eid}: {e}"
+					))
+				})?
+				.map_err(|e| {
+					conduwuit::err!(Database("rebuild_state: missing PDU {eid}: {e}"))
+				})?;
 			let prev: Vec<OwnedEventId> = pdu.prev_events().map(ToOwned::to_owned).collect();
 			let auth: Vec<OwnedEventId> = pdu.auth_events().map(ToOwned::to_owned).collect();
 			let is_state = pdu.state_key().is_some();
@@ -189,6 +206,41 @@ impl super::Service {
 				}
 			}
 
+			// Derive the DAG-only caches in the same pass. These are pure
+			// functions of the event bodies, so imports can omit them.
+			if *pdu.kind() == TimelineEventType::RoomMember {
+				if let Some(Ok(user_id)) = pdu.state_key().map(OwnedUserId::parse) {
+					if pdu
+						.get_content::<slipstream::events::room::member::RoomMemberEventContent>()
+						.is_ok_and(|content| {
+							content.membership
+								== slipstream::events::room::member::MembershipState::Join
+						}) {
+						self.services
+							.state_cache
+							.mark_as_once_joined(&user_id, room_id);
+					}
+				}
+			}
+
+			if let Some(count) = count {
+				if let Ok(content) = pdu.get_content::<super::ExtractRelatesToEventId>() {
+					if let Ok(related_count) =
+						self.get_pdu_count(&content.relates_to.event_id).await
+					{
+						self.services
+							.pdu_metadata
+							.add_relation(count, related_count);
+					}
+				}
+			}
+
+			if !prev.is_empty() {
+				self.services
+					.pdu_metadata
+					.mark_as_referenced(room_id, prev.iter().map(AsRef::as_ref));
+			}
+
 			events_meta.push((eid.clone(), prev, auth, state_key, depth));
 			// Keep state event PDUs for fork resolution; drop messages
 			state_pdus.push(if is_state { Some(pdu_to_lean(&pdu)) } else { None });
@@ -212,7 +264,7 @@ impl super::Service {
 
 	fn rebuild_auth_chains(
 		events_meta: &[EventMeta],
-	) -> (HashMap<OwnedEventId, u32>, Vec<OwnedEventId>, Vec<roaring::RoaringBitmap>) {
+	) -> (HashMap<OwnedEventId, u32>, Vec<OwnedEventId>, Vec<Bitmap>) {
 		let start = Instant::now();
 
 		// Pass 1: Index all events
@@ -229,7 +281,7 @@ impl super::Service {
 		// Pass 2: Iterative post-order traversal on auth DAG for transitive closures.
 		// Uses an explicit stack instead of recursion (Rust has no TCO).
 		let n = events_meta.len();
-		let mut bitmaps: Vec<Option<roaring::RoaringBitmap>> = vec![None; n];
+		let mut bitmaps: Vec<Option<Bitmap>> = vec![None; n];
 		let mut visiting = vec![false; n]; // Cycle detection
 
 		for i in 0..n {
@@ -263,7 +315,7 @@ impl super::Service {
 				}
 
 				if all_resolved {
-					let mut chain = roaring::RoaringBitmap::new();
+					let mut chain = Bitmap::new();
 					for auth_id in auth_events {
 						if let Some(&auth_idx) = eid_to_idx.get(auth_id) {
 							let auth_usize = to_usize(auth_idx);
@@ -281,7 +333,7 @@ impl super::Service {
 		}
 
 		// Unwrap all Options into final Vec
-		let final_bitmaps: Vec<roaring::RoaringBitmap> =
+		let final_bitmaps: Vec<Bitmap> =
 			bitmaps.into_iter().map(Option::unwrap_or_default).collect();
 
 		debug!(
@@ -318,8 +370,18 @@ impl super::Service {
 			.store
 			.persist_node_recursive(room_id.as_bytes(), root_node)?;
 
+		// Rebuild materializes a complete lattice for every root it computes,
+		// so each one is a checkpoint rather than a chain. Write it directly to
+		// mtxdb; the redb lattice mirror is now read-only compatibility for
+		// data written before this path existed.
 		let encoded = lattice.to_bytes();
-		self.db.db["state_hamt_root_lattices"].insert(&root_handle.structural_hash, &encoded);
+		let record = conduwuit_mtxdb::lattice::encode_checkpoint(&encoded).ok_or_else(|| {
+			err!(Database(error!("rebuild_state: failed to encode root lattice checkpoint")))
+		})?;
+		self.services
+			.state_hamt
+			.store
+			.put_root_lattice(&root_handle.structural_hash, &record)?;
 
 		Ok(root_handle)
 	}
@@ -368,11 +430,24 @@ impl super::Service {
 	/// the `shorteventid_roothandle` map. Used by rebuild-state to bound the
 	/// number of pending writes; the caller holds a database cork, so these
 	/// land in the same in-memory batch.
-	fn write_roothandle_entries(&self, entries: &[(u64, Vec<u8>)]) {
+	fn write_roothandle_entries(&self, entries: &[(u64, Vec<u8>)]) -> Result<()> {
+		// mtxdb is authoritative for short-ID event roots; the redb map is the
+		// legacy mirror. Write mtxdb first so a failure leaves both stores on
+		// the old roots instead of shadowing a partially repaired mirror.
+		let roots: Vec<(u64, &[u8])> = entries
+			.iter()
+			.map(|(shorteventid, bytes)| (*shorteventid, bytes.as_slice()))
+			.collect();
+		self.services
+			.state_hamt
+			.store
+			.put_short_event_roots(&roots)?;
+
 		let map = self.db.db["shorteventid_roothandle"].clone();
 		for (shorteventid, bytes) in entries {
 			map.insert(&shorteventid.to_be_bytes(), bytes);
 		}
+		Ok(())
 	}
 }
 
@@ -662,7 +737,7 @@ impl super::Service {
 			if shorteventid != 0 {
 				pdu_root_entries.push((shorteventid, rooms::state::root_handle_to_bytes(&root)));
 				if pdu_root_entries.len() >= 4096 {
-					self.write_roothandle_entries(&pdu_root_entries);
+					self.write_roothandle_entries(&pdu_root_entries)?;
 					pdu_root_entries.clear();
 				}
 			}
@@ -679,7 +754,7 @@ impl super::Service {
 		}
 
 		if !pdu_root_entries.is_empty() {
-			self.write_roothandle_entries(&pdu_root_entries);
+			self.write_roothandle_entries(&pdu_root_entries)?;
 		}
 
 		drop(cork.take());
@@ -706,7 +781,7 @@ impl super::Service {
 
 	/// Resolve a fork between multiple parent state sets using in-memory PDUs
 	/// and `rezzy`. Pre-separates unconflicted/conflicted, computes auth
-	/// difference via roaring bitmaps, then builds LeanEvents from the
+	/// difference via bitmap set operations, then builds LeanEvents from the
 	/// pre-cached state PDUs (zero RocksDB I/O).
 	fn resolve_fork_with_states(
 		ctx: &RebuildCtx,
@@ -794,12 +869,12 @@ impl super::Service {
 		);
 
 		// 3. Compute auth chains (needed for both V2 auth diff and V2_1+ context)
-		let mut union_auth = roaring::RoaringBitmap::new();
-		let mut intersect_auth = roaring::RoaringBitmap::new();
+		let mut union_auth = Bitmap::new();
+		let mut intersect_auth = Bitmap::new();
 		let mut first = true;
 
 		for map in fork_states {
-			let mut chain = roaring::RoaringBitmap::new();
+			let mut chain = Bitmap::new();
 			for eid in map.values() {
 				if let Some(&idx) = ctx.eid_to_idx.get(eid) {
 					chain.insert(idx);
@@ -819,7 +894,7 @@ impl super::Service {
 		// V2 only: auth chain diff events are also conflicted.
 		// V2_1+ (MSC4297): uses conflicted state subgraph instead.
 		if !is_v2_1_plus {
-			let auth_diff = std::ops::Sub::sub(&union_auth, &intersect_auth);
+			let auth_diff = std::ops::Sub::sub(union_auth.clone(), &intersect_auth);
 			for idx in auth_diff {
 				conflicted_eids.insert(ctx.idx_to_eid[to_usize(idx)].clone());
 			}

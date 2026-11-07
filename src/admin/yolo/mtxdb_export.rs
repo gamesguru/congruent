@@ -97,7 +97,7 @@ pub(super) async fn export_mtxdb_keys(&self, path: Option<String>) -> Result {
 		.await?;
 
 	self.write_str(&format!(
-		"Exported {} historical, {} provisional, {} corroborated, {} notary key records to {}",
+		"Exported {} permanent, {} provisional, {} corroborated, {} notary key records to {}",
 		counts.historical,
 		counts.provisional,
 		counts.corroborated,

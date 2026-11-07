@@ -87,8 +87,18 @@ pub(super) async fn rebuild_state(&self, room_id: OwnedRoomId) -> Result {
 
 	Box::pin(self.services.rooms.timeline.rebuild_state(&room_id)).await?;
 
+	// v23 skips the legacy membership maps, so retrying a room that failed
+	// there must also rebuild the state-derived membership cache.
+	let _state_lock = self.services.rooms.state.mutex.lock(&room_id).await;
+	self.services
+		.rooms
+		.state_cache
+		.reconcile_membership(&room_id)
+		.await;
+
 	self.write_str(&format!(
-		"Successfully rebuilt state for {room_id}. Timeline PduCounts were unchanged."
+		"Successfully rebuilt state and membership for {room_id}. Timeline PduCounts were \
+		 unchanged."
 	))
 	.await
 }
@@ -106,7 +116,7 @@ pub(super) async fn purge_timeline_pdu(&self, event_id: OwnedEventId) -> Result 
 
 	let mut room_id_opt = None;
 	if in_timeline {
-		if let Ok(pdu) = self.services.rooms.timeline.get_pdu(&event_id).await {
+		if let Ok(pdu) = self.services.rooms.timeline.get_pdu(&event_id) {
 			room_id_opt = pdu.room_id().map(ToOwned::to_owned);
 		}
 	}

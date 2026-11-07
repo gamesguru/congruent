@@ -504,7 +504,7 @@ async fn inject_state_hash_mismatches(
 		// mismatch.
 		let received_inputs = entry.resolution_inputs().map(ToOwned::to_owned);
 		let local_inputs = if check_inputs {
-			match services.rooms.timeline.get_pdu(&event_id).await {
+			match services.rooms.timeline.get_pdu(&event_id) {
 				| Ok(pdu) =>
 					services
 						.rooms

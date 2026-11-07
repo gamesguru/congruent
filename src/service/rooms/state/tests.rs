@@ -431,6 +431,274 @@ async fn seed_membership_state(
 	root
 }
 
+/// Roots after the first one store a lattice delta chain rather than repeating
+/// the full 2 KiB checkpoint, and replaying the chain yields the root's state
+/// group id.
+#[conduwuit_macros::async_test]
+async fn test_root_lattice_chain_replays_to_state_group_id() {
+	use conduwuit_mtxdb::lattice::{
+		LatticeRecord, RECORD_CHAIN, RECORD_CHECKPOINT, decode_record,
+	};
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
+	let mutex = services.rooms.state.mutex.lock(&room_id).await;
+	let root = seed_membership_state(&services, &room_id, &mutex, 3).await;
+
+	let raw = services
+		.rooms
+		.state_hamt
+		.store
+		.root_lattice(&root.structural_hash)
+		.expect("read lattice record")
+		.expect("chain root must have a lattice record");
+	assert_eq!(raw.first(), Some(&RECORD_CHAIN), "later roots must store a delta chain");
+
+	let chain = match decode_record(&raw).expect("decode chain record") {
+		| LatticeRecord::Chain(chain) => chain,
+		| LatticeRecord::Checkpoint(_) => panic!("expected a chain record"),
+	};
+	assert_eq!(chain.hops, 3, "create plus three members is three hops from the checkpoint");
+
+	let base = services
+		.rooms
+		.state_hamt
+		.store
+		.root_lattice(&chain.base)
+		.expect("read base record")
+		.expect("chain base must be persisted");
+	assert_eq!(
+		base.first(),
+		Some(&RECORD_CHECKPOINT),
+		"a chain must point at a full checkpoint"
+	);
+
+	let lattice = services
+		.rooms
+		.state
+		.get_root_lattice(&root)
+		.await
+		.expect("replay chain lattice");
+	assert_eq!(
+		lattice.digest(),
+		root.state_group_id,
+		"replayed lattice must match the root's state-group id"
+	);
+
+	// Extending from a root whose chain was just replayed must link to it and
+	// keep the original checkpoint rather than starting over.
+	let next_id = EventId::parse("$seed-member-3:test.conduwuit.local").unwrap();
+	let next =
+		create_dummy_pdu(&room_id, &next_id, "m.room.member", "@user3:test.conduwuit.local");
+	persist_dummy_pdu(&services, &room_id, &next).await;
+	let next_root = services
+		.rooms
+		.state
+		.set_event_state(&room_id, &next, &mutex)
+		.await
+		.expect("append after chain replay");
+
+	let next_raw = services
+		.rooms
+		.state_hamt
+		.store
+		.root_lattice(&next_root.structural_hash)
+		.expect("read next lattice record")
+		.expect("next root must have a lattice record");
+	let next_chain = match decode_record(&next_raw).expect("decode next chain") {
+		| LatticeRecord::Chain(chain) => chain,
+		| LatticeRecord::Checkpoint(_) => panic!("expected a chain record"),
+	};
+	assert_eq!(next_chain.hops, 4);
+	assert_eq!(next_chain.parent, root.structural_hash);
+	assert_eq!(next_chain.base, chain.base);
+}
+
+/// A chain compacts into a checkpoint exactly at the 500-hop boundary, and a
+/// cold read of the last linked root replays the whole chain from mtxdb.
+#[conduwuit_macros::async_test]
+async fn test_lattice_chain_compacts_and_replays_at_five_hundred_hops() {
+	use conduwuit_mtxdb::lattice::{
+		CHECKPOINT_INTERVAL, LatticeDelta, LatticeRecord, RECORD_CHECKPOINT, decode_record,
+	};
+	use rezzy::{hamt::RootHandle, incremental::LtHash};
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let mut lattice = LtHash::default();
+	let mut roots = Vec::new();
+	let mut previous: Option<RootHandle> = None;
+
+	for index in 0..=CHECKPOINT_INTERVAL {
+		let event_type = "m.room.member";
+		let state_key = format!("@user{index}:test.conduwuit.local");
+		let event_id = format!("$chain-{index}:test.conduwuit.local");
+		lattice.insert(event_type, &state_key, &event_id);
+
+		let mut structural_hash = [0_u8; 32];
+		structural_hash[..8].copy_from_slice(&u64::from(index).to_be_bytes());
+		let root = RootHandle::from_lthash(structural_hash, &lattice);
+
+		let delta = LatticeDelta::Insert {
+			event_type: event_type.to_owned(),
+			state_key: state_key.clone(),
+			event_id: event_id.clone(),
+		};
+		let (base, deltas) = match &previous {
+			| Some(base) => (Some(base), std::slice::from_ref(&delta)),
+			| None => (None, &[][..]),
+		};
+		services
+			.rooms
+			.state
+			.persist_root_lattice(&root, &lattice, base, deltas);
+
+		// Publish the record the way the live path would, so the chain is
+		// durable in mtxdb and the staged entry is retired.
+		let record = services
+			.rooms
+			.state
+			.lattice_record_for_publish(&root.structural_hash)
+			.expect("persisted root must stage a lattice record");
+		services
+			.rooms
+			.state_hamt
+			.store
+			.put_root_lattice(&root.structural_hash, &record)
+			.expect("publish lattice record");
+		services
+			.rooms
+			.state
+			.finish_lattice_publish(&root.structural_hash);
+
+		previous = Some(root.clone());
+		roots.push((root, lattice));
+	}
+
+	let record_at = |index: usize| {
+		services
+			.rooms
+			.state_hamt
+			.store
+			.root_lattice(&roots[index].0.structural_hash)
+			.expect("read lattice record")
+			.expect("root must have a lattice record")
+	};
+
+	assert_eq!(record_at(0).first(), Some(&RECORD_CHECKPOINT), "the first root is a checkpoint");
+	let last_chain = match decode_record(&record_at(499)).expect("decode hop 499") {
+		| LatticeRecord::Chain(chain) => chain,
+		| LatticeRecord::Checkpoint(_) => panic!("hop 499 must still be a chain"),
+	};
+	assert_eq!(last_chain.hops, 499);
+	assert_eq!(last_chain.base, roots[0].0.structural_hash);
+	assert_eq!(
+		record_at(500).first(),
+		Some(&RECORD_CHECKPOINT),
+		"hop 500 must compact into a checkpoint"
+	);
+
+	// Drop every cached lattice so the next read must walk the durable chain.
+	services.rooms.state.db.lattice_cache.invalidate_all();
+	services.rooms.state.db.lattice_cache.run_pending_tasks();
+
+	for index in [499_usize, 500] {
+		let (root, expected) = &roots[index];
+		let replayed = services
+			.rooms
+			.state
+			.get_root_lattice(root)
+			.await
+			.unwrap_or_else(|| panic!("replay hop {index}"));
+		assert_eq!(replayed, *expected, "replayed lattice must equal the accumulated lattice");
+		assert_eq!(
+			replayed.digest(),
+			root.state_group_id,
+			"replayed lattice must match the root's state-group id"
+		);
+	}
+
+	// Evict only the tip: the replay stops at a cached intermediate root
+	// instead of walking all the way back to the checkpoint.
+	services
+		.rooms
+		.state
+		.db
+		.lattice_cache
+		.invalidate(&roots[499].0.structural_hash);
+	services.rooms.state.db.lattice_cache.run_pending_tasks();
+	let (root, expected) = &roots[499];
+	let replayed = services
+		.rooms
+		.state
+		.get_root_lattice(root)
+		.await
+		.expect("replay from a cached intermediate root");
+	assert_eq!(replayed, *expected);
+}
+
+/// A caller that supplies deltas which do not reproduce the lattice gets a
+/// self-contained checkpoint instead of a chain that describes a different
+/// state.
+#[conduwuit_macros::async_test]
+async fn test_lattice_chain_falls_back_on_mismatched_deltas() {
+	use conduwuit_mtxdb::lattice::{
+		LatticeDelta, LatticeRecord, RECORD_CHECKPOINT, decode_record,
+	};
+	use rezzy::{hamt::RootHandle, incremental::LtHash};
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let mut base_lattice = LtHash::default();
+	base_lattice.insert("m.room.create", "", "$create");
+	let base = RootHandle::from_lthash([1; 32], &base_lattice);
+	services
+		.rooms
+		.state
+		.persist_root_lattice(&base, &base_lattice, None, &[]);
+	let base_record = services
+		.rooms
+		.state
+		.lattice_record_for_publish(&base.structural_hash)
+		.expect("base record");
+	services
+		.rooms
+		.state_hamt
+		.store
+		.put_root_lattice(&base.structural_hash, &base_record)
+		.expect("publish base record");
+	services
+		.rooms
+		.state
+		.finish_lattice_publish(&base.structural_hash);
+
+	let mut lattice = base_lattice;
+	lattice.insert("m.room.member", "@a:test.conduwuit.local", "$a");
+	let root = RootHandle::from_lthash([2; 32], &lattice);
+	let wrong_delta = LatticeDelta::Insert {
+		event_type: "m.room.member".to_owned(),
+		state_key: "@b:test.conduwuit.local".to_owned(),
+		event_id: "$b".to_owned(),
+	};
+	services
+		.rooms
+		.state
+		.persist_root_lattice(&root, &lattice, Some(&base), &[wrong_delta]);
+	let record = services
+		.rooms
+		.state
+		.lattice_record_for_publish(&root.structural_hash)
+		.expect("root record");
+
+	assert_eq!(
+		record.first(),
+		Some(&RECORD_CHECKPOINT),
+		"mismatched deltas must not produce a chain"
+	);
+	assert!(
+		matches!(decode_record(&record), Some(LatticeRecord::Checkpoint(_))),
+		"the fallback record must decode as a checkpoint"
+	);
+}
+
 /// A bulk state update must copy only the changed spines, not re-emit the tree.
 ///
 /// `resolve_state` used to call `build_hamt_root_handle` +
@@ -495,6 +763,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 			&root,
 			vec![(target_key, Some(target_value))],
 			&lattice,
+			&[],
 		)
 		.expect("bulk mutation failed");
 	// Deferred nodes are not cached before publication, so they must be
@@ -546,6 +815,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 			&new_root,
 			vec![(target_key, Some(target_value))],
 			&lattice,
+			&[],
 		)
 		.expect("repeat bulk mutation failed");
 	let (rewritten_after, _) = services.rooms.state_hamt.store.write_stats().snapshot();
@@ -629,7 +899,14 @@ async fn test_bulk_state_update_insert_remove_and_mixed() {
 			let (handle, nodes) = services
 				.rooms
 				.state
-				.persist_state_hamt_mutations(room_id, structural_key, &prev, mutations, lattice)
+				.persist_state_hamt_mutations(
+					room_id,
+					structural_key,
+					&prev,
+					mutations,
+					lattice,
+					&[],
+				)
 				.expect("bulk mutation failed");
 			services
 				.rooms
@@ -1177,6 +1454,11 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 	let rejected = event_id!("$rejected:test.conduwuit.local").to_owned();
 	let redacted = event_id!("$redacted:test.conduwuit.local").to_owned();
 	let redaction = event_id!("$redaction:test.conduwuit.local").to_owned();
+	services
+		.rooms
+		.short
+		.set_room_version(&room_id, &slipstream::RoomVersionId::V11)
+		.expect("room version must be persisted");
 
 	for (id, kind) in [
 		(&ok, "m.room.topic"),
@@ -1190,7 +1472,7 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 	services
 		.rooms
 		.pdu_metadata
-		.mark_event_soft_failed(&soft, SoftFailCode::Manual)
+		.mark_event_soft_failed_at(&soft, SoftFailCode::Manual, 9)
 		.unwrap();
 	services
 		.rooms
@@ -1209,22 +1491,11 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 	let create_pdu = PduEvent::from_id_val(&create, create_json, Some(&room_id)).unwrap();
 	persist_dummy_pdu(&services, &room_id, &create_pdu).await;
 
-	let shortroomid = services
-		.rooms
-		.short
-		.get_or_create_shortroomid(&room_id)
-		.await;
-	// The room has no create event: seed the room version directly so
-	// `redact_pdu` can apply redaction rules.
-	services
-		.rooms
-		.short
-		.set_room_version(&room_id, &slipstream::RoomVersionId::V11);
 	let reason = create_dummy_pdu(&room_id, &redaction, "m.room.redaction", "");
 	services
 		.rooms
 		.timeline
-		.redact_pdu(&redacted, &reason, shortroomid)
+		.redact_pdu(&redacted, &reason)
 		.await
 		.expect("redaction must be recorded");
 
@@ -1254,9 +1525,14 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 	assert_eq!(field(&soft, "soft_fail_code").and_then(|v| v.as_u64()), Some(2));
 	assert_eq!(field(&rejected, "rejection_code").and_then(|v| v.as_u64()), Some(7));
 	assert_eq!(field(&soft, "soft_failed"), Some(true.into()));
+	assert_eq!(field(&soft, "arrival_ordering").and_then(|v| v.as_i64()), Some(9));
 	assert_eq!(field(&rejected, "rejected"), Some(true.into()));
 	assert_eq!(field(&ok, "rejected"), Some(false.into()));
 	assert!(field(&ok, "soft_fail_code").is_none() && field(&ok, "redacted_by").is_none());
+	assert!(
+		field(&rejected, "arrival_ordering").is_none(),
+		"rejected events have no arrival order"
+	);
 	assert_eq!(
 		field(&redacted, "redacted_by").and_then(|v| v.as_str().map(str::to_owned)),
 		Some(redaction.as_str().to_owned())
@@ -1334,11 +1610,12 @@ async fn test_keys_export_carries_every_kind_and_payload() {
 		.unwrap();
 	assert_eq!(
 		(counts.historical, counts.provisional, counts.corroborated, counts.notary),
-		(1, 1, 1, 1)
+		(1, 1, 2, 1)
 	);
 	let text = String::from_utf8(out).unwrap();
 
-	let mut by_kind = std::collections::HashMap::new();
+	let mut keys = std::collections::HashMap::new();
+	let mut notary = None;
 	for line in text.lines() {
 		let slipstream::json::Value::Object(object) = slipstream::codec::from_str(line).unwrap()
 		else {
@@ -1346,54 +1623,27 @@ async fn test_keys_export_carries_every_kind_and_payload() {
 		};
 		assert_eq!(object["t"].as_str(), Some("server_keys"));
 		assert_eq!(object["origin"].as_str(), Some("keys.example.org"));
-		let bytes = STANDARD
-			.decode(object["payload"].as_str().unwrap())
-			.unwrap();
-		by_kind.insert(object["kind"].as_str().unwrap().to_owned(), bytes);
+		match object["kind"].as_str().unwrap() {
+			| "permanent" | "provisional" => {
+				keys.insert(object["key_id"].as_str().unwrap().to_owned(), object);
+			},
+			| "notary" => {
+				let payload = object["payload"].as_str().unwrap();
+				notary = Some(STANDARD.decode(payload).unwrap());
+			},
+			| other => panic!("unexpected key kind {other}"),
+		}
 	}
-	assert_eq!(by_kind.len(), 4, "one record per kind: {:?}", by_kind.keys());
 
-	let ids = |kind: &str| -> Vec<String> {
-		slipstream::codec::from_slice(&by_kind[kind]).expect("key id array")
-	};
-	assert_eq!(ids("provisional"), ["ed25519:B"]);
-	// Every key accepted as active in any response is corroborated, whatever
-	// its source, so the notary-learned B is here too.
-	assert_eq!(ids("corroborated"), ["ed25519:A", "ed25519:B"]);
-	let historical: ServerSigningKeys =
-		slipstream::codec::from_slice(&by_kind["historical"]).unwrap();
-	assert_eq!(historical.verify_keys.len(), 2, "A and B are both in the cumulative record");
-	assert_eq!(by_kind["notary"], notary_body.get().as_bytes(), "notary body is verbatim");
-
-	// A never-seen origin's historical record starts at `valid_until_ts = now`,
-	// the one field that differs between runs. Pin it, then compare the
-	// otherwise exact export with the fixture the CLI importer also reads.
-	let pinned: Vec<String> = text
-		.lines()
-		.map(|line| {
-			let slipstream::json::Value::Object(mut object) =
-				slipstream::codec::from_str(line).unwrap()
-			else {
-				unreachable!()
-			};
-			if object["kind"].as_str() == Some("historical") {
-				let mut keys: ServerSigningKeys =
-					slipstream::codec::from_slice(&by_kind["historical"]).unwrap();
-				keys.valid_until_ts = MilliSecondsSinceUnixEpoch(4_102_444_800_000);
-				object.insert(
-					"payload".to_owned(),
-					slipstream::json::Value::String(
-						STANDARD.encode(slipstream::codec::to_vec(&keys)),
-					),
-				);
-			}
-			slipstream::codec::to_string(&slipstream::json::Value::Object(object))
-		})
-		.collect();
-	assert_matches_fixture(
-		"tests/fixtures/mtxdb-export/server-keys-v1.jsonl",
-		&(pinned.join("\n") + "\n"),
-	);
+	assert_eq!(keys.len(), 2, "one record per key");
+	let a = &keys["ed25519:A"];
+	assert_eq!(a["kind"].as_str(), Some("permanent"));
+	assert_eq!(STANDARD.decode(a["key"].as_str().unwrap()).unwrap(), vec![0x11; 32]);
+	assert_eq!(a["corroborated"].as_bool(), Some(true));
+	let b = &keys["ed25519:B"];
+	assert_eq!(b["kind"].as_str(), Some("provisional"));
+	assert_eq!(STANDARD.decode(b["key"].as_str().unwrap()).unwrap(), vec![0x22; 32]);
+	assert_eq!(notary.unwrap(), notary_body.get().as_bytes(), "notary body is verbatim");
 }
 
 /// Outliers are exported with `outlier: true`, an event stored as both a
@@ -1405,6 +1655,11 @@ async fn test_room_export_outliers_duplicates_and_end_count() {
 	let room_id = room_id!("!export-outlier:test.conduwuit.local").to_owned();
 	let timeline = event_id!("$timeline:test.conduwuit.local").to_owned();
 	let outlier = event_id!("$outlier:test.conduwuit.local").to_owned();
+	services
+		.rooms
+		.short
+		.set_room_version(&room_id, &slipstream::RoomVersionId::V11)
+		.expect("room version must be persisted");
 
 	persist_dummy_pdu(
 		&services,
@@ -1500,6 +1755,11 @@ async fn test_room_export_fails_when_writer_errors_mid_stream() {
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = room_id!("!export-writer-failure:test.conduwuit.local").to_owned();
 	let event_id = event_id!("$export-writer-failure:test.conduwuit.local").to_owned();
+	services
+		.rooms
+		.short
+		.set_room_version(&room_id, &slipstream::RoomVersionId::V11)
+		.expect("room version must be persisted");
 	persist_dummy_pdu(
 		&services,
 		&room_id,
@@ -1523,4 +1783,458 @@ async fn test_room_export_fails_when_writer_errors_mid_stream() {
 		!String::from_utf8_lossy(&writer.bytes).contains("\"t\":\"end\""),
 		"a failed export must not emit a valid end record"
 	);
+}
+
+/// `append_pdu` must take the per-room `mutex_insert` *before* it writes the
+/// event body, because that write CASes the room-wide auth collection.
+///
+/// The future is polled by hand while the test holds the lock, so no sleep or
+/// scheduler timing decides the result. With the lock taken first the future
+/// stays pending at the lock and the body is never written; if the body write
+/// came first, it would land on an early poll.
+#[conduwuit_macros::async_test]
+async fn append_pdu_takes_insert_lock_before_writing_body() {
+	use std::{
+		future::Future,
+		pin::pin,
+		task::{Context, Poll, Waker},
+	};
+
+	use crate::rooms::timeline::AppendPduContext;
+
+	const POLLS_WITH_LOCK_HELD: usize = 200;
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!ordering:test.conduwuit.local").unwrap();
+	let event_id = slipstream::OwnedEventId::parse("$ordering:test.conduwuit.local").unwrap();
+	let room_id = room_id.as_ref();
+	let event_id = event_id.as_ref();
+	let pdu = create_dummy_pdu(room_id, event_id, "m.room.message", "");
+	let pdu_json = pdu.to_canonical_object();
+
+	services
+		.rooms
+		.short
+		.get_or_create_shortroomid(room_id)
+		.await;
+	services
+		.rooms
+		.short
+		.set_room_version(room_id, &slipstream::RoomVersionId::V10)
+		.expect("room version");
+
+	let events = conduwuit_mtxdb::events::EventAdapter::new(services.mtxdb.clone());
+	let state_lock = services.rooms.state.mutex.lock(room_id).await;
+	let insert_lock = services.rooms.timeline.mutex_insert.lock(room_id).await;
+
+	let append = services.rooms.timeline.append_pdu(
+		&pdu,
+		pdu_json,
+		std::iter::empty::<&EventId>(),
+		false,
+		AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: None,
+			pending_nodes: Vec::new(),
+			prev_state_root_handle: None,
+			advance_current_state: false,
+			was_joined_before_state_install: None,
+		},
+	);
+	let mut append = pin!(append);
+	let mut cx = Context::from_waker(Waker::noop());
+
+	for _ in 0..POLLS_WITH_LOCK_HELD {
+		assert!(
+			matches!(append.as_mut().poll(&mut cx), Poll::Pending),
+			"append_pdu finished while mutex_insert was held"
+		);
+		assert!(
+			events
+				.get_event(room_id.as_bytes(), event_id.as_bytes())
+				.expect("get_event")
+				.is_none(),
+			"event body was written before append_pdu took mutex_insert"
+		);
+		tokio::task::yield_now().await;
+	}
+
+	drop(insert_lock);
+	append
+		.await
+		.expect("append_pdu after releasing the insert lock");
+	assert!(
+		events
+			.get_event(room_id.as_bytes(), event_id.as_bytes())
+			.expect("get_event")
+			.is_some(),
+		"event body must exist once append_pdu completes"
+	);
+}
+
+/// A failed timeline insert must not publish the event as a forward extremity
+/// or a reference: nothing would ever have a timeline row for it.
+#[conduwuit_macros::async_test]
+async fn failed_timeline_insert_leaves_no_extremity_or_reference() {
+	use futures::StreamExt;
+
+	use crate::rooms::timeline::AppendPduContext;
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!failed:test.conduwuit.local").unwrap();
+	let event_id = slipstream::OwnedEventId::parse("$failed:test.conduwuit.local").unwrap();
+	let prev_id = slipstream::OwnedEventId::parse("$prev:test.conduwuit.local").unwrap();
+	let room_id = room_id.as_ref();
+	let event_id = event_id.as_ref();
+	let prev_id: &EventId = prev_id.as_ref();
+	let mut json =
+		create_dummy_pdu(room_id, event_id, "m.room.message", "").to_canonical_object();
+	json.insert(
+		"prev_events".into(),
+		slipstream::CanonicalJsonValue::Array(vec![slipstream::CanonicalJsonValue::String(
+			prev_id.as_str().to_owned(),
+		)]),
+	);
+	let pdu = PduEvent::from_id_val(event_id, json.clone(), Some(room_id)).expect("pdu");
+
+	services
+		.rooms
+		.short
+		.get_or_create_shortroomid(room_id)
+		.await;
+	services
+		.rooms
+		.short
+		.set_room_version(room_id, &slipstream::RoomVersionId::V10)
+		.expect("room version");
+
+	// A malformed head makes `stage_append` fail with `Corrupt`, after the event
+	// body has been written.
+	let timeline = conduwuit_mtxdb::timeline::TimelineAdapter::new(services.mtxdb.clone());
+	timeline
+		.ensure_room_metadata(room_id.as_bytes())
+		.expect("timeline metadata");
+	let tx = services.mtxdb.begin_transaction();
+	tx.put(
+		conduwuit_mtxdb::ShardType::EventDag,
+		conduwuit_mtxdb::timeline::timeline_collection_id(room_id.as_str()),
+		conduwuit_mtxdb::timeline::TIMELINE_HEAD_ID,
+		b"not a timeline head",
+	)
+	.expect("stage corrupt head");
+	tx.commit().expect("commit corrupt head");
+
+	let state_lock = services.rooms.state.mutex.lock(room_id).await;
+	let result = services
+		.rooms
+		.timeline
+		.append_pdu(&pdu, json.clone(), std::iter::once(event_id), false, AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: None,
+			pending_nodes: Vec::new(),
+			prev_state_root_handle: None,
+			advance_current_state: false,
+			was_joined_before_state_install: None,
+		})
+		.await;
+	assert!(result.is_err(), "the corrupt head must fail the append");
+
+	let extremities: Vec<_> = services
+		.rooms
+		.state
+		.get_forward_extremities(room_id)
+		.collect()
+		.await;
+	assert!(extremities.is_empty(), "failed append published {extremities:?}");
+	assert!(
+		!services
+			.rooms
+			.pdu_metadata
+			.is_event_referenced(room_id, prev_id)
+			.await,
+		"failed append marked its prev event as referenced"
+	);
+
+	// Repair the head and redeliver: the failed append must be completed, not
+	// duplicated. This is window 1, before the timeline row.
+	let tx = services.mtxdb.begin_transaction();
+	tx.remove(
+		conduwuit_mtxdb::ShardType::EventDag,
+		conduwuit_mtxdb::timeline::timeline_collection_id(room_id.as_str()),
+		conduwuit_mtxdb::timeline::TIMELINE_HEAD_ID,
+	)
+	.expect("remove corrupt head");
+	tx.commit().expect("commit head removal");
+
+	let root = empty_root_handle();
+	let result = services
+		.rooms
+		.timeline
+		.append_pdu(&pdu, json, std::iter::once(event_id), false, AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: Some(root),
+			pending_nodes: Vec::new(),
+			prev_state_root_handle: None,
+			advance_current_state: false,
+			was_joined_before_state_install: None,
+		})
+		.await;
+	assert!(result.is_ok(), "redelivery after the failed insert: {result:?}");
+
+	assert_single_timeline_row(&services, room_id, event_id);
+	assert_published(&services, room_id, event_id, prev_id).await;
+}
+
+/// A root handle with no state, sufficient for tests that only need a
+/// publishable state pointer.
+fn empty_root_handle() -> rezzy::hamt::RootHandle {
+	rezzy::hamt::RootHandle {
+		codec_version: rezzy::hamt::HAMT_CODEC_VERSION,
+		routing_version: rezzy::hamt::HAMT_ROUTING_VERSION,
+		routing_params: [0; 4],
+		structural_hash: [0; 32],
+		state_group_id: [0; 32],
+	}
+}
+
+fn assert_single_timeline_row(services: &Services, room_id: &RoomId, event_id: &EventId) {
+	let timeline = conduwuit_mtxdb::timeline::TimelineAdapter::new(services.mtxdb.clone());
+	let page = timeline
+		.page_room(room_id.as_bytes(), None, true, 256)
+		.expect("read timeline");
+	let rows = page
+		.entries
+		.iter()
+		.filter(|entry| {
+			entry.event_ref == conduwuit_mtxdb::timeline::event_id_ref(event_id.as_bytes())
+		})
+		.count();
+	assert_eq!(rows, 1, "expected exactly one timeline row for {event_id}");
+}
+
+async fn assert_published(
+	services: &Services,
+	room_id: &RoomId,
+	event_id: &EventId,
+	prev_id: &EventId,
+) {
+	use futures::StreamExt;
+
+	assert!(
+		services.rooms.timeline.get_pdu_id(event_id).await.is_ok(),
+		"the duplicate gate must be restored"
+	);
+	let extremities: Vec<_> = services
+		.rooms
+		.state
+		.get_forward_extremities(room_id)
+		.collect()
+		.await;
+	assert!(
+		extremities.iter().any(|extremity| extremity == event_id),
+		"forward extremity missing after redelivery: {extremities:?}"
+	);
+	assert!(
+		services
+			.rooms
+			.pdu_metadata
+			.is_event_referenced(room_id, prev_id)
+			.await,
+		"prev-event reference missing after redelivery"
+	);
+	let shorteventid = services
+		.rooms
+		.short
+		.get_or_create_shorteventid(event_id)
+		.await;
+	assert!(
+		services
+			.rooms
+			.state
+			.get_roothandle(shorteventid)
+			.await
+			.is_ok(),
+		"state root missing after redelivery"
+	);
+}
+
+/// A crash after the timeline row but before the legacy batch leaves the row
+/// and body without extremities, references or state. Redelivery must reuse the
+/// row, finish those writes, and keep exactly one row.
+#[conduwuit_macros::async_test]
+async fn redelivery_after_the_timeline_row_repairs_the_missing_writes() {
+	use crate::rooms::timeline::AppendPduContext;
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!window2:test.conduwuit.local").unwrap();
+	let event_id = slipstream::OwnedEventId::parse("$window2:test.conduwuit.local").unwrap();
+	let prev_id = slipstream::OwnedEventId::parse("$prev2:test.conduwuit.local").unwrap();
+	let room_id = room_id.as_ref();
+	let event_id = event_id.as_ref();
+	let prev_id: &EventId = prev_id.as_ref();
+	let mut json =
+		create_dummy_pdu(room_id, event_id, "m.room.message", "").to_canonical_object();
+	json.insert(
+		"prev_events".into(),
+		slipstream::CanonicalJsonValue::Array(vec![slipstream::CanonicalJsonValue::String(
+			prev_id.as_str().to_owned(),
+		)]),
+	);
+	let pdu = PduEvent::from_id_val(event_id, json.clone(), Some(room_id)).expect("pdu");
+
+	services
+		.rooms
+		.short
+		.get_or_create_shortroomid(room_id)
+		.await;
+	services
+		.rooms
+		.short
+		.set_room_version(room_id, &slipstream::RoomVersionId::V10)
+		.expect("room version");
+
+	// Simulate the crash: the body and timeline row committed, nothing else.
+	let events = conduwuit_mtxdb::events::EventAdapter::new(services.mtxdb.clone());
+	let body = slipstream::codec::to_string(&json);
+	let prev_refs: Vec<&[u8]> = pdu.prev_events().map(AsRef::as_ref).collect();
+	events
+		.write_event_with_edges(
+			room_id.as_bytes(),
+			event_id.as_bytes(),
+			body.as_bytes(),
+			&prev_refs,
+			&[],
+		)
+		.expect("write event body");
+	let timeline = conduwuit_mtxdb::timeline::TimelineAdapter::new(services.mtxdb.clone());
+	let entry = conduwuit_mtxdb::timeline::TimelineAdapter::make_entry(
+		room_id.as_bytes(),
+		pdu.depth().cast_signed(),
+		1,
+		event_id.as_bytes(),
+	);
+	timeline
+		.append_room(room_id.as_bytes(), &[entry])
+		.expect("write timeline row");
+	assert!(
+		!services
+			.rooms
+			.timeline
+			.non_outlier_pdu_exists(event_id)
+			.await,
+		"the legacy gate must not exist before redelivery"
+	);
+
+	let root = empty_root_handle();
+	let state_lock = services.rooms.state.mutex.lock(room_id).await;
+	let result = services
+		.rooms
+		.timeline
+		.append_pdu(&pdu, json, std::iter::once(event_id), false, AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: Some(root),
+			pending_nodes: Vec::new(),
+			prev_state_root_handle: None,
+			advance_current_state: false,
+			was_joined_before_state_install: None,
+		})
+		.await;
+	assert!(result.is_ok(), "redelivery after the row: {result:?}");
+
+	assert_single_timeline_row(&services, room_id, event_id);
+	assert_published(&services, room_id, event_id, prev_id).await;
+}
+
+/// A crash after every other write but before the legacy batch leaves the
+/// duplicate gate missing. Redelivery must restore it without adding a row.
+#[conduwuit_macros::async_test]
+async fn redelivery_after_the_state_root_restores_the_gate() {
+	use crate::rooms::timeline::AppendPduContext;
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!window3:test.conduwuit.local").unwrap();
+	let event_id = slipstream::OwnedEventId::parse("$window3:test.conduwuit.local").unwrap();
+	let prev_id = slipstream::OwnedEventId::parse("$prev3:test.conduwuit.local").unwrap();
+	let room_id = room_id.as_ref();
+	let event_id = event_id.as_ref();
+	let prev_id: &EventId = prev_id.as_ref();
+	let mut json =
+		create_dummy_pdu(room_id, event_id, "m.room.message", "").to_canonical_object();
+	json.insert(
+		"prev_events".into(),
+		slipstream::CanonicalJsonValue::Array(vec![slipstream::CanonicalJsonValue::String(
+			prev_id.as_str().to_owned(),
+		)]),
+	);
+	let pdu = PduEvent::from_id_val(event_id, json.clone(), Some(room_id)).expect("pdu");
+
+	services
+		.rooms
+		.short
+		.get_or_create_shortroomid(room_id)
+		.await;
+	services
+		.rooms
+		.short
+		.set_room_version(room_id, &slipstream::RoomVersionId::V10)
+		.expect("room version");
+
+	let root = empty_root_handle();
+	let state_lock = services.rooms.state.mutex.lock(room_id).await;
+	let result = services
+		.rooms
+		.timeline
+		.append_pdu(&pdu, json.clone(), std::iter::once(event_id), false, AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: Some(root.clone()),
+			pending_nodes: Vec::new(),
+			prev_state_root_handle: None,
+			advance_current_state: false,
+			was_joined_before_state_install: None,
+		})
+		.await;
+	assert!(result.is_ok(), "first append: {result:?}");
+
+	// Simulate a crash after the state root but before the batch: remove only
+	// the duplicate gate.
+	let pdu_id = services
+		.rooms
+		.timeline
+		.get_pdu_id(event_id)
+		.await
+		.expect("gate before the simulated crash");
+	services.db["eventid_pduid"].remove(event_id);
+	services.db["eventid_metadata"].remove(event_id.as_bytes());
+	services.db["room_pducount_eventid"].remove(&pdu_id);
+	assert!(
+		!services
+			.rooms
+			.timeline
+			.non_outlier_pdu_exists(event_id)
+			.await,
+		"the gate must be gone before redelivery"
+	);
+
+	let result = services
+		.rooms
+		.timeline
+		.append_pdu(&pdu, json, std::iter::once(event_id), false, AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: Some(root),
+			pending_nodes: Vec::new(),
+			prev_state_root_handle: None,
+			advance_current_state: false,
+			was_joined_before_state_install: None,
+		})
+		.await;
+	assert!(result.is_ok(), "redelivery after the state root: {result:?}");
+
+	assert_single_timeline_row(&services, room_id, event_id);
+	assert_published(&services, room_id, event_id, prev_id).await;
 }

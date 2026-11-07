@@ -100,39 +100,123 @@ impl VerdictAdapter {
 	where
 		F: FnMut(&mut Verdict),
 	{
-		let node = event_record_id(event_id);
-		let collection = event_verdict_collection_id(&node);
-		let mut attempts = 0_u8;
+		// The per-store write lock does not cover other stores or processes, so
+		// a commit can still lose to a concurrent writer: re-read and redo.
+		const MAX_ATTEMPTS: u32 = 8;
+		let mut attempt = 1;
 		loop {
-			let version = self
-				.store
-				.collection_version(ShardType::EventDag, &collection)?;
-			let mut verdict = match self.store.get(ShardType::EventDag, &collection, node)? {
-				| Some(bytes) => {
-					let (stored_event, verdict) = decode_verdict(&bytes)?;
-					if stored_event != event_id {
-						return Err(StorageError::Corrupt(
-							"event record id collision in verdicts".to_owned(),
-						));
-					}
-					verdict
-				},
-				| None => Verdict::default(),
-			};
-			change(&mut verdict);
-
-			let tx = self.store.begin_transaction();
-			tx.expect_collection_version(ShardType::EventDag, collection, version)?;
-			self.stage(&tx, event_id, &verdict)?;
-			match tx.commit() {
-				| Err(StorageError::StaleRead { .. }) if attempts < 3 => {
-					attempts = attempts
-						.checked_add(1)
-						.expect("attempts is less than three");
-				},
+			match self.update_once(event_id, &mut change) {
+				| Err(error) if error.is_stale_read() && attempt < MAX_ATTEMPTS =>
+					attempt = attempt.saturating_add(1),
 				| result => return result,
 			}
 		}
+	}
+
+	/// Apply one verdict change to many events using one transaction per
+	/// bucketed collection. Records are read through the staged transaction so
+	/// the version check protects the complete read-modify-write batch.
+	///
+	/// A conflicting bucket is retried like [`Self::update`]; because buckets
+	/// commit independently, `change` must be idempotent (the marker setters
+	/// are) in case an earlier bucket already committed before the retry.
+	pub fn update_many<F>(&self, event_ids: &[&[u8]], mut change: F) -> Result<(), StorageError>
+	where
+		F: FnMut(&[u8], &mut Verdict),
+	{
+		const MAX_ATTEMPTS: u32 = 8;
+		let mut attempt = 1;
+		loop {
+			match self.update_many_once(event_ids, &mut change) {
+				| Err(error) if error.is_stale_read() && attempt < MAX_ATTEMPTS =>
+					attempt = attempt.saturating_add(1),
+				| result => return result,
+			}
+		}
+	}
+
+	fn update_many_once<F>(&self, event_ids: &[&[u8]], change: &mut F) -> Result<(), StorageError>
+	where
+		F: FnMut(&[u8], &mut Verdict),
+	{
+		use std::collections::HashMap;
+
+		let mut buckets: HashMap<CollectionId, Vec<(NodeId, &[u8])>> = HashMap::new();
+		for event_id in event_ids {
+			let node = event_record_id(event_id);
+			buckets
+				.entry(event_verdict_collection_id(&node))
+				.or_default()
+				.push((node, event_id));
+		}
+
+		for (collection, entries) in buckets {
+			let _write_lock = self.store.write_lock(ShardType::EventDag, collection);
+			let tx = self.store.begin_transaction();
+			let nodes: Vec<NodeId> = entries.iter().map(|(node, _)| *node).collect();
+			let (values, version) =
+				tx.get_with_collection_version(ShardType::EventDag, collection, &nodes)?;
+			let mut updates = Vec::with_capacity(entries.len());
+			for ((node, event_id), value) in entries.iter().zip(values) {
+				let mut verdict = match value {
+					| Some(bytes) => {
+						let (stored_event, verdict) = decode_verdict(&bytes)?;
+						if stored_event != *event_id {
+							return Err(StorageError::Corrupt(
+								"event record id collision in verdicts".to_owned(),
+							));
+						}
+						verdict
+					},
+					| None => Verdict::default(),
+				};
+				change(event_id, &mut verdict);
+				updates.push((*node, *event_id, verdict));
+			}
+			tx.expect_collection_version(ShardType::EventDag, collection, version)?;
+			for (node, event_id, verdict) in updates {
+				if verdict.is_empty() {
+					tx.remove(ShardType::EventDag, collection, node)?;
+				} else {
+					tx.put(
+						ShardType::EventDag,
+						collection,
+						node,
+						&encode_verdict(event_id, &verdict)?,
+					)?;
+				}
+			}
+			tx.commit()?;
+		}
+		Ok(())
+	}
+
+	fn update_once<F>(&self, event_id: &[u8], change: &mut F) -> Result<(), StorageError>
+	where
+		F: FnMut(&mut Verdict),
+	{
+		let node = event_record_id(event_id);
+		let collection = event_verdict_collection_id(&node);
+		let _write_lock = self.store.write_lock(ShardType::EventDag, collection);
+		let tx = self.store.begin_transaction();
+		let (values, version) =
+			tx.get_with_collection_version(ShardType::EventDag, collection, &[node])?;
+		let mut verdict = match values.into_iter().next().flatten() {
+			| Some(bytes) => {
+				let (stored_event, verdict) = decode_verdict(&bytes)?;
+				if stored_event != event_id {
+					return Err(StorageError::Corrupt(
+						"event record id collision in verdicts".to_owned(),
+					));
+				}
+				verdict
+			},
+			| None => Verdict::default(),
+		};
+		change(&mut verdict);
+		tx.expect_collection_version(ShardType::EventDag, collection, version)?;
+		self.stage(&tx, event_id, &verdict)?;
+		tx.commit()
 	}
 
 	/// Stage the event's whole verdict in `tx`, replacing any stored one, so an
@@ -148,7 +232,12 @@ impl VerdictAdapter {
 	) -> Result<(), StorageError> {
 		let node = event_record_id(event_id);
 		let collection = event_verdict_collection_id(&node);
-		if let Some(existing) = self.store.get(ShardType::EventDag, &collection, node)? {
+		if let Some(existing) = tx
+			.get_many(ShardType::EventDag, collection, &[node])?
+			.into_iter()
+			.next()
+			.flatten()
+		{
 			let (stored_event, _) = decode_verdict(&existing)?;
 			if stored_event != event_id {
 				return Err(StorageError::Corrupt(
@@ -218,6 +307,7 @@ mod tests {
 					soft_fail: Some(7),
 					redacted_by: Some(b"$redact:example.com".to_vec()),
 					outlier: false,
+					arrival_ordering: None,
 				})
 			);
 			assert!(adapter.get(other).unwrap().is_none());
@@ -240,12 +330,36 @@ mod tests {
 	}
 
 	#[test]
+	fn batch_update_preserves_other_verdict_fields() {
+		let path = test_path("update-many");
+		let _ = fs::remove_dir_all(&path);
+		let first = b"$first:example.com";
+		let second = b"$second:example.com";
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = VerdictAdapter::new(store);
+
+		adapter.update(first, |v| v.soft_fail = Some(7)).unwrap();
+		adapter
+			.update_many(&[first, second], |_, verdict| {
+				verdict.rejection = Some(4);
+			})
+			.unwrap();
+
+		assert_eq!(adapter.get(first).unwrap().unwrap().rejection, Some(4));
+		assert_eq!(adapter.get(first).unwrap().unwrap().soft_fail, Some(7));
+		assert_eq!(adapter.get(second).unwrap().unwrap().rejection, Some(4));
+		assert_eq!(adapter.get(second).unwrap().unwrap().soft_fail, None);
+		fs::remove_dir_all(&path).unwrap();
+	}
+
+	#[test]
 	fn decode_rejects_truncated_records() {
 		let verdict = Verdict {
 			rejection: Some(1),
 			soft_fail: None,
 			redacted_by: Some(b"$r:x".to_vec()),
 			outlier: false,
+			arrival_ordering: None,
 		};
 		let bytes = encode_verdict(b"$e:x", &verdict).unwrap();
 		let old_bytes: &[u8] =
@@ -273,6 +387,7 @@ mod tests {
 			soft_fail: None,
 			redacted_by: Some(b"$redact:example.com".to_vec()),
 			outlier: false,
+			arrival_ordering: None,
 		};
 		let tx = store.begin_transaction();
 		adapter.stage(&tx, event, &verdict).unwrap();
@@ -288,6 +403,7 @@ mod tests {
 			soft_fail: Some(2),
 			redacted_by: None,
 			outlier: false,
+			arrival_ordering: None,
 		};
 		for _ in 0..2 {
 			let tx = store.begin_transaction();

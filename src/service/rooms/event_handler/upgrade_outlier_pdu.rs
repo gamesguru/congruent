@@ -244,7 +244,12 @@ where
 	let partial_auth_events: Vec<PduEvent> = if partial_room {
 		let mut v = Vec::new();
 		for id in incoming_pdu.auth_events() {
-			if let Ok(pdu) = self.services.timeline.get_pdu(id).await {
+			if let Ok(pdu) = self.services.timeline.get_pdu(id) {
+				// A rejected (including pre-persisted/pending) event has no
+				// validated auth verdict and must not be trusted as auth context.
+				if self.services.pdu_metadata.is_event_rejected(id)? {
+					continue;
+				}
 				v.push(pdu);
 			}
 		}
@@ -274,7 +279,7 @@ where
 		let from_state = async {
 			let shortstatekey = self.services.short.get_shortstatekey(&k, &s).await.ok()?;
 			let event_id = state_fetch_state.get(&shortstatekey)?;
-			self.services.timeline.get_pdu(event_id).await.ok()
+			self.services.timeline.get_pdu(event_id).ok()
 		}
 		.await;
 		from_state.or_else(|| {
@@ -403,7 +408,7 @@ where
 				// TODO: If pending-redaction tracking is added, bound its per-room
 				// entries and age. The current path stores no additional pending index;
 				// the bound is needed for the future target-to-redaction lookup.
-				self.services.timeline.get_pdu(&redact_id).await.is_ok()
+				self.services.timeline.get_pdu(&redact_id).is_ok()
 					&& !self
 						.services
 						.state_accessor
@@ -629,9 +634,11 @@ where
 		.await?;
 
 		// Soft fail, we keep the event as an outlier but don't add it to the timeline
-		self.services.pdu_metadata.mark_event_soft_failed(
+		let arrival = self.services.globals.next_count()?;
+		self.services.pdu_metadata.mark_event_soft_failed_at(
 			incoming_pdu.event_id(),
 			crate::rooms::pdu_metadata::SoftFailCode::AuthCheckFailed,
+			arrival,
 		)?;
 
 		warn!(
@@ -741,7 +748,6 @@ async fn reusable_predecessor_root_handle(
 		.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), prev_event)
-		.await
 	{
 		| Ok(pdu) => pdu,
 		| Err(e) if e.is_not_found() => return Ok(None),

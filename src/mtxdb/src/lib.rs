@@ -13,12 +13,16 @@ use std::{
 pub mod events;
 pub mod keys;
 pub mod marker;
+pub mod room_metadata;
 pub mod server_keys;
 pub mod shortids;
 pub mod state;
 pub mod store;
+pub mod timeline;
 pub mod verdicts;
 
+/// Content-addressed state lattice checkpoint/chain codec, owned by mtxdb.
+pub use mtxdb::lattice;
 /// Database shard type.
 pub use mtxdb::ShardType;
 /// Wire schema of the `mtxdb-export/v1` interchange, shared with the importer.

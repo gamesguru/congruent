@@ -465,7 +465,7 @@ impl Service {
 			return Ok(());
 		};
 
-		let Ok(pdu) = self.services.timeline.get_pdu(&in_reply_to.event_id).await else {
+		let Ok(pdu) = self.services.timeline.get_pdu(&in_reply_to.event_id) else {
 			error!(
 				event_id = ?in_reply_to.event_id,
 				"Missing admin command in_reply_to event"

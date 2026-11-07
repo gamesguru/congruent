@@ -63,7 +63,7 @@ async fn lazy_member_event(
 		.filter(|(_, pdu)| pdu.sender() == user_id)
 	{
 		for auth_event_id in pdu.auth_events() {
-			if let Ok(auth_pdu) = services.rooms.timeline.get_pdu(auth_event_id).await {
+			if let Ok(auth_pdu) = services.rooms.timeline.get_pdu(auth_event_id) {
 				if *auth_pdu.kind() == slipstream::events::TimelineEventType::RoomMember
 					&& auth_pdu.state_key() == Some(user_id.as_str())
 				{
@@ -126,7 +126,7 @@ pub(super) async fn build_state_initial(
 			}
 		})
 		.broad_filter_map(|event_id: OwnedEventId| async move {
-			services.rooms.timeline.get_pdu(&event_id).await.ok()
+			services.rooms.timeline.get_pdu(&event_id).ok()
 		})
 		.collect::<Vec<PduEvent>>()
 		.await;

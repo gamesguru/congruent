@@ -93,7 +93,13 @@ where
 					return Ok(false);
 				}
 			}
-			let Ok(json) = self.services.timeline.get_outlier_pdu_json(prev_id).await else {
+			let timeline = self.services.timeline.clone();
+			let runtime = self.services.server.runtime().clone();
+			let outlier_id = prev_id.to_owned();
+			let json = runtime
+				.spawn_blocking(move || timeline.get_outlier_pdu_json(&outlier_id))
+				.await;
+			let Ok(Ok(json)) = json else {
 				return Ok(false);
 			};
 			let Ok(pdu) = PduEvent::from_id_val(prev_id, json.clone(), Some(room_id)) else {

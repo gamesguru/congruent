@@ -24,6 +24,16 @@ out="$stats_dir/${safe_name}-${container_id:0:12}.txt"
 
 mkdir -p "$stats_dir"
 
+# Full application log, only when the test failed or a human asked for it.
+# Captured up front (and on exit) so a stopped or crashed container, which
+# skips the live diagnostics below, still leaves its log behind.
+capture_logs() {
+	if [ "$failed" = "true" ] || [ -n "${COMPLEMENT_DEBUG:-}" ]; then
+		docker logs "$container_id" >"$stats_dir/container.${safe_name}-${container_id:0:12}.log" 2>&1 || true
+	fi
+}
+trap capture_logs EXIT
+
 dexec() { docker exec "$container_id" sh -c "$1" 2>&1 || true; }
 
 {

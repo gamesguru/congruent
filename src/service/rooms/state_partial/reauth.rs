@@ -113,7 +113,6 @@ impl Service {
 			.services
 			.timeline
 			.get_pdu(anchor)
-			.await
 			.map(|pdu| pdu.depth())
 			.ok();
 
@@ -130,7 +129,7 @@ impl Service {
 			if event_id == anchor || window.contains_key(&event_id) {
 				continue;
 			}
-			let Ok(pdu) = self.services.timeline.get_pdu(&event_id).await else {
+			let Ok(pdu) = self.services.timeline.get_pdu(&event_id) else {
 				warn!(target: "reauth_debug", %event_id, "window event not found");
 				continue;
 			};
@@ -188,7 +187,7 @@ impl Service {
 				} else {
 					// Outside the window: only acceptable if it is known to be at or
 					// below the anchor's depth, and then its own stored state is used.
-					let older = match (self.services.timeline.get_pdu(prev).await, anchor_depth) {
+					let older = match (self.services.timeline.get_pdu(prev), anchor_depth) {
 						| (Ok(pred), Some(depth)) => pred.depth() <= depth,
 						| _ => false,
 					};
@@ -251,7 +250,7 @@ impl Service {
 						.await
 						.ok()?;
 					let id = before_ref.get(&shortstatekey)?;
-					self.services.timeline.get_pdu(id).await.ok()
+					self.services.timeline.get_pdu(id).ok()
 				};
 				match state_res::event_auth::auth_check(
 					&room_version,
@@ -399,23 +398,30 @@ impl Service {
 			return states.first().cloned();
 		}
 
+		let mut key_cache: HashMap<ShortStateKey, (StateEventType, StateKey)> = HashMap::new();
 		let mut full_states = Vec::with_capacity(states.len());
 		for state in states {
 			let mut full_state = state_res::StateMap::new();
 			for (short_key, event_id) in state {
-				let (event_type, state_key) = match self
-					.services
-					.short
-					.get_statekey_from_short(*short_key)
-					.await
-				{
-					| Ok(key) => key,
-					| Err(e) => {
-						warn!(target: "reauth_debug", %room_id, "unknown shortstatekey {short_key:?} in state to resolve: {e}");
-						return None;
-					},
+				let key = if let Some(key) = key_cache.get(short_key) {
+					key.clone()
+				} else {
+					let key = match self
+						.services
+						.short
+						.get_statekey_from_short(*short_key)
+						.await
+					{
+						| Ok(key) => key,
+						| Err(e) => {
+							warn!(target: "reauth_debug", %room_id, "unknown shortstatekey {short_key:?} in state to resolve: {e}");
+							return None;
+						},
+					};
+					key_cache.insert(*short_key, key.clone());
+					key
 				};
-				full_state.insert((event_type, state_key), event_id.clone());
+				full_state.insert(key, event_id.clone());
 			}
 			full_states.push(full_state);
 		}
@@ -432,13 +438,23 @@ impl Service {
 				return None;
 			},
 		};
+
+		let mut rev_cache: HashMap<(&StateEventType, &str), ShortStateKey> =
+			HashMap::with_capacity(key_cache.len());
+		for (k, (ty, sk)) in &key_cache {
+			rev_cache.insert((ty, sk.as_str()), *k);
+		}
+
 		let mut short_state = HashMap::with_capacity(resolved.len());
 		for ((event_type, state_key), event_id) in resolved {
-			let short_key = self
-				.services
-				.short
-				.get_or_create_shortstatekey(&event_type, state_key.as_str())
-				.await;
+			let short_key = if let Some(&k) = rev_cache.get(&(&event_type, state_key.as_str())) {
+				k
+			} else {
+				self.services
+					.short
+					.get_or_create_shortstatekey(&event_type, state_key.as_str())
+					.await
+			};
 			short_state.insert(short_key, event_id);
 		}
 		Some(short_state)
@@ -489,7 +505,7 @@ impl Service {
 		let Some(id) = state.get(&key) else {
 			return false;
 		};
-		self.services.timeline.get_pdu(id).await.is_ok_and(|pdu| {
+		self.services.timeline.get_pdu(id).is_ok_and(|pdu| {
 			pdu.get_content::<RoomMemberEventContent>()
 				.is_ok_and(|c| c.membership == MembershipState::Join)
 		})
@@ -521,7 +537,7 @@ impl Service {
 			if self.services.globals.user_is_local(&user_id) {
 				continue;
 			}
-			let Ok(pdu) = self.services.timeline.get_pdu(new_id).await else {
+			let Ok(pdu) = self.services.timeline.get_pdu(new_id) else {
 				continue;
 			};
 			let joined = pdu

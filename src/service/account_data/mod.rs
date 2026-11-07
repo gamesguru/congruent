@@ -87,11 +87,15 @@ pub async fn update(
 		return Err!(Request(InvalidParam("Account data doesn't have all required fields.")));
 	}
 
+	// Keep /sync from advancing past this count before the row is written (see
+	// `globals::Service::edu_barrier`).
+	let barrier = self.services.globals.edu_barrier.read().await;
 	let count = self.services.globals.next_count().unwrap();
 	let roomuserdataid = (room_id, user_id, count, &event_type);
 	self.db
 		.roomuserdataid_accountdata
 		.put(roomuserdataid, Json(data));
+	drop(barrier);
 
 	let key = (room_id, user_id, &event_type);
 	let prev = self.db.roomusertype_roomuserdataid.qry(&key).await;
@@ -122,11 +126,13 @@ pub async fn delete(
 	data.field("content", &slipstream::json::Object::new());
 	let data = data.finish();
 
+	let barrier = self.services.globals.edu_barrier.read().await;
 	let count = self.services.globals.next_count().unwrap();
 	let roomuserdataid = (room_id, user_id, count, event_type);
 	self.db
 		.roomuserdataid_accountdata
 		.put(roomuserdataid, Json(data));
+	drop(barrier);
 
 	self.db.roomusertype_roomuserdataid.put(key, roomuserdataid);
 

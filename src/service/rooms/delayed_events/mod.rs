@@ -3,6 +3,7 @@ mod submission_queue;
 use std::{
 	collections::{BTreeMap, HashSet},
 	fmt::Write,
+	iter::once,
 	sync::{
 		Arc,
 		atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -12,7 +13,8 @@ use std::{
 
 use async_trait::async_trait;
 use conduwuit::{
-	Err, Error, Result, debug_warn, err, error,
+	Err, Error, Result, debug_warn, err, error, info,
+	matrix::{Event, PduEvent},
 	utils::{self, stream::WidebandExt},
 };
 use database::{Deserialized, Json, Map};
@@ -26,6 +28,8 @@ use slipstream::{
 	events::TimelineEventType,
 	sswire::Raw,
 };
+
+const DATABASE_FAILURE_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug)]
 pub enum UpdateAction {
@@ -199,6 +203,10 @@ pub struct Service {
 	mem_usage: AtomicUsize,
 }
 
+impl Service {
+	pub async fn initialize(&self) { submission_queue::initialize(self).await; }
+}
+
 #[async_trait]
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
@@ -247,7 +255,7 @@ impl crate::Service for Service {
 	}
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ScheduledDelayedEvent {
 	pub event_type: TimelineEventType,
 	pub state_key: Option<String>,
@@ -256,6 +264,8 @@ pub struct ScheduledDelayedEvent {
 	pub room_id: OwnedRoomId,
 	pub running_since: SystemTime,
 	pub delay: Duration,
+	/// Event ID of an attempted send whose result is still being recovered.
+	pub pending_event_id: Option<OwnedEventId>,
 }
 
 /// Encodes a `Duration` like serde does: `{"secs":_,"nanos":_}`.
@@ -314,6 +324,9 @@ impl CodecSerialize for ScheduledDelayedEvent {
 		obj.insert("room_id".into(), self.room_id.to_json());
 		obj.insert("running_since".into(), system_time_to_json(&self.running_since));
 		obj.insert("delay".into(), duration_to_json(&self.delay));
+		if let Some(event_id) = &self.pending_event_id {
+			obj.insert("pending_event_id".into(), event_id.to_json());
+		}
 		slipstream::json::Value::Object(obj)
 	}
 }
@@ -334,6 +347,7 @@ impl CodecDeserialize for ScheduledDelayedEvent {
 			room_id: input.body("room_id")?,
 			running_since: system_time_from_json(field("running_since")?)?,
 			delay: duration_from_json(field("delay")?)?,
+			pending_event_id: input.body_or_default("pending_event_id")?,
 		})
 	}
 }
@@ -454,7 +468,7 @@ impl Service {
 	async fn finalize_delayed_event(
 		&self,
 		delay_id: &String,
-		event: ScheduledDelayedEvent,
+		mut event: ScheduledDelayedEvent,
 		action: UpdateAction,
 		leave_scheduled_on_error: bool,
 	) -> Result<()> {
@@ -477,32 +491,65 @@ impl Service {
 
 				let mut unsigned = BTreeMap::new();
 				unsigned.insert("delay_id".to_owned(), delay_id.clone().into());
+				let mut pending_event_id = event.pending_event_id.clone();
 
-				let result = match &event.state_key {
-					| Some(state_key) =>
-						Box::pin(self.services.timeline.send_state_event_for_key_helper(
-							&event.user_id,
-							&event.room_id,
-							&state_lock,
-							&event.event_type.to_string().into(),
-							&event.content.cast(),
-							state_key,
-							Some(timestamp),
-							Some(unsigned),
-						))
-						.await,
-					| None =>
-						Box::pin(self.services.timeline.send_message_event_helper(
-							&event.user_id,
-							&event.room_id,
-							&state_lock,
-							&event.event_type.to_string().into(),
-							&event.content.cast(),
-							None,
-							Some(timestamp),
-							Some(unsigned),
-						))
-						.await,
+				let result = if let Some(event_id) = &pending_event_id {
+					let already_appended = match self.delayed_event_is_appended(event_id).await {
+						| Ok(already_appended) => already_appended,
+						| Err(error) => {
+							self.scheduled_events.lock().await.insert(delay_id.clone());
+							return Err(error);
+						},
+					};
+					if already_appended {
+						Ok(event_id.clone())
+					} else {
+						// The body is written before the timeline row. If a previous
+						// attempt got that far, retrying by building a new PDU would
+						// append a second event; resume the persisted PDU instead.
+						match self.services.timeline.get_pdu_json(event_id) {
+							| Ok(_) =>
+								self.resume_persisted_event(&event, event_id, &state_lock)
+									.await,
+							| Err(error @ Error::Database(_)) => Err(error),
+							| Err(_) =>
+								self.send_scheduled_event(
+									&event,
+									timestamp,
+									unsigned,
+									&mut pending_event_id,
+									&state_lock,
+								)
+								.await,
+						}
+					}
+				} else {
+					self.send_scheduled_event(
+						&event,
+						timestamp,
+						unsigned,
+						&mut pending_event_id,
+						&state_lock,
+					)
+					.await
+				};
+
+				let result = match result {
+					| Err(error @ Error::Database(_)) => {
+						if let Some(event_id) = pending_event_id {
+							event.pending_event_id = Some(event_id.clone());
+							self.db
+								.delayid_scheduleddelayedevent
+								.put(delay_id, Json(event.clone()));
+							match self.delayed_event_is_appended(&event_id).await {
+								| Ok(true) => Ok(event_id),
+								| _ => Err(error),
+							}
+						} else {
+							Err(error)
+						}
+					},
+					| result => result,
 				};
 
 				match result {
@@ -519,9 +566,11 @@ impl Service {
 						Ok(())
 					},
 					| Err(error) => {
-						if leave_scheduled_on_error {
-							// In case of error on a manual send, return the error and leave the
-							// event scheduled
+						if leave_scheduled_on_error || matches!(&error, Error::Database(_)) {
+							// Manual sends should keep the delayed event scheduled on failure
+							// so the client can inspect the error without losing the schedule.
+							// Automatic sends do the same for database failures so temporary
+							// write conflicts can be retried by the submission queue.
 							self.scheduled_events.lock().await.insert(delay_id.clone());
 							return Err(error);
 						}
@@ -575,13 +624,127 @@ impl Service {
 		result
 	}
 
+	async fn send_scheduled_event(
+		&self,
+		event: &ScheduledDelayedEvent,
+		timestamp: MilliSecondsSinceUnixEpoch,
+		unsigned: BTreeMap<String, slipstream::json::Value>,
+		pending_event_id: &mut Option<OwnedEventId>,
+		state_lock: &rooms::state::RoomMutexGuard,
+	) -> Result<OwnedEventId> {
+		match &event.state_key {
+			| Some(state_key) =>
+				Box::pin(self.services.timeline.send_state_event_for_key_helper(
+					&event.user_id,
+					&event.room_id,
+					state_lock,
+					&event.event_type.to_string().into(),
+					&event.content.cast(),
+					state_key,
+					Some(timestamp),
+					Some(unsigned),
+					Some(pending_event_id),
+				))
+				.await,
+			| None =>
+				Box::pin(self.services.timeline.send_message_event_helper(
+					&event.user_id,
+					&event.room_id,
+					state_lock,
+					&event.event_type.to_string().into(),
+					&event.content.cast(),
+					None,
+					Some(timestamp),
+					Some(unsigned),
+					Some(pending_event_id),
+				))
+				.await,
+		}
+	}
+
+	/// Re-run the append for a PDU whose body was persisted by a previous
+	/// attempt. `append_pdu` is idempotent for this case: it finds the existing
+	/// row (or creates the missing one) instead of assigning a new event ID, so
+	/// an interrupted delayed send cannot be duplicated.
+	async fn resume_persisted_event(
+		&self,
+		event: &ScheduledDelayedEvent,
+		event_id: &OwnedEventId,
+		state_lock: &rooms::state::RoomMutexGuard,
+	) -> Result<OwnedEventId> {
+		let pdu_json = self.services.timeline.get_pdu_json(event_id)?;
+		let pdu = PduEvent::from_id_val(event_id, pdu_json.clone(), Some(&event.room_id))
+			.map_err(|error| {
+				err!(Database("Failed to parse persisted delayed event {event_id}: {error}"))
+			})?;
+		let previous_root_handle = self
+			.services
+			.state
+			.get_room_state_hamt(&event.room_id)
+			.await
+			.ok();
+
+		// Mirror the normal build path: state events stage their new state root
+		// with the timeline write, while non-state events reuse the current one.
+		let (state_root_handle, pending_nodes) = if pdu.state_key().is_some() {
+			self.services
+				.state
+				.append_to_state(&pdu, &event.room_id, state_lock, None)
+				.await
+				.map(|(handle, _node, nodes)| (handle, nodes))?
+		} else {
+			let root = previous_root_handle
+				.clone()
+				.ok_or_else(|| err!(Request(NotFound("Room has no state to append"))))?;
+			(root, Vec::new())
+		};
+
+		self.services
+			.timeline
+			.append_pdu(
+				&pdu,
+				pdu_json,
+				once(pdu.event_id()),
+				false,
+				rooms::timeline::AppendPduContext {
+					state_lock,
+					room_id: &event.room_id,
+					state_root_handle: Some(state_root_handle.clone()),
+					pending_nodes,
+					prev_state_root_handle: previous_root_handle,
+					advance_current_state: false,
+					was_joined_before_state_install: None,
+				},
+			)
+			.await?;
+
+		if pdu.state_key().is_none() {
+			self.services
+				.state
+				.set_room_state_hamt(&event.room_id, &state_root_handle, state_lock)
+				.await?;
+		}
+
+		Ok(event_id.clone())
+	}
+
+	async fn delayed_event_is_appended(&self, event_id: &OwnedEventId) -> Result<bool> {
+		match self.services.timeline.get_pdu_id(event_id).await {
+			| Ok(_) => Ok(true),
+			| Err(error @ Error::Database(_)) => Err(error),
+			| Err(_) => Ok(false),
+		}
+	}
+
 	/// Add a delayed event to the queue
 	/// It will be submitted when it's timer runs out, unless modified before
-	#[allow(clippy::arithmetic_side_effects)]
 	pub async fn queue_delayed_event(&self, event: ScheduledDelayedEvent) -> Result<String> {
 		let delay_id = utils::random_string(DELAY_ID_SIZE);
 
-		let submission_time = event.running_since + event.delay;
+		let submission_time = event
+			.running_since
+			.checked_add(event.delay)
+			.ok_or_else(|| err!(Request(InvalidParam("delayed event due time is too large"))))?;
 		let relation = (event.user_id.clone(), event.room_id.clone(), delay_id.clone());
 
 		self.db
@@ -704,16 +867,29 @@ impl Service {
 	/// path that can return an error.
 	#[allow(clippy::arithmetic_side_effects)]
 	async fn send_event_if_ready(&self, delay_id: String) -> Option<(SystemTime, String)> {
-		let event = self
-			.db
-			.delayid_scheduleddelayedevent
-			.get(&delay_id)
-			.await
-			.inspect_err(|err| {
-				debug_warn!(%delay_id, "Event was not found (database error: {err}).\
-					If the event was updated via the management endpoint, this is probably normal.");
-			})
-			.ok()?;
+		// Leave overdue events in the schedule during graceful shutdown. The next
+		// process reloads them; sending here would fire after the server has
+		// already begun stopping and can race client-visible restart behavior.
+		if self.interrupt_requested.load(Ordering::Relaxed) {
+			return None;
+		}
+
+		let event = match self.db.delayid_scheduleddelayedevent.get(&delay_id).await {
+			| Ok(event) => event,
+			| Err(err) if err.is_not_found() => {
+				debug_warn!(%delay_id, "Event was not found. If the event was updated via \
+					the management endpoint, this is probably normal.");
+				return None;
+			},
+			| Err(err) => {
+				// A transient read failure must not drop the queue item while the
+				// event is still scheduled in the database.
+				error!(%delay_id, %err, "Failed to read delayed event; will retry.");
+				return SystemTime::now()
+					.checked_add(DATABASE_FAILURE_RETRY_DELAY)
+					.map(|retry_at| (retry_at, delay_id));
+			},
+		};
 		let event: ScheduledDelayedEvent = event
 			.deserialized()
 			.inspect_err(
@@ -724,14 +900,24 @@ impl Service {
 		let submission_time = event.running_since + event.delay;
 
 		if submission_time <= SystemTime::now() {
-			let _ = Box::pin(self.finalize_delayed_event(
+			info!(%delay_id, "Sending due delayed event");
+			let result = Box::pin(self.finalize_delayed_event(
 				&delay_id,
 				event,
 				UpdateAction::Send,
 				false,
 			))
-			.await
-			.inspect_err(|err| error!(%delay_id, %err, "Error encountered submitting event."));
+			.await;
+			if let Err(err) = result {
+				error!(%delay_id, %err, "Error encountered submitting event.");
+				if matches!(&err, Error::Database(_)) {
+					return SystemTime::now()
+						.checked_add(DATABASE_FAILURE_RETRY_DELAY)
+						.map(|retry_at| (retry_at, delay_id));
+				}
+			} else {
+				info!(%delay_id, "Delayed event sent");
+			}
 			None
 		} else {
 			Some((submission_time, delay_id))

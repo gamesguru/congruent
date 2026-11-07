@@ -137,7 +137,7 @@ pub(crate) async fn get_member_events_route(
 			&StateEventType::RoomMember,
 		)
 		.broadn_filter_map(256, |(_, event_id)| async move {
-			services.rooms.timeline.get_pdu(&event_id).await.ok()
+			services.rooms.timeline.get_pdu(&event_id).ok()
 		})
 		.map(Event::into_pdu)
 		.collect()

@@ -52,6 +52,21 @@ pub(super) struct PduPushEval<'a> {
 	pub soft_fail: bool,
 }
 
+/// Removes a room's cached last timeline count on drop while armed.
+struct CountCacheGuard<'a> {
+	cache: &'a moka::sync::Cache<slipstream::OwnedRoomId, PduCount>,
+	room_id: &'a slipstream::RoomId,
+	armed: bool,
+}
+
+impl Drop for CountCacheGuard<'_> {
+	fn drop(&mut self) {
+		if self.armed {
+			self.cache.invalidate(&self.room_id.to_owned());
+		}
+	}
+}
+
 /// Append the incoming event setting the state snapshot to the state from
 /// the server that sent the event.
 #[implement(super::Service)]
@@ -191,6 +206,14 @@ where
 		was_joined_before_state_install,
 	} = ctx;
 
+	// A failed v23 rebuild leaves this room without a trustworthy current-state
+	// root. Do not append an event that could publish a root derived from empty
+	// state; a successful `yolo rebuild-state` clears the durable block.
+	self.services
+		.state
+		.ensure_room_state_rebuilt(room_id)
+		.await?;
+
 	// Coalesce timeline writes; flush before pub'ing receipt changes / waking sync.
 	let cork = self.db.db.cork_and_flush();
 	// Soft-failed events return before `append_pdu` (see `append_incoming_pdu`),
@@ -257,41 +280,10 @@ where
 		}
 	}
 
-	// We must keep track of all events that have been referenced.
-	// EXCEPT for soft-failed events, which are invisible to DAG tips.
-	if !soft_fail {
-		self.services
-			.pdu_metadata
-			.mark_as_referenced(room_id, pdu.prev_events().map(AsRef::as_ref));
-	}
-
-	trace!("setting forward extremities");
-	self.services
-		.state
-		.set_forward_extremities(
-			room_id,
-			leaves.map(ToOwned::to_owned),
-			Some(pdu.event_id()),
-			state_lock,
-		)
-		.await?;
-
-	// An event accepted while the room's state is partial is outside every
-	// re-authorised window until a resync has seen it, so record it under the
-	// state lock the extremity update just used: the resync reads the marks
-	// back under that same lock before dropping the room's markers.
-	if self
-		.services
-		.state_partial
-		.partial_server(room_id)
-		.await
-		.is_ok_and(|server| server.is_some())
-	{
-		self.services
-			.state_partial
-			.mark_pending_event(room_id, pdu.event_id());
-	}
-
+	// Take the per-room insert lock before the body write: `write_event_to_mtxdb`
+	// does a compare-and-swap on the room-global auth-closure collection, so
+	// same-room appends must be serialized before it, not just before the
+	// timeline row, or they race and rely on the StaleRead retry loop.
 	let insert_lock = self.mutex_insert.lock(room_id).await;
 	info!(
 		target: "watermark_debug",
@@ -299,6 +291,32 @@ where
 		"append_pdu: acquired insert_lock"
 	);
 
+	// A body that already exists means this is a redelivery, possibly with the
+	// timeline row committed but the duplicate gate not. Only then pay for the
+	// event-id lookup below; normal appends skip it.
+	let body_present = self.pdu_exists(pdu.event_id()).await;
+
+	// mtxdb is the authoritative event store for recovered history. Write the
+	// event before the timeline row, references, or pending-state marks, so a
+	// failed write leaves those structures untouched. The write is idempotent when the
+	// event already has a timeline row.
+	//
+	// A process crash is not a returned error. The body can commit and the
+	// process can die before the timeline row, the extremities, the prev-event
+	// reference marks, the partial-state pending mark, or the state root are
+	// published. The legacy count/metadata batch is applied last, after every
+	// one of those, because `get_pdu_id` reads it and `handle_incoming_pdu`
+	// drops a redelivery once it is visible.
+	//
+	// A crash anywhere before that final apply leaves the event unfinished, so
+	// redelivery runs the append again. If the timeline row is already there,
+	// the depth-bounded lookup below reuses its count and `append_room`
+	// deduplicates the identical entry; the missing legacy batch is rebuilt and
+	// applied last. A repair must re-run the whole append, not just insert a
+	// missing row.
+	self.db.write_event_to_mtxdb(pdu, &pdu_json).await?;
+
+	let mut needs_legacy_batch = false;
 	let existing_pdu = if self.non_outlier_pdu_exists(pdu.event_id()).await {
 		warn!(
 			target: "timeline_debug",
@@ -314,6 +332,25 @@ where
 		} else {
 			None
 		}
+	} else if body_present {
+		// The timeline row can exist while the legacy duplicate gate did not
+		// commit (a crash between the two). Reuse its count so redelivery
+		// continues the remaining writes instead of allocating a new count and
+		// appending a second row for the same event. The row also has to be
+		// regenerated through `append_pdu_prewritten` so the missing legacy
+		// batch is rebuilt; `append_room` deduplicates the identical entry.
+		self.db
+			.find_pending_timeline_entry(
+				room_id.as_bytes(),
+				pdu.event_id().as_bytes(),
+				pdu.depth().cast_signed(),
+			)?
+			.map(|entry| {
+				let pdu_count = PduCount::from_signed(entry.stream_ordering);
+				let pdu_id: RawPduId = PduId { shortroomid, shorteventid: pdu_count }.into();
+				needs_legacy_batch = true;
+				(pdu_id, pdu_count)
+			})
 	} else {
 		None
 	};
@@ -336,18 +373,24 @@ where
 		.user
 		.reset_notification_counts(pdu.sender(), room_id);
 
-	// The mtxdb event write is keyed by event id, not by stream count, so it runs
-	// before the sync barrier is taken. That keeps the span between allocating a
-	// count and making its row visible down to the RocksDB batch apply.
-	if existing_pdu.is_none() {
-		self.db.write_event_to_mtxdb(pdu, &pdu_json);
-	}
 	// Held (for a new PDU) until the state association below has run, so sync
 	// cannot snapshot a count whose membership change is not yet applied.
 	let mut sync_barrier = None;
+	let mut pending_batch = None;
+	// Un-publishes the cached count if a later step fails before the legacy
+	// batch lands. Safe under `insert_lock`: no other append in this room can
+	// have published a newer count meanwhile.
+	let mut count_cache_guard: Option<CountCacheGuard<'_>> = None;
 	let (pdu_id, pdu_count, private_read_count) = if let Some((existing_id, existing_count)) =
 		existing_pdu
 	{
+		if needs_legacy_batch {
+			let batch = self
+				.db
+				.append_pdu_prewritten(&existing_id, pdu, &pdu_json, existing_count)
+				.await?;
+			pending_batch = Some(batch);
+		}
 		(existing_id, existing_count, match existing_count {
 			| PduCount::Normal(count) => Some(count),
 			| PduCount::Backfilled(_) => None,
@@ -364,10 +407,13 @@ where
 		// TEMPORARY diagnostic only
 		info!(target: "timeline_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: about to insert");
 
-		// Write first, then publish the count
-		self.db
+		// Write the timeline row now, but hold the legacy batch until every
+		// other write has landed. See the apply below.
+		let batch = self
+			.db
 			.append_pdu_prewritten(&pdu_id, pdu, &pdu_json, pdu_count)
-			.await;
+			.await?;
+		pending_batch = Some(batch);
 		info!(target: "timeline_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: insert complete");
 
 		info!(
@@ -377,9 +423,52 @@ where
 		);
 		self.last_timeline_count_cache
 			.insert(room_id.to_owned(), pdu_count);
+		count_cache_guard = Some(CountCacheGuard {
+			cache: &self.last_timeline_count_cache,
+			room_id,
+			armed: true,
+		});
 
 		(pdu_id, pdu_count, Some(count))
 	};
+
+	trace!("setting forward extremities");
+	self.services
+		.state
+		.set_forward_extremities(
+			room_id,
+			leaves.map(ToOwned::to_owned),
+			Some(pdu.event_id()),
+			state_lock,
+		)
+		.await?;
+
+	// Only after the timeline row exists and the extremities are stored: a
+	// failure above must not leave a reference mark on a leaf that is still a
+	// stored tip. A retry takes the `existing_pdu` path and reaches this again.
+	// We must keep track of all events that have been referenced.
+	// EXCEPT for soft-failed events, which are invisible to DAG tips.
+	if !soft_fail {
+		self.services
+			.pdu_metadata
+			.mark_as_referenced(room_id, pdu.prev_events().map(AsRef::as_ref));
+	}
+
+	// An event accepted while the room's state is partial is outside every
+	// re-authorised window until a resync has seen it, so record it under the
+	// state lock the extremity update just used: the resync reads the marks
+	// back under that same lock before dropping the room's markers.
+	if self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|server| server.is_some())
+	{
+		self.services
+			.state_partial
+			.mark_pending_event(room_id, pdu.event_id());
+	}
 
 	// Must stay after the timeline row is inserted and its count published: this
 	// applies the membership change and wakes sync, which has to find the PDU.
@@ -392,7 +481,6 @@ where
 		&pending_nodes,
 	))
 	.await?;
-	drop(sync_barrier);
 
 	// Recovered outlier timelines carry no state event of their own, so the batch
 	// above did not advance the room pointer for them. A state event already had
@@ -403,9 +491,28 @@ where
 	{
 		self.services
 			.state
-			.set_room_state_hamt(room_id, root_handle, state_lock)?;
+			.set_room_state_hamt(room_id, root_handle, state_lock)
+			.await?;
+	}
+
+	// The duplicate gate is the last write. `get_pdu_id` reads this batch, and
+	// `handle_incoming_pdu` drops a redelivery once it is visible, so applying
+	// it earlier would let a crash publish an event that looks complete while
+	// its timeline row, extremities, reference marks or state root are missing.
+	// A crash before this point leaves the event unfinished and redelivery
+	// re-runs the append.
+	if let Some(batch) = pending_batch {
+		self.db.apply_batch(batch);
+	}
+	if let Some(guard) = count_cache_guard.as_mut() {
+		guard.armed = false;
 	}
 	drop(cork);
+	// Keep sync snapshots behind the count until the legacy timeline batch and
+	// state association are both visible. Releasing after the state update but
+	// before this batch lets sync advance `next_batch` past a join whose timeline
+	// row is not readable yet.
+	drop(sync_barrier);
 	let receipt_content = BTreeMap::from_iter([(
 		slipstream::events::receipt::ReceiptEventId::from_opaque(pdu.event_id().as_str()),
 		BTreeMap::from_iter([(
@@ -478,7 +585,7 @@ where
 
 	let mut notifies = Vec::with_capacity(push_target.len().saturating_add(1));
 	let mut highlights = Vec::with_capacity(push_target.len().saturating_add(1));
-	let thread_root = self.services.threads.get_thread_id(pdu).await;
+	let thread_root = self.services.threads.get_thread_id_async(pdu).await;
 
 	if *pdu.kind() == TimelineEventType::RoomMember {
 		if let Some(state_key) = pdu.state_key() {
@@ -560,7 +667,7 @@ where
 					.user_can_redact(&redact_id, pdu.sender(), room_id, false)
 					.await?
 				{
-					self.redact_pdu(&redact_id, pdu, shortroomid).await?;
+					self.redact_pdu(&redact_id, pdu).await?;
 				}
 			}
 		},
@@ -637,9 +744,6 @@ where
 					.await
 					.remove(room_id);
 			}
-		},
-		| TimelineEventType::RoomMessage => {
-			self.index_pdu_search(shortroomid, &pdu_id, pdu);
 		},
 		| _ => {},
 	}

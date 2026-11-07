@@ -23,7 +23,7 @@ pub async fn user_can_redact(
 	room_id: &RoomId,
 	federation: bool,
 ) -> Result<bool> {
-	let redacting_event = self.services.timeline.get_pdu(redacts).await;
+	let redacting_event = self.services.timeline.get_pdu(redacts);
 
 	if redacting_event
 		.as_ref()
@@ -101,7 +101,7 @@ pub async fn user_can_see_event(
 	room_id: &RoomId,
 	event_id: &EventId,
 ) -> bool {
-	if let Ok(pdu) = self.services.timeline.get_pdu(event_id).await {
+	if let Ok(pdu) = self.services.timeline.get_pdu(event_id) {
 		if pdu.sender == user_id {
 			debug_info!("visibility {event_id}: sender match -> true");
 			return true;

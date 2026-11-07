@@ -61,6 +61,20 @@ pub(crate) fn authenticate_user_with_body<'a>(
 	metadata: &'a slipstream::api::Metadata,
 ) -> BoxFuture<'a, Result<(OwnedUserId, Bytes)>> {
 	Box::pin(async move {
+		authenticate_user_with_body_and_device(request, services, metadata)
+			.await
+			.map(|(user, _, body)| (user, body))
+	})
+}
+
+/// Like [`authenticate_user_with_body`], also returning the authenticated
+/// device so endpoints can key idempotent transaction caches correctly.
+pub(crate) fn authenticate_user_with_body_and_device<'a>(
+	request: hyper::Request<Incoming>,
+	services: &'a State,
+	metadata: &'a slipstream::api::Metadata,
+) -> BoxFuture<'a, Result<(OwnedUserId, Option<OwnedDeviceId>, Bytes)>> {
+	Box::pin(async move {
 		let request = request::from(services, request).await?;
 		let json_body = std::str::from_utf8(&request.body)
 			.ok()
@@ -69,7 +83,7 @@ pub(crate) fn authenticate_user_with_body<'a>(
 		let user = auth
 			.sender_user
 			.ok_or_else(|| err!(Request(MissingToken("Missing access token."))))?;
-		Ok((user, request.body))
+		Ok((user, auth.sender_device, request.body))
 	})
 }
 

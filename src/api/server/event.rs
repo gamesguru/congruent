@@ -18,7 +18,6 @@ pub(crate) async fn get_event_route(
 		.rooms
 		.timeline
 		.get_pdu(&body.event_id)
-		.await
 		.map_err(|_| err!(Request(NotFound("Event not found."))))?;
 
 	let room_id = event
@@ -53,7 +52,6 @@ pub(crate) async fn get_event_route(
 		.rooms
 		.timeline
 		.get_pdu_json(&body.event_id)
-		.await
 		.map_err(|_| err!(Request(NotFound("Event not found."))))?;
 
 	Ok(get_event::v1::Response {

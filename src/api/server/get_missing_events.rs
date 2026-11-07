@@ -64,7 +64,7 @@ pub(crate) async fn get_missing_events_route(
 			break;
 		}
 
-		let mut pdu = match services.rooms.timeline.get_pdu(&next_event_id).await {
+		let mut pdu = match services.rooms.timeline.get_pdu(&next_event_id) {
 			| Ok(pdu) => pdu,
 			| Err(e) => {
 				warn!("could not find event {next_event_id} while walking missing events: {e}");

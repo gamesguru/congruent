@@ -37,7 +37,10 @@ use super::{DIGEST_FEATURE, Key, Service};
 /// Events fetched from one peer in one exchange.
 const MAX_FETCHES: usize = 100;
 /// Events fetched first, before the rest are trusted enough to fetch.
-const SAMPLE: usize = 16;
+///
+/// Large enough that a peer with a substantial fake share is detected reliably:
+/// at 50% fake, a 16-event sample misses the fakes about once in 65,000 rounds.
+const SAMPLE: usize = 32;
 /// Concurrent event fetches.
 const FETCH_CONCURRENCY: usize = 4;
 /// The share of failed fetches, out of 100, above which a peer's claim is
@@ -409,7 +412,7 @@ impl Service {
 	/// that check out through the incoming-PDU pipeline.
 	/// Skips events already in the timeline or remembered as unusable for this
 	/// peer, and attempts at most 100 remaining events. A failure rate above
-	/// 25% after either batch abandons the exchange. Accepted events are
+	/// 25% abandons the exchange as soon as it is observed. Accepted events are
 	/// applied in depth order under the room federation lock. Events that
 	/// remain outside the timeline are remembered. Reports fetch failures and
 	/// truncation so the scheduler can retry or continue.
@@ -449,15 +452,13 @@ impl Service {
 		// Sample first; a peer whose sample mostly fails is not believed.
 		let rest = wanted.split_off(SAMPLE.min(wanted.len()));
 		for batch in [wanted, rest] {
-			let results: Vec<_> = stream::iter(batch)
+			let mut results = stream::iter(batch)
 				.map(|id| async move {
 					let result = self.fetch_event(room_id, peer, &id).await;
 					(id, result)
 				})
-				.buffer_unordered(FETCH_CONCURRENCY)
-				.collect()
-				.await;
-			for (id, result) in results {
+				.buffer_unordered(FETCH_CONCURRENCY);
+			while let Some((id, result)) = results.next().await {
 				attempted = attempted.saturating_add(1);
 				match result {
 					| FetchEvent::Fetched(event) => fetched.push(event),
@@ -473,6 +474,10 @@ impl Service {
 					},
 				}
 			}
+
+			// Judge the failure ratio only after the batch (including the sample)
+			// has finished, so a retryable failure cannot abort before the sample
+			// is complete.
 			if failed.saturating_mul(100) > attempted.saturating_mul(MAX_FAILED_PERCENT) {
 				return Outcome::Abandoned(format!(
 					"{failed} of {attempted} offered events could not be fetched"
@@ -487,22 +492,22 @@ impl Service {
 			| Err(e) => return Outcome::Failed(format!("room version: {e}")),
 		};
 
-		// Serialize with inbound /send and backfill for this room, as every other
-		// caller of the incoming-PDU pipeline does. Taken only after the
-		// federation fetches, so no lock is held across network I/O.
-		let _room_lock = self
-			.services
-			.event_handler
-			.mutex_federation
-			.lock(room_id)
-			.await;
-		// The lock wait may have outlasted our or the peer's membership.
-		if let Some(outcome) = self.admission_lapsed(room_id, peer).await {
-			return outcome;
-		}
-
 		let (mut applied, mut unusable) = (0_usize, 0_usize);
 		for (_, parsed_room, event_id, value) in fetched {
+			// Hold the room federation lock for one event at a time. The batch can
+			// take tens of seconds on a slow peer, and holding the lock throughout
+			// blocks a concurrent /messages backfill behind the whole exchange.
+			let _room_lock = self
+				.services
+				.event_handler
+				.mutex_federation
+				.lock(room_id)
+				.await;
+			// The lock wait, or a previous event in this batch, may have
+			// outlasted our or the peer's membership.
+			if let Some(outcome) = self.admission_lapsed(room_id, peer).await {
+				return outcome;
+			}
 			let handled = self
 				.services
 				.event_handler
