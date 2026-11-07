@@ -36,6 +36,7 @@ pub async fn build_and_append_pdu(
 	state_lock: &RoomMutexGuard,
 ) -> Result<OwnedEventId> {
 	self.build_and_append_pdu_tracked(pdu_builder, sender, room_id, state_lock, None)
+		.boxed()
 		.await
 }
 
