@@ -304,7 +304,7 @@ branch = "dev"
 [workspace.dependencies.mtxdb]
 git = "https://gitlab.com/wombat-foundation/mtxdb.git"
 branch = "dev"
-features = ["reconcile"]
+features = ["reconcile", "state-lattice"]
 
 [workspace.dependencies.rezzy]
 git = "https://gitlab.com/wombat-foundation/rezzy.git"

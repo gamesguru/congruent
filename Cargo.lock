@@ -2128,7 +2128,7 @@ dependencies = [
 [[package]]
 name = "mtxdb"
 version = "0.1.0-beta.3"
-source = "git+https://gitlab.com/wombat-foundation/mtxdb.git?branch=dev#8f32de40c298970daaba12d1ce1fb1ce825a3cf2"
+source = "git+https://gitlab.com/wombat-foundation/mtxdb.git?branch=dev#daffb63f31cd0690e5ad95c7c544723ba16b83f4"
 dependencies = [
  "arc-swap",
  "blake3",
@@ -2489,7 +2489,7 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 [[package]]
 name = "rezzy"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#af5c94d87755ecd35a1d1e1566226a1bdc1168f7"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#8447ecee80482938fec20d19e5a887dae5ce01e6"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -2504,7 +2504,7 @@ dependencies = [
 [[package]]
 name = "rezzy-json"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#af5c94d87755ecd35a1d1e1566226a1bdc1168f7"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#8447ecee80482938fec20d19e5a887dae5ce01e6"
 dependencies = [
  "ryu",
 ]
@@ -2512,7 +2512,7 @@ dependencies = [
 [[package]]
 name = "rezzy-log"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#af5c94d87755ecd35a1d1e1566226a1bdc1168f7"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#8447ecee80482938fec20d19e5a887dae5ce01e6"
 dependencies = [
  "tracing",
 ]
@@ -2520,9 +2520,10 @@ dependencies = [
 [[package]]
 name = "rezzy-recon"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#af5c94d87755ecd35a1d1e1566226a1bdc1168f7"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#8447ecee80482938fec20d19e5a887dae5ce01e6"
 dependencies = [
  "base64 0.23.1",
+ "blake3",
  "rezzy-log",
  "sha2",
 ]
