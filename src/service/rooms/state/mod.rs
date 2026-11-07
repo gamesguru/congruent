@@ -393,13 +393,12 @@ impl Service {
 				.services
 				.short
 				.get_statekey_from_short(shortstatekey)
-				.await
-				&& !matches!(
-					event_type,
-					StateEventType::RoomMember
-						| StateEventType::RoomEncryption
-						| StateEventType::SpaceChild
-				) {
+				.await && !matches!(
+				event_type,
+				StateEventType::RoomMember
+					| StateEventType::RoomEncryption
+					| StateEventType::SpaceChild
+			) {
 				continue;
 			}
 			let Ok(event_id_obj) = self
@@ -426,13 +425,12 @@ impl Service {
 				.services
 				.short
 				.get_statekey_from_short(shortstatekey)
-				.await
-				&& !matches!(
-					event_type,
-					StateEventType::RoomMember
-						| StateEventType::RoomEncryption
-						| StateEventType::SpaceChild
-				) {
+				.await && !matches!(
+				event_type,
+				StateEventType::RoomMember
+					| StateEventType::RoomEncryption
+					| StateEventType::SpaceChild
+			) {
 				continue;
 			}
 			let Ok(event_id_obj) = self

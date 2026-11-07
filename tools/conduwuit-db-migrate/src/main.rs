@@ -88,6 +88,7 @@ fn usage() -> ! {
 	eprintln!("       conduwuit-db-migrate import <bundle.jsonl> <new-metadata.redb>");
 	eprintln!("       conduwuit-db-migrate compact <metadata.redb>");
 	eprintln!("       conduwuit-db-migrate list <rocksdb>");
+	eprintln!("       conduwuit-db-migrate stats <rocksdb>");
 	std::process::exit(2);
 }
 
@@ -251,6 +252,179 @@ fn list(rocks_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 		};
 		println!("{ownership:<17}  {name}");
 	}
+	Ok(())
+}
+
+/// Count one composite-key map per entity.
+///
+/// Keys are `entity\xffrest` when `take_after_sep` is false and
+/// `rest\xffentity` when it is true. RocksDB stores the keys raw, so this does
+/// not depend on redb's serialization.
+fn count_keys(
+	db: &DB,
+	cf: &str,
+	take_after_sep: bool,
+) -> Result<std::collections::HashMap<Vec<u8>, u64>, Box<dyn std::error::Error>> {
+	let handle = db
+		.cf_handle(cf)
+		.ok_or_else(|| format!("missing column family: {cf}"))?;
+	let mut counts = std::collections::HashMap::new();
+	for item in db.iterator_cf(handle, IteratorMode::Start) {
+		let (key, _) = item?;
+		let Some(sep) = key.iter().position(|&byte| byte == 0xFF) else {
+			continue;
+		};
+		let entity = if take_after_sep {
+			&key[sep.saturating_add(1)..]
+		} else {
+			&key[..sep]
+		};
+		*counts.entry(entity.to_vec()).or_insert(0) += 1;
+	}
+	Ok(counts)
+}
+
+fn percentile(sorted: &[u64], fraction: f64) -> u64 {
+	if sorted.is_empty() {
+		return 0;
+	}
+	let last = sorted.len().saturating_sub(1);
+	let index = (last as f64 * fraction).round() as usize;
+	sorted.get(index).copied().unwrap_or_default()
+}
+
+fn print_distribution(label: &str, mut values: Vec<u64>) {
+	values.sort_unstable();
+	let total: u64 = values.iter().sum();
+	println!(
+		"{label}: entities={}, total={}, min={}, p50={}, p90={}, p99={}, max={}",
+		values.len(),
+		total,
+		values.first().copied().unwrap_or_default(),
+		percentile(&values, 0.50),
+		percentile(&values, 0.90),
+		percentile(&values, 0.99),
+		values.last().copied().unwrap_or_default(),
+	);
+
+	let buckets = [
+		(0_u64, 0_u64),
+		(1, 10),
+		(11, 100),
+		(101, 1_000),
+		(1_001, 10_000),
+		(10_001, 100_000),
+		(100_001, u64::MAX),
+	];
+	let mut histogram = [0_u64; 7];
+	for value in &values {
+		let slot = buckets
+			.iter()
+			.position(|(low, high)| value >= low && value <= high)
+			.unwrap_or(6);
+		histogram[slot] = histogram[slot].saturating_add(1);
+	}
+	println!(
+		"  histogram: 0={}, 1-10={}, 11-100={}, 101-1k={}, 1k-10k={}, 10k-100k={}, \
+		 >100k={}",
+		histogram[0],
+		histogram[1],
+		histogram[2],
+		histogram[3],
+		histogram[4],
+		histogram[5],
+		histogram[6],
+	);
+}
+
+fn stats(rocks_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+	let options = Options::default();
+	let all = DB::list_cf(&options, rocks_path)?;
+	let all_names: Vec<&str> = all.iter().map(String::as_str).collect();
+	// Read-only open replays WALs and crashes on some legacy stores (the
+	// upstream read-only recovery path dereferences a null context). A
+	// secondary instance reads the same files without that path.
+	let secondary = std::env::temp_dir().join(format!(
+		"conduwuit-db-stats-secondary-{}",
+		std::process::id()
+	));
+	if secondary.exists() {
+		std::fs::remove_dir_all(&secondary)?;
+	}
+	std::fs::create_dir_all(&secondary)?;
+	let db = DB::open_cf_as_secondary(&options, rocks_path, &secondary, &all_names)?;
+
+	let current = count_keys(&db, "roomuserid_joined", false)?;
+	let once = count_keys(&db, "roomuseroncejoinedids", true)?;
+	let servers = count_keys(&db, "roomserverids", false)?;
+
+	print_distribution(
+		"current members per room",
+		current.values().copied().collect(),
+	);
+	print_distribution(
+		"ever-joined per room",
+		once.values().copied().collect(),
+	);
+	print_distribution(
+		"joined servers per room",
+		servers.values().copied().collect(),
+	);
+
+	let total_current: u64 = current.values().sum();
+	let total_once: u64 = once.values().sum();
+	let total_servers: u64 = servers.values().sum();
+	let churn: u64 = once
+		.iter()
+		.map(|(room, ever)| ever.saturating_sub(*current.get(room).unwrap_or(&0)))
+		.sum();
+	println!(
+		"totals: current_memberships={total_current}, ever_joined_pairs={total_once}, \
+		 left_pairs={churn}, room_server_rows={total_servers}"
+	);
+	println!(
+		"flat u32 payload: current={} bytes, reverse={} bytes, combined={} bytes",
+		total_current.saturating_mul(4),
+		total_current.saturating_mul(4),
+		total_current.saturating_mul(8),
+	);
+	println!(
+		"naive resident locators (10.7 B/key): current={} bytes, once={} bytes, servers={} \
+		 bytes",
+		total_current.saturating_mul(11),
+		total_once.saturating_mul(11),
+		total_servers.saturating_mul(11),
+	);
+
+	let mut rows: Vec<(Vec<u8>, u64, u64, u64)> = current
+		.keys()
+		.chain(once.keys())
+		.chain(servers.keys())
+		.collect::<std::collections::HashSet<_>>()
+		.into_iter()
+		.map(|room| {
+			(
+				room.clone(),
+				*current.get(room).unwrap_or(&0),
+				*once.get(room).unwrap_or(&0),
+				*servers.get(room).unwrap_or(&0),
+			)
+		})
+		.collect();
+	rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
+
+	println!("\ntop rooms by current members:");
+	for (room, joined, ever, server_count) in rows.iter().take(20) {
+		println!(
+			"  {:<64} joined={joined:<8} ever={ever:<8} servers={server_count:<5} left={}",
+			String::from_utf8_lossy(room),
+			ever.saturating_sub(*joined),
+		);
+	}
+
+	drop(db);
+	std::fs::remove_dir_all(&secondary).ok();
+
 	Ok(())
 }
 
@@ -474,6 +648,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		| Some("list") => {
 			let rocks = args.next().unwrap_or_else(|| usage());
 			list(Path::new(&rocks))
+		},
+		| Some("stats") => {
+			let rocks = args.next().unwrap_or_else(|| usage());
+			if args.next().is_some() {
+				usage();
+			}
+			stats(Path::new(&rocks))
 		},
 		| _ => usage(),
 	}
