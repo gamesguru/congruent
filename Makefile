@@ -556,6 +556,7 @@ restart:    ##H Restart service (using systemctl)
 #   MIGRATE_OUT=/path/to/work/dir                 (export/, new/, import.log)
 #   MIGRATE_SERVER=example.org                    (when users span many servers)
 #   MIGRATE_SKIP_ROOMS=!a:x.org,!b:y.org          (comma-separated; rooms with no m.room.create)
+#   MIGRATE_NO_STATE_HAMTS=1                      (skip importer state HAMTs; let v23 rebuild)
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 MIGRATE_SERVER ?=
@@ -563,6 +564,9 @@ MIGRATE_SKIP_ROOMS ?=
 COMMA := ,
 MIGRATE_OUT ?=
 MIGRATE_NEWDB ?= $(MIGRATE_OUT)/new/var/lib/conduwuit
+# State HAMTs are built by the import by default. Set MIGRATE_NO_STATE_HAMTS=1
+# to skip them and let the server's v23 migration rebuild them instead.
+MIGRATE_NO_STATE_HAMTS ?=
 MIGRATE_BIN = ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 	ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 	LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
@@ -603,7 +607,7 @@ migrate/import-rooms: _migrate_vars ##H Import the room export and signing keys 
 		esac; \
 	done; \
 	ulimit -n 65535; \
-	mtxdb --debug import --no-state-hamts --dir "$(MIGRATE_NEWDB)/mtxdb" $$inputs 2>&1 | tee "$(MIGRATE_OUT)/import.log"; \
+	mtxdb --debug import $(if $(MIGRATE_NO_STATE_HAMTS),--no-state-hamts) --dir "$(MIGRATE_NEWDB)/mtxdb" $$inputs 2>&1 | tee "$(MIGRATE_OUT)/import.log"; \
 	exit $${PIPESTATUS[0]}
 
 .PHONY: migrate/clean

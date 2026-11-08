@@ -14,18 +14,18 @@ redb records use the production table name and composite-key encoding from
 
 Export defaults to every source column family except `default`, the mtxdb-owned
 event/DAG/signing-key families, and derived or obsolete maps. This includes the
-legacy short-ID maps: mtxdb import builds its own short-ID index from event
-identities, and v23 rebuilds state HAMTs from timeline events rather than the
-legacy `shortstatehash_statediff` history or `roomid_shortstatehash` room
-selection. The `tokenids` search index is also skipped; search scans event
-bodies directly and v28 drops the map. Copying those maps would only inflate
-metadata.redb. Root-handle and HAMT-node maps remain excluded because v23
-rewrites them. The membership cache, join/invite counts, server lists,
-once-joined markers, relation index and referenced-event index are also
-excluded: v23 rebuilds state HAMTs from the imported timeline, then
-reconciles membership from that state and derives the DAG indexes from the
-event bodies in the same pass. The `list` command shows the classification
-before export.
+legacy short-ID maps: mtxdb import builds its own short-ID index and state
+HAMTs from event identities and event records, rather than importing the legacy
+`shortstatehash_statediff` history or `roomid_shortstatehash` room selection.
+The server's v23 migration also rebuilds state HAMTs from the imported
+timeline. The `tokenids` search index is skipped; search scans event bodies
+directly and v28 drops the map. Copying these maps would only inflate
+metadata.redb. Legacy root-handle and HAMT-node maps are excluded because the
+importer and v23 generate the new state data. The membership cache,
+join/invite counts, server lists, once-joined markers, relation index and
+referenced-event index are also excluded: v23 reconciles membership from the
+rebuilt state and derives DAG indexes from event bodies. The `list` command
+shows the classification before export.
 Explicit map names can select a subset, but mtxdb-owned and skipped families
 are refused. The importer refuses to overwrite an existing redb destination
 and publishes the completed temporary database by rename. Stop the source
@@ -77,10 +77,12 @@ cargo run --manifest-path tools/conduwuit-db-migrate/Cargo.toml -- \
   import /tmp/wombatx-metadata.jsonl \
   /tmp/wombatx-redb/metadata.redb
 
-# Import every room file and the keys file in one invocation. The import
-# marker is only written when the complete set succeeds. `--no-state-hamts`
-# leaves state to the server: congruent's v23 migration rebuilds the room
-# HAMTs from the imported timeline events.
+# Import every room file and the keys file in one invocation. State HAMTs are
+# built from the events by default. The import marker is only written when the
+# complete set succeeds.
+mtxdb import --dir /path/to/new-database/mtxdb /tmp/wombatx-mtxdb-export/*.jsonl
+
+# Optional: skip state HAMTs and let the server's v23 migration rebuild them.
 mtxdb import --no-state-hamts --dir /path/to/new-database/mtxdb /tmp/wombatx-mtxdb-export/*.jsonl
 ```
 
