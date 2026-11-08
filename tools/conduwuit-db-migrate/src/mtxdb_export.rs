@@ -303,6 +303,22 @@ fn write_room(
 	Ok(path)
 }
 
+/// `eventid_pdu` carries every body, including events the source kept only as
+/// outliers. The first record for an ID wins when the maps are merged, so apply
+/// the outlier claim from `eventid_outlierpdu` afterwards — but never to an
+/// event the source gave a timeline position. A stale outlier row beside a real
+/// timeline entry must not remove that event from the timeline.
+fn apply_outlier_claims(
+	events: &mut BTreeMap<String, BTreeMap<String, Event>>,
+	outlier_ids: &HashSet<String>,
+) {
+	for event in events.values_mut().flat_map(|by_id| by_id.values_mut()) {
+		if event.stream_ordering.is_none() && outlier_ids.contains(&event.id) {
+			event.outlier = true;
+		}
+	}
+}
+
 /// Events kept as outliers have no timeline position by design. Any other
 /// event without one lost its legacy index row, so give it an ordering after
 /// the room's existing ones: the importer only needs the value to place the
@@ -712,6 +728,7 @@ pub fn export(
 			 event ID"
 		);
 	}
+	apply_outlier_claims(&mut events, &outlier_ids);
 	let synthesized = synthesize_stream_orderings(&mut events, &outlier_ids);
 	if synthesized > 0 {
 		eprintln!(
@@ -795,6 +812,42 @@ mod tests {
 			.find(|line| line.contains("ed25519:a"))
 			.unwrap();
 		assert!(retired.contains("\"expired_ts\":5"), "{retired}");
+	}
+
+	#[test]
+	fn outlier_claim_survives_a_duplicate_timeline_body() {
+		let event = |id: &str, stream: Option<i64>| Event {
+			id: id.to_owned(),
+			room: "!room:example.org".to_owned(),
+			pdu: Value::Object(Object::new()),
+			prev: Value::Array(Vec::new()),
+			auth: Value::Array(Vec::new()),
+			stream_ordering: stream,
+			depth: None,
+			outlier: false,
+			rejection_code: None,
+			soft_fail_code: None,
+		};
+		let mut by_id = BTreeMap::new();
+		by_id.insert("$outlier".to_owned(), event("$outlier", None));
+		by_id.insert("$timeline".to_owned(), event("$timeline", Some(5)));
+		let mut events = BTreeMap::new();
+		events.insert("!room:example.org".to_owned(), by_id);
+		let mut outlier_ids = HashSet::new();
+		outlier_ids.insert("$outlier".to_owned());
+		outlier_ids.insert("$timeline".to_owned());
+
+		apply_outlier_claims(&mut events, &outlier_ids);
+
+		let claimed = &events["!room:example.org"];
+		assert!(
+			claimed["$outlier"].outlier,
+			"an unpositioned event keeps its outlier claim"
+		);
+		assert!(
+			!claimed["$timeline"].outlier,
+			"a timeline position wins over a stale outlier row"
+		);
 	}
 
 	#[test]
