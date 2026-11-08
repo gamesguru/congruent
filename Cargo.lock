@@ -2116,7 +2116,7 @@ dependencies = [
 [[package]]
 name = "mtx-slipstream"
 version = "0.1.0"
-source = "git+https://gitlab.com/wombat-foundation/mtx-slipstream.git?branch=dev#6e56c44e40fd00dd8b126d8e5ecb44563b3e0269"
+source = "git+https://gitlab.com/wombat-foundation/mtx-slipstream.git?branch=dev#27c41c10c512a2c4515b970d4db577bc032a3528"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -2128,7 +2128,7 @@ dependencies = [
 [[package]]
 name = "mtxdb"
 version = "0.1.0-beta.3"
-source = "git+https://gitlab.com/wombat-foundation/mtxdb.git?branch=dev#7053fd18181b60f6a1aef6b96f1c128154f8a956"
+source = "git+https://gitlab.com/wombat-foundation/mtxdb.git?branch=dev#85489641a8cffdd26d101434bcd1d2773165b2b6"
 dependencies = [
  "arc-swap",
  "blake3",
@@ -2489,7 +2489,7 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 [[package]]
 name = "rezzy"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#bd1638277c4858532e5535eea08136384b898453"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#6b872e5d01454ab9a8df771e0baa2a8a60a20cc1"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -2504,7 +2504,7 @@ dependencies = [
 [[package]]
 name = "rezzy-json"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#bd1638277c4858532e5535eea08136384b898453"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#6b872e5d01454ab9a8df771e0baa2a8a60a20cc1"
 dependencies = [
  "ryu",
 ]
@@ -2512,7 +2512,7 @@ dependencies = [
 [[package]]
 name = "rezzy-log"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#bd1638277c4858532e5535eea08136384b898453"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#6b872e5d01454ab9a8df771e0baa2a8a60a20cc1"
 dependencies = [
  "tracing",
 ]
@@ -2520,7 +2520,7 @@ dependencies = [
 [[package]]
 name = "rezzy-recon"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#bd1638277c4858532e5535eea08136384b898453"
+source = "git+https://gitlab.com/wombat-foundation/rezzy.git?branch=dev#6b872e5d01454ab9a8df771e0baa2a8a60a20cc1"
 dependencies = [
  "base64 0.23.1",
  "blake3",
