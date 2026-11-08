@@ -303,6 +303,40 @@ fn write_room(
 	Ok(path)
 }
 
+/// Events kept as outliers have no timeline position by design. Any other
+/// event without one lost its legacy index row, so give it an ordering after
+/// the room's existing ones: the importer only needs the value to place the
+/// event in the timeline index, and the state rebuild orders by DAG position.
+fn synthesize_stream_orderings(
+	events: &mut BTreeMap<String, BTreeMap<String, Event>>,
+	outlier_ids: &HashSet<String>,
+) -> usize {
+	let mut synthesized = 0_usize;
+	for by_id in events.values_mut() {
+		let mut next = by_id
+			.values()
+			.filter_map(|event| event.stream_ordering)
+			.max()
+			.map_or(1, |max| max.saturating_add(1));
+		let mut missing: Vec<(Option<i64>, String)> = by_id
+			.iter()
+			.filter(|(id, event)| {
+				event.stream_ordering.is_none() && !outlier_ids.contains(*id)
+			})
+			.map(|(id, event)| (event.depth, id.to_string()))
+			.collect();
+		missing.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+		for (_, id) in missing {
+			if let Some(event) = by_id.get_mut(&id) {
+				event.stream_ordering = Some(next);
+				next = next.saturating_add(1);
+				synthesized = synthesized.saturating_add(1);
+			}
+		}
+	}
+	synthesized
+}
+
 fn dependency_order(events: Vec<Event>) -> Vec<Event> {
 	let ids: HashMap<String, usize> = events
 		.iter()
@@ -427,9 +461,21 @@ fn write_keys(
 			.open(out_path)?,
 	);
 	let mut count = 0;
+	let mut metadata_rows = 0_usize;
 	let mut records: BTreeMap<(String, String), Object> = BTreeMap::new();
 	for (key, raw) in rows(db, "server_signingkeys")? {
 		let key = std::str::from_utf8(&key)?;
+		// `<origin>\0provisional` and `<origin>\0corroborated` rows are the local
+		// sets of key IDs the server saw active (MSC4499), not key records: no
+		// `valid_until_ts`, no key bytes. That evidence is re-derived from signed
+		// events below, so these rows are skipped rather than exported.
+		if key
+			.split_once('\0')
+			.is_some_and(|(_, kind)| kind != "historical")
+		{
+			metadata_rows = metadata_rows.saturating_add(1);
+			continue;
+		}
 		let Some((origin, historical)) = key
 			.strip_suffix("\0historical")
 			.map(|origin| (origin, true))
@@ -495,6 +541,12 @@ fn write_keys(
 				records.insert(id, record);
 			}
 		}
+	}
+	if metadata_rows > 0 {
+		eprintln!(
+			"warning: skipped {metadata_rows} legacy provisional/corroborated key-metadata rows; \
+			 that evidence is re-derived from signed events"
+		);
 	}
 	for record in records.into_values() {
 		writer.write_all(codec::to_string(&Value::Object(record)).as_bytes())?;
@@ -600,6 +652,7 @@ pub fn export(
 		}
 	}
 	let mut events: BTreeMap<String, BTreeMap<String, Event>> = BTreeMap::new();
+	let mut outlier_ids: HashSet<String> = HashSet::new();
 	let mut id_mismatches = 0usize;
 	let mut add = |mut event: Event| {
 		event.rejection_code = rejection_codes.get(event.id.as_bytes()).copied();
@@ -649,6 +702,7 @@ pub fn export(
 				)
 			})?;
 		event.outlier = true;
+		outlier_ids.insert(event.id.clone());
 		id_mismatches += usize::from(mismatch);
 		add(event);
 	}
@@ -658,15 +712,22 @@ pub fn export(
 			 event ID"
 		);
 	}
-	let missing_stream_ordering = events
+	let synthesized = synthesize_stream_orderings(&mut events, &outlier_ids);
+	if synthesized > 0 {
+		eprintln!(
+			"warning: {synthesized} timeline events had no stream-ordering index entry in the \
+			 legacy store; assigned synthetic orderings so the state rebuild includes them"
+		);
+	}
+	let unpositioned_outliers = events
 		.values()
 		.flat_map(BTreeMap::values)
 		.filter(|event| event.stream_ordering.is_none())
 		.count();
-	if missing_stream_ordering > 0 {
+	if unpositioned_outliers > 0 {
 		eprintln!(
-			"warning: {missing_stream_ordering} exported events have no stream ordering and \
-			 will be omitted from the timeline index"
+			"note: {unpositioned_outliers} outlier events have no timeline position and stay out \
+			 of the timeline index"
 		);
 	}
 	if events.is_empty() {
