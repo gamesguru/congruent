@@ -321,13 +321,11 @@ fn get_space_child_events<'a>(
 				.await
 		})
 		.map_ok(|current_root_handle| {
-			self.services
-				.state_accessor
-				.state_keys_with_ids_hamt::<OwnedEventId>(
-					room_id,
-					current_root_handle,
-					&StateEventType::SpaceChild,
-				)
+			self.services.state_accessor.state_keys_with_ids_hamt(
+				room_id,
+				current_root_handle,
+				&StateEventType::SpaceChild,
+			)
 		})
 		.map(Result::into_iter)
 		.map(IterStream::stream)

@@ -1844,7 +1844,7 @@ async fn collect_required_state(
 					let keys: Vec<conduwuit::matrix::StateKey> = services
 						.rooms
 						.state_accessor
-						.state_keys_with_ids_hamt::<OwnedEventId>(
+						.state_keys_with_ids_hamt(
 							room_id,
 							current_root_handle.clone(),
 							event_type,

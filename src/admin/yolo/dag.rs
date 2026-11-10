@@ -262,7 +262,7 @@ pub(super) async fn get_room_dag(
 					.services
 					.rooms
 					.state_accessor
-					.state_get_id_hamt::<EventId>(
+					.state_get_id_hamt(
 						&room_id,
 						room_root.as_ref().expect("room fingerprint implies a root"),
 						&last_type.to_string().into(),

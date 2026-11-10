@@ -873,17 +873,21 @@ async fn join_room_by_id_helper_remote_process(
 
 	let mut entries = Vec::with_capacity(state.len());
 	for (&shortstatekey, event_id) in &state {
-		let shorteventid = services
+		if let Ok((kind, state_key)) = services
 			.rooms
 			.short
-			.get_or_create_shorteventid(event_id)
-			.await;
-		entries.push((shortstatekey, shorteventid));
+			.get_statekey_from_short(shortstatekey)
+			.await
+		{
+			entries.push((
+				service::rooms::state_hamt::hamt_key(&kind, &state_key),
+				service::rooms::state_hamt::hamt_value(event_id),
+			));
+		}
 	}
 	drop(state);
 
-	let structural_key =
-		service::rooms::state_hamt::room_structural_key(&services.globals.server_secret, room_id);
+	let structural_key = service::rooms::state_hamt::room_structural_key(room_id);
 	let (root_handle, root_node) =
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root for join: {e:?}")))?;

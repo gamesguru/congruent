@@ -14,16 +14,19 @@ use std::{
 
 use conduwuit::{Result, err, warn};
 use rezzy::{
-	hamt::{HamtNode, PersistedInternalNode, RootHandle, StructuralHash},
+	hamt::{PersistedInternalNode, RootHandle, StructuralHash},
 	incremental::LtHash,
 };
 
-use super::orphan_scan::{NodePrefix, OrphanReport, RoomInput, RoomOrphans, SkipReason};
+use super::{
+	StateHamtKey, StateHamtNode, StateHamtValue,
+	orphan_scan::{NodePrefix, OrphanReport, RoomInput, RoomOrphans, SkipReason},
+};
 
 /// A node's structural hash and encoded bytes, held back so it is published to
 /// mtxdb in the same transaction as the roots that reference it.
 pub type PendingNode = (StructuralHash, Vec<u8>);
-type NodeCache = moka::sync::Cache<(Vec<u8>, StructuralHash), Arc<HamtNode<u64, u64>>>;
+type NodeCache = moka::sync::Cache<(Vec<u8>, StructuralHash), Arc<StateHamtNode>>;
 
 /// Counters describing how much redundant node writing the content-addressed
 /// elision in [`Store`] avoided.
@@ -54,9 +57,7 @@ pub struct Store {
 
 	/// Content-addressed cache of parsed HamtNodes in memory.
 	/// Room is part of the key because mtxdb scopes node records by room.
-	///
-	/// Note: `u64, u64` is currently a placeholder for `ShortStateKey` and
-	/// `ShortEventId` which are the actual domain types.
+	/// Capacity counts nodes, not bytes; leaves hold full strings.
 	node_cache: NodeCache,
 
 	/// Redundant-write counters for the content-addressed elision below.
@@ -107,7 +108,7 @@ impl Store {
 		room_id: &[u8],
 		structural_key: &[u8],
 		hash: &StructuralHash,
-	) -> Result<Arc<HamtNode<u64, u64>>> {
+	) -> Result<Arc<StateHamtNode>> {
 		let cache_key = (room_id.to_vec(), *hash);
 		if let Some(node) = self.node_cache.get(&cache_key) {
 			return Ok(node);
@@ -125,7 +126,7 @@ impl Store {
 		&'a self,
 		room_id: &'a [u8],
 		structural_key: &'a [u8],
-	) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<u64, u64>>, conduwuit::Error> + 'a {
+	) -> impl FnMut(&StructuralHash) -> Result<Arc<StateHamtNode>, conduwuit::Error> + 'a {
 		move |hash: &StructuralHash| self.get_node(room_id, structural_key, hash)
 	}
 
@@ -137,7 +138,7 @@ impl Store {
 		room_id: &[u8],
 		structural_key: &[u8],
 		hash: &StructuralHash,
-	) -> Result<Option<Arc<HamtNode<u64, u64>>>> {
+	) -> Result<Option<Arc<StateHamtNode>>> {
 		let nodes = self
 			.mtxdb
 			.get_nodes(room_id, &[*hash])
@@ -146,9 +147,12 @@ impl Store {
 			return Ok(None);
 		};
 
-		let node =
-			PersistedInternalNode::<u64, u64>::decode_v1_verified(&bytes, structural_key, *hash)
-				.map_err(|error| err!(Database(error!("{error}"))))?;
+		let node = PersistedInternalNode::<StateHamtKey, StateHamtValue>::decode_v1_verified(
+			&bytes,
+			structural_key,
+			*hash,
+		)
+		.map_err(|error| err!(Database(error!("{error}"))))?;
 		Ok(Some(Arc::new(node)))
 	}
 
@@ -158,9 +162,10 @@ impl Store {
 	/// Shared by the read and write paths so a node cached right after being
 	/// written is held under exactly the same representation a later read would
 	/// have produced.
-	fn decode_node(hash: &StructuralHash, bytes: &[u8]) -> Result<Arc<HamtNode<u64, u64>>> {
-		let persisted = PersistedInternalNode::<u64, u64>::decode_v1_unverified(bytes)
-			.map_err(|e| err!(Database(error!("{e}"))))?;
+	fn decode_node(hash: &StructuralHash, bytes: &[u8]) -> Result<Arc<StateHamtNode>> {
+		let persisted =
+			PersistedInternalNode::<StateHamtKey, StateHamtValue>::decode_v1_unverified(bytes)
+				.map_err(|e| err!(Database(error!("{e}"))))?;
 
 		if (persisted.datamap & persisted.nodemap) != 0 {
 			return Err(err!(Database(error!(
@@ -181,7 +186,7 @@ impl Store {
 			))));
 		}
 
-		let node = Arc::new(HamtNode {
+		let node = Arc::new(StateHamtNode {
 			datamap: persisted.datamap,
 			nodemap: persisted.nodemap,
 			leaves: persisted.leaves,
@@ -209,7 +214,7 @@ impl Store {
 	pub fn put_node_deferred(
 		&self,
 		room_id: &[u8],
-		node: Arc<HamtNode<u64, u64>>,
+		node: Arc<StateHamtNode>,
 	) -> Result<Vec<PendingNode>> {
 		let hash = node.structural_hash;
 		if self.is_durable(room_id, &hash)? {
@@ -220,7 +225,7 @@ impl Store {
 			return Ok(Vec::new());
 		}
 
-		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
+		let persisted: PersistedInternalNode<StateHamtKey, StateHamtValue> = node.as_ref().into();
 		let bytes = persisted.encode_v1();
 
 		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
@@ -228,7 +233,7 @@ impl Store {
 	}
 
 	/// Stores a node on its own, without a root.
-	pub fn put_node(&self, room_id: &[u8], node: Arc<HamtNode<u64, u64>>) -> Result<()> {
+	pub fn put_node(&self, room_id: &[u8], node: Arc<StateHamtNode>) -> Result<()> {
 		let pending = self.put_node_deferred(room_id, node)?;
 		self.publish_nodes(room_id, &pending)
 	}
@@ -237,7 +242,7 @@ impl Store {
 	pub fn persist_node_recursive_deferred(
 		&self,
 		room_id: &[u8],
-		node: Arc<HamtNode<u64, u64>>,
+		node: Arc<StateHamtNode>,
 	) -> Result<Vec<PendingNode>> {
 		let mut deferred = Vec::new();
 		for child in &node.children {
@@ -252,11 +257,7 @@ impl Store {
 
 	/// Stores a node and all of its resolved children recursively, in one
 	/// transaction and without a root.
-	pub fn persist_node_recursive(
-		&self,
-		room_id: &[u8],
-		node: Arc<HamtNode<u64, u64>>,
-	) -> Result<()> {
+	pub fn persist_node_recursive(&self, room_id: &[u8], node: Arc<StateHamtNode>) -> Result<()> {
 		let pending = self.persist_node_recursive_deferred(room_id, node)?;
 		self.publish_nodes(room_id, &pending)
 	}
@@ -518,7 +519,7 @@ impl Store {
 		handles.dedup_by_key(|handle| handle.structural_hash);
 
 		let mut resolver =
-			|hash: &StructuralHash| -> std::result::Result<Arc<HamtNode<u64, u64>>, Missing> {
+			|hash: &StructuralHash| -> std::result::Result<Arc<StateHamtNode>, Missing> {
 				match self.read_node_verified(&room.room_id, &room.structural_key, hash) {
 					| Ok(Some(node)) => Ok(node),
 					| Ok(None) | Err(_) => Err(Missing),
@@ -570,8 +571,9 @@ impl Store {
 	///
 	/// This is the MSC00DC root: `state_group_id` is `BLAKE2b-256(lattice)`
 	/// (rezzy's `LtHash::checksum`), reproducible by any server that
-	/// resolves to the same state — unlike `structural_hash`, which is a
-	/// local-only cache key and must never be compared across servers.
+	/// resolves to the same state. `structural_hash` is reproducible too: the
+	/// leaves are canonical strings and the structural key depends only on the
+	/// room ID, so two servers holding the same state build the same nodes.
 	#[must_use]
 	pub fn root_handle(&self, structural_hash: StructuralHash, lattice: &LtHash) -> RootHandle {
 		RootHandle::from_lthash(structural_hash, lattice)

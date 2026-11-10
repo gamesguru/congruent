@@ -5,7 +5,7 @@ use conduwuit::{
 use conduwuit_service::rooms::state::root_handle_fingerprint;
 use futures::{StreamExt, TryStreamExt, future::join};
 use slipstream::{
-	OwnedEventId, OwnedUserId,
+	OwnedUserId,
 	api::client::membership::{
 		get_member_events::{self, v3::MembershipEventFilter},
 		joined_members,
@@ -131,11 +131,7 @@ pub(crate) async fn get_member_events_route(
 	let mut members: Vec<Pdu> = services
 		.rooms
 		.state_accessor
-		.state_keys_with_ids_hamt::<OwnedEventId>(
-			room_id,
-			leave_root,
-			&StateEventType::RoomMember,
-		)
+		.state_keys_with_ids_hamt(room_id, leave_root, &StateEventType::RoomMember)
 		.broadn_filter_map(256, |(_, event_id)| async move {
 			services.rooms.timeline.get_pdu(&event_id).ok()
 		})

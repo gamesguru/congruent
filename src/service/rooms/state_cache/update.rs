@@ -1165,7 +1165,7 @@ pub async fn update_caches_for_state_delta(
 				match self
 					.services
 					.state_accessor
-					.state_get_shortid_hamt(
+					.state_get_event_id_hamt(
 						room_id,
 						new_root_handle,
 						&StateEventType::RoomMember,

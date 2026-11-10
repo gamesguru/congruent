@@ -938,26 +938,17 @@ pub(super) async fn set_state_event(
 		.collect()
 		.await;
 
-	for ((shortstatekey, eid), key_result) in
-		short_state_keys.into_iter().zip(event_ids).zip(string_keys)
-	{
-		let shorteventid = self
-			.services
-			.rooms
-			.short
-			.get_or_create_shorteventid(&eid)
-			.await;
-		entries.push((shortstatekey, shorteventid));
-
+	for (eid, key_result) in event_ids.into_iter().zip(string_keys) {
 		if let Ok((ty, sk)) = key_result {
 			lattice.insert(ty.to_string().as_str(), sk.as_str(), eid.as_str());
+			entries.push((
+				conduwuit_service::rooms::state_hamt::hamt_key(&ty, &sk),
+				conduwuit_service::rooms::state_hamt::hamt_value(&eid),
+			));
 		}
 	}
 
-	let structural_key = conduwuit_service::rooms::state_hamt::room_structural_key(
-		&self.services.globals.server_secret,
-		&room_id,
-	);
+	let structural_key = conduwuit_service::rooms::state_hamt::room_structural_key(&room_id);
 	let (new_root, root_node) =
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;

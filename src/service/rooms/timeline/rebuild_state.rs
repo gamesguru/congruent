@@ -7,10 +7,8 @@ use conduwuit::utils::timeline_sorter::sort_timeline_events;
 use conduwuit_core::{
 	Result, debug, err, info,
 	matrix::{StateKey, event::Event, state_res::StateMap},
-	utils::IterStream,
 	warn,
 };
-use futures::StreamExt;
 use rezzy::bitmap::Bitmap;
 use slipstream::{
 	OwnedEventId, OwnedUserId, RoomId, RoomVersionId,
@@ -19,7 +17,7 @@ use slipstream::{
 
 use crate::rooms::{
 	self,
-	short::{ShortEventId, ShortStateKey},
+	state_hamt::{StateHamtKey, StateHamtValue, hamt_key, hamt_value},
 };
 
 /// Event metadata extracted during Phase 1 streaming.
@@ -117,9 +115,8 @@ impl super::Service {
 
 		// Phase 5: Final multi-head extremity merge
 		eprintln!("[rebuild_state] Phase 5: merge extremities...");
-		let current_root = self
-			.rebuild_merge_extremities(room_id, &ctx, &event_root, current_root)
-			.await?;
+		let current_root =
+			self.rebuild_merge_extremities(room_id, &ctx, &event_root, current_root)?;
 		eprintln!("[rebuild_state] Phase 5 done");
 
 		// Phase 6: Apply final state. This mirrors the legacy `force_state_quiet`
@@ -359,11 +356,10 @@ impl super::Service {
 		&self,
 		room_id: &RoomId,
 		prev: &rezzy::hamt::RootHandle,
-		mutations: Vec<(ShortStateKey, Option<ShortEventId>)>,
+		mutations: Vec<(StateHamtKey, Option<StateHamtValue>)>,
 		lattice: &rezzy::incremental::LtHash,
 	) -> Result<rezzy::hamt::RootHandle> {
-		let structural_key =
-			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
+		let structural_key = rooms::state_hamt::room_structural_key(room_id);
 		let (root_handle, deferred_nodes) = self.services.state.persist_state_hamt_mutations(
 			room_id,
 			&structural_key,
@@ -391,11 +387,10 @@ impl super::Service {
 	fn store_hamt_root(
 		&self,
 		room_id: &RoomId,
-		entries: Vec<(ShortStateKey, ShortEventId)>,
+		entries: Vec<(StateHamtKey, StateHamtValue)>,
 		lattice: &rezzy::incremental::LtHash,
 	) -> Result<rezzy::hamt::RootHandle> {
-		let structural_key =
-			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
+		let structural_key = rooms::state_hamt::room_structural_key(room_id);
 		let (root_handle, root_node) =
 			rezzy::hamt::build_hamt_root_handle(&structural_key, lattice, entries)
 				.map_err(|e| err!(error!("rebuild_state: failed to build HAMT root: {e:?}")))?;
@@ -419,46 +414,6 @@ impl super::Service {
 			.put_root_lattice(&root_handle.structural_hash, &record)?;
 
 		Ok(root_handle)
-	}
-
-	/// Reconstructs an LtHash lattice for a set of `(shortstatekey, shorteventid)`
-	/// entries by resolving them to their `(type, state_key, event_id)` triples.
-	/// Used by Phase 5, which materializes a handful of extremity roots.
-	async fn lattice_for_short_entries(
-		&self,
-		entries: &[(ShortStateKey, ShortEventId)],
-	) -> Result<rezzy::incremental::LtHash> {
-		let mut lattice = rezzy::incremental::LtHash::default();
-
-		let shortstatekeys: Vec<ShortStateKey> = entries
-			.iter()
-			.map(|(shortstatekey, _)| *shortstatekey)
-			.collect();
-		let string_keys: Vec<Result<(StateEventType, StateKey)>> = self
-			.services
-			.short
-			.multi_get_statekey_from_short(shortstatekeys.iter().copied().stream())
-			.collect()
-			.await;
-
-		for ((_shortstatekey, shorteventid), key_result) in entries.iter().zip(string_keys) {
-			if let Ok((event_type, state_key)) = key_result {
-				if let Ok(event_id) = self
-					.services
-					.short
-					.get_eventid_from_short::<OwnedEventId>(*shorteventid)
-					.await
-				{
-					lattice.insert(
-						event_type.to_string().as_str(),
-						state_key.as_str(),
-						event_id.as_str(),
-					);
-				}
-			}
-		}
-
-		Ok(lattice)
 	}
 
 	/// Writes a chunk of `shorteventid -> serialized RootHandle` mappings to
@@ -517,41 +472,14 @@ impl super::Service {
 
 		// ── Pre-cache short IDs ──
 		let precache_start = Instant::now();
-		let mut unique_state_keys: HashSet<(String, String)> = HashSet::new();
-		for (_, _, _, state_key, _) in &ctx.events_meta {
-			if let Some((ty, sk)) = state_key {
-				unique_state_keys.insert((ty.clone(), sk.clone()));
-			}
-		}
-
-		let mut ssk_cache: HashMap<
-			rezzy::basespec::event_types::EventType,
-			HashMap<String, u64>,
-		> = HashMap::with_capacity(unique_state_keys.len());
-		for (ty, sk) in &unique_state_keys {
-			let ssk = self
-				.services
-				.short
-				.get_or_create_shortstatekey(&ty.as_str().into(), sk)
-				.await;
-			ssk_cache
-				.entry(ty.clone().into())
-				.or_default()
-				.insert(sk.clone(), ssk);
-		}
-
 		let mut sei_cache: HashMap<OwnedEventId, u64> =
-			HashMap::with_capacity(ctx.events_meta.len());
-		let mut sei_str_cache: HashMap<String, u64> =
 			HashMap::with_capacity(ctx.events_meta.len());
 		for (eid, ..) in &ctx.events_meta {
 			let sei = self.services.short.get_or_create_shorteventid(eid).await;
-			sei_str_cache.insert(eid.to_string(), sei);
 			sei_cache.insert(eid.clone(), sei);
 		}
 		debug!(
-			"rebuild_state: pre-cached {} shortstatekeys + {} shorteventids in {:?}",
-			ssk_cache.len(),
+			"rebuild_state: pre-cached {} shorteventids in {:?}",
 			sei_cache.len(),
 			precache_start.elapsed(),
 		);
@@ -745,22 +673,15 @@ impl super::Service {
 								};
 								let (ty, sk) =
 									state_key.as_ref().expect("state_key checked above");
-								let ssk = ssk_cache
-									.get(&ty.as_str().into())
-									.and_then(|keys| keys.get(sk))
-									.copied();
-								let sei = sei_cache.get(eid).copied();
-								match (parent, ssk, sei) {
-									| (Some(parent), Some(ssk), Some(sei)) => self
-										.store_hamt_mutation(
-											room_id,
-											&parent,
-											vec![(ssk, Some(sei))],
-											&hash,
-										)
-										.ok(),
-									| _ => None,
-								}
+								parent.and_then(|parent| {
+									self.store_hamt_mutation(
+										room_id,
+										&parent,
+										vec![((ty.clone(), sk.clone()), Some(eid.to_string()))],
+										&hash,
+									)
+									.ok()
+								})
 							} else {
 								None
 							};
@@ -768,19 +689,18 @@ impl super::Service {
 							let root = if let Some(root) = incremental {
 								root
 							} else {
-								// Fork resolution or a missing short-ID cache entry:
-								// fall back to building the complete tree.
+								// Fork resolution or a missing parent root: fall
+								// back to building the complete tree.
 								let tc0 = Instant::now();
-								let mut entries = Vec::with_capacity(state.len());
-								for (key, ev_id_str) in &state {
-									let ssk = ssk_cache
-										.get(&key.0)
-										.and_then(|keys| keys.get(&key.1))
-										.copied()
-										.unwrap_or(0);
-									let sei = sei_str_cache.get(ev_id_str).copied().unwrap_or(0);
-									entries.push((ssk, sei));
-								}
+								let entries: Vec<(StateHamtKey, StateHamtValue)> = state
+									.iter()
+									.map(|(key, ev_id_str)| {
+										(
+											(key.0.as_str().to_owned(), key.1.clone()),
+											ev_id_str.clone(),
+										)
+									})
+									.collect();
 								t_compress = t_compress.saturating_add(tc0.elapsed());
 
 								let ts0 = Instant::now();
@@ -1090,16 +1010,13 @@ impl super::Service {
 	// ── Phase 5: Final multi-head extremity merge ──
 	// Handles rooms with multiple forward extremities by merging their state.
 
-	async fn rebuild_merge_extremities(
+	fn rebuild_merge_extremities(
 		&self,
 		room_id: &RoomId,
 		ctx: &RebuildCtx,
 		event_root: &HashMap<OwnedEventId, rezzy::hamt::RootHandle>,
 		current_root: rezzy::hamt::RootHandle,
 	) -> Result<rezzy::hamt::RootHandle> {
-		use conduwuit::utils::stream::{IterStream, ReadyExt, WidebandExt};
-		use futures::{StreamExt, TryStreamExt};
-
 		let mut has_children: HashSet<&OwnedEventId> = HashSet::new();
 		for (_, prev_events, ..) in &ctx.events_meta {
 			for parent in prev_events {
@@ -1140,88 +1057,53 @@ impl super::Service {
 			extremity_roots.len(),
 		);
 
-		// Materialize the union of the extremity states.
-		let mut all_entries: HashMap<ShortStateKey, ShortEventId> = HashMap::new();
+		// Materialize the extremity states, aborting rather than merging a
+		// partial union: dropping an extremity's state would commit incomplete
+		// room state.
+		let mut fork_states: Vec<StateMap<OwnedEventId>> =
+			Vec::with_capacity(extremity_roots.len());
 		for root in &extremity_roots {
-			// Abort rather than merge a partial union: dropping an extremity's
-			// state would commit incomplete room state.
-			let full_state = self
-				.services
-				.state_accessor
-				.load_full_state_hamt(room_id, root)?;
-			for (shortstatekey, shorteventid) in full_state {
-				all_entries.insert(shortstatekey, shorteventid);
+			fork_states.push(
+				self.services
+					.state_accessor
+					.load_full_state_hamt(room_id, root)?,
+			);
+		}
+
+		let mut all_entries: StateMap<OwnedEventId> = StateMap::new();
+		let mut conflicting = 0_usize;
+		for state in &fork_states {
+			for (key, event_id) in state {
+				if let Some(existing) = all_entries.insert(key.clone(), event_id.clone()) {
+					if existing != *event_id {
+						conflicting = conflicting.saturating_add(1);
+					}
+				}
 			}
 		}
 
-		// Build ssk -> set of shorteventid values to detect conflicts
-		let mut ssk_values: HashMap<ShortStateKey, HashSet<ShortEventId>> = HashMap::new();
-		for (&shortstatekey, &shorteventid) in &all_entries {
-			ssk_values
-				.entry(shortstatekey)
-				.or_default()
-				.insert(shorteventid);
-		}
-
-		let conflicting: Vec<ShortStateKey> = ssk_values
-			.iter()
-			.filter(|(_, values)| values.len() > 1)
-			.map(|(shortstatekey, _)| *shortstatekey)
-			.collect();
-
-		if conflicting.is_empty() {
+		if conflicting == 0 {
 			eprintln!(
 				"[rebuild_state] Phase 5: trivial merge, {} state entries, 0 conflicts",
-				ssk_values.len(),
+				all_entries.len(),
 			);
-			let entries: Vec<(ShortStateKey, ShortEventId)> = all_entries.into_iter().collect();
-			let lattice = self.lattice_for_short_entries(&entries).await?;
+			let (entries, lattice) = hamt_entries_with_lattice(&all_entries);
 			let merged_root = self.store_hamt_root(room_id, entries, &lattice)?;
 			return Ok(merged_root);
 		}
 
 		eprintln!(
-			"[rebuild_state] Phase 5: {} conflicts across {} unique roots — running N-way \
-			 resolution...",
-			conflicting.len(),
+			"[rebuild_state] Phase 5: {conflicting} conflicts across {} unique roots — running \
+			 N-way resolution...",
 			extremity_roots.len(),
 		);
 
 		debug!(
-			"rebuild_state: {} forward extremities with {} unique roots ({} conflicts) — \
-			 merging via n-way resolution...",
+			"rebuild_state: {} forward extremities with {} unique roots ({conflicting} \
+			 conflicts) — merging via n-way resolution...",
 			num_extremities,
 			extremity_roots.len(),
-			conflicting.len(),
 		);
-
-		let mut fork_maps = Vec::with_capacity(extremity_roots.len());
-		for root in &extremity_roots {
-			let map: HashMap<ShortStateKey, OwnedEventId> = self
-				.services
-				.state_accessor
-				.state_full_ids_hamt(room_id, root)
-				.try_collect()
-				.await?;
-			fork_maps.push(map);
-		}
-
-		let fork_states: Vec<StateMap<OwnedEventId>> = fork_maps
-			.iter()
-			.stream()
-			.wide_then(|fork_map| {
-				let shortstatekeys = fork_map.keys().copied().stream();
-				let event_ids = fork_map.values().cloned().stream();
-				self.services
-					.short
-					.multi_get_statekey_from_short(shortstatekeys)
-					.zip(event_ids)
-					.ready_filter_map(|(ty_sk, id)| Some((ty_sk.ok()?, id)))
-					.collect()
-			})
-			.map(Ok::<_, conduwuit::Error>)
-			.try_collect()
-			.await?;
 
 		let fork_state_refs: Vec<&StateMap<OwnedEventId>> = fork_states.iter().collect();
 		eprintln!(
@@ -1237,23 +1119,24 @@ impl super::Service {
 			resolved_map.len()
 		);
 
-		let mut lattice = rezzy::incremental::LtHash::default();
-		let mut entries: Vec<(ShortStateKey, ShortEventId)> =
-			Vec::with_capacity(resolved_map.len());
-		for ((ty, sk), id) in &resolved_map {
-			lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
-			let ssk = self
-				.services
-				.short
-				.get_or_create_shortstatekey(ty, sk.as_ref())
-				.await;
-			let sei = self.services.short.get_or_create_shorteventid(id).await;
-			entries.push((ssk, sei));
-		}
+		let (entries, lattice) = hamt_entries_with_lattice(&resolved_map);
 
 		debug!("rebuild_state: merged state has {} entries", entries.len());
 		let merged_root = self.store_hamt_root(room_id, entries, &lattice)?;
 
 		Ok(merged_root)
 	}
+}
+
+/// The state-HAMT leaves and lattice for a resolved state map.
+fn hamt_entries_with_lattice(
+	state: &StateMap<OwnedEventId>,
+) -> (Vec<(StateHamtKey, StateHamtValue)>, rezzy::incremental::LtHash) {
+	let mut lattice = rezzy::incremental::LtHash::default();
+	let mut entries = Vec::with_capacity(state.len());
+	for ((ty, sk), id) in state {
+		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
+		entries.push((hamt_key(ty, sk), hamt_value(id)));
+	}
+	(entries, lattice)
 }

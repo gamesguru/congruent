@@ -22,8 +22,11 @@ use conduwuit_mtxdb::lattice::{
 	encode_chain, encode_checkpoint, extend_chain,
 };
 
-/// A (add, rem) pair of `(shortstatekey, shorteventid)` from a HAMT delta.
-type HamtDelta = (Vec<(u64, u64)>, Vec<(u64, u64)>);
+/// A (add, rem) pair of state-HAMT leaves from a HAMT delta.
+type HamtDelta = (
+	Vec<(rooms::state_hamt::StateHamtKey, rooms::state_hamt::StateHamtValue)>,
+	Vec<(rooms::state_hamt::StateHamtKey, rooms::state_hamt::StateHamtValue)>,
+);
 
 const CODEC_VERSION_LEN: usize = 1;
 const ROUTING_VERSION_LEN: usize = 1;
@@ -111,7 +114,7 @@ pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHa
 #[must_use]
 pub(crate) fn is_state_event(pdu: &PduEvent) -> bool { pdu.state_key().is_some() }
 
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all};
+use futures::{FutureExt, Stream, StreamExt, TryStreamExt, future::join_all};
 use slipstream::{
 	EventId, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, UserId,
 	events::{
@@ -121,10 +124,7 @@ use slipstream::{
 	sswire::Raw,
 };
 
-use crate::{
-	Dep, globals, rooms,
-	rooms::short::{ShortEventId, ShortStateKey},
-};
+use crate::{Dep, globals, rooms, rooms::short::ShortEventId};
 
 pub struct Service {
 	pub mutex: RoomMutexMap,
@@ -338,13 +338,12 @@ impl Service {
 		from_root: Option<&rezzy::hamt::RootHandle>,
 		to_root: &rezzy::hamt::RootHandle,
 	) -> Result<()> {
-		let structural_key =
-			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
+		let structural_key = rooms::state_hamt::room_structural_key(room_id);
 		let store = &self.services.state_hamt.store;
 		let old_node = match from_root {
 			| Some(root) =>
 				store.get_node(room_id.as_bytes(), &structural_key, &root.structural_hash)?,
-			| None => Arc::new(rezzy::hamt::HamtNode {
+			| None => Arc::new(rooms::state_hamt::StateHamtNode {
 				datamap: 0,
 				nodemap: 0,
 				leaves: vec![],
@@ -353,7 +352,7 @@ impl Service {
 			}),
 		};
 		let new_node = if to_root.structural_hash == rezzy::hamt::StructuralHash::default() {
-			let empty_node = Arc::new(rezzy::hamt::HamtNode {
+			let empty_node = Arc::new(rooms::state_hamt::StateHamtNode {
 				datamap: 0,
 				nodemap: 0,
 				leaves: vec![],
@@ -372,13 +371,12 @@ impl Service {
 		let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
 		let lattice = rezzy::incremental::LtHash::default();
 		let (added, removed): HamtDelta =
-			rezzy::hamt::delta::isolate_delta::<u64, u64, _, conduwuit::Error>(
-				&old_node,
-				&lattice,
-				&new_node,
-				&lattice,
-				&mut resolver,
-			)
+			rezzy::hamt::delta::isolate_delta::<
+				rooms::state_hamt::StateHamtKey,
+				rooms::state_hamt::StateHamtValue,
+				_,
+				conduwuit::Error,
+			>(&old_node, &lattice, &new_node, &lattice, &mut resolver)
 			.map_err(|e| match e {
 				| rezzy::hamt::delta::HamtTraversalError::Resolve(inner) => inner,
 				| rezzy::hamt::delta::HamtTraversalError::MaxDepthExceeded { depth } => {
@@ -386,70 +384,31 @@ impl Service {
 				},
 			})?;
 
-		// resolve PDUs
-		let mut added_pdus = Vec::new();
-		for (shortstatekey, event_id) in added {
-			if let Ok((event_type, _)) = self
-				.services
-				.short
-				.get_statekey_from_short(shortstatekey)
-				.await && !matches!(
-				event_type,
+		// Only membership, encryption and space-child changes feed the caches.
+		let relevant = |(event_type, _): &rooms::state_hamt::StateHamtKey| {
+			matches!(
+				StateEventType::from(event_type.as_str()),
 				StateEventType::RoomMember
 					| StateEventType::RoomEncryption
 					| StateEventType::SpaceChild
-			) {
-				continue;
-			}
-			let Ok(event_id_obj) = self
-				.services
-				.short
-				.get_eventid_from_short::<OwnedEventId>(event_id)
-				.await
-			else {
-				continue;
-			};
-			let Ok(pdu) = self
-				.services
-				.timeline
-				.get_pdu_in_room(Some(room_id), &event_id_obj)
-			else {
-				continue;
-			};
-			added_pdus.push(Arc::new(pdu));
-		}
-
-		let mut removed_pdus = Vec::new();
-		for (shortstatekey, event_id) in removed {
-			if let Ok((event_type, _)) = self
-				.services
-				.short
-				.get_statekey_from_short(shortstatekey)
-				.await && !matches!(
-				event_type,
-				StateEventType::RoomMember
-					| StateEventType::RoomEncryption
-					| StateEventType::SpaceChild
-			) {
-				continue;
-			}
-			let Ok(event_id_obj) = self
-				.services
-				.short
-				.get_eventid_from_short::<OwnedEventId>(event_id)
-				.await
-			else {
-				continue;
-			};
-			let Ok(pdu) = self
-				.services
-				.timeline
-				.get_pdu_in_room(Some(room_id), &event_id_obj)
-			else {
-				continue;
-			};
-			removed_pdus.push(Arc::new(pdu));
-		}
+			)
+		};
+		let load_pdus = |leaves: Vec<(rooms::state_hamt::StateHamtKey, String)>| {
+			leaves
+				.into_iter()
+				.filter(|(key, _)| relevant(key))
+				.filter_map(|(_, event_id)| {
+					let event_id = OwnedEventId::try_from(event_id).ok()?;
+					self.services
+						.timeline
+						.get_pdu_in_room(Some(room_id), &event_id)
+						.ok()
+						.map(Arc::new)
+				})
+				.collect::<Vec<_>>()
+		};
+		let added_pdus = load_pdus(added);
+		let removed_pdus = load_pdus(removed);
 
 		self.services
 			.state_cache
@@ -590,7 +549,7 @@ impl Service {
 		state_root_handle: Option<&rezzy::hamt::RootHandle>,
 	) -> Result<(
 		rezzy::hamt::RootHandle,
-		Arc<rezzy::hamt::HamtNode<u64, u64>>,
+		Arc<rooms::state_hamt::StateHamtNode>,
 		Vec<rooms::state_hamt::store::PendingNode>,
 	)> {
 		self.ensure_room_state_rebuilt(room_id).await?;
@@ -599,11 +558,7 @@ impl Service {
 		};
 
 		let event_type: StateEventType = new_pdu.kind().to_string().into();
-		let new_shortstatekey = self
-			.services
-			.short
-			.get_or_create_shortstatekey(&event_type, state_key)
-			.await;
+		let new_key = rooms::state_hamt::hamt_key(&event_type, state_key);
 
 		let base = match state_root_handle {
 			| Some(root) => Some(root.clone()),
@@ -611,38 +566,25 @@ impl Service {
 		};
 		if let Some(base) = base {
 			if let Some(mut lattice) = self.get_root_lattice(&base).await {
-				let structural_key = rooms::state_hamt::room_structural_key(
-					&self.services.globals.server_secret,
-					room_id,
-				);
+				let structural_key = rooms::state_hamt::room_structural_key(room_id);
 				let store = &self.services.state_hamt.store;
 				let old =
 					store.get_node(room_id.as_bytes(), &structural_key, &base.structural_hash)?;
 				let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
-				let value = self
-					.services
-					.short
-					.get_or_create_shorteventid(new_pdu.event_id())
-					.await;
 				let (new_node, displaced, created) = rezzy::hamt::persist_mutation(
 					&old,
 					&structural_key,
-					new_shortstatekey,
-					Some(value),
+					new_key,
+					Some(rooms::state_hamt::hamt_value(new_pdu.event_id())),
 					&mut resolver,
 				)
 				.map_err(|e| err!(error!("HAMT mutation failed: {e:?}")))?;
 				let mut deltas = Vec::with_capacity(2);
-				if let Some(old) = displaced {
-					let old_id = self
-						.services
-						.short
-						.get_eventid_from_short::<OwnedEventId>(old)
-						.await?;
+				if let Some(old_id) = displaced {
 					deltas.push(LatticeDelta::Remove {
 						event_type: event_type.as_ref().to_owned(),
 						state_key: state_key.to_owned(),
-						event_id: old_id.to_string(),
+						event_id: old_id.clone(),
 					});
 					deltas.push(LatticeDelta::Insert {
 						event_type: event_type.as_ref().to_owned(),
@@ -683,54 +625,34 @@ impl Service {
 			}
 		}
 
-		let mut current: HashMap<ShortStateKey, OwnedEventId> = if let Some(root_handle) =
-			state_root_handle
-		{
-			self.load_state_map_from_root_handle(room_id, root_handle, new_shortstatekey)
-				.await?
-		} else {
-			match self.get_room_state_hamt(room_id).await {
-				| Ok(root_handle) =>
-					self.load_state_map_from_root_handle(room_id, &root_handle, new_shortstatekey)
-						.await?,
-				| Err(e) if e.is_not_found() => HashMap::new(),
+		let base_root = match state_root_handle {
+			| Some(root_handle) => Some(root_handle.clone()),
+			| None => match self.get_room_state_hamt(room_id).await {
+				| Ok(root_handle) => Some(root_handle),
+				| Err(e) if e.is_not_found() => None,
 				| Err(e) => return Err(e),
-			}
+			},
 		};
-
-		current.insert(new_shortstatekey, new_pdu.event_id().to_owned());
-
-		let (short_state_keys, event_ids): (Vec<ShortStateKey>, Vec<OwnedEventId>) =
-			current.into_iter().unzip();
-
-		let string_keys: Vec<Result<(StateEventType, StateKey)>> = self
-			.services
-			.short
-			.multi_get_statekey_from_short(short_state_keys.iter().copied().stream())
-			.collect()
-			.await;
+		let mut current = match base_root {
+			| Some(root_handle) => self
+				.services
+				.state_accessor
+				.load_full_state_hamt(room_id, &root_handle)?,
+			| None => HashMap::new(),
+		};
+		current.insert((event_type, state_key.into()), new_pdu.event_id().to_owned());
 
 		let mut lattice = rezzy::incremental::LtHash::default();
-		let mut entries: Vec<(ShortStateKey, ShortEventId)> =
-			Vec::with_capacity(short_state_keys.len());
-
-		for ((ssk, event_id), key_result) in
-			short_state_keys.into_iter().zip(event_ids).zip(string_keys)
-		{
-			let shorteventid = self
-				.services
-				.short
-				.get_or_create_shorteventid(&event_id)
-				.await;
-			entries.push((ssk, shorteventid));
-
-			if let Ok((ty, sk)) = key_result {
-				lattice.insert(ty.to_string().as_str(), sk.as_str(), event_id.as_str());
-			}
+		let mut entries = Vec::with_capacity(current.len());
+		for ((ty, sk), event_id) in &current {
+			lattice.insert(ty.to_string().as_str(), sk.as_str(), event_id.as_str());
+			entries.push((
+				rooms::state_hamt::hamt_key(ty, sk),
+				rooms::state_hamt::hamt_value(event_id),
+			));
 		}
 
-		let structural_key =
-			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
+		let structural_key = rooms::state_hamt::room_structural_key(room_id);
 		let (root_handle, root_node) =
 			rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 				.map_err(|e| err!(error!("Failed to build HAMT in append_to_state: {e:?}")))?;
@@ -760,7 +682,10 @@ impl Service {
 		room_id: &RoomId,
 		structural_key: &[u8],
 		prev: &rezzy::hamt::RootHandle,
-		mutations: Vec<(ShortStateKey, Option<ShortEventId>)>,
+		mutations: Vec<(
+			rooms::state_hamt::StateHamtKey,
+			Option<rooms::state_hamt::StateHamtValue>,
+		)>,
 		lattice: &rezzy::incremental::LtHash,
 		deltas: &[LatticeDelta],
 	) -> Result<(rezzy::hamt::RootHandle, Vec<rooms::state_hamt::store::PendingNode>)> {
@@ -1086,42 +1011,6 @@ impl Service {
 			}
 		}
 		Some(raw)
-	}
-
-	async fn load_state_map_from_root_handle(
-		&self,
-		room_id: &RoomId,
-		root_handle: &rezzy::hamt::RootHandle,
-		skip_shortstatekey: ShortStateKey,
-	) -> Result<HashMap<ShortStateKey, OwnedEventId>> {
-		let structural_key =
-			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
-		let store = &self.services.state_hamt.store;
-		let node =
-			store.get_node(room_id.as_bytes(), &structural_key, &root_handle.structural_hash)?;
-
-		let mut short_events = Vec::new();
-		node.visit_entries(
-			&mut store.get_room_resolver(room_id.as_bytes(), &structural_key),
-			&mut |k, v| {
-				short_events.push((*k, *v));
-				Ok::<(), conduwuit::Error>(())
-			},
-		)?;
-
-		let mut map = HashMap::new();
-		for (sk, se) in short_events {
-			if sk != skip_shortstatekey {
-				let eid = self
-					.services
-					.short
-					.get_eventid_from_short::<OwnedEventId>(se)
-					.await?;
-				map.insert(sk, eid);
-			}
-		}
-
-		Ok(map)
 	}
 
 	pub async fn summary_stripped<'a, E>(
@@ -1477,10 +1366,7 @@ impl Service {
 			};
 			rooms.push(rooms::state_hamt::orphan_scan::RoomInput {
 				room_id: key.to_vec(),
-				structural_key: rooms::state_hamt::room_structural_key(
-					&self.services.globals.server_secret,
-					&room_id,
-				),
+				structural_key: rooms::state_hamt::room_structural_key(&room_id),
 			});
 		}
 
@@ -1687,45 +1573,27 @@ impl Service {
 			.map(|(ty, sk)| (ty.into(), sk.into()))
 			.collect();
 		debug!(?auth_types, "Auth types for event");
-		let sauthevents: HashMap<_, _> = auth_types
-			.iter()
+		// The leaves are keyed by `(event_type, state_key)`, so each auth type
+		// is a point lookup rather than a scan of the whole state.
+		auth_types
+			.into_iter()
 			.stream()
 			.broad_filter_map(|(event_type, state_key)| {
-				self.services
-					.short
-					.get_shortstatekey(event_type, state_key)
-					.map_ok(move |ssk| (ssk, (event_type, state_key)))
-					.map(Result::ok)
-			})
-			.collect()
-			.await;
-		debug!(?sauthevents, "Auth events to fetch");
-
-		let (state_keys, event_ids): (Vec<_>, Vec<_>) = self
-			.services
-			.state_accessor
-			.state_full_shortids_hamt(room_id, root_handle)
-			.ready_filter_map(Result::ok)
-			.ready_filter_map(|(shortstatekey, shorteventid)| {
-				sauthevents
-					.get(&shortstatekey)
-					.map(|(ty, sk)| ((ty, sk), shorteventid))
-			})
-			.unzip()
-			.await;
-		debug!(?state_keys, ?event_ids, "Auth events found in state");
-		self.services
-			.short
-			.multi_get_eventid_from_short(event_ids.into_iter().stream())
-			.zip(state_keys.into_iter().stream())
-			.ready_filter_map(|(event_id, (ty, sk))| Some(((ty, sk), event_id.ok()?)))
-			.broad_filter_map(|((ty, sk), event_id): (_, OwnedEventId)| async move {
-				self.services
-					.timeline
-					.get_pdu(&event_id)
-					.map(move |pdu| (((*ty).clone(), (*sk).clone()), pdu))
-					.inspect_err(|e| warn!("Failed to get auth event {event_id}: {e:?}"))
-					.ok()
+				let root_handle = &root_handle;
+				async move {
+					let event_id = self
+						.services
+						.state_accessor
+						.state_get_event_id_hamt(room_id, root_handle, &event_type, &state_key)
+						.await
+						.ok()?;
+					self.services
+						.timeline
+						.get_pdu(&event_id)
+						.map(move |pdu| ((event_type, state_key), pdu))
+						.inspect_err(|e| warn!("Failed to get auth event {event_id}: {e:?}"))
+						.ok()
+				}
 			})
 			.collect()
 			.map(Ok)

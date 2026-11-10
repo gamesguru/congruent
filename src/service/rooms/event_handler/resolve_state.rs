@@ -12,7 +12,7 @@ use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use parking_lot::RwLock;
 use slipstream::{OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
 
-use crate::rooms::short::{ShortEventId, ShortStateKey};
+use crate::rooms::state_hamt::{StateHamtKey, StateHamtValue, hamt_key, hamt_value};
 
 /// Pre-loaded event cache to avoid per-event RocksDB lookups during
 /// state resolution. Populated once at the start of bulk operations
@@ -117,7 +117,7 @@ pub async fn resolve_state(
 	// Only the changed leaves become mutations, so this stays proportional to
 	// the state delta rather than the state size. The same changes become the
 	// lattice delta used to avoid writing a full checkpoint on every event.
-	let mut mutations: Vec<(ShortStateKey, Option<ShortEventId>)> = Vec::new();
+	let mut mutations: Vec<(StateHamtKey, Option<StateHamtValue>)> = Vec::new();
 	let mut deltas: Vec<LatticeDelta> = Vec::new();
 
 	for ((ty, sk), id) in &state {
@@ -125,13 +125,6 @@ pub async fn resolve_state(
 		if previous == Some(id) {
 			continue;
 		}
-
-		let shortstatekey = self
-			.services
-			.short
-			.get_or_create_shortstatekey(ty, sk)
-			.await;
-		let shorteventid = self.services.short.get_or_create_shorteventid(id).await;
 
 		if let Some(previous_id) = previous {
 			deltas.push(LatticeDelta::Remove {
@@ -145,7 +138,7 @@ pub async fn resolve_state(
 			state_key: sk.to_string(),
 			event_id: id.to_string(),
 		});
-		mutations.push((shortstatekey, Some(shorteventid)));
+		mutations.push((hamt_key(ty, sk), Some(hamt_value(id))));
 	}
 
 	// Resolution picks a winner per `(type, state_key)` from the union of the
@@ -153,12 +146,7 @@ pub async fn resolve_state(
 	// anyway rather than silently leaving a stale leaf behind.
 	for ((ty, sk), previous_id) in previous_statemap {
 		if !state.contains_key(&(ty.clone(), sk.clone())) {
-			let shortstatekey = self
-				.services
-				.short
-				.get_or_create_shortstatekey(ty, sk)
-				.await;
-			mutations.push((shortstatekey, None));
+			mutations.push((hamt_key(ty, sk), None));
 			deltas.push(LatticeDelta::Remove {
 				event_type: ty.to_string(),
 				state_key: sk.to_string(),
@@ -167,10 +155,7 @@ pub async fn resolve_state(
 		}
 	}
 
-	let structural_key = crate::rooms::state_hamt::room_structural_key(
-		&self.services.globals.server_secret,
-		room_id,
-	);
+	let structural_key = crate::rooms::state_hamt::room_structural_key(room_id);
 
 	// Start from the current root's lattice and apply only the changed entries.
 	// Re-hashing the full resolved state would make every state event O(S) even

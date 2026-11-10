@@ -350,20 +350,13 @@ where
 	let mut entries = Vec::with_capacity(new_state.len());
 	for ((ty, sk), id) in &new_state {
 		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
-
-		let shortstatekey = self
-			.services
-			.short
-			.get_or_create_shortstatekey(ty, sk)
-			.await;
-		let shorteventid = self.services.short.get_or_create_shorteventid(id).await;
-		entries.push((shortstatekey, shorteventid));
+		entries.push((
+			crate::rooms::state_hamt::hamt_key(ty, sk),
+			crate::rooms::state_hamt::hamt_value(id),
+		));
 	}
 
-	let structural_key = crate::rooms::state_hamt::room_structural_key(
-		&self.services.globals.server_secret,
-		room_id,
-	);
+	let structural_key = crate::rooms::state_hamt::room_structural_key(room_id);
 	let (root_handle, root_node) =
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!("Failed to build HAMT root: {e:?}"))?;

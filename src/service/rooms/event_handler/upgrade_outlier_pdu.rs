@@ -810,18 +810,13 @@ pub async fn state_map_to_root_handle(
 		.collect()
 		.await;
 
-	for ((shortstatekey, event_id), key_result) in
-		short_state_keys.into_iter().zip(event_ids).zip(string_keys)
-	{
+	for (event_id, key_result) in event_ids.into_iter().zip(string_keys) {
 		let event_id = event_id.as_ref();
-		let shorteventid = self
-			.services
-			.short
-			.get_or_create_shorteventid(event_id)
-			.await;
-		entries.push((shortstatekey, shorteventid));
-
 		if let Ok((event_type, state_key)) = key_result {
+			entries.push((
+				crate::rooms::state_hamt::hamt_key(&event_type, &state_key),
+				crate::rooms::state_hamt::hamt_value(event_id),
+			));
 			lattice.insert(
 				event_type.to_string().as_str(),
 				state_key.as_str(),
@@ -830,10 +825,7 @@ pub async fn state_map_to_root_handle(
 		}
 	}
 
-	let structural_key = crate::rooms::state_hamt::room_structural_key(
-		&self.services.globals.server_secret,
-		room_id,
-	);
+	let structural_key = crate::rooms::state_hamt::room_structural_key(room_id);
 	let (root_handle, root_node) =
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;

@@ -6,7 +6,7 @@ use conduwuit_core::{
 	Server,
 	config::Config,
 	log::{Log, LogLevelReloadHandles, capture},
-	matrix::{Event, PduEvent},
+	matrix::{Event, PduEvent, StateKey},
 };
 use slipstream::{
 	CanonicalJsonObject, EventId, RoomId, event_id,
@@ -349,34 +349,12 @@ async fn test_state_equivalence() {
 		.expect("failed to get state");
 	assert_eq!(final_root.structural_hash, root2.structural_hash);
 
-	let create_shortstatekey = services
-		.rooms
-		.short
-		.get_shortstatekey(&StateEventType::RoomCreate, "")
-		.await
-		.expect("create shortstatekey should exist");
-	let create_shorteventid = services
-		.rooms
-		.short
-		.get_shorteventid(&event1.event_id)
-		.await
-		.expect("create shorteventid should exist");
-	let member_shortstatekey = services
-		.rooms
-		.short
-		.get_shortstatekey(&StateEventType::RoomMember, "@alice:test.conduwuit.local")
-		.await
-		.expect("member shortstatekey should exist");
-	let member_shorteventid = services
-		.rooms
-		.short
-		.get_shorteventid(&event2.event_id)
-		.await
-		.expect("member shorteventid should exist");
-
 	let expected = std::collections::HashMap::from([
-		(create_shortstatekey, create_shorteventid),
-		(member_shortstatekey, member_shorteventid),
+		((StateEventType::RoomCreate, "".into()), event1.event_id.clone()),
+		(
+			(StateEventType::RoomMember, "@alice:test.conduwuit.local".into()),
+			event2.event_id.clone(),
+		),
 	]);
 	let actual = services
 		.rooms
@@ -724,16 +702,11 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 	);
 	persist_dummy_pdu(&services, &room_id, &updated).await;
 
-	let target_key = services
-		.rooms
-		.short
-		.get_or_create_shortstatekey(&StateEventType::RoomMember, "@user7:test.conduwuit.local")
-		.await;
-	let target_value = services
-		.rooms
-		.short
-		.get_or_create_shorteventid(&updated.event_id)
-		.await;
+	let target_key = crate::rooms::state_hamt::hamt_key(
+		&StateEventType::RoomMember,
+		"@user7:test.conduwuit.local",
+	);
+	let target_value = crate::rooms::state_hamt::hamt_value(&updated.event_id);
 
 	// Reuse the persisted lattice so the assertion is about node volume only.
 	let mut lattice = services
@@ -749,8 +722,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 		updated.event_id.as_str(),
 	);
 
-	let structural_key =
-		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
+	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
 
 	let (written_before, elided_before) =
 		services.rooms.state_hamt.store.write_stats().snapshot();
@@ -761,7 +733,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 			&room_id,
 			&structural_key,
 			&root,
-			vec![(target_key, Some(target_value))],
+			vec![(target_key.clone(), Some(target_value.clone()))],
 			&lattice,
 			&[],
 		)
@@ -801,7 +773,10 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 		.load_full_state_hamt(&room_id, &new_root)
 		.expect("failed to load HAMT state");
 	assert_eq!(actual.len(), 201, "state size must be preserved by the update");
-	assert_eq!(actual.get(&target_key), Some(&target_value));
+	assert_eq!(
+		actual.get(&(StateEventType::RoomMember, "@user7:test.conduwuit.local".into())),
+		Some(&updated.event_id)
+	);
 
 	// Re-applying the identical mutation produces an identical root and must not
 	// write anything: the content-addressed elision has nothing left to do.
@@ -813,7 +788,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 			&room_id,
 			&structural_key,
 			&new_root,
-			vec![(target_key, Some(target_value))],
+			vec![(target_key.clone(), Some(target_value.clone()))],
 			&lattice,
 			&[],
 		)
@@ -866,8 +841,7 @@ async fn test_bulk_state_update_insert_remove_and_mixed() {
 		.get_root_lattice(&root)
 		.await
 		.expect("seeded root must have a retained lattice");
-	let structural_key =
-		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
+	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
 	let initial = services
 		.rooms
 		.state_accessor
@@ -875,22 +849,12 @@ async fn test_bulk_state_update_insert_remove_and_mixed() {
 		.expect("failed to load seeded state");
 	assert_eq!(initial.len(), 101);
 
-	let state_key = |user: &str| {
-		let services = &services;
-		let user = user.to_owned();
-		async move {
-			services
-				.rooms
-				.short
-				.get_or_create_shortstatekey(&StateEventType::RoomMember, &user)
-				.await
-		}
-	};
-	let event_value = |id: &str| {
-		let services = &services;
-		let id = slipstream::OwnedEventId::parse(id).unwrap();
-		async move { services.rooms.short.get_or_create_shorteventid(&id).await }
-	};
+	let state_key =
+		|user: &str| -> (StateEventType, StateKey) { (StateEventType::RoomMember, user.into()) };
+	let event_value = |id: &str| slipstream::OwnedEventId::parse(id).unwrap();
+	let leaf =
+		|key: &(StateEventType, StateKey)| crate::rooms::state_hamt::hamt_key(&key.0, &key.1);
+	let value = |id: &slipstream::OwnedEventId| crate::rooms::state_hamt::hamt_value(id);
 
 	let apply = |prev: rezzy::hamt::RootHandle, mutations| {
 		let (services, room_id, structural_key, lattice) =
@@ -924,8 +888,8 @@ async fn test_bulk_state_update_insert_remove_and_mixed() {
 	};
 
 	// Removal only.
-	let removed_key = state_key("@user3:test.conduwuit.local").await;
-	let (root, state) = apply(root, vec![(removed_key, None)]).await;
+	let removed_key = state_key("@user3:test.conduwuit.local");
+	let (root, state) = apply(root, vec![(leaf(&removed_key), None)]).await;
 	assert_eq!(state.len(), 100);
 	assert!(!state.contains_key(&removed_key), "removed key must be gone");
 	for (key, value) in initial.iter().filter(|(key, _)| **key != removed_key) {
@@ -933,23 +897,23 @@ async fn test_bulk_state_update_insert_remove_and_mixed() {
 	}
 
 	// Insertion only.
-	let new_key = state_key("@newuser:test.conduwuit.local").await;
-	let new_value = event_value("$new-member:test.conduwuit.local").await;
-	let (root, state) = apply(root, vec![(new_key, Some(new_value))]).await;
+	let new_key = state_key("@newuser:test.conduwuit.local");
+	let new_value = event_value("$new-member:test.conduwuit.local");
+	let (root, state) = apply(root, vec![(leaf(&new_key), Some(value(&new_value)))]).await;
 	assert_eq!(state.len(), 101);
 	assert_eq!(state.get(&new_key), Some(&new_value));
 	assert!(!state.contains_key(&removed_key));
 
 	// Remove, insert and replace in one update.
-	let other_removed = state_key("@user50:test.conduwuit.local").await;
-	let added_key = state_key("@another:test.conduwuit.local").await;
-	let added_value = event_value("$another-member:test.conduwuit.local").await;
-	let replaced_key = state_key("@user7:test.conduwuit.local").await;
-	let replaced_value = event_value("$replaced-member:test.conduwuit.local").await;
+	let other_removed = state_key("@user50:test.conduwuit.local");
+	let added_key = state_key("@another:test.conduwuit.local");
+	let added_value = event_value("$another-member:test.conduwuit.local");
+	let replaced_key = state_key("@user7:test.conduwuit.local");
+	let replaced_value = event_value("$replaced-member:test.conduwuit.local");
 	let (_root, state) = apply(root, vec![
-		(other_removed, None),
-		(added_key, Some(added_value)),
-		(replaced_key, Some(replaced_value)),
+		(leaf(&other_removed), None),
+		(leaf(&added_key), Some(value(&added_value))),
+		(leaf(&replaced_key), Some(value(&replaced_value))),
 	])
 	.await;
 	assert_eq!(state.len(), 101, "one removal and one insertion keep the size");
@@ -958,10 +922,8 @@ async fn test_bulk_state_update_insert_remove_and_mixed() {
 	assert_eq!(state.get(&added_key), Some(&added_value));
 	assert_eq!(state.get(&new_key), Some(&new_value));
 	assert_eq!(state.get(&replaced_key), Some(&replaced_value));
-	for (key, value) in initial
-		.iter()
-		.filter(|(key, _)| ![removed_key, other_removed, replaced_key].contains(*key))
-	{
+	let touched = [removed_key, other_removed, replaced_key];
+	for (key, value) in initial.iter().filter(|(key, _)| !touched.contains(*key)) {
 		assert_eq!(state.get(key), Some(value), "untouched entry changed by a mixed update");
 	}
 }
@@ -1021,7 +983,7 @@ async fn test_state_added_hamt_matches_full_state_difference() {
 	let mut expected: Vec<_> = new_state
 		.iter()
 		.filter(|(key, value)| old_state.get(key) != Some(value))
-		.map(|(key, value)| (*key, *value))
+		.map(|(key, value)| (key.clone(), value.clone()))
 		.collect();
 	expected.sort_unstable();
 
@@ -1035,10 +997,10 @@ async fn test_state_added_hamt_matches_full_state_difference() {
 	assert_eq!(actual, expected, "structural diff must match the full-state difference");
 }
 
-/// Full-state ID resolution must resolve short event IDs in one batched call
-/// and preserve the same key/id pairing as per-entry resolution.
+/// Full-state ID resolution must pair each entry's short state key with the
+/// event ID stored in its leaf.
 #[conduwuit_macros::async_test]
-async fn test_state_full_ids_hamt_batches_short_id_resolution() {
+async fn test_state_full_ids_hamt_pairs_short_keys_with_leaf_ids() {
 	use futures::TryStreamExt;
 
 	let (_guard, _server, services) = setup_test_services().await;
@@ -1046,21 +1008,20 @@ async fn test_state_full_ids_hamt_batches_short_id_resolution() {
 	let mutex = services.rooms.state.mutex.lock(&room_id).await;
 	let root = seed_membership_state(&services, &room_id, &mutex, 16).await;
 
-	let short_state = services
+	let state = services
 		.rooms
 		.state_accessor
 		.load_full_state_hamt(&room_id, &root)
-		.expect("failed to load short state");
+		.expect("failed to load state");
 
-	let mut expected = Vec::with_capacity(short_state.len());
-	for (shortstatekey, shorteventid) in &short_state {
-		let event_id = services
+	let mut expected = Vec::with_capacity(state.len());
+	for ((event_type, state_key), event_id) in &state {
+		let shortstatekey = services
 			.rooms
 			.short
-			.get_eventid_from_short::<slipstream::OwnedEventId>(*shorteventid)
-			.await
-			.expect("short event ID must resolve");
-		expected.push((*shortstatekey, event_id));
+			.get_or_create_shortstatekey(event_type, state_key)
+			.await;
+		expected.push((shortstatekey, event_id.clone()));
 	}
 	expected.sort_unstable_by_key(|(key, _)| *key);
 
@@ -1073,7 +1034,7 @@ async fn test_state_full_ids_hamt_batches_short_id_resolution() {
 		.expect("state_full_ids_hamt failed");
 	actual.sort_unstable_by_key(|(key, _)| *key);
 
-	assert_eq!(actual, expected, "batched resolution must preserve every key/id pair");
+	assert_eq!(actual, expected, "every short key must pair with its leaf's event ID");
 }
 
 /// Nodes are stored in mtxdb under their canonical encoding, and reads reject
@@ -1085,13 +1046,11 @@ async fn test_mtxdb_node_bytes_and_full_hash_verification() {
 
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = slipstream::OwnedRoomId::parse("!mtxdb-hamt:test.conduwuit.local").unwrap();
-	let structural_key =
-		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
+	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
 	let entries = (0_u64..128).map(|key| {
 		(
-			key,
-			key.checked_add(1000)
-				.expect("fixture value must fit in u64"),
+			("m.room.member".to_owned(), format!("@user{key}:test")),
+			format!("$event{key}:test"),
 		)
 	});
 	let (_, node) =
@@ -1219,11 +1178,10 @@ async fn test_orphan_scan_reports_only_unreachable_nodes() {
 			&format!("$orphan{index}:test.conduwuit.local"),
 		);
 	}
-	let structural_key =
-		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
+	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
 	let (_, orphan) = rezzy::hamt::build_hamt_root_handle(&structural_key, &orphan_lattice, [(
-		1_u64 << 40,
-		7_u64,
+		("m.room.member".to_owned(), "@orphan:test".to_owned()),
+		"$orphan:test".to_owned(),
 	)])
 	.expect("build orphan tree");
 	let orphan_hash = orphan.structural_hash;
@@ -1366,8 +1324,7 @@ async fn test_node_reads_verify_the_full_hash_and_missing_nodes_error() {
 
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = slipstream::OwnedRoomId::parse("!mtxdb-verify:test.conduwuit.local").unwrap();
-	let structural_key =
-		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
+	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
 	let store = &services.rooms.state_hamt.store;
 	let adapter = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
 
@@ -1375,7 +1332,7 @@ async fn test_node_reads_verify_the_full_hash_and_missing_nodes_error() {
 		let (_, node) = rezzy::hamt::build_hamt_root_handle(
 			&structural_key,
 			&LtHash::default(),
-			(0_u64..4).map(move |key| (key, key.checked_add(seed).expect("fixture fits u64"))),
+			(0_u64..4).map(move |key| fixture_leaf(key, seed)),
 		)
 		.expect("build HAMT node");
 		let bytes = PersistedInternalNode::from(node.as_ref()).encode_v1();
@@ -1410,8 +1367,20 @@ async fn test_node_reads_verify_the_full_hash_and_missing_nodes_error() {
 		.expect("cached read");
 }
 
+/// A synthetic membership leaf; `seed` varies the event ID so distinct seeds
+/// build distinct trees over the same keys.
+fn fixture_leaf(
+	key: u64,
+	seed: u64,
+) -> (crate::rooms::state_hamt::StateHamtKey, crate::rooms::state_hamt::StateHamtValue) {
+	(
+		("m.room.member".to_owned(), format!("@user{key}:test")),
+		format!("$event{key}-{seed}:test"),
+	)
+}
+
 /// Every structural hash in a resolved tree.
-fn tree_hashes(root: &Arc<rezzy::hamt::HamtNode<u64, u64>>) -> Vec<[u8; 32]> {
+fn tree_hashes(root: &Arc<crate::rooms::state_hamt::StateHamtNode>) -> Vec<[u8; 32]> {
 	let mut hashes = Vec::new();
 	let mut pending = vec![root.clone()];
 	while let Some(current) = pending.pop() {
@@ -1442,8 +1411,7 @@ async fn test_orphan_scan_dry_run_reports_unrooted_nodes_and_skips_rooms_it_cann
 
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = slipstream::OwnedRoomId::parse("!sweep:test.conduwuit.local").unwrap();
-	let structural_key =
-		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
+	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
 	let adapter = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
 	let store = &services.rooms.state_hamt.store;
 	let input = RoomInput {
@@ -1452,7 +1420,7 @@ async fn test_orphan_scan_dry_run_reports_unrooted_nodes_and_skips_rooms_it_cann
 	};
 
 	let build = |base: u64| {
-		let entries = (0_u64..128).map(move |key| (key, key.checked_add(base).unwrap()));
+		let entries = (0_u64..128).map(move |key| fixture_leaf(key, base));
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &LtHash::default(), entries)
 			.expect("build HAMT")
 	};
@@ -1539,10 +1507,7 @@ async fn test_orphan_scan_dry_run_skips_rooms_without_usable_roots() {
 
 	let rooms = [&empty, &garbage].map(|room| RoomInput {
 		room_id: room.as_bytes().to_vec(),
-		structural_key: crate::rooms::state_hamt::room_structural_key(
-			&services.globals.server_secret,
-			room,
-		),
+		structural_key: crate::rooms::state_hamt::room_structural_key(room),
 	});
 	let report = store.orphan_scan_dry_run(&rooms, 2);
 
@@ -2347,4 +2312,95 @@ async fn redelivery_after_the_state_root_restores_the_gate() {
 
 	assert_single_timeline_row(&services, room_id, event_id);
 	assert_published(&services, room_id, event_id, prev_id).await;
+}
+
+/// A state root is a function of the room and its state alone, so two servers
+/// holding the same state agree on it whatever path they took to reach it and
+/// whatever short IDs they assigned locally.
+///
+/// The seeded root is built one event at a time through the incremental path.
+/// Rebuilding the same state from scratch, from the leaves in reverse order
+/// and without consulting any short ID, must give the identical root handle.
+#[conduwuit_macros::async_test]
+async fn test_state_root_is_independent_of_history_and_local_ids() {
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!portable:test.conduwuit.local").unwrap();
+	let mutex = services.rooms.state.mutex.lock(&room_id).await;
+	let root = seed_membership_state(&services, &room_id, &mutex, 64).await;
+
+	let state = services
+		.rooms
+		.state_accessor
+		.load_full_state_hamt(&room_id, &root)
+		.expect("failed to load state");
+	let lattice = services
+		.rooms
+		.state
+		.get_root_lattice(&root)
+		.await
+		.expect("seeded root must have a retained lattice");
+
+	let mut entries: Vec<_> = state
+		.iter()
+		.map(|((event_type, state_key), event_id)| {
+			(
+				crate::rooms::state_hamt::hamt_key(event_type, state_key),
+				crate::rooms::state_hamt::hamt_value(event_id),
+			)
+		})
+		.collect();
+	entries.sort_unstable();
+	entries.reverse();
+
+	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
+	let (rebuilt, _) = rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+		.expect("rebuild HAMT");
+	assert_eq!(
+		rebuilt.structural_hash, root.structural_hash,
+		"the same state must give the same tree on any server"
+	);
+	assert_eq!(rebuilt.state_group_id, root.state_group_id);
+
+	// The structural key depends on the room ID only, never a server secret.
+	let other_room = slipstream::OwnedRoomId::parse("!other:test.conduwuit.local").unwrap();
+	assert_ne!(
+		crate::rooms::state_hamt::room_structural_key(&other_room),
+		structural_key,
+		"rooms must not share a hash domain"
+	);
+}
+
+/// Pins a state root to a fixed hash.
+///
+/// Servers can compare roots only if every build derives the same bytes: the
+/// structural key, the leaf encoding, and the routing hash (which goes through
+/// `std::hash::Hash` for the string leaves). A change to any of them moves
+/// this hash, so it must be a deliberate, network-visible change.
+#[test]
+fn test_state_root_golden_hash() {
+	let room_id = slipstream::OwnedRoomId::parse("!golden:example.org").unwrap();
+	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
+	let entries = vec![
+		(("m.room.create".to_owned(), String::new()), "$create".to_owned()),
+		(
+			("m.room.member".to_owned(), "@alice:example.org".to_owned()),
+			"$alice".to_owned(),
+		),
+		(("m.room.power_levels".to_owned(), String::new()), "$power".to_owned()),
+	];
+	let (handle, _) = rezzy::hamt::build_hamt_root_handle(
+		&structural_key,
+		&rezzy::incremental::LtHash::default(),
+		entries,
+	)
+	.expect("build HAMT");
+	let hex = handle
+		.structural_hash
+		.iter()
+		.fold(String::with_capacity(64), |mut hex, byte| {
+			use std::fmt::Write;
+			write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
+			hex
+		});
+	assert_eq!(hex, "8254949e88246fa95334b7612da6430b04163cbe59a32f555ef630df0290e63f");
 }

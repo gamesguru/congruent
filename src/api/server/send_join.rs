@@ -125,19 +125,13 @@ async fn create_join_event(
 	.await?;
 
 	trace!("Fetching current state IDs");
-	// Resolve short event IDs in batches rather than one lookup per state
-	// event; any traversal or lookup failure aborts the join response.
-	let short_event_ids: Vec<_> = services
-		.rooms
-		.state_accessor
-		.state_full_shortids_hamt(room_id, root_handle.clone())
-		.map_ok(at!(1))
-		.try_collect()
-		.await?;
+	// The HAMT leaves hold the event IDs; any traversal failure aborts the
+	// join response.
 	let state_ids: Vec<OwnedEventId> = services
 		.rooms
-		.short
-		.multi_get_eventid_from_short::<OwnedEventId, _>(short_event_ids.into_iter().stream())
+		.state_accessor
+		.state_full_entries_hamt(room_id, root_handle.clone())
+		.map_ok(at!(1))
 		.try_collect()
 		.await?;
 
