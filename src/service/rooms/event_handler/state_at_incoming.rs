@@ -352,7 +352,9 @@ where
 		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
 		entries.push((
 			crate::rooms::state_hamt::hamt_key(ty, sk),
-			crate::rooms::state_hamt::hamt_value(id),
+			self.services
+				.state_hamt
+				.leaf_value_in(room_version_id, id.as_str())?,
 		));
 	}
 

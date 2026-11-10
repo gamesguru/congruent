@@ -663,7 +663,10 @@ async fn knock_room_helper_remote(
 		{
 			entries.push((
 				service::rooms::state_hamt::hamt_key(&kind, &state_key),
-				service::rooms::state_hamt::hamt_value(event_id),
+				services
+					.rooms
+					.state_hamt
+					.leaf_value_in(&room_version_id, event_id.as_str())?,
 			));
 		}
 	}

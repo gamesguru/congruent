@@ -17,7 +17,7 @@ use slipstream::{
 
 use crate::rooms::{
 	self,
-	state_hamt::{StateHamtKey, StateHamtValue, hamt_key, hamt_value},
+	state_hamt::{StateHamtKey, StateHamtValue, hamt_key},
 };
 
 /// Event metadata extracted during Phase 1 streaming.
@@ -677,7 +677,18 @@ impl super::Service {
 									self.store_hamt_mutation(
 										room_id,
 										&parent,
-										vec![((ty.clone(), sk.clone()), Some(eid.to_string()))],
+										vec![(
+											(ty.clone(), sk.clone()),
+											Some(
+												self.services
+													.state_hamt
+													.leaf_value_in(
+														&ctx.room_version,
+														eid.as_str(),
+													)
+													.ok()?,
+											),
+										)],
 										&hash,
 									)
 									.ok()
@@ -695,12 +706,14 @@ impl super::Service {
 								let entries: Vec<(StateHamtKey, StateHamtValue)> = state
 									.iter()
 									.map(|(key, ev_id_str)| {
-										(
+										Ok((
 											(key.0.as_str().to_owned(), key.1.clone()),
-											ev_id_str.clone(),
-										)
+											self.services
+												.state_hamt
+												.leaf_value_in(&ctx.room_version, ev_id_str)?,
+										))
 									})
-									.collect();
+									.collect::<Result<_>>()?;
 								t_compress = t_compress.saturating_add(tc0.elapsed());
 
 								let ts0 = Instant::now();
@@ -1087,7 +1100,7 @@ impl super::Service {
 				"[rebuild_state] Phase 5: trivial merge, {} state entries, 0 conflicts",
 				all_entries.len(),
 			);
-			let (entries, lattice) = hamt_entries_with_lattice(&all_entries);
+			let (entries, lattice) = self.hamt_entries_with_lattice(ctx, &all_entries)?;
 			let merged_root = self.store_hamt_root(room_id, entries, &lattice)?;
 			return Ok(merged_root);
 		}
@@ -1119,24 +1132,31 @@ impl super::Service {
 			resolved_map.len()
 		);
 
-		let (entries, lattice) = hamt_entries_with_lattice(&resolved_map);
+		let (entries, lattice) = self.hamt_entries_with_lattice(ctx, &resolved_map)?;
 
 		debug!("rebuild_state: merged state has {} entries", entries.len());
 		let merged_root = self.store_hamt_root(room_id, entries, &lattice)?;
 
 		Ok(merged_root)
 	}
-}
 
-/// The state-HAMT leaves and lattice for a resolved state map.
-fn hamt_entries_with_lattice(
-	state: &StateMap<OwnedEventId>,
-) -> (Vec<(StateHamtKey, StateHamtValue)>, rezzy::incremental::LtHash) {
-	let mut lattice = rezzy::incremental::LtHash::default();
-	let mut entries = Vec::with_capacity(state.len());
-	for ((ty, sk), id) in state {
-		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
-		entries.push((hamt_key(ty, sk), hamt_value(id)));
+	/// The state-HAMT leaves and lattice for a resolved state map.
+	fn hamt_entries_with_lattice(
+		&self,
+		ctx: &RebuildCtx,
+		state: &StateMap<OwnedEventId>,
+	) -> Result<(Vec<(StateHamtKey, StateHamtValue)>, rezzy::incremental::LtHash)> {
+		let mut lattice = rezzy::incremental::LtHash::default();
+		let mut entries = Vec::with_capacity(state.len());
+		for ((ty, sk), id) in state {
+			lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
+			entries.push((
+				hamt_key(ty, sk),
+				self.services
+					.state_hamt
+					.leaf_value_in(&ctx.room_version, id.as_str())?,
+			));
+		}
+		Ok((entries, lattice))
 	}
-	(entries, lattice)
 }

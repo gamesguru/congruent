@@ -811,11 +811,13 @@ pub async fn state_map_to_root_handle(
 		.await;
 
 	for (event_id, key_result) in event_ids.into_iter().zip(string_keys) {
-		let event_id = event_id.as_ref();
+		let event_id: &slipstream::EventId = event_id.as_ref();
 		if let Ok((event_type, state_key)) = key_result {
 			entries.push((
 				crate::rooms::state_hamt::hamt_key(&event_type, &state_key),
-				crate::rooms::state_hamt::hamt_value(event_id),
+				self.services
+					.state_hamt
+					.leaf_value(room_id, event_id.as_str())?,
 			));
 			lattice.insert(
 				event_type.to_string().as_str(),

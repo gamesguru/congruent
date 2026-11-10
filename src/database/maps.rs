@@ -19,6 +19,7 @@ const MAP_NAMES: &[&str] = &[
 	"deviceleftid_userid",
 	"disabledroomids",
 	"email_localpart",
+	"eventhash_eventid",
 	"eventid_metadata",
 	"eventid_pduid",
 	"fallbackkeyid_fallbackkey",

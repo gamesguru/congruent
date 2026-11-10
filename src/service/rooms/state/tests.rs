@@ -706,7 +706,11 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 		&StateEventType::RoomMember,
 		"@user7:test.conduwuit.local",
 	);
-	let target_value = crate::rooms::state_hamt::hamt_value(&updated.event_id);
+	let target_value = services
+		.rooms
+		.state_hamt
+		.leaf_value(&room_id, updated.event_id.as_str())
+		.expect("leaf value");
 
 	// Reuse the persisted lattice so the assertion is about node volume only.
 	let mut lattice = services
@@ -733,7 +737,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 			&room_id,
 			&structural_key,
 			&root,
-			vec![(target_key.clone(), Some(target_value.clone()))],
+			vec![(target_key.clone(), Some(target_value))],
 			&lattice,
 			&[],
 		)
@@ -788,7 +792,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 			&room_id,
 			&structural_key,
 			&new_root,
-			vec![(target_key.clone(), Some(target_value.clone()))],
+			vec![(target_key.clone(), Some(target_value))],
 			&lattice,
 			&[],
 		)
@@ -854,7 +858,13 @@ async fn test_bulk_state_update_insert_remove_and_mixed() {
 	let event_value = |id: &str| slipstream::OwnedEventId::parse(id).unwrap();
 	let leaf =
 		|key: &(StateEventType, StateKey)| crate::rooms::state_hamt::hamt_key(&key.0, &key.1);
-	let value = |id: &slipstream::OwnedEventId| crate::rooms::state_hamt::hamt_value(id);
+	let value = |id: &slipstream::OwnedEventId| {
+		services
+			.rooms
+			.state_hamt
+			.leaf_value(&room_id, id.as_str())
+			.expect("leaf value")
+	};
 
 	let apply = |prev: rezzy::hamt::RootHandle, mutations| {
 		let (services, room_id, structural_key, lattice) =
@@ -1047,12 +1057,7 @@ async fn test_mtxdb_node_bytes_and_full_hash_verification() {
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = slipstream::OwnedRoomId::parse("!mtxdb-hamt:test.conduwuit.local").unwrap();
 	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
-	let entries = (0_u64..128).map(|key| {
-		(
-			("m.room.member".to_owned(), format!("@user{key}:test")),
-			format!("$event{key}:test"),
-		)
-	});
+	let entries = (0_u64..128).map(|key| fixture_leaf(key, 0));
 	let (_, node) =
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &LtHash::default(), entries)
 			.expect("build HAMT node");
@@ -1179,11 +1184,12 @@ async fn test_orphan_scan_reports_only_unreachable_nodes() {
 		);
 	}
 	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
-	let (_, orphan) = rezzy::hamt::build_hamt_root_handle(&structural_key, &orphan_lattice, [(
-		("m.room.member".to_owned(), "@orphan:test".to_owned()),
-		"$orphan:test".to_owned(),
-	)])
-	.expect("build orphan tree");
+	let (_, orphan) =
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &orphan_lattice, [fixture_leaf(
+			1 << 40,
+			7,
+		)])
+		.expect("build orphan tree");
 	let orphan_hash = orphan.structural_hash;
 	services
 		.rooms
@@ -1375,7 +1381,8 @@ fn fixture_leaf(
 ) -> (crate::rooms::state_hamt::StateHamtKey, crate::rooms::state_hamt::StateHamtValue) {
 	(
 		("m.room.member".to_owned(), format!("@user{key}:test")),
-		format!("$event{key}-{seed}:test"),
+		rezzy::hamt::state_hamt_event_id(&format!("$event{key}-{seed}:test"), "1")
+			.expect("opaque event IDs always hash"),
 	)
 }
 
@@ -1881,7 +1888,9 @@ async fn append_pdu_takes_insert_lock_before_writing_body() {
 
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = slipstream::OwnedRoomId::parse("!ordering:test.conduwuit.local").unwrap();
-	let event_id = slipstream::OwnedEventId::parse("$ordering:test.conduwuit.local").unwrap();
+	// A v10 event ID is a reference hash, so it must decode to 32 bytes.
+	let event_id =
+		slipstream::OwnedEventId::parse("$orderingAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
 	let room_id = room_id.as_ref();
 	let event_id = event_id.as_ref();
 	let pdu = create_dummy_pdu(room_id, event_id, "m.room.message", "");
@@ -2345,7 +2354,11 @@ async fn test_state_root_is_independent_of_history_and_local_ids() {
 		.map(|((event_type, state_key), event_id)| {
 			(
 				crate::rooms::state_hamt::hamt_key(event_type, state_key),
-				crate::rooms::state_hamt::hamt_value(event_id),
+				services
+					.rooms
+					.state_hamt
+					.leaf_value(&room_id, event_id.as_str())
+					.expect("leaf value"),
 			)
 		})
 		.collect();
@@ -2381,12 +2394,9 @@ fn test_state_root_golden_hash() {
 	let room_id = slipstream::OwnedRoomId::parse("!golden:example.org").unwrap();
 	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
 	let entries = vec![
-		(("m.room.create".to_owned(), String::new()), "$create".to_owned()),
-		(
-			("m.room.member".to_owned(), "@alice:example.org".to_owned()),
-			"$alice".to_owned(),
-		),
-		(("m.room.power_levels".to_owned(), String::new()), "$power".to_owned()),
+		(("m.room.create".to_owned(), String::new()), [1_u8; 32]),
+		(("m.room.member".to_owned(), "@alice:example.org".to_owned()), [2_u8; 32]),
+		(("m.room.power_levels".to_owned(), String::new()), [3_u8; 32]),
 	];
 	let (handle, _) = rezzy::hamt::build_hamt_root_handle(
 		&structural_key,
@@ -2402,5 +2412,5 @@ fn test_state_root_golden_hash() {
 			write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
 			hex
 		});
-	assert_eq!(hex, "8254949e88246fa95334b7612da6430b04163cbe59a32f555ef630df0290e63f");
+	assert_eq!(hex, "e629dd81385b41b6b0cac87c1fbeb3c7a3acf2b2232147cae53163f7035ff1b0");
 }

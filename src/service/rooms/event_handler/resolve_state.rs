@@ -12,7 +12,7 @@ use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use parking_lot::RwLock;
 use slipstream::{OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
 
-use crate::rooms::state_hamt::{StateHamtKey, StateHamtValue, hamt_key, hamt_value};
+use crate::rooms::state_hamt::{StateHamtKey, StateHamtValue, hamt_key};
 
 /// Pre-loaded event cache to avoid per-event RocksDB lookups during
 /// state resolution. Populated once at the start of bulk operations
@@ -138,7 +138,11 @@ pub async fn resolve_state(
 			state_key: sk.to_string(),
 			event_id: id.to_string(),
 		});
-		mutations.push((hamt_key(ty, sk), Some(hamt_value(id))));
+		let value = self
+			.services
+			.state_hamt
+			.leaf_value_in(room_version_id, id.as_str())?;
+		mutations.push((hamt_key(ty, sk), Some(value)));
 	}
 
 	// Resolution picks a winner per `(type, state_key)` from the union of the

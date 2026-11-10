@@ -393,12 +393,29 @@ impl Service {
 					| StateEventType::SpaceChild
 			)
 		};
-		let load_pdus = |leaves: Vec<(rooms::state_hamt::StateHamtKey, String)>| {
+		let added: Vec<_> = added.into_iter().filter(|(key, _)| relevant(key)).collect();
+		let removed: Vec<_> = removed
+			.into_iter()
+			.filter(|(key, _)| relevant(key))
+			.collect();
+		// Only a relevant leaf needs its event ID, and so the room version.
+		let room_version = if added.is_empty() && removed.is_empty() {
+			None
+		} else {
+			Some(self.services.short.get_room_version_blocking(room_id)?)
+		};
+		let load_pdus = |leaves: Vec<(
+			rooms::state_hamt::StateHamtKey,
+			rooms::state_hamt::StateHamtValue,
+		)>| {
 			leaves
 				.into_iter()
-				.filter(|(key, _)| relevant(key))
-				.filter_map(|(_, event_id)| {
-					let event_id = OwnedEventId::try_from(event_id).ok()?;
+				.filter_map(|(_, value)| {
+					let event_id = self
+						.services
+						.state_hamt
+						.leaf_event_id_in(room_version.as_ref()?, &value)
+						.ok()?;
 					self.services
 						.timeline
 						.get_pdu_in_room(Some(room_id), &event_id)
@@ -575,12 +592,20 @@ impl Service {
 					&old,
 					&structural_key,
 					new_key,
-					Some(rooms::state_hamt::hamt_value(new_pdu.event_id())),
+					Some(self.services.state_hamt.leaf_value_in(
+						&self.room_version_for(room_id, new_pdu)?,
+						new_pdu.event_id().as_str(),
+					)?),
 					&mut resolver,
 				)
 				.map_err(|e| err!(error!("HAMT mutation failed: {e:?}")))?;
 				let mut deltas = Vec::with_capacity(2);
-				if let Some(old_id) = displaced {
+				if let Some(old_value) = displaced {
+					let old_id = self
+						.services
+						.state_hamt
+						.leaf_event_id(room_id, &old_value)?
+						.to_string();
 					deltas.push(LatticeDelta::Remove {
 						event_type: event_type.as_ref().to_owned(),
 						state_key: state_key.to_owned(),
@@ -642,13 +667,16 @@ impl Service {
 		};
 		current.insert((event_type, state_key.into()), new_pdu.event_id().to_owned());
 
+		let room_version = self.room_version_for(room_id, new_pdu)?;
 		let mut lattice = rezzy::incremental::LtHash::default();
 		let mut entries = Vec::with_capacity(current.len());
 		for ((ty, sk), event_id) in &current {
 			lattice.insert(ty.to_string().as_str(), sk.as_str(), event_id.as_str());
 			entries.push((
 				rooms::state_hamt::hamt_key(ty, sk),
-				rooms::state_hamt::hamt_value(event_id),
+				self.services
+					.state_hamt
+					.leaf_value_in(&room_version, event_id.as_str())?,
 			));
 		}
 
@@ -665,6 +693,17 @@ impl Service {
 			.persist_node_recursive_deferred(room_id.as_bytes(), root_node.clone())?;
 
 		Ok((root_handle, root_node, deferred_nodes))
+	}
+
+	/// The room version `new_pdu` is judged under. A create event names its own
+	/// version, which may not be recorded for the room yet.
+	fn room_version_for(&self, room_id: &RoomId, new_pdu: &PduEvent) -> Result<RoomVersionId> {
+		if *new_pdu.kind() == TimelineEventType::RoomCreate {
+			if let Ok(content) = new_pdu.get_content::<RoomCreateEventContent>() {
+				return Ok(content.room_version);
+			}
+		}
+		self.services.short.get_room_version_blocking(room_id)
 	}
 
 	/// Applies `mutations` on top of `prev` with copy-on-write path copying and

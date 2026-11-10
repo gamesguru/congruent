@@ -943,7 +943,10 @@ pub(super) async fn set_state_event(
 			lattice.insert(ty.to_string().as_str(), sk.as_str(), eid.as_str());
 			entries.push((
 				conduwuit_service::rooms::state_hamt::hamt_key(&ty, &sk),
-				conduwuit_service::rooms::state_hamt::hamt_value(&eid),
+				self.services
+					.rooms
+					.state_hamt
+					.leaf_value(&room_id, eid.as_str())?,
 			));
 		}
 	}

@@ -14,7 +14,7 @@ use slipstream::{
 
 use crate::rooms::{
 	short::ShortStateKey,
-	state_hamt::{StateHamtKey, StateHamtValue, hamt_key, parse_hamt_entry, room_structural_key},
+	state_hamt::{StateHamtKey, StateHamtValue, hamt_key, room_structural_key},
 };
 
 /// The user was a joined member at this state (potentially in the past)
@@ -151,8 +151,7 @@ pub async fn state_get_event_id_hamt(
 		.search(&structural_key, &hamt_key(event_type, state_key), &mut resolver)
 		.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?
 		.ok_or_else(|| err!(Request(NotFound("Not found in room state"))))?;
-	OwnedEventId::try_from(event_id)
-		.map_err(|e| err!(Database(error!("Invalid event ID in state HAMT leaf: {e}"))))
+	self.services.state_hamt.leaf_event_id(room_id, &event_id)
 }
 
 #[implement(super::Service)]
@@ -242,10 +241,7 @@ pub fn state_full_entries_hamt<'a>(
 		// Sorting keeps iteration deterministic (e.g. a space's
 		// `children_state`); the HAMT's own order follows routing hashes.
 		entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-		entries
-			.iter()
-			.map(|(key, value)| parse_hamt_entry(key, value))
-			.collect::<Result<Vec<_>>>()
+		self.parse_state_hamt_leaves(room_id, &entries)
 	};
 	load.map_ok(Vec::into_iter)
 		.map_ok(IterStream::try_stream)
@@ -350,10 +346,7 @@ pub fn state_added_hamt(
 		},
 	})?;
 
-	added
-		.iter()
-		.map(|(key, value)| parse_hamt_entry(key, value))
-		.collect()
+	self.parse_state_hamt_leaves(room_id, &added)
 }
 
 #[implement(super::Service)]
@@ -390,7 +383,7 @@ pub fn load_state_hamt_leaves(
 	let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
 	root_node
 		.visit_entries(&mut resolver, &mut |key, value| {
-			leaves.push((key.clone(), value.clone()));
+			leaves.push((key.clone(), *value));
 			Ok(())
 		})
 		.map_err(|e| err!(error!("HAMT visit failed: {e:?}")))?;
@@ -404,9 +397,29 @@ pub fn load_full_state_hamt(
 	room_id: &RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 ) -> Result<StateMap<OwnedEventId>> {
-	self.load_state_hamt_leaves(room_id, root_handle)?
+	let leaves = self.load_state_hamt_leaves(room_id, root_handle)?;
+	Ok(self
+		.parse_state_hamt_leaves(room_id, &leaves)?
+		.into_iter()
+		.collect())
+}
+
+#[implement(super::Service)]
+/// Parses raw leaves into typed `((event_type, state_key), event_id)` entries,
+/// in order.
+pub fn parse_state_hamt_leaves(
+	&self,
+	room_id: &RoomId,
+	leaves: &[(StateHamtKey, StateHamtValue)],
+) -> Result<Vec<((StateEventType, StateKey), OwnedEventId)>> {
+	let room_version = self.services.short.get_room_version_blocking(room_id)?;
+	leaves
 		.iter()
-		.map(|(key, value)| parse_hamt_entry(key, value))
+		.map(|(key, value)| {
+			self.services
+				.state_hamt
+				.parse_entry_in(&room_version, key, value)
+		})
 		.collect()
 }
 
