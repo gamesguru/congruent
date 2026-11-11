@@ -161,6 +161,13 @@ async fn test_state_round_trip() {
 	let (_guard, _server, services) = setup_test_services().await;
 
 	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
+	// V1: these tests use legacy `$name:server` event IDs, which only room
+	// versions 1 and 2 accept; v3+ need 43-character hash IDs.
+	services
+		.rooms
+		.short
+		.set_room_version(&room_id, &slipstream::RoomVersionId::V1)
+		.expect("set room version");
 	let event_id = slipstream::OwnedEventId::parse("$event1:test.conduwuit.local").unwrap();
 	let pdu = create_dummy_pdu(&room_id, &event_id, "m.room.create", "");
 
@@ -259,6 +266,13 @@ async fn test_force_state() {
 	let (_guard, _server, services) = setup_test_services().await;
 
 	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
+	// V1: these tests use legacy `$name:server` event IDs, which only room
+	// versions 1 and 2 accept; v3+ need 43-character hash IDs.
+	services
+		.rooms
+		.short
+		.set_room_version(&room_id, &slipstream::RoomVersionId::V1)
+		.expect("set room version");
 	let event = create_dummy_pdu(
 		&room_id,
 		&slipstream::OwnedEventId::parse("$force-state:test.conduwuit.local").unwrap(),
