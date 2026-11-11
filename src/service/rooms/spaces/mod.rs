@@ -375,8 +375,8 @@ async fn get_space_child_events_ordered(&self, room_id: &RoomId) -> Vec<PduEvent
 		.await;
 	children.sort_by(|(order_a, a), (order_b, b)| {
 		compare_children(
-			(order_a.as_deref(), a.origin_server_ts(), a.state_key().unwrap_or_default()),
-			(order_b.as_deref(), b.origin_server_ts(), b.state_key().unwrap_or_default()),
+			&(order_a.as_deref(), a.origin_server_ts(), a.state_key().unwrap_or_default()),
+			&(order_b.as_deref(), b.origin_server_ts(), b.state_key().unwrap_or_default()),
 		)
 	});
 	children.into_iter().map(|(_, pdu)| pdu).collect()
@@ -386,8 +386,8 @@ async fn get_space_child_events_ordered(&self, room_id: &RoomId) -> Vec<PduEvent
 /// valid `order` sorts first, lexicographically; the rest follow by timestamp,
 /// and ties break on room ID.
 fn compare_children<T: Ord>(
-	a: (Option<&str>, T, &str),
-	b: (Option<&str>, T, &str),
+	a: &(Option<&str>, T, &str),
+	b: &(Option<&str>, T, &str),
 ) -> std::cmp::Ordering {
 	a.0.is_none()
 		.cmp(&b.0.is_none())
@@ -690,8 +690,8 @@ pub fn get_parent_children_via(
 
 	children.sort_by(|a, b| {
 		compare_children(
-			(a.content.order.as_deref(), a.origin_server_ts, a.state_key.as_str()),
-			(b.content.order.as_deref(), b.origin_server_ts, b.state_key.as_str()),
+			&(a.content.order.as_deref(), a.origin_server_ts, a.state_key.as_str()),
+			&(b.content.order.as_deref(), b.origin_server_ts, b.state_key.as_str()),
 		)
 	});
 
