@@ -588,12 +588,12 @@ impl Service {
 				let old =
 					store.get_node(room_id.as_bytes(), &structural_key, &base.structural_hash)?;
 				let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
-				let (new_node, displaced, created) = rezzy::hamt::persist_mutation(
+				let (new_node, displaced, created) = rooms::state_hamt::persist_mutation(
 					&old,
 					&structural_key,
 					new_key,
 					Some(self.services.state_hamt.leaf_value_in(
-						&self.room_version_for(room_id, new_pdu)?,
+						&self.services.short.get_room_version_blocking(room_id)?,
 						new_pdu.event_id().as_str(),
 					)?),
 					&mut resolver,
@@ -667,7 +667,7 @@ impl Service {
 		};
 		current.insert((event_type, state_key.into()), new_pdu.event_id().to_owned());
 
-		let room_version = self.room_version_for(room_id, new_pdu)?;
+		let room_version = self.services.short.get_room_version_blocking(room_id)?;
 		let mut lattice = rezzy::incremental::LtHash::default();
 		let mut entries = Vec::with_capacity(current.len());
 		for ((ty, sk), event_id) in &current {
@@ -682,7 +682,7 @@ impl Service {
 
 		let structural_key = rooms::state_hamt::room_structural_key(room_id);
 		let (root_handle, root_node) =
-			rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+			rooms::state_hamt::build_root(&structural_key, &lattice, entries)
 				.map_err(|e| err!(error!("Failed to build HAMT in append_to_state: {e:?}")))?;
 		self.persist_root_lattice(&root_handle, &lattice, None, &[]);
 
@@ -693,17 +693,6 @@ impl Service {
 			.persist_node_recursive_deferred(room_id.as_bytes(), root_node.clone())?;
 
 		Ok((root_handle, root_node, deferred_nodes))
-	}
-
-	/// The room version `new_pdu` is judged under. A create event names its own
-	/// version, which may not be recorded for the room yet.
-	fn room_version_for(&self, room_id: &RoomId, new_pdu: &PduEvent) -> Result<RoomVersionId> {
-		if *new_pdu.kind() == TimelineEventType::RoomCreate {
-			if let Ok(content) = new_pdu.get_content::<RoomCreateEventContent>() {
-				return Ok(content.room_version);
-			}
-		}
-		self.services.short.get_room_version_blocking(room_id)
 	}
 
 	/// Applies `mutations` on top of `prev` with copy-on-write path copying and
@@ -736,7 +725,7 @@ impl Service {
 		// from the resolved post-mutation state, so there is no need to replay
 		// per-key insert/replace arithmetic here.
 		let (new_node, _displaced, created) =
-			rezzy::hamt::persist_mutations(&old, structural_key, mutations, &mut resolver)
+			rooms::state_hamt::persist_mutations(&old, structural_key, mutations, &mut resolver)
 				.map_err(|e| err!(error!("HAMT batch mutation failed: {e:?}")))?;
 
 		let mut deferred_nodes = Vec::with_capacity(created.len());

@@ -293,29 +293,27 @@ fn add_pdu_outlier_batch_impl<'a>(
 		let json = slipstream::codec::to_string(&pdu);
 		let prev: Vec<_> = parsed_pdu.prev_events().map(EventId::as_bytes).collect();
 		let auth: Vec<_> = parsed_pdu.auth_events().map(EventId::as_bytes).collect();
-		if parsed_pdu.kind == slipstream::events::TimelineEventType::RoomCreate {
-			match parsed_pdu
-				.get_content::<slipstream::events::room::create::RoomCreateEventContent>()
-			{
-				| Ok(content) => {
-					if let Err(error) = self
-						.services
-						.short
-						.set_room_version(room_id, &content.room_version)
-					{
-						warn!(?error, %room_id, %event_id, "Skipping outlier without mtxdb room-version metadata");
+		// A create event names its own room version; it is committed in the
+		// same mtxdb transaction as the event body below, never before it.
+		let create_version =
+			if parsed_pdu.kind == slipstream::events::TimelineEventType::RoomCreate {
+				match parsed_pdu
+					.get_content::<slipstream::events::room::create::RoomCreateEventContent>()
+				{
+					| Ok(content) => Some(content.room_version),
+					| Err(error) => {
+						warn!(?error, %room_id, %event_id, "Skipping invalid room-create outlier");
 						return;
-					}
-				},
-				| Err(error) => {
-					warn!(?error, %room_id, %event_id, "Skipping invalid room-create outlier");
-					return;
-				},
+					},
+				}
+			} else {
+				None
+			};
+		if create_version.is_none() {
+			if let Err(error) = self.services.short.get_room_version_blocking(room_id) {
+				warn!(?error, %room_id, %event_id, "Skipping outlier before room version is established");
+				return;
 			}
-		}
-		if let Err(error) = self.services.short.get_room_version_blocking(room_id) {
-			warn!(?error, %room_id, %event_id, "Skipping outlier before room version is established");
-			return;
 		}
 		for auth_event in parsed_pdu.auth_events() {
 			let _ = self
@@ -331,21 +329,40 @@ fn add_pdu_outlier_batch_impl<'a>(
 			.event_matches_with_edges(room_id.as_bytes(), event_id.as_bytes(), json.as_bytes())
 			.unwrap_or(false);
 		if !already_stored {
-			if let Err(error) = rooms::timeline::retry::retry_stale_blocking(|| {
-				self.db.mtxdb_events.write_event_with_edges(
-					room_id.as_bytes(),
-					event_id.as_bytes(),
-					json.as_bytes(),
-					&prev,
-					&auth,
-				)
-			}) {
+			if let Err(error) =
+				rooms::timeline::retry::retry_stale_blocking(|| match create_version.as_ref() {
+					| Some(version) => self.db.mtxdb_events.write_create_event_with_room_version(
+						room_id.as_bytes(),
+						event_id.as_bytes(),
+						json.as_bytes(),
+						&prev,
+						&auth,
+						version.as_str(),
+					),
+					| None => self.db.mtxdb_events.write_event_with_edges(
+						room_id.as_bytes(),
+						event_id.as_bytes(),
+						json.as_bytes(),
+						&prev,
+						&auth,
+					),
+				}) {
 				warn!(
 					?error,
 					%room_id,
 					%event_id,
 					"Failed to write outlier event and auth edges to mtxdb; not storing the event"
 				);
+				return;
+			}
+		}
+		// The mtxdb record is already committed with the create event (or was
+		// from an earlier write); this idempotent call refreshes the legacy map
+		// and the in-memory cache, and repairs a create stored before the
+		// version was bundled with it.
+		if let Some(version) = create_version.as_ref() {
+			if let Err(error) = self.services.short.set_room_version(room_id, version) {
+				warn!(?error, %room_id, %event_id, "Skipping outlier without mtxdb room-version metadata");
 				return;
 			}
 		}

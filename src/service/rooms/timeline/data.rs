@@ -1331,23 +1331,19 @@ impl Data {
 		let room_id = pdu
 			.room_id_or_hash()
 			.ok_or_else(|| err!(Database("Event {} has no room ID", pdu.event_id)))?;
-		if pdu.kind == slipstream::events::TimelineEventType::RoomCreate {
+		// A create event's room version is committed in the same mtxdb
+		// transaction as its body, never before it.
+		let create_version = if pdu.kind == slipstream::events::TimelineEventType::RoomCreate {
 			match pdu.get_content::<slipstream::events::room::create::RoomCreateEventContent>() {
-				| Ok(content) => {
-					self.services
-						.short
-						.set_room_version(&room_id, &content.room_version)
-						.map_err(|error| {
-							err!(Database("Failed to store room version: {error}"))
-						})?;
-				},
+				| Ok(content) => Some(content.room_version),
 				| Err(error) => {
 					return Err(err!(Database("Invalid room-create content: {error}")));
 				},
 			}
 		} else {
 			self.services.state.get_room_version(&room_id).await?;
-		}
+			None
+		};
 
 		for auth_event in pdu.auth_events() {
 			let _ = self
@@ -1360,17 +1356,33 @@ impl Data {
 		let event_json = slipstream::codec::to_string(json);
 		let prev_events = pdu.prev_events().map(EventId::as_bytes).collect::<Vec<_>>();
 		let auth_events = pdu.auth_events().map(EventId::as_bytes).collect::<Vec<_>>();
-		super::retry::retry_stale(|| {
-			self.mtxdb_events.write_event_with_edges(
+		super::retry::retry_stale(|| match create_version.as_ref() {
+			| Some(version) => self.mtxdb_events.write_create_event_with_room_version(
 				room_id_bytes,
 				event_id_bytes,
 				event_json.as_bytes(),
 				&prev_events,
 				&auth_events,
-			)
+				version.as_str(),
+			),
+			| None => self.mtxdb_events.write_event_with_edges(
+				room_id_bytes,
+				event_id_bytes,
+				event_json.as_bytes(),
+				&prev_events,
+				&auth_events,
+			),
 		})
 		.await
 		.map_err(|error| err!(Database("Failed to write event to mtxdb: {error}")))?;
+		// Idempotent: the record is already committed with the event; this
+		// refreshes the legacy map and the in-memory cache.
+		if let Some(version) = create_version.as_ref() {
+			self.services
+				.short
+				.set_room_version(&room_id, version)
+				.map_err(|error| err!(Database("Failed to store room version: {error}")))?;
+		}
 		Ok(())
 	}
 
