@@ -367,6 +367,27 @@ impl EventAdapter {
 		tx.commit()
 	}
 
+	/// Writes a room's create event and records its room version in the same
+	/// transaction, so the version is never absent once the create event is.
+	///
+	/// Edges are still recorded first in their own transaction (see
+	/// [`Self::write_event_with_edges`]); the body, locator and version commit
+	/// together.
+	pub fn write_create_event_with_room_version(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+		event_body: &[u8],
+		prev_events: &[&[u8]],
+		auth_events: &[&[u8]],
+		room_version: &str,
+	) -> Result<(), StorageError> {
+		let tx = self.store.begin_transaction();
+		self.put_event_with_edges(&tx, room_id, event_id, event_body, prev_events, auth_events)?;
+		crate::room_metadata::stage_room_version(&tx, room_id, room_version)?;
+		tx.commit()
+	}
+
 	/// Write a batch of one room's events and edges.
 	///
 	/// All edges are recorded first (one transaction per [`MAX_BATCH_EVENTS`]),
@@ -588,6 +609,56 @@ mod room_tests {
 		assert_eq!(adapter.get_event(room_b, event).unwrap().as_deref(), Some(&b"in-b"[..]));
 		assert_eq!(adapter.get_prev_events(room_a, event).unwrap(), vec![prev_a.to_vec()]);
 		assert_eq!(adapter.get_prev_events(room_b, event).unwrap(), vec![prev_b.to_vec()]);
+
+		drop(adapter);
+		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn create_event_and_room_version_commit_together() {
+		let path = test_path("create-room-version");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let create = b"$create:example.com";
+		let conflicting_create = b"$conflicting-create:example.com";
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = EventAdapter::new(store.clone());
+
+		adapter
+			.write_create_event_with_room_version(room, create, b"create", &[], &[], "12")
+			.unwrap();
+		assert_eq!(
+			crate::room_metadata::get_room_version(&store, room)
+				.unwrap()
+				.as_deref(),
+			Some("12")
+		);
+		assert_eq!(adapter.get_event(room, create).unwrap().as_deref(), Some(&b"create"[..]));
+
+		assert!(
+			adapter
+				.write_create_event_with_room_version(
+					room,
+					conflicting_create,
+					b"conflicting create",
+					&[],
+					&[],
+					"11",
+				)
+				.is_err()
+		);
+		assert!(
+			adapter
+				.get_event(room, conflicting_create)
+				.unwrap()
+				.is_none()
+		);
+		assert_eq!(
+			crate::room_metadata::get_room_version(&store, room)
+				.unwrap()
+				.as_deref(),
+			Some("12")
+		);
 
 		drop(adapter);
 		let _ = fs::remove_dir_all(path);

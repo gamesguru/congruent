@@ -6,7 +6,7 @@ use rezzy::json::Value;
 use crate::{
 	StorageError,
 	keys::{derive_id, room_event_collection_id},
-	store::MtxdbStore,
+	store::{MtxdbStore, MtxdbTransaction},
 };
 
 const ROOM_VERSION_DOMAIN: &[u8] = b"matrix-room-version-v1";
@@ -100,11 +100,27 @@ pub fn set_room_version(
 	version: &str,
 ) -> Result<(), StorageError> {
 	let collection = version_collection(room_id);
-	let node = version_node();
-	let record = encode_record(room_id, version)?;
-
 	let _write_lock = store.write_lock(ShardType::ServerInfo, collection);
 	let tx = store.begin_transaction();
+	stage_room_version(&tx, room_id, version)?;
+	tx.commit()
+}
+
+/// Stage the room-version record in `tx`, so it commits atomically with
+/// whatever else `tx` writes (for example the room's create event).
+///
+/// Idempotent for an identical version; a different recorded version is a
+/// `Collision`. The write is guarded by the collection version, so a racing
+/// writer surfaces as `StaleRead` at commit and the caller retries the whole
+/// transaction.
+pub fn stage_room_version(
+	tx: &MtxdbTransaction<'_>,
+	room_id: &[u8],
+	version: &str,
+) -> Result<(), StorageError> {
+	let collection = version_collection(room_id);
+	let node = version_node();
+	let record = encode_record(room_id, version)?;
 	let (values, collection_version) =
 		tx.get_with_collection_version(ShardType::ServerInfo, collection, &[node])?;
 	if let Some(existing) = values.into_iter().next().flatten() {
@@ -119,8 +135,7 @@ pub fn set_room_version(
 		};
 	}
 	tx.put(ShardType::ServerInfo, collection, node, &record)?;
-	tx.expect_collection_version(ShardType::ServerInfo, collection, collection_version)?;
-	tx.commit()
+	tx.expect_collection_version(ShardType::ServerInfo, collection, collection_version)
 }
 
 /// Read a room version from the collection header written by the mtxdb importer.
