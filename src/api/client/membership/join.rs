@@ -892,7 +892,7 @@ async fn join_room_by_id_helper_remote_process(
 
 	let structural_key = service::rooms::state_hamt::room_structural_key(room_id);
 	let (root_handle, root_node) =
-		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+		service::rooms::state_hamt::build_root(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root for join: {e:?}")))?;
 	let pending_nodes = services
 		.rooms

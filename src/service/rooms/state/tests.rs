@@ -1059,7 +1059,7 @@ async fn test_mtxdb_node_bytes_and_full_hash_verification() {
 	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
 	let entries = (0_u64..128).map(|key| fixture_leaf(key, 0));
 	let (_, node) =
-		rezzy::hamt::build_hamt_root_handle(&structural_key, &LtHash::default(), entries)
+		crate::rooms::state_hamt::build_root(&structural_key, &LtHash::default(), entries)
 			.expect("build HAMT node");
 	let hash = node.structural_hash;
 	let bytes = PersistedInternalNode::from(node.as_ref()).encode_v1();
@@ -1185,7 +1185,7 @@ async fn test_orphan_scan_reports_only_unreachable_nodes() {
 	}
 	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
 	let (_, orphan) =
-		rezzy::hamt::build_hamt_root_handle(&structural_key, &orphan_lattice, [fixture_leaf(
+		crate::rooms::state_hamt::build_root(&structural_key, &orphan_lattice, [fixture_leaf(
 			1 << 40,
 			7,
 		)])
@@ -1335,7 +1335,7 @@ async fn test_node_reads_verify_the_full_hash_and_missing_nodes_error() {
 	let adapter = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
 
 	let build = |seed: u64| {
-		let (_, node) = rezzy::hamt::build_hamt_root_handle(
+		let (_, node) = crate::rooms::state_hamt::build_root(
 			&structural_key,
 			&LtHash::default(),
 			(0_u64..4).map(move |key| fixture_leaf(key, seed)),
@@ -1428,7 +1428,7 @@ async fn test_orphan_scan_dry_run_reports_unrooted_nodes_and_skips_rooms_it_cann
 
 	let build = |base: u64| {
 		let entries = (0_u64..128).map(move |key| fixture_leaf(key, base));
-		rezzy::hamt::build_hamt_root_handle(&structural_key, &LtHash::default(), entries)
+		crate::rooms::state_hamt::build_root(&structural_key, &LtHash::default(), entries)
 			.expect("build HAMT")
 	};
 
@@ -2366,7 +2366,7 @@ async fn test_state_root_is_independent_of_history_and_local_ids() {
 	entries.reverse();
 
 	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
-	let (rebuilt, _) = rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+	let (rebuilt, _) = crate::rooms::state_hamt::build_root(&structural_key, &lattice, entries)
 		.expect("rebuild HAMT");
 	assert_eq!(
 		rebuilt.structural_hash, root.structural_hash,
@@ -2398,7 +2398,7 @@ fn test_state_root_golden_hash() {
 		(("m.room.member".to_owned(), "@alice:example.org".to_owned()), [2_u8; 32]),
 		(("m.room.power_levels".to_owned(), String::new()), [3_u8; 32]),
 	];
-	let (handle, _) = rezzy::hamt::build_hamt_root_handle(
+	let (handle, _) = crate::rooms::state_hamt::build_root(
 		&structural_key,
 		&rezzy::incremental::LtHash::default(),
 		entries,
@@ -2412,5 +2412,5 @@ fn test_state_root_golden_hash() {
 			write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
 			hex
 		});
-	assert_eq!(hex, "e629dd81385b41b6b0cac87c1fbeb3c7a3acf2b2232147cae53163f7035ff1b0");
+	assert_eq!(hex, "de3582f73999f4d3bc6012a88d33499f9ed7074b08282727611d55c3921653ef");
 }

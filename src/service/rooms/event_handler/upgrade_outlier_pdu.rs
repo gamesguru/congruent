@@ -829,7 +829,7 @@ pub async fn state_map_to_root_handle(
 
 	let structural_key = crate::rooms::state_hamt::room_structural_key(room_id);
 	let (root_handle, root_node) =
-		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+		crate::rooms::state_hamt::build_root(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
 
 	let nodes = self

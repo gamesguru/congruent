@@ -431,7 +431,7 @@ pub async fn msc4500_before_root(&self, pdu: &Pdu) -> Option<rezzy::hamt::RootHa
 		let room_id = pdu.room_id_or_hash()?;
 		let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
 		let (root, node) =
-			rezzy::hamt::build_hamt_root_handle(&structural_key, &LtHash::default(), Vec::new())
+			crate::rooms::state_hamt::build_root(&structural_key, &LtHash::default(), Vec::new())
 				.ok()?;
 		self.services
 			.state_hamt

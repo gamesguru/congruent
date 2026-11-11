@@ -147,10 +147,14 @@ pub async fn state_get_event_id_hamt(
 	let root_node =
 		store.get_node(room_id.as_bytes(), &structural_key, &root_handle.structural_hash)?;
 	let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
-	let event_id = root_node
-		.search(&structural_key, &hamt_key(event_type, state_key), &mut resolver)
-		.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?
-		.ok_or_else(|| err!(Request(NotFound("Not found in room state"))))?;
+	let event_id = crate::rooms::state_hamt::search(
+		&root_node,
+		&structural_key,
+		&hamt_key(event_type, state_key),
+		&mut resolver,
+	)
+	.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?
+	.ok_or_else(|| err!(Request(NotFound("Not found in room state"))))?;
 	self.services.state_hamt.leaf_event_id(room_id, &event_id)
 }
 
@@ -467,7 +471,7 @@ pub async fn pdu_roothandle_before_event(
 	if pdu.prev_events().next().is_none() {
 		if let Some(room_id) = pdu.room_id() {
 			let structural_key = room_structural_key(room_id);
-			let (empty_root, empty_node) = rezzy::hamt::build_hamt_root_handle(
+			let (empty_root, empty_node) = crate::rooms::state_hamt::build_root(
 				&structural_key,
 				&rezzy::incremental::LtHash::default(),
 				Vec::new(),

@@ -392,7 +392,7 @@ impl super::Service {
 	) -> Result<rezzy::hamt::RootHandle> {
 		let structural_key = rooms::state_hamt::room_structural_key(room_id);
 		let (root_handle, root_node) =
-			rezzy::hamt::build_hamt_root_handle(&structural_key, lattice, entries)
+			rooms::state_hamt::build_root(&structural_key, lattice, entries)
 				.map_err(|e| err!(error!("rebuild_state: failed to build HAMT root: {e:?}")))?;
 
 		self.services

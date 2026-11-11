@@ -953,7 +953,7 @@ pub(super) async fn set_state_event(
 
 	let structural_key = conduwuit_service::rooms::state_hamt::room_structural_key(&room_id);
 	let (new_root, root_node) =
-		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+		conduwuit_service::rooms::state_hamt::build_root(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
 
 	// Persist the root node, then record the event's post-event root and commit

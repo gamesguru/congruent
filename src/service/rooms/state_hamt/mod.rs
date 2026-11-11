@@ -128,6 +128,80 @@ impl Service {
 	}
 }
 
+/// The routing hash of a leaf key.
+///
+/// It hashes the key's persisted encoding, not its in-memory `Hash` stream,
+/// which Rust does not promise to keep stable, so every server routes the
+/// same key the same way. Every build, mutation and lookup goes through it.
+#[must_use]
+pub fn route(structural_key: &[u8], key: &StateHamtKey) -> rezzy::hamt::StructuralHash {
+	rezzy::hamt::canonical_key_path_hash(structural_key, key)
+}
+
+/// Builds a room's state tree from `entries`, with its root handle.
+pub fn build_root<I>(
+	structural_key: &[u8],
+	lattice: &rezzy::incremental::LtHash,
+	entries: I,
+) -> std::result::Result<(rezzy::hamt::RootHandle, Arc<StateHamtNode>), rezzy::hamt::HamtBuildError>
+where
+	I: IntoIterator<Item = (StateHamtKey, StateHamtValue)>,
+{
+	let root = rezzy::hamt::build_hamt_with_key_hash(structural_key, entries, |key| {
+		route(structural_key, key)
+	})?;
+	Ok((rezzy::hamt::RootHandle::from_lthash(root.structural_hash, lattice), root))
+}
+
+/// Inserts, replaces or (with `None`) removes one leaf.
+pub fn persist_mutation<F, E>(
+	prev_root: &Arc<StateHamtNode>,
+	structural_key: &[u8],
+	key: StateHamtKey,
+	value: Option<StateHamtValue>,
+	resolver: &mut F,
+) -> rezzy::hamt::PersistMutationResult<StateHamtKey, StateHamtValue, E>
+where
+	F: rezzy::hamt::NodeResolver<StateHamtKey, StateHamtValue, E>,
+{
+	rezzy::hamt::persist_mutation_with_key_hash(
+		prev_root,
+		structural_key,
+		key,
+		value,
+		|key| route(structural_key, key),
+		resolver,
+	)
+}
+
+/// Applies a batch of leaf mutations, publishing one final root.
+pub fn persist_mutations<I, F, E>(
+	prev_root: &Arc<StateHamtNode>,
+	structural_key: &[u8],
+	mutations: I,
+	resolver: &mut F,
+) -> rezzy::hamt::PersistMutationsResult<StateHamtKey, StateHamtValue, E>
+where
+	I: IntoIterator<Item = (StateHamtKey, Option<StateHamtValue>)>,
+	F: rezzy::hamt::NodeResolver<StateHamtKey, StateHamtValue, E>,
+{
+	rezzy::hamt::HamtMutator::new(|key: &StateHamtKey| route(structural_key, key), resolver)
+		.persist_mutations(prev_root, structural_key, mutations)
+}
+
+/// Looks up the leaf value for `key`.
+pub fn search<F, E>(
+	root: &StateHamtNode,
+	structural_key: &[u8],
+	key: &StateHamtKey,
+	resolver: &mut F,
+) -> std::result::Result<Option<StateHamtValue>, E>
+where
+	F: rezzy::hamt::NodeResolver<StateHamtKey, StateHamtValue, E>,
+{
+	root.search_with_key_hash(key, |key| route(structural_key, key), resolver)
+}
+
 /// Computes the structural key for a room's state HAMT.
 ///
 /// It depends only on the room ID, so every server derives the same key and
