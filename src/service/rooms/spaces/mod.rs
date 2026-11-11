@@ -162,10 +162,11 @@ pub async fn get_summary_and_children_local(
 	}
 
 	let children_pdus: Vec<_> = self
-		.get_space_child_events(current_room)
+		.get_space_child_events_ordered(current_room)
+		.await
+		.into_iter()
 		.map(Event::into_format)
-		.collect()
-		.await;
+		.collect();
 
 	let Ok(summary) = self
 		.get_room_summary(current_room, children_pdus, identifier)
@@ -195,10 +196,11 @@ async fn get_summary_and_children_local_fallback(
 	identifier: &Identifier<'_>,
 ) -> Result<Option<SummaryAccessibility>> {
 	let children_pdus: Vec<_> = self
-		.get_space_child_events(current_room)
+		.get_space_child_events_ordered(current_room)
+		.await
+		.into_iter()
 		.map(Event::into_format)
-		.collect()
-		.await;
+		.collect();
 
 	let Ok(summary) = self
 		.get_room_summary(current_room, children_pdus, identifier)
@@ -353,6 +355,27 @@ fn get_space_child_events<'a>(
 
 			Some(pdu)
 		})
+}
+
+/// The stripped m.space.child events of a room in the spec's child order: by
+/// `order`, then `origin_server_ts`, then room ID. State iteration order is
+/// not insertion order, so `children_state` must never be built unsorted.
+#[implement(Service)]
+async fn get_space_child_events_ordered(&self, room_id: &RoomId) -> Vec<PduEvent> {
+	let mut pdus: Vec<PduEvent> = self.get_space_child_events(room_id).collect().await;
+	pdus.sort_by_cached_key(|pdu| {
+		let order = pdu
+			.get_content::<SpaceChildEventContent>()
+			.ok()
+			.and_then(|content| content.order.as_deref().map(str::to_owned));
+		(
+			order.is_none(),
+			order.unwrap_or_default(),
+			pdu.origin_server_ts(),
+			pdu.state_key().unwrap_or_default().to_owned(),
+		)
+	});
+	pdus
 }
 
 /// Gets the summary of a space using either local or remote (federation)
@@ -704,10 +727,11 @@ async fn cache_insert(
 		allowed_room_ids,
 		room_id: room_id.clone(),
 		children_state: self
-			.get_space_child_events(&room_id)
+			.get_space_child_events_ordered(&room_id)
+			.await
+			.into_iter()
 			.map(Event::into_format)
-			.collect()
-			.await,
+			.collect(),
 		encryption,
 		room_version,
 	};
