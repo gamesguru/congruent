@@ -113,6 +113,9 @@ pub async fn build_and_append_pdu_tracked(
 			.short
 			.get_or_create_shortroomid(&room_id)
 			.await;
+		// Persist the create event and its room-version record together before
+		// state insertion needs to resolve the room version.
+		self.db.write_event_to_mtxdb(&pdu, &pdu_json).await?;
 	}
 
 	let previous_root_handle = self.services.state.get_room_state_hamt(&room_id).await.ok();
