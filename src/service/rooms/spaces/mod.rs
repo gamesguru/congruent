@@ -362,20 +362,38 @@ fn get_space_child_events<'a>(
 /// not insertion order, so `children_state` must never be built unsorted.
 #[implement(Service)]
 async fn get_space_child_events_ordered(&self, room_id: &RoomId) -> Vec<PduEvent> {
-	let mut pdus: Vec<PduEvent> = self.get_space_child_events(room_id).collect().await;
-	pdus.sort_by_cached_key(|pdu| {
-		let order = pdu
-			.get_content::<SpaceChildEventContent>()
-			.ok()
-			.and_then(|content| content.order.as_deref().map(str::to_owned));
-		(
-			order.is_none(),
-			order.unwrap_or_default(),
-			pdu.origin_server_ts(),
-			pdu.state_key().unwrap_or_default().to_owned(),
+	let mut children: Vec<(Option<String>, PduEvent)> = self
+		.get_space_child_events(room_id)
+		.map(|pdu| {
+			let order = pdu
+				.get_content::<SpaceChildEventContent>()
+				.ok()
+				.and_then(|content| content.order.as_deref().map(str::to_owned));
+			(order, pdu)
+		})
+		.collect()
+		.await;
+	children.sort_by(|(order_a, a), (order_b, b)| {
+		compare_children(
+			(order_a.as_deref(), a.origin_server_ts(), a.state_key().unwrap_or_default()),
+			(order_b.as_deref(), b.origin_server_ts(), b.state_key().unwrap_or_default()),
 		)
 	});
-	pdus
+	children.into_iter().map(|(_, pdu)| pdu).collect()
+}
+
+/// The spec's child ordering, as (`order`, `origin_server_ts`, room ID): a
+/// valid `order` sorts first, lexicographically; the rest follow by timestamp,
+/// and ties break on room ID.
+fn compare_children<T: Ord>(
+	a: (Option<&str>, T, &str),
+	b: (Option<&str>, T, &str),
+) -> std::cmp::Ordering {
+	a.0.is_none()
+		.cmp(&b.0.is_none())
+		.then_with(|| a.0.unwrap_or_default().cmp(b.0.unwrap_or_default()))
+		.then_with(|| a.1.cmp(&b.1))
+		.then_with(|| a.2.cmp(b.2))
 }
 
 /// Gets the summary of a space using either local or remote (federation)
@@ -670,20 +688,11 @@ pub fn get_parent_children_via(
 		.filter(|ce| !suggested_only || ce.content.suggested)
 		.collect();
 
-	children.sort_by(|a, b| match (a.content.order.as_deref(), b.content.order.as_deref()) {
-		| (Some(order_a), Some(order_b)) => match order_a.cmp(order_b) {
-			| std::cmp::Ordering::Equal => match a.origin_server_ts.cmp(&b.origin_server_ts) {
-				| std::cmp::Ordering::Equal => a.state_key.cmp(&b.state_key),
-				| ordering => ordering,
-			},
-			| ordering => ordering,
-		},
-		| (Some(_), None) => std::cmp::Ordering::Less,
-		| (None, Some(_)) => std::cmp::Ordering::Greater,
-		| (None, None) => match a.origin_server_ts.cmp(&b.origin_server_ts) {
-			| std::cmp::Ordering::Equal => a.state_key.cmp(&b.state_key),
-			| ordering => ordering,
-		},
+	children.sort_by(|a, b| {
+		compare_children(
+			(a.content.order.as_deref(), a.origin_server_ts, a.state_key.as_str()),
+			(b.content.order.as_deref(), b.origin_server_ts, b.state_key.as_str()),
+		)
 	});
 
 	children
