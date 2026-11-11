@@ -751,7 +751,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 			&room_id,
 			&structural_key,
 			&root,
-			vec![(target_key.clone(), Some(target_value))],
+			vec![(target_key.clone(), Some(target_value.clone()))],
 			&lattice,
 			&[],
 		)
@@ -1395,8 +1395,7 @@ fn fixture_leaf(
 ) -> (crate::rooms::state_hamt::StateHamtKey, crate::rooms::state_hamt::StateHamtValue) {
 	(
 		("m.room.member".to_owned(), format!("@user{key}:test")),
-		rezzy::hamt::state_hamt_event_id(&format!("$event{key}-{seed}:test"), "1")
-			.expect("opaque event IDs always hash"),
+		format!("$event{key}-{seed}:test"),
 	)
 }
 
@@ -2408,9 +2407,12 @@ fn test_state_root_golden_hash() {
 	let room_id = slipstream::OwnedRoomId::parse("!golden:example.org").unwrap();
 	let structural_key = crate::rooms::state_hamt::room_structural_key(&room_id);
 	let entries = vec![
-		(("m.room.create".to_owned(), String::new()), [1_u8; 32]),
-		(("m.room.member".to_owned(), "@alice:example.org".to_owned()), [2_u8; 32]),
-		(("m.room.power_levels".to_owned(), String::new()), [3_u8; 32]),
+		(("m.room.create".to_owned(), String::new()), "$create".to_owned()),
+		(
+			("m.room.member".to_owned(), "@alice:example.org".to_owned()),
+			"$member".to_owned(),
+		),
+		(("m.room.power_levels".to_owned(), String::new()), "$power".to_owned()),
 	];
 	let (handle, _) = crate::rooms::state_hamt::build_root(
 		&structural_key,
@@ -2426,5 +2428,5 @@ fn test_state_root_golden_hash() {
 			write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
 			hex
 		});
-	assert_eq!(hex, "de3582f73999f4d3bc6012a88d33499f9ed7074b08282727611d55c3921653ef");
+	assert_eq!(hex, "43300744c5d0b6a1e4c6e5f948780a339da4bb5c1029cc11a2e5c485327fccf4");
 }

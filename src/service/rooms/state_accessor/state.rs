@@ -387,7 +387,7 @@ pub fn load_state_hamt_leaves(
 	let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
 	root_node
 		.visit_entries(&mut resolver, &mut |key, value| {
-			leaves.push((key.clone(), *value));
+			leaves.push((key.clone(), value.clone()));
 			Ok(())
 		})
 		.map_err(|e| err!(error!("HAMT visit failed: {e:?}")))?;

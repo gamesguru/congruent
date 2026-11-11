@@ -1,34 +1,19 @@
 use std::sync::Arc;
 
 use conduwuit::{Result, err, matrix::StateKey};
-use conduwuit_database::Map;
 use slipstream::{OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
-
-use crate::{Dep, rooms};
 
 pub mod orphan_scan;
 pub mod store;
 
 pub struct Service {
 	pub store: store::Store,
-	services: Services,
-	/// Leaf value to event ID, for room versions 1 and 2. Their leaf values
-	/// hash the opaque event ID and cannot be decoded back into it.
-	eventhash_eventid: Arc<Map>,
-}
-
-struct Services {
-	short: Dep<rooms::short::Service>,
 }
 
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
 			store: store::Store::new(args.mtxdb.clone()),
-			services: Services {
-				short: args.depend::<rooms::short::Service>("rooms::short"),
-			},
-			eventhash_eventid: args.db["eventhash_eventid"].clone(),
 		}))
 	}
 
@@ -42,11 +27,11 @@ impl crate::Service for Service {
 /// every server holding the same state of the same room.
 pub type StateHamtKey = (String, String);
 
-/// A state-HAMT leaf value: the 32-byte hash that identifies the event.
+/// A state-HAMT leaf value: the event ID string.
 ///
-/// See [`rezzy::hamt::state_hamt_event_id`]: the reference hash a room-v3+
-/// event ID encodes, or a hash of the opaque ID in room versions 1 and 2.
-pub type StateHamtValue = rezzy::hamt::StateHamtEventId;
+/// Storing the ID itself keeps leaves self-describing and works for every room
+/// version, including v1/v2 opaque IDs. The dense codec length-prefixes it.
+pub type StateHamtValue = String;
 
 /// A node of a room's state HAMT.
 pub type StateHamtNode = rezzy::hamt::HamtNode<StateHamtKey, StateHamtValue>;
@@ -57,61 +42,47 @@ pub fn hamt_key(event_type: &StateEventType, state_key: &str) -> StateHamtKey {
 	(event_type.to_string(), state_key.to_owned())
 }
 
+#[allow(
+	clippy::unused_self,
+	reason = "the leaf is the event ID itself; the service holds no leaf state"
+)]
 impl Service {
-	/// The leaf value for `event_id` in `room_id`.
-	pub fn leaf_value(&self, room_id: &RoomId, event_id: &str) -> Result<StateHamtValue> {
-		let room_version = self.services.short.get_room_version_blocking(room_id)?;
-		self.leaf_value_in(&room_version, event_id)
+	/// The leaf value for `event_id`.
+	///
+	/// `room_id` is accepted for call-site symmetry with the other
+	/// room-scoped accessors and is otherwise unused.
+	pub fn leaf_value(&self, _room_id: &RoomId, event_id: &str) -> Result<StateHamtValue> {
+		Ok(event_id.to_owned())
 	}
 
 	/// The leaf value for `event_id` in a room of `room_version`.
 	///
-	/// This is the only way leaf values are made, so every one of them can be
-	/// read back: for room versions 1 and 2 it records the hash's event ID.
+	/// The version is no longer needed now that the leaf stores the ID itself.
 	pub fn leaf_value_in(
 		&self,
-		room_version: &RoomVersionId,
+		_room_version: &RoomVersionId,
 		event_id: &str,
 	) -> Result<StateHamtValue> {
-		let value =
-			rezzy::hamt::state_hamt_event_id(event_id, room_version.as_str()).map_err(|e| {
-				err!(Request(InvalidParam("{event_id} in a {room_version} room: {e}")))
-			})?;
-		if rezzy::has_opaque_event_ids(room_version.as_str()) {
-			self.eventhash_eventid.insert(&value, event_id);
-		}
-		Ok(value)
+		Ok(event_id.to_owned())
 	}
 
-	/// The event ID a leaf value in `room_id` stands for.
+	/// The event ID a leaf value stands for.
 	pub fn leaf_event_id(
 		&self,
-		room_id: &RoomId,
+		_room_id: &RoomId,
 		value: &StateHamtValue,
 	) -> Result<OwnedEventId> {
-		let room_version = self.services.short.get_room_version_blocking(room_id)?;
-		self.leaf_event_id_in(&room_version, value)
+		OwnedEventId::try_from(value.as_str())
+			.map_err(|e| err!(Database(error!("Invalid event ID in state HAMT leaf: {e}"))))
 	}
 
-	/// The event ID a leaf value in a room of `room_version` stands for.
+	/// The event ID a leaf value stands for.
 	pub fn leaf_event_id_in(
 		&self,
-		room_version: &RoomVersionId,
+		_room_version: &RoomVersionId,
 		value: &StateHamtValue,
 	) -> Result<OwnedEventId> {
-		let event_id = match rezzy::hamt::state_hamt_event_id_string(value, room_version.as_str())
-		{
-			| Some(event_id) => event_id,
-			| None => {
-				let handle = self.eventhash_eventid.get_blocking(value).map_err(|_| {
-					err!(Database(error!("No event ID recorded for a state HAMT leaf value")))
-				})?;
-				String::from_utf8(handle.to_vec()).map_err(|e| {
-					err!(Database(error!("Invalid event ID recorded for a leaf value: {e}")))
-				})?
-			},
-		};
-		OwnedEventId::try_from(event_id)
+		OwnedEventId::try_from(value.as_str())
 			.map_err(|e| err!(Database(error!("Invalid event ID in state HAMT leaf: {e}"))))
 	}
 
