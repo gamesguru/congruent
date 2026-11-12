@@ -96,6 +96,49 @@ impl Data {
 		Ok(chain)
 	}
 
+	/// Load several complete chains as one room-local union, translating labels once.
+	pub(super) async fn get_cached_authchain_union(
+		&self,
+		shortroomid: u64,
+		starting: &[(u64, &slipstream::EventId)],
+	) -> Result<Arc<Bitmap64>> {
+		let key = union_cache_key(shortroomid, starting.iter().map(|(id, _)| *id));
+		if let Some(cached) = self.auth_chain_cache.lock().get_mut(key.as_slice()) {
+			return Ok(Arc::clone(cached));
+		}
+		let starting: Vec<Vec<u8>> = starting
+			.iter()
+			.map(|(_, id)| id.as_bytes().to_vec())
+			.collect();
+		let events = self.events.clone();
+		let shortids = self.shortids.clone();
+		let chain = self
+			.runtime
+			.spawn_blocking(move || {
+				let room = shortids
+					.get_room_id(shortroomid)
+					.map_err(|error| err!(Database("room short-id lookup failed: {error}")))?
+					.ok_or_else(|| err!(Request(NotFound("room short ID not found"))))?;
+				let starting: Vec<&[u8]> = starting.iter().map(Vec::as_slice).collect();
+				let union = events
+					.complete_auth_chain_union(&room, &starting)
+					.map_err(|error| err!(Database("complete auth union failed: {error}")))?;
+				let mut bitmap = Bitmap64::new();
+				for event in union {
+					let id = shortids
+						.get_event(&event)
+						.map_err(|error| err!(Database("auth short-id lookup failed: {error}")))?
+						.ok_or_else(|| err!(Request(NotFound("auth short ID not found"))))?;
+					bitmap.insert(id);
+				}
+				Ok::<_, conduwuit::Error>(Arc::new(bitmap))
+			})
+			.await
+			.map_err(|error| err!(Database("blocking auth union failed: {error}")))??;
+		self.auth_chain_cache.lock().insert(key, Arc::clone(&chain));
+		Ok(chain)
+	}
+
 	/// Cache the supplied ancestor short IDs in RAM for this room and event.
 	/// Does not persist the chain or verify its completeness.
 	pub(super) fn cache_auth_chain(
@@ -127,4 +170,48 @@ impl Data {
 
 	/// Clear the RAM auth-chain cache, leaving persisted mtxdb closures intact.
 	pub(super) async fn clear_db_cache(&self) { self.auth_chain_cache.lock().clear(); }
+}
+
+/// Cache key for a room-local auth-chain union: the room, the canonical
+/// (sorted, deduplicated) starting short IDs, and their count.
+///
+/// The count keeps a one-element union distinct from the single-event key
+/// `[shortroomid, shorteventid]`, so the two entry kinds can never collide.
+fn union_cache_key(shortroomid: u64, ids: impl IntoIterator<Item = u64>) -> Vec<u64> {
+	let mut ids: Vec<u64> = ids.into_iter().collect();
+	ids.sort_unstable();
+	ids.dedup();
+	let mut key = Vec::with_capacity(ids.len().saturating_add(2));
+	key.push(shortroomid);
+	key.push(u64::try_from(ids.len()).expect("starting-event count fits u64"));
+	key.extend(ids);
+	key
+}
+
+#[cfg(test)]
+mod tests {
+	use super::union_cache_key;
+
+	#[test]
+	fn union_cache_key_is_order_and_duplicate_insensitive() {
+		let ordered = union_cache_key(7, [1, 2, 3]);
+		assert_eq!(ordered, vec![7, 3, 1, 2, 3]);
+		assert_eq!(ordered, union_cache_key(7, [3, 1, 2, 2, 3]));
+		assert_ne!(ordered, union_cache_key(8, [1, 2, 3]));
+		assert_ne!(ordered, union_cache_key(7, [1, 2]));
+	}
+
+	#[test]
+	fn union_cache_key_never_collides_with_an_event_key() {
+		// Single-event entries are `[shortroomid, shorteventid]`; a union of one
+		// id must not share that shape.
+		assert_eq!(union_cache_key(9, [42]), vec![9, 1, 42]);
+		assert_ne!(union_cache_key(9, [42]), vec![9, 42]);
+		assert_ne!(union_cache_key(9, [42]), union_cache_key(9, [43]));
+	}
+
+	#[test]
+	fn empty_union_key_is_just_room_and_count() {
+		assert_eq!(union_cache_key(5, []), vec![5, 0]);
+	}
 }

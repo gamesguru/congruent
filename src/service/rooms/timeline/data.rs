@@ -1063,21 +1063,22 @@ impl Data {
 			if seen.insert(event_id.clone()) {
 				event_ids.push(event_id.clone());
 			}
-			let auth_chain = self
-				.mtxdb_events
-				.get_auth_chain(room_id.as_bytes(), event_id.as_bytes())
-				.map_err(|error| err!(Database("mtxdb auth-chain lookup failed: {error}")))?;
-			for auth_event_id in auth_chain {
-				let auth_event_id =
-					OwnedEventId::parse(std::str::from_utf8(&auth_event_id).map_err(
-						|error| err!(Database("invalid event ID in mtxdb auth chain: {error}")),
-					)?)
-					.map_err(|error| {
-						err!(Database("invalid event ID in mtxdb auth chain: {error}"))
-					})?;
-				if seen.insert(auth_event_id.clone()) {
-					event_ids.push(auth_event_id);
-				}
+		}
+		let starts: Vec<&[u8]> = event_ids.iter().map(OwnedEventId::as_bytes).collect();
+		let auth_chain = self
+			.mtxdb_events
+			.complete_auth_chain_union(room_id.as_bytes(), &starts)
+			.map_err(|error| err!(Database("mtxdb auth-chain union failed: {error}")))?;
+		for auth_event_id in auth_chain {
+			let auth_event_id =
+				OwnedEventId::parse(std::str::from_utf8(&auth_event_id).map_err(|error| {
+					err!(Database("invalid event ID in mtxdb auth chain: {error}"))
+				})?)
+				.map_err(|error| {
+					err!(Database("invalid event ID in mtxdb auth chain: {error}"))
+				})?;
+			if seen.insert(auth_event_id.clone()) {
+				event_ids.push(auth_event_id);
 			}
 		}
 

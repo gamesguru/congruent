@@ -97,9 +97,15 @@ where
 		.into_iter()
 		.try_stream::<conduwuit::Error>()
 		.broad_and_then(|(shortid, event_id)| async move {
+			// Do not independently translate each cold persisted closure.
+			let key = [shortroomid, shortid];
 			let res = self
-				.get_cached_eventid_authchain(shortroomid, shortid)
-				.await;
+				.db
+				.auth_chain_cache
+				.lock()
+				.get_mut(key.as_slice())
+				.cloned()
+				.ok_or_else(|| conduwuit::err!(Request(NotFound("auth chain not in RAM"))));
 			Ok((shortid, event_id, res))
 		})
 		.try_collect::<Vec<_>>()
@@ -111,6 +117,21 @@ where
 			full_auth_chain.insert(shortid);
 		} else {
 			uncached.push((shortid, event_id));
+		}
+	}
+
+	// Merge cold closures in room-local space before translating their union.
+	if uncached.len() > 1 {
+		if let Ok(union) = self
+			.db
+			.get_cached_authchain_union(shortroomid, &uncached)
+			.await
+		{
+			full_auth_chain |= union.as_ref();
+			for (id, _) in &uncached {
+				full_auth_chain.insert(*id);
+			}
+			uncached.clear();
 		}
 	}
 
@@ -187,9 +208,15 @@ where
 		.into_iter()
 		.try_stream::<conduwuit::Error>()
 		.broad_and_then(|(shortid, event_id)| async move {
+			// Do not independently translate each cold persisted closure.
+			let key = [shortroomid, shortid];
 			let res = self
-				.get_cached_eventid_authchain(shortroomid, shortid)
-				.await;
+				.db
+				.auth_chain_cache
+				.lock()
+				.get_mut(key.as_slice())
+				.cloned()
+				.ok_or_else(|| conduwuit::err!(Request(NotFound("auth chain not in RAM"))));
 			Ok((shortid, event_id, res))
 		})
 		.try_collect::<Vec<_>>()
@@ -201,6 +228,21 @@ where
 			full_auth_chain.insert(shortid);
 		} else {
 			uncached.push((shortid, event_id));
+		}
+	}
+
+	// Merge cold closures in room-local space before translating their union.
+	if uncached.len() > 1 {
+		if let Ok(union) = self
+			.db
+			.get_cached_authchain_union(shortroomid, &uncached)
+			.await
+		{
+			full_auth_chain |= union.as_ref();
+			for (id, _) in &uncached {
+				full_auth_chain.insert(*id);
+			}
+			uncached.clear();
 		}
 	}
 

@@ -351,28 +351,17 @@ where
 	) {
 		// V2.1+ subgraph computation needs full auth chain visibility.
 		// Build event context by BFS-walking auth chains from all fork state events.
-		let mut ctx: HashMap<String, rezzy::LeanEvent<String, rezzy::JsonValue>> = HashMap::new();
-		let mut q: std::collections::VecDeque<String> = lean_state_sets
-			.iter()
-			.flat_map(|ss| ss.values().cloned())
-			.collect();
-		while let Some(eid) = q.pop_front() {
-			if ctx.contains_key(&eid) {
-				continue;
-			}
-			let ev = <_ as rezzy::basespec::rezzy_types::EventProvider<
-				String,
-				rezzy::JsonValue,
-			>>::get_event(&provider, &eid);
-			if let Some(ev) = ev {
-				for aid in &ev.auth_events {
-					if !ctx.contains_key(aid) {
-						q.push_back(aid.clone());
-					}
-				}
-				ctx.insert(eid, ev.clone());
-			}
-		}
+		let ctx = collect_auth_context(
+			lean_state_sets.iter().flat_map(|ss| ss.values().cloned()),
+			|eid| {
+				<_ as rezzy::basespec::rezzy_types::EventProvider<
+				String, rezzy::JsonValue,
+			>>::get_event(&provider, eid).cloned()
+			},
+		)
+		.inspect_err(|error| {
+			warn!(%room_id, %error, "State resolution requires a complete auth context");
+		})?;
 		rezzy::resolve::multi::resolve_state_maps(&lean_state_sets, &ctx, version)
 	} else {
 		// V2 and below: lazy BFS is sufficient.
@@ -395,6 +384,33 @@ where
 	}
 
 	Ok(resolved)
+}
+
+// Shared by the V2.1+ production path and its missing-ancestry regressions.
+fn collect_auth_context<I, F>(
+	starting: I,
+	mut fetch: F,
+) -> Result<HashMap<String, rezzy::LeanEvent<String, rezzy::JsonValue>>>
+where
+	I: IntoIterator<Item = String>,
+	F: FnMut(&String) -> Option<rezzy::LeanEvent<String, rezzy::JsonValue>>,
+{
+	let mut context = HashMap::new();
+	let mut queue: std::collections::VecDeque<String> = starting.into_iter().collect();
+	while let Some(id) = queue.pop_front() {
+		if context.contains_key(&id) {
+			continue;
+		}
+		let event = fetch(&id)
+			.ok_or_else(|| err!(Database("State resolution auth context is incomplete: {id}")))?;
+		for parent in &event.auth_events {
+			if !context.contains_key(parent) {
+				queue.push_back(parent.clone());
+			}
+		}
+		context.insert(id, event);
+	}
+	Ok(context)
 }
 
 fn sender_power_level_from_auth<F>(
@@ -540,5 +556,58 @@ fn pdu_to_lean(
 		depth: pdu.depth,
 		rejected: pdu.rejected,
 		..Default::default()
+	}
+}
+
+#[cfg(test)]
+mod auth_context_tests {
+	use super::*;
+
+	fn event(id: &str, parents: &[&str]) -> rezzy::LeanEvent<String, rezzy::JsonValue> {
+		rezzy::LeanEvent {
+			event_id: id.to_owned(),
+			auth_events: parents.iter().map(|id| (*id).to_owned()).collect(),
+			..Default::default()
+		}
+	}
+
+	#[test]
+	fn missing_transitive_ancestor_errors_with_all_starting_bodies_present() {
+		let events = HashMap::from([
+			("left".to_owned(), event("left", &["parent"])),
+			("right".to_owned(), event("right", &["parent"])),
+			("parent".to_owned(), event("parent", &["missing"])),
+		]);
+		let error = collect_auth_context(["left".to_owned(), "right".to_owned()], |id| {
+			events.get(id).cloned()
+		})
+		.unwrap_err();
+		assert!(error.to_string().contains("missing"));
+	}
+
+	#[test]
+	fn missing_starting_event_returns_error_instead_of_reaching_resolver() {
+		collect_auth_context(["missing".to_owned()], |_| None)
+			.map(|_| ())
+			.unwrap_err();
+	}
+
+	#[test]
+	fn shared_ancestors_and_duplicate_roots_are_fetched_once() {
+		let events = HashMap::from([
+			("left".to_owned(), event("left", &["parent", "root"])),
+			("right".to_owned(), event("right", &["parent"])),
+			("parent".to_owned(), event("parent", &["root"])),
+			("root".to_owned(), event("root", &[])),
+		]);
+		let mut reads = HashMap::<String, usize>::new();
+		let context = collect_auth_context(["left", "right", "left"].map(str::to_owned), |id| {
+			*reads.entry(id.clone()).or_default() += 1;
+			events.get(id).cloned()
+		})
+		.unwrap();
+		assert_eq!(context.len(), events.len());
+		assert!(reads.values().all(|count| *count == 1));
+		rezzy::auth::roaring::AuthGraph::try_build(&context).unwrap();
 	}
 }

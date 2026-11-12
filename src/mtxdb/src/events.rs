@@ -213,6 +213,43 @@ impl EventAdapter {
 		Ok(edge_bytes(chain))
 	}
 
+	/// Union complete auth chains in room-local ordinal space, resolving labels once.
+	/// Missing ancestry is an error rather than a partial successful result.
+	pub fn complete_auth_chain_union(
+		&self,
+		room_id: &[u8],
+		event_ids: &[&[u8]],
+	) -> Result<Vec<Vec<u8>>, StorageError> {
+		let room_name = utf8(room_id, "room id")?;
+		let room = RoomAuth::new(room_name);
+		let db = self.store.database();
+		let snapshot = room.snapshot(db).map_err(auth_error)?;
+		let mut union = None;
+		for event_id in event_ids {
+			let chain = snapshot
+				.auth_chain_ids(db, utf8(event_id, "event id")?)
+				.map_err(auth_error)?;
+			union = Some(match union {
+				| None => chain,
+				| Some(ref previous) => chain.union(previous)?,
+			});
+		}
+		let Some(union) = union else {
+			return Ok(Vec::new());
+		};
+		let ids: Vec<u32> = union.iter().collect();
+		CsrAdjacency::new(room_name)
+			.events_index()
+			.resolve(db, &ids)?
+			.into_iter()
+			.map(|key| {
+				key.ok_or_else(|| {
+					StorageError::Corrupt("auth union short id has no event id".to_owned())
+				})
+			})
+			.collect()
+	}
+
 	/// Whether the stored event body and auth-edge record already match this
 	/// write.
 	///
@@ -838,6 +875,14 @@ mod room_tests {
 		chain.sort();
 		assert_eq!(chain, vec![create.to_vec(), join.to_vec(), power.to_vec()]);
 		assert!(adapter.get_auth_chain(room, create).unwrap().is_empty());
+		let mut union = adapter
+			.complete_auth_chain_union(room, &[message, join, message])
+			.unwrap();
+		union.sort();
+		assert_eq!(union, chain);
+		adapter
+			.complete_auth_chain_union(room, &[b"$unknown"])
+			.unwrap_err();
 		assert!(
 			adapter
 				.get_auth_chain(room, b"$unknown")
@@ -848,6 +893,79 @@ mod room_tests {
 		drop(adapter);
 		let _ = fs::remove_dir_all(path);
 	}
+	#[test]
+	fn complete_auth_union_rejects_gaps_and_recovers_after_parent_arrives() {
+		let path = test_path("complete-union-gap");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = EventAdapter::new(store);
+		adapter
+			.write_event_with_edges(room, b"$good", b"g", &[], &[])
+			.unwrap();
+		adapter
+			.write_event_with_edges(room, b"$child", b"c", &[], &[b"$parent"])
+			.unwrap();
+		// A good root must not turn the other root's partial ancestry into success.
+		adapter
+			.complete_auth_chain_union(room, &[b"$good", b"$child"])
+			.unwrap_err();
+		adapter
+			.write_event_with_edges(room, b"$parent", b"p", &[], &[])
+			.unwrap();
+		assert_eq!(
+			adapter
+				.complete_auth_chain_union(room, &[b"$good", b"$child", b"$child"])
+				.unwrap(),
+			vec![b"$parent".to_vec()]
+		);
+		assert!(
+			adapter
+				.complete_auth_chain_union(room, &[])
+				.unwrap()
+				.is_empty()
+		);
+		adapter
+			.complete_auth_chain_union(b"!other:example.com", &[b"$child"])
+			.unwrap_err();
+		drop(adapter);
+		let _ = fs::remove_dir_all(path);
+	}
+
+	#[test]
+	fn complete_union_refuses_partial_ancestry_that_the_walk_returns() {
+		let path = test_path("auth-union-incomplete");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = EventAdapter::new(store);
+
+		let (create, child, missing) = (&b"$create"[..], &b"$child"[..], &b"$missing"[..]);
+		adapter
+			.write_event_with_edges(room, create, b"c", &[], &[])
+			.unwrap();
+		// The child cites an ancestor the room never recorded.
+		adapter
+			.write_event_with_edges(room, child, b"x", &[], &[create, missing])
+			.unwrap();
+
+		// A complete union refuses instead of returning a partial set.
+		adapter
+			.complete_auth_chain_union(room, &[child])
+			.unwrap_err();
+
+		// The partial walk still reports what it knows, which is the behavior the
+		// union path deliberately does not inherit.
+		let mut partial = adapter.get_auth_chain(room, child).unwrap();
+		partial.sort();
+		let mut expected = vec![create.to_vec(), missing.to_vec()];
+		expected.sort();
+		assert_eq!(partial, expected);
+
+		drop(adapter);
+		let _ = fs::remove_dir_all(path);
+	}
+
 	#[test]
 	fn persisted_closure_matches_the_walk() {
 		let path = test_path("closure-persisted");
