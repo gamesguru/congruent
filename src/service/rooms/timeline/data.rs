@@ -1788,9 +1788,7 @@ impl Data {
 					// Clone raw bytes to owned before async resolve to avoid
 					// RocksDB cursor invalidation through try_buffered
 					.map_ok(|(key, val)| (key.to_vec(), val.to_vec()))
-					.and_then(
-						move |(key, val)| async move { self.resolve_pdu((&key, &val)) },
-					)
+					.and_then(move |(key, val)| async move { self.resolve_pdu((&key, &val)) })
 			})
 			.inspect_err(|e| conduwuit::warn!("pdus_rev count_to_id failed: {e}"))
 			.try_flatten_stream()
@@ -1822,9 +1820,7 @@ impl Data {
 					// Clone raw bytes to owned before async resolve to avoid
 					// RocksDB cursor invalidation through try_buffered
 					.map_ok(|(key, val)| (key.to_vec(), val.to_vec()))
-					.and_then(
-						move |(key, val)| async move { self.resolve_pdu((&key, &val)) },
-					)
+					.and_then(move |(key, val)| async move { self.resolve_pdu((&key, &val)) })
 			})
 			.try_flatten_stream()
 	}

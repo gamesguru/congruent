@@ -290,7 +290,8 @@ pub fn build(
 			post(client::update_delayed_event_route),
 		)
 		.route(
-			"/_matrix/client/unstable/org.matrix.msc4140/rooms/{room_id}/delayed_event/{event_type}/{txn_id}",
+			"/_matrix/client/unstable/org.matrix.msc4140/rooms/{room_id}/delayed_event/\
+			 {event_type}/{txn_id}",
 			put(client::schedule_delayed_event_route),
 		)
 		.ruma_route(&client::get_tags_route)
@@ -338,7 +339,10 @@ pub fn build(
 			"/_synapse/admin/v1/register",
 			get(client::synapse_register_nonce).post(client::synapse_register),
 		)
-		.route("/_synapse/admin/v1/send_server_notice", post(client::synapse_send_server_notice))
+		.route(
+			"/_synapse/admin/v1/send_server_notice",
+			post(client::synapse_send_server_notice),
+		)
 		.route(
 			"/_synapse/admin/v1/send_server_notice/{txn_id}",
 			put(client::synapse_send_server_notice_txn),

@@ -57,3 +57,6 @@ pub(super) use well_known::*;
 
 mod utils;
 use utils::AccessCheck;
+
+#[cfg(test)]
+mod test_server;
