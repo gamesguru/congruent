@@ -101,10 +101,10 @@ impl Data {
 		&self,
 		shortroomid: u64,
 		starting: &[(u64, &slipstream::EventId)],
-	) -> Result<Arc<Bitmap64>> {
+	) -> Result<Option<Arc<Bitmap64>>> {
 		let key = union_cache_key(shortroomid, starting.iter().map(|(id, _)| *id));
 		if let Some(cached) = self.auth_chain_cache.lock().get_mut(key.as_slice()) {
-			return Ok(Arc::clone(cached));
+			return Ok(Some(Arc::clone(cached)));
 		}
 		let starting: Vec<Vec<u8>> = starting
 			.iter()
@@ -120,9 +120,12 @@ impl Data {
 					.map_err(|error| err!(Database("room short-id lookup failed: {error}")))?
 					.ok_or_else(|| err!(Request(NotFound("room short ID not found"))))?;
 				let starting: Vec<&[u8]> = starting.iter().map(Vec::as_slice).collect();
-				let union = events
-					.complete_auth_chain_union(&room, &starting)
-					.map_err(|error| err!(Database("complete auth union failed: {error}")))?;
+				let Some(union) = events
+					.try_complete_auth_chain_union(&room, &starting)
+					.map_err(|error| err!(Database("complete auth union failed: {error}")))?
+				else {
+					return Ok(None);
+				};
 				let mut bitmap = Bitmap64::new();
 				for event in union {
 					let id = shortids
@@ -131,11 +134,13 @@ impl Data {
 						.ok_or_else(|| err!(Request(NotFound("auth short ID not found"))))?;
 					bitmap.insert(id);
 				}
-				Ok::<_, conduwuit::Error>(Arc::new(bitmap))
+				Ok::<_, conduwuit::Error>(Some(Arc::new(bitmap)))
 			})
 			.await
 			.map_err(|error| err!(Database("blocking auth union failed: {error}")))??;
-		self.auth_chain_cache.lock().insert(key, Arc::clone(&chain));
+		if let Some(chain) = &chain {
+			self.auth_chain_cache.lock().insert(key, Arc::clone(chain));
+		}
 		Ok(chain)
 	}
 

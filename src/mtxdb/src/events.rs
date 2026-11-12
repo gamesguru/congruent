@@ -220,22 +220,39 @@ impl EventAdapter {
 		room_id: &[u8],
 		event_ids: &[&[u8]],
 	) -> Result<Vec<Vec<u8>>, StorageError> {
+		self.try_complete_auth_chain_union(room_id, event_ids)?
+			.ok_or_else(|| StorageError::Corrupt("incomplete auth ancestry".to_owned()))
+	}
+
+	/// Return `None` for missing ancestry; preserve storage and corruption errors.
+	pub fn try_complete_auth_chain_union(
+		&self,
+		room_id: &[u8],
+		event_ids: &[&[u8]],
+	) -> Result<Option<Vec<Vec<u8>>>, StorageError> {
 		let room_name = utf8(room_id, "room id")?;
 		let room = RoomAuth::new(room_name);
 		let db = self.store.database();
 		let snapshot = room.snapshot(db).map_err(auth_error)?;
 		let mut union = None;
 		for event_id in event_ids {
-			let chain = snapshot
-				.auth_chain_ids(db, utf8(event_id, "event id")?)
-				.map_err(auth_error)?;
+			let chain = match snapshot.auth_chain_ids(db, utf8(event_id, "event id")?) {
+				| Ok(chain) => chain,
+				| Err(
+					RoomAuthError::UnknownEvent { .. }
+					| RoomAuthError::EventNotRecorded { .. }
+					| RoomAuthError::MissingParent { .. }
+					| RoomAuthError::IncompleteClosure { .. },
+				) => return Ok(None),
+				| Err(error) => return Err(auth_error(error)),
+			};
 			union = Some(match union {
 				| None => chain,
 				| Some(ref previous) => chain.union(previous)?,
 			});
 		}
 		let Some(union) = union else {
-			return Ok(Vec::new());
+			return Ok(Some(Vec::new()));
 		};
 		let ids: Vec<u32> = union.iter().collect();
 		CsrAdjacency::new(room_name)
@@ -247,7 +264,8 @@ impl EventAdapter {
 					StorageError::Corrupt("auth union short id has no event id".to_owned())
 				})
 			})
-			.collect()
+			.collect::<Result<Vec<_>, _>>()
+			.map(Some)
 	}
 
 	/// Whether the stored event body and auth-edge record already match this
@@ -910,6 +928,16 @@ mod room_tests {
 		adapter
 			.complete_auth_chain_union(room, &[b"$good", b"$child"])
 			.unwrap_err();
+		assert!(
+			adapter
+				.try_complete_auth_chain_union(room, &[b"$good", b"$child"])
+				.unwrap()
+				.is_none()
+		);
+		adapter
+			.try_complete_auth_chain_union(room, &[&[0xFF]])
+			.unwrap_err();
+
 		adapter
 			.write_event_with_edges(room, b"$parent", b"p", &[], &[])
 			.unwrap();

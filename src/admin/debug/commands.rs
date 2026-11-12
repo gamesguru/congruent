@@ -13,10 +13,7 @@ use conduwuit::{
 		pdu::{PduEvent, PduId, RawPduId},
 	},
 	trace, utils,
-	utils::{
-		stream::{IterStream, ReadyExt},
-		string::EMPTY,
-	},
+	utils::{stream::IterStream, string::EMPTY},
 	warn,
 };
 use futures::{FutureExt, StreamExt, TryStreamExt};
@@ -46,17 +43,17 @@ pub(super) async fn get_auth_chain(&self, event_id: OwnedEventId) -> Result {
 		.ok_or_else(|| err!(Database("Event has no room_id")))?;
 
 	let start = Instant::now();
-	let count = self
+	let chain = self
 		.services
 		.rooms
 		.auth_chain
-		.event_ids_iter(&room_id, once(event_id.as_ref()))
-		.ready_filter_map(Result::ok)
-		.count()
-		.await;
-
+		.get_auth_chain(&room_id, once(event_id.as_ref()))
+		.await?;
+	let count = chain.ids.len();
+	let complete = chain.complete;
 	let elapsed = start.elapsed();
-	let out = format!("Loaded auth chain with length {count} in {elapsed:?}");
+	let out =
+		format!("Loaded auth chain with length {count} in {elapsed:?} (complete: {complete})");
 
 	self.write_str(&out).await
 }

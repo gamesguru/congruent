@@ -1,5 +1,5 @@
-use conduwuit::{Event, Result};
-use futures::StreamExt;
+use conduwuit::{Event, Result, err};
+use futures::TryStreamExt;
 use slipstream::{OwnedEventId, api::federation::event::event_relationships};
 
 use super::AccessCheck;
@@ -58,9 +58,8 @@ pub(crate) async fn get_event_relationships_route(
 				.rooms
 				.auth_chain
 				.event_ids_iter(&room_id, std::iter::once(pdu.event_id()))
-				.filter_map(|r| async move { r.ok() })
-				.collect()
-				.await;
+				.try_collect()
+				.await?;
 			auth_chain_ids.extend(chain);
 		}
 	}
@@ -71,15 +70,14 @@ pub(crate) async fn get_event_relationships_route(
 		let runtime = services.server.runtime().clone();
 		let pdu = runtime
 			.spawn_blocking(move || services_for_read.rooms.timeline.get_pdu(&event_id))
-			.await;
-		if let Ok(Ok(pdu)) = pdu {
-			auth_chain.push(
-				services
-					.sending
-					.convert_to_outgoing_federation_event(pdu.to_canonical_object())
-					.await,
-			);
-		}
+			.await
+			.map_err(|error| err!(Database("blocking auth PDU lookup failed: {error}")))??;
+		auth_chain.push(
+			services
+				.sending
+				.convert_to_outgoing_federation_event(pdu.to_canonical_object())
+				.await,
+		);
 	}
 
 	Ok(event_relationships::unstable::Response {

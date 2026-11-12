@@ -1,7 +1,7 @@
 use std::{borrow::Borrow, iter::once};
 
-use conduwuit::{Err, Error, Event, Result, info, utils::stream::ReadyExt};
-use futures::StreamExt;
+use conduwuit::{Err, Error, Event, Result, err, info};
+use futures::TryStreamExt;
 use slipstream::api::{
 	client::error::ErrorKind, federation::authorization::get_event_authorization,
 };
@@ -51,22 +51,25 @@ pub(crate) async fn get_event_authorization_route(
 		.rooms
 		.auth_chain
 		.event_ids_iter(&body.room_id, once(body.event_id.borrow()))
-		.ready_filter_map(Result::ok)
-		.ready_filter(|id| id != &body.event_id)
-		.filter_map(|id| {
+		.try_filter(|id| futures::future::ready(id != &body.event_id))
+		.and_then(|id| {
 			let services = services.services();
 			let runtime = services.server.runtime().clone();
 			async move {
 				runtime
 					.spawn_blocking(move || services.rooms.timeline.get_pdu_json(&id))
 					.await
-					.ok()?
-					.ok()
+					.map_err(|error| err!(Database("blocking auth PDU lookup failed: {error}")))?
 			}
 		})
-		.then(|pdu| services.sending.convert_to_outgoing_federation_event(pdu))
-		.collect()
-		.await;
+		.and_then(|pdu| async {
+			Ok(services
+				.sending
+				.convert_to_outgoing_federation_event(pdu)
+				.await)
+		})
+		.try_collect()
+		.await?;
 
 	Ok(get_event_authorization::v1::Response { auth_chain })
 }
