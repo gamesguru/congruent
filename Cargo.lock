@@ -2116,7 +2116,7 @@ dependencies = [
 [[package]]
 name = "mtx-slipstream"
 version = "0.1.0"
-source = "git+https://gitlab.com/wombat-foundation/mtx-slipstream.git?branch=dev#af4503c65b803602c0331909bc25a79bb3c014e5"
+source = "git+https://gitlab.com/wombat-foundation/mtx-slipstream.git?branch=dev#e1fa5fd8d9f43de0868230761f27eee6d4870c90"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -2128,7 +2128,7 @@ dependencies = [
 [[package]]
 name = "mtxdb"
 version = "0.1.0-beta.3"
-source = "git+https://gitlab.com/wombat-foundation/mtxdb.git?branch=dev#f1cb003a951656754878e1cbe8bb8223db769ad1"
+source = "git+https://gitlab.com/wombat-foundation/mtxdb.git?branch=dev#8d6c57f5b0bb90fbae9aadba13c86f369eb47f8c"
 dependencies = [
  "arc-swap",
  "base64 0.23.1",
