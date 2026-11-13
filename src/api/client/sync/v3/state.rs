@@ -7,16 +7,12 @@ use conduwuit::{
 		pdu::{PduCount, PduEvent},
 	},
 	trace,
-	utils::{
-		BoolExt, IterStream, ReadyExt,
-		stream::{BroadbandExt, TryIgnore},
-	},
+	utils::{BoolExt, IterStream, ReadyExt, stream::BroadbandExt},
 };
 use conduwuit_service::{Services, rooms::lazy_loading::MemberSet};
 use futures::{StreamExt, TryStreamExt};
 use itertools::Itertools;
-use service::rooms::short::ShortEventId;
-use slipstream::{OwnedEventId, RoomId, UserId, events::StateEventType};
+use slipstream::{EventId, OwnedEventId, RoomId, UserId, events::StateEventType};
 
 use crate::client::TimelinePdus;
 
@@ -63,7 +59,7 @@ async fn lazy_member_event(
 		.filter(|(_, pdu)| pdu.sender() == user_id)
 	{
 		for auth_event_id in pdu.auth_events() {
-			if let Ok(auth_pdu) = services.rooms.timeline.get_pdu(auth_event_id).await {
+			if let Ok(auth_pdu) = services.rooms.timeline.get_pdu(auth_event_id) {
 				if *auth_pdu.kind() == slipstream::events::TimelineEventType::RoomMember
 					&& auth_pdu.state_key() == Some(user_id.as_str())
 				{
@@ -126,7 +122,7 @@ pub(super) async fn build_state_initial(
 			}
 		})
 		.broad_filter_map(|event_id: OwnedEventId| async move {
-			services.rooms.timeline.get_pdu(&event_id).await.ok()
+			services.rooms.timeline.get_pdu(&event_id).ok()
 		})
 		.collect::<Vec<PduEvent>>()
 		.await;
@@ -295,19 +291,13 @@ pub(super) async fn build_state_incremental<'a>(
 
 	trace!(%timeline_is_linear, %timeline.limited, "computing state for incremental sync");
 
-	// fetch the shorteventids of state events in the timeline
-	let state_events_in_timeline: BTreeSet<ShortEventId> = services
-		.rooms
-		.short
-		.multi_get_or_create_shorteventid(timeline.pdus.iter().filter_map(|(_, pdu)| {
-			if pdu.state_key().is_some() {
-				Some(pdu.event_id.as_ref())
-			} else {
-				None
-			}
-		}))
-		.collect()
-		.await;
+	// the event IDs of state events in the timeline
+	let state_events_in_timeline: BTreeSet<&EventId> = timeline
+		.pdus
+		.iter()
+		.filter(|(_, pdu)| pdu.state_key().is_some())
+		.map(|(_, pdu)| pdu.event_id.as_ref())
+		.collect();
 
 	trace!("{} state events in timeline", state_events_in_timeline.len());
 
@@ -315,27 +305,19 @@ pub(super) async fn build_state_incremental<'a>(
 	fetch the state events which were added since the last sync.
 
 	specifically we fetch the difference between the state at the last sync and the state at the _end_
-	of the timeline, and then we filter out state events in the timeline itself using the shorteventids we fetched.
+	of the timeline, and then we filter out state events in the timeline itself using their event IDs.
 	this is necessary to account for splits in the DAG, as explained above.
 	*/
 	let state_diff = services
 		.rooms
-		.short
-		.multi_get_eventid_from_short::<'_, OwnedEventId, _>(
-			services
-				.rooms
-				.state_accessor
-				.state_added_hamt(room_id, (last_sync_end_root_handle, timeline_end_root_handle))?
-				.stream()
-				.ready_filter_map(|(_, shorteventid)| {
-					if state_events_in_timeline.contains(&shorteventid) {
-						None
-					} else {
-						Some(shorteventid)
-					}
-				}),
-		)
-		.ignore_err();
+		.state_accessor
+		.state_added_hamt(room_id, (last_sync_end_root_handle, timeline_end_root_handle))?
+		.into_iter()
+		.filter_map(|(_, event_id)| {
+			let event_id_ref: &EventId = &event_id;
+			(!state_events_in_timeline.contains(event_id_ref)).then_some(event_id)
+		})
+		.stream();
 
 	// finally, fetch the PDU contents and collect them into a vec
 	let mut state_diff_pdus = state_diff

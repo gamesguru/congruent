@@ -913,7 +913,7 @@ async fn check_joined_since_last_sync(
 			if let Ok(event_id) = services
 				.rooms
 				.state_accessor
-				.state_get_id_hamt::<OwnedEventId>(
+				.state_get_id_hamt(
 					room_id,
 					current_root_handle,
 					&StateEventType::RoomMember,
@@ -1057,17 +1057,10 @@ async fn build_heroes(
 	// then as a last resort fetch every membership event
 	let all_members_stream = services
 		.rooms
-		.short
-		.multi_get_statekey_from_short(
-			services
-				.rooms
-				.state_accessor
-				.state_full_shortids_hamt(room_id, current_root_handle)
-				.ignore_err()
-				.ready_filter_map(|(key, _)| Some(key)),
-		)
+		.state_accessor
+		.state_full_entries_hamt(room_id, current_root_handle)
 		.ignore_err()
-		.ready_filter_map(|(event_type, state_key)| {
+		.ready_filter_map(|((event_type, state_key), _)| {
 			if event_type == StateEventType::RoomMember {
 				UserId::parse(state_key).ok()
 			} else {

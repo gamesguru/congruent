@@ -2,8 +2,8 @@ import json
 import re
 import tomllib
 
-with open("conduwuit.toml", "rb") as f:
-    config = tomllib.load(f)
+with open("conduwuit.toml", "rb") as config_file:
+    config = tomllib.load(config_file)
 
 # Manually insert the dropped keys from the scrollback memory mapping
 config["global"]["proxy"] = "none"
@@ -149,8 +149,8 @@ config["global"]["experimental_features"] = {}
 config["global"]["experimental_features"]["msc3266_enabled"] = True
 config["global"]["experimental_features"]["msc4222_enabled"] = True
 
-with open("conduwuit-example.toml", "r") as f:
-    example_lines = f.readlines()
+with open("conduwuit-example.toml", "r", encoding="utf-8") as example_file:
+    example_lines = example_file.readlines()
 
 
 def format_value(v):
@@ -217,5 +217,5 @@ while i < len(example_lines):
     merged_lines.append(line)
     i += 1
 
-with open("conduwuit.toml", "w") as f:
-    f.writelines(merged_lines)
+with open("conduwuit.toml", "w", encoding="utf-8") as output_file:
+    output_file.writelines(merged_lines)

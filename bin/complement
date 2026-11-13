@@ -20,11 +20,10 @@ RESULTS_FILE="${3:-"${RESULTS_FILE:-$RESULTS_DIR/results.jsonl}"}"
 # after running `cargo build`. Only the debug binary is used.
 COMPLEMENT_BASE_IMAGE="${COMPLEMENT_BASE_IMAGE:-continuwuity:complement}"
 
-# Complement tests that are skipped due to flakiness/reliability issues or we
-# don't implement such features and won't for a long time.
-# This can be overridden by environment variable. TestPartialStateJoin runs by
-# default (fast_joins is enabled in complement.config.toml).
-SKIPPED_COMPLEMENT_TESTS="${SKIPPED_COMPLEMENT_TESTS:-""}"
+# Complement tests that are skipped due to flakiness/reliability issues or
+# unsupported features. Override with SKIPPED_COMPLEMENT_TESTS (set it empty to
+# disable the defaults). MSC4242 uses a room version not supported yet.
+SKIPPED_COMPLEMENT_TESTS="${SKIPPED_COMPLEMENT_TESTS-^TestMSC4242}"
 
 # Partial-state joins only exist with fast_joins, so TestPartialStateJoin cannot
 # pass without it; skip it rather than report its subtests as failures.
@@ -89,6 +88,11 @@ echo "Complement source commit: $SOURCE_COMMIT_SHORT ($SOURCE_COMMIT)"
 echo "Congruent source revision: $CONGRUENT_REVISION"
 echo "Complement test source commit: $COMPLEMENT_COMMIT"
 echo "Complement base image: $COMPLEMENT_BASE_IMAGE"
+if [ -n "${COMPLEMENT_MTXDB_HOST_DIR:-}" ]; then
+	echo "Complement mtxdb path: $COMPLEMENT_MTXDB_HOST_DIR/<container-hostname>/mtxdb (host; mounted at /mtxdb-host/<container-hostname>)"
+else
+	echo "Complement mtxdb path: /var/lib/continuwuity/<SERVER_NAME>/mtxdb (inside each homeserver container)"
+fi
 echo "Complement execution: dirty_runs=${COMPLEMENT_ENABLE_DIRTY_RUNS:-0}, host_cpus=$(nproc 2>/dev/null || echo unknown), go_p=${COMPLEMENT_PACKAGE_PARALLEL}, go_parallel=${COMPLEMENT_TEST_PARALLEL}"
 
 if [ "$RUN_TESTS" = "." ]; then
@@ -138,6 +142,24 @@ COMPLEMENT_WRAPPER_ENV_NAME="${COMPLEMENT_WRAPPER_ENV_PREFIX}COMPLEMENT_WRAPPER_
 printf -v "$COMPLEMENT_WRAPPER_ENV_NAME" '%s' "$COMPLEMENT_WRAPPER_TOKEN"
 declare -x "$COMPLEMENT_WRAPPER_ENV_NAME=$COMPLEMENT_WRAPPER_TOKEN"
 export COMPLEMENT_SHARE_ENV_PREFIX="$COMPLEMENT_WRAPPER_ENV_PREFIX"
+
+# Optionally keep mtxdb files outside disposable Complement containers. Each
+# homeserver gets a hostname-specific directory so its database stays isolated.
+if [ -n "${COMPLEMENT_MTXDB_HOST_DIR:-}" ]; then
+	mkdir -p "$COMPLEMENT_MTXDB_HOST_DIR"
+	COMPLEMENT_MTXDB_HOST_DIR="$(realpath -m "$COMPLEMENT_MTXDB_HOST_DIR")"
+	export COMPLEMENT_HOST_MOUNTS="${COMPLEMENT_HOST_MOUNTS:+$COMPLEMENT_HOST_MOUNTS;}$COMPLEMENT_MTXDB_HOST_DIR:/mtxdb-host"
+	for variable in CONDUWUIT_DATABASE_PATH CONDUWUIT_UID CONDUWUIT_GID; do
+		case "$variable" in
+			CONDUWUIT_DATABASE_PATH) value='/mtxdb-host/@HOSTNAME@' ;;
+			CONDUWUIT_UID) value="$(id -u)" ;;
+			CONDUWUIT_GID) value="$(id -g)" ;;
+		esac
+		propagated_name="${COMPLEMENT_WRAPPER_ENV_PREFIX}${variable}"
+		printf -v "$propagated_name" '%s' "$value"
+		declare -x "$propagated_name=$value"
+	done
+fi
 
 # Cleanup only Complement containers spawned by this wrapper run.
 cleanup_complement_containers() {

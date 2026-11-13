@@ -87,6 +87,7 @@ remote-debug-poc config="conduwuit-example.toml":
 
 # Run Complement tests (requires complement-src)
 # Usage: just complement TestName
+# Set COMPLEMENT_MTXDB_HOST_DIR=/path to keep each homeserver's mtxdb files on the host.
 complement args=".":
     #!/usr/bin/env bash
     set -euo pipefail

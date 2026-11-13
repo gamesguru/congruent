@@ -15,10 +15,11 @@ crate-type = [
 #	"dylib",
 ]
 
+# `log` is required by the `conduwuit_core` logging macros (`log::` paths).
 # `ctor` is used only via the `::ctor::ctor` paths emitted by
 # `conduwuit_macros::introspect_crate!`.
 [package.metadata.cargo-machete]
-ignored = ["const-str", "ctor"]
+ignored = ["const-str", "ctor", "log"]
 
 [features]
 direct_tls = [

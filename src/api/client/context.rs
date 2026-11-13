@@ -2,7 +2,6 @@ use conduwuit::{
 	Err, Event, PduEvent, Result, at, debug_warn, err, info, ref_at,
 	utils::{
 		IterStream,
-		future::TryExtExt,
 		stream::{BroadbandExt, ReadyExt, TryIgnore, WidebandExt},
 	},
 };
@@ -10,7 +9,7 @@ use conduwuit_core::matrix::pdu::TopoToken;
 use conduwuit_service::rooms::{lazy_loading, lazy_loading::Options, short::ShortStateKey};
 use futures::{
 	FutureExt, StreamExt, TryFutureExt, TryStreamExt,
-	future::{OptionFuture, join, join3, try_join3},
+	future::{OptionFuture, join, join3, try_join},
 };
 use slipstream::{
 	OwnedEventId, UserId, api::client::context::get_context, events::StateEventType,
@@ -75,7 +74,8 @@ pub(crate) async fn get_context_route(
 		.user_can_see_event(sender_user, room_id, event_id)
 		.map(Ok);
 
-	let (base_id, base_pdu, visible) = try_join3(base_id, base_pdu, visible).await?;
+	let base_pdu = base_pdu?;
+	let (base_id, visible) = try_join(base_id, visible).await?;
 
 	if base_pdu.room_id_or_hash().as_ref() != Some(room_id) || base_pdu.event_id != *event_id {
 		return Err!(Request(NotFound("Event not found.")));
@@ -230,7 +230,7 @@ pub(crate) async fn get_context_route(
 
 			Some(event_id)
 		})
-		.broad_filter_map(|event_id: &OwnedEventId| {
+		.broad_filter_map(|event_id: &OwnedEventId| async move {
 			services.rooms.timeline.get_pdu(event_id.as_ref()).ok()
 		})
 		.map(Event::into_format)

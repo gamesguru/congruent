@@ -240,7 +240,14 @@ async fn load_timeline(
 	}
 
 	// 6. Execute hotfix branch's Topo Sort for correct DAG traversal ordering
-	if !pdus.is_empty() {
+	//
+	// The spec says events in a sync response are ordered by their arrival time
+	// at the homeserver, and MSC4445 only permits topological ordering for
+	// initial sync and newly joined rooms (both of which have no
+	// `starting_count`). Do not re-sort an incremental batch: a late federated
+	// event which arrived after a local event would otherwise be moved ahead of
+	// it by the DAG/origin_server_ts tie-break, breaking arrival order.
+	if starting_count.is_none() && !pdus.is_empty() {
 		let mut event_to_count = std::collections::HashMap::new();
 		let events: Vec<_> = pdus
 			.into_iter()

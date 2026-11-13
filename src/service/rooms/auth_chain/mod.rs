@@ -1,16 +1,13 @@
 mod data;
 
-use std::{collections::HashSet, fmt::Debug, sync::Arc, time::Instant};
+use std::{fmt::Debug, sync::Arc, time::Instant};
 
 use conduwuit::{
-	Err, Result, debug, implement, info, trace,
-	utils::{
-		IterStream, MutexMap,
-		stream::{ReadyExt, TryBroadbandExt},
-	},
+	Result, debug, implement, info,
+	utils::{IterStream, MutexMap, stream::TryBroadbandExt},
 };
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
-use roaring::RoaringTreemap;
+use rezzy::bitmap::Bitmap64;
 use slipstream::{EventId, OwnedEventId, RoomId};
 
 use self::data::Data;
@@ -18,6 +15,24 @@ use crate::{
 	Dep, rooms,
 	rooms::short::{ShortEventId, ShortRoomId},
 };
+
+/// An auth chain and whether every reachable event has recorded auth edges.
+/// Partial chains are intended for diagnostics, not federation responses.
+#[derive(Debug)]
+pub struct AuthChain<T = Vec<ShortEventId>> {
+	pub ids: T,
+	pub complete: bool,
+}
+
+impl<T> AuthChain<T> {
+	/// Reject partial ancestry before exposing a federation response.
+	pub fn require_complete(self) -> Result<T> {
+		if !self.complete {
+			return Err(conduwuit::err!(Database("auth chain is incomplete")));
+		}
+		Ok(self.ids)
+	}
+}
 
 pub struct Service {
 	services: Services,
@@ -55,11 +70,12 @@ where
 	I: Iterator<Item = &'a EventId> + Clone + Debug + ExactSizeIterator + Send + 'a,
 {
 	self.get_auth_chain(room_id, starting_events)
-		.map_ok(|chain| {
-			self.services
+		.and_then(move |chain| async move {
+			let chain = chain.require_complete()?;
+			Ok(self
+				.services
 				.short
-				.multi_get_eventid_from_short(chain.into_iter().stream())
-				.ready_filter(Result::is_ok)
+				.multi_get_eventid_from_short(chain.into_iter().stream()))
 		})
 		.try_flatten_stream()
 }
@@ -69,89 +85,15 @@ pub async fn get_auth_chain<'a, I>(
 	&'a self,
 	room_id: &RoomId,
 	starting_events: I,
-) -> Result<Vec<ShortEventId>>
+) -> Result<AuthChain>
 where
 	I: Iterator<Item = &'a EventId> + Clone + Debug + ExactSizeIterator + Send + 'a,
 {
-	let started = Instant::now();
-	let shortroomid = self.services.short.get_shortroomid(room_id).await?;
-	let starting_ids: Vec<(ShortEventId, &EventId)> = self
-		.services
-		.short
-		.multi_get_or_create_shorteventid(starting_events.clone())
-		.zip(starting_events.stream())
-		.collect()
-		.await;
-
-	debug!(
-		starting_events = ?starting_ids.len(),
-		elapsed = ?started.elapsed(),
-		"start",
-	);
-
-	let mut full_auth_chain = RoaringTreemap::new();
-	let mut uncached = Vec::new();
-
-	// Parallel check for starting events already in cache
-	let cache_checks = starting_ids
-		.into_iter()
-		.try_stream::<conduwuit::Error>()
-		.broad_and_then(|(shortid, event_id)| async move {
-			let res = self
-				.get_cached_eventid_authchain(shortroomid, shortid)
-				.await;
-			Ok((shortid, event_id, res))
-		})
-		.try_collect::<Vec<_>>()
-		.await?;
-
-	for (shortid, event_id, cache_res) in cache_checks {
-		if let Ok(cached) = cache_res {
-			full_auth_chain |= cached.as_ref();
-			full_auth_chain.insert(shortid);
-		} else {
-			uncached.push((shortid, event_id));
-		}
-	}
-
-	// Sequential walk for uncached starting events
-	for (shortid, event_id) in uncached {
-		let _guard = self.mutex_fetch.lock(event_id).await;
-
-		// Re-check cache under lock in case a concurrent walk populated it
-		if let Ok(cached) = self
-			.get_cached_eventid_authchain(shortroomid, shortid)
-			.await
-		{
-			full_auth_chain |= cached.as_ref();
-			full_auth_chain.insert(shortid);
-			continue;
-		}
-
-		let (auth_chain, is_complete) = self
-			.get_auth_chain_inner(room_id, shortroomid, event_id, shortid)
-			.await?;
-		if is_complete {
-			self.cache_auth_chain_bitmap(shortroomid, shortid, &auth_chain);
-		}
-
-		full_auth_chain |= &auth_chain;
-		full_auth_chain.insert(shortid);
-	}
-
-	// Cached chains may predate the derived create event being recorded.
-	self.add_derived_create_event(room_id, None, &mut full_auth_chain)
-		.await;
-
-	let full_auth_chain: Vec<ShortEventId> = full_auth_chain.iter().collect();
-
-	info!(
-		chain_length = ?full_auth_chain.len(),
-		elapsed = ?started.elapsed(),
-		"done",
-	);
-
-	Ok(full_auth_chain)
+	let chain = self.get_auth_chain_bitmap(room_id, starting_events).await?;
+	Ok(AuthChain {
+		ids: chain.ids.iter().collect(),
+		complete: chain.complete,
+	})
 }
 
 #[implement(Service)]
@@ -159,7 +101,7 @@ pub async fn get_auth_chain_bitmap<'a, I>(
 	&'a self,
 	room_id: &RoomId,
 	starting_events: I,
-) -> Result<RoaringTreemap>
+) -> Result<AuthChain<Bitmap64>>
 where
 	I: Iterator<Item = &'a EventId> + Clone + Debug + ExactSizeIterator + Send + 'a,
 {
@@ -179,7 +121,8 @@ where
 		"start",
 	);
 
-	let mut full_auth_chain = RoaringTreemap::new();
+	let mut full_auth_chain = Bitmap64::new();
+	let mut complete = true;
 	let mut uncached = Vec::new();
 
 	// Parallel check for starting events already in cache
@@ -187,9 +130,15 @@ where
 		.into_iter()
 		.try_stream::<conduwuit::Error>()
 		.broad_and_then(|(shortid, event_id)| async move {
+			// Do not independently translate each cold persisted closure.
+			let key = [shortroomid, shortid];
 			let res = self
-				.get_cached_eventid_authchain(shortroomid, shortid)
-				.await;
+				.db
+				.auth_chain_cache
+				.lock()
+				.get_mut(key.as_slice())
+				.cloned()
+				.ok_or_else(|| conduwuit::err!(Request(NotFound("auth chain not in RAM"))));
 			Ok((shortid, event_id, res))
 		})
 		.try_collect::<Vec<_>>()
@@ -204,14 +153,29 @@ where
 		}
 	}
 
+	// Merge cold closures in room-local space before translating their union.
+	if uncached.len() > 1 {
+		if let Some(union) = self
+			.db
+			.get_cached_authchain_union(shortroomid, &uncached)
+			.await?
+		{
+			full_auth_chain |= union.as_ref();
+			for (id, _) in &uncached {
+				full_auth_chain.insert(*id);
+			}
+			uncached.clear();
+		}
+	}
+
 	// Sequential walk for uncached starting events
 	for (shortid, event_id) in uncached {
 		let _guard = self.mutex_fetch.lock(event_id).await;
 
 		// Re-check cache under lock in case a concurrent walk populated it
-		if let Ok(cached) = self
-			.get_cached_eventid_authchain(shortroomid, shortid)
-			.await
+		if let Some(cached) = self
+			.get_optional_cached_authchain(shortroomid, shortid)
+			.await?
 		{
 			full_auth_chain |= cached.as_ref();
 			full_auth_chain.insert(shortid);
@@ -221,6 +185,7 @@ where
 		let (auth_chain, is_complete) = self
 			.get_auth_chain_inner(room_id, shortroomid, event_id, shortid)
 			.await?;
+		complete &= is_complete;
 		if is_complete {
 			self.cache_auth_chain_bitmap(shortroomid, shortid, &auth_chain);
 		}
@@ -230,7 +195,8 @@ where
 	}
 
 	// Cached chains may predate the derived create event being recorded.
-	self.add_derived_create_event(room_id, None, &mut full_auth_chain)
+	complete &= self
+		.add_derived_create_event(room_id, None, &mut full_auth_chain)
 		.await;
 
 	info!(
@@ -239,7 +205,7 @@ where
 		"done",
 	);
 
-	Ok(full_auth_chain)
+	Ok(AuthChain { ids: full_auth_chain, complete })
 }
 
 #[implement(Service)]
@@ -249,9 +215,9 @@ async fn get_auth_chain_inner(
 	shortroomid: ShortRoomId,
 	event_id: &EventId,
 	shortid: ShortEventId,
-) -> Result<(RoaringTreemap, bool)> {
-	let mut todo = vec![(shortid, event_id.to_owned())];
-	let mut found = RoaringTreemap::new();
+) -> Result<(Bitmap64, bool)> {
+	let mut todo = vec![shortid];
+	let mut found = Bitmap64::new();
 	let mut is_complete = true;
 
 	let started = Instant::now();
@@ -264,26 +230,23 @@ async fn get_auth_chain_inner(
 		}
 
 		let current_batch = std::mem::take(&mut todo);
-		let (short_ids, event_ids): (Vec<_>, Vec<_>) = current_batch.into_iter().unzip();
-
 		let mut next_short_ids = Vec::new();
-		let mut missing_events = Vec::new();
 
 		let batch_results: Vec<_> = self
 			.services
 			.timeline
-			.multi_get_shortauthevents(futures::stream::iter(short_ids.clone()))
+			.multi_get_shortauthevents(futures::stream::iter(current_batch))
 			.collect()
 			.await;
 
-		for (idx, (res, _short_id)) in batch_results.into_iter().zip(short_ids).enumerate() {
+		for res in batch_results {
 			match res {
 				| Ok(auth_shorts) =>
 					for auth_short in auth_shorts {
 						if found.insert(auth_short) {
-							if let Ok(cached) = self
-								.get_cached_eventid_authchain(shortroomid, auth_short)
-								.await
+							if let Some(cached) = self
+								.get_optional_cached_authchain(shortroomid, auth_short)
+								.await?
 							{
 								found |= cached.as_ref();
 							} else {
@@ -291,103 +254,18 @@ async fn get_auth_chain_inner(
 							}
 						}
 					},
-				| Err(_) => {
-					missing_events.push(event_ids[idx].clone());
-				},
-			}
-		}
-
-		if !next_short_ids.is_empty() {
-			let resolved_events: Vec<_> = futures::stream::iter(next_short_ids.clone())
-				.zip(
-					self.services
-						.short
-						.multi_get_eventid_from_short::<OwnedEventId, _>(futures::stream::iter(
-							next_short_ids,
-						)),
-				)
-				.collect()
-				.await;
-
-			for (auth_short, res) in resolved_events {
-				if let Ok(auth_event_id) = res {
-					todo.push((auth_short, auth_event_id));
-				} else {
+				| Err(error) if error.is_not_found() => {
+					// Auth edges come only from mtxdb. A missing locator or edge row
+					// means the offline import was incomplete; never reconstruct the
+					// walk from legacy PDU data.
+					debug!(%room_id, ?error, "Could not read mtxdb auth edges; marking auth chain as incomplete");
 					is_complete = false;
-				}
+				},
+				| Err(error) => return Err(error),
 			}
 		}
 
-		if !missing_events.is_empty() {
-			let results: Vec<_> = missing_events
-				.into_iter()
-				.try_stream::<conduwuit::Error>()
-				.broad_and_then(|missing_event_id| async move {
-					trace!(%missing_event_id, "processing legacy auth event");
-
-					let pdu_result = self
-						.services
-						.timeline
-						.get_pdu_in_room(Some(room_id), &missing_event_id)
-						.await;
-
-					Ok((missing_event_id, pdu_result))
-				})
-				.try_collect()
-				.await?;
-
-			let mut new_auth_events = HashSet::new();
-			for (missing_event_id, pdu_result) in results {
-				match pdu_result {
-					| Err(e) => {
-						info!(%missing_event_id, ?e, "Could not find pdu mentioned in auth events; marking chain as incomplete");
-						is_complete = false;
-					},
-					| Ok(pdu) => {
-						if let Some(claimed_room_id) = pdu.room_id.clone() {
-							if claimed_room_id != *room_id {
-								return Err!(Request(Forbidden(error!(
-									%missing_event_id,
-									%room_id,
-									wrong_room_id = ?pdu.room_id.unwrap(),
-									"auth event for incorrect room"
-								))));
-							}
-						}
-
-						for auth_event in &pdu.auth_events {
-							new_auth_events.insert(auth_event.clone());
-						}
-					},
-				}
-			}
-
-			let new_auth_events: Vec<_> = new_auth_events.into_iter().collect();
-			if new_auth_events.is_empty() {
-				continue;
-			}
-
-			let mut legacy_short_ids = self
-				.services
-				.short
-				.multi_get_or_create_shorteventid(new_auth_events.iter())
-				.zip(futures::stream::iter(new_auth_events.clone()))
-				.boxed();
-
-			while let Some((sauthevent, auth_event)) = legacy_short_ids.next().await {
-				if found.insert(sauthevent) {
-					if let Ok(cached) = self
-						.get_cached_eventid_authchain(shortroomid, sauthevent)
-						.await
-					{
-						found |= cached.as_ref();
-					} else {
-						trace!(?auth_event, "adding legacy auth event to processing queue");
-						todo.push((sauthevent, auth_event));
-					}
-				}
-			}
-		}
+		todo.extend(next_short_ids);
 	}
 
 	if !self
@@ -412,7 +290,7 @@ async fn add_derived_create_event(
 	&self,
 	room_id: &RoomId,
 	exclude: Option<&EventId>,
-	chain: &mut RoaringTreemap,
+	chain: &mut Bitmap64,
 ) -> bool {
 	let Some(room_id_without_sigil) = room_id.as_str().strip_prefix('!') else {
 		return true;
@@ -431,7 +309,6 @@ async fn add_derived_create_event(
 		.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), &create_id)
-		.await
 		.is_err()
 	{
 		return false;
@@ -447,9 +324,35 @@ pub async fn get_cached_eventid_authchain(
 	&self,
 	shortroomid: ShortRoomId,
 	shorteventid: ShortEventId,
-) -> Result<Arc<RoaringTreemap>> {
+) -> Result<Arc<Bitmap64>> {
 	self.db
 		.get_cached_eventid_authchain(shortroomid, shorteventid)
+		.await
+}
+
+/// A missing closure permits an edge walk; a failed storage read does not.
+#[implement(Service)]
+async fn get_optional_cached_authchain(
+	&self,
+	room: ShortRoomId,
+	event: ShortEventId,
+) -> Result<Option<Arc<Bitmap64>>> {
+	match self.get_cached_eventid_authchain(room, event).await {
+		| Ok(chain) => Ok(Some(chain)),
+		| Err(error) if error.is_not_found() => Ok(None),
+		| Err(error) => Err(error),
+	}
+}
+
+/// Reload the persisted closure for an event, replacing any RAM entry.
+#[implement(Service)]
+pub async fn reload_persisted_eventid_authchain(
+	&self,
+	shortroomid: ShortRoomId,
+	shorteventid: ShortEventId,
+) -> Result<Arc<Bitmap64>> {
+	self.db
+		.load_persisted_authchain(shortroomid, shorteventid)
 		.await
 }
 
@@ -458,7 +361,7 @@ pub fn cache_auth_chain_bitmap(
 	&self,
 	shortroomid: ShortRoomId,
 	shorteventid: ShortEventId,
-	auth_chain: &RoaringTreemap,
+	auth_chain: &Bitmap64,
 ) {
 	self.db
 		.cache_auth_chain(shortroomid, shorteventid, Arc::new(auth_chain.clone()));
@@ -476,3 +379,6 @@ pub fn clear_cache(&self) { self.db.auth_chain_cache.lock().clear(); }
 
 #[implement(Service)]
 pub async fn clear_db_cache(&self) { self.db.clear_db_cache().await; }
+
+#[cfg(test)]
+mod tests;

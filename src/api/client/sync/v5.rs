@@ -1844,7 +1844,7 @@ async fn collect_required_state(
 					let keys: Vec<conduwuit::matrix::StateKey> = services
 						.rooms
 						.state_accessor
-						.state_keys_with_ids_hamt::<OwnedEventId>(
+						.state_keys_with_ids_hamt(
 							room_id,
 							current_root_handle.clone(),
 							event_type,
@@ -2225,7 +2225,7 @@ where
 							continue;
 						}
 
-						let Ok(pdu) = services.rooms.timeline.get_pdu(&id).await else {
+						let Ok(pdu) = services.rooms.timeline.get_pdu(&id) else {
 							error!("Pdu in state not found: {id}");
 							continue;
 						};

@@ -7,10 +7,15 @@ license.workspace = true
 repository.workspace = true
 version.workspace = true
 
+# `log` is required by the `conduwuit_core` logging macros, which expand to `log::` paths.
+[package.metadata.cargo-machete]
+ignored = ["log"]
+
 [dependencies]
+conduwuit-core.workspace = true
+log.workspace = true
 mtxdb.workspace = true
 rezzy.workspace = true
-sha2.workspace = true
 
 [lints]
 workspace = true

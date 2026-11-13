@@ -213,7 +213,7 @@ async fn receipt_event_is_in_thread(
 			return event_id == thread_root || hops > 0;
 		}
 
-		let Ok(pdu) = services.rooms.timeline.get_pdu(&current).await else {
+		let Ok(pdu) = services.rooms.timeline.get_pdu(&current) else {
 			return false;
 		};
 		// `m.relates_to` is required for a thread relation.
@@ -254,7 +254,6 @@ async fn update_read_receipt(
 		.rooms
 		.timeline
 		.get_pdu_in_room(Some(room_id), event_id)
-		.await
 		.map_err(|_| conduwuit::err!(Request(NotFound("Event not found in room."))))?;
 	let new_count = services
 		.rooms
@@ -346,7 +345,6 @@ async fn update_private_read_receipt(
 		.rooms
 		.timeline
 		.get_pdu_in_room(Some(room_id), event_id)
-		.await
 		.map_err(|_| conduwuit::err!(Request(NotFound("Event not found in room."))))?;
 	let count = services
 		.rooms

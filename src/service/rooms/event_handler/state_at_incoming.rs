@@ -32,7 +32,6 @@ where
 		.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), prev_event)
-		.await
 	else {
 		debug!("prev_event {prev_event} not found locally; falling back to fetch_state");
 		return Ok(None);
@@ -76,7 +75,6 @@ where
 			.services
 			.timeline
 			.get_pdu_in_room(Some(room_id), &parent)
-			.await
 		else {
 			return Ok(None);
 		};
@@ -125,15 +123,22 @@ where
 		.prev_events()
 		.try_stream()
 		.broad_and_then(|prev_eventid| {
-			self.services
-				.timeline
-				.get_pdu_in_room(Some(room_id), prev_eventid)
-				.and_then(move |prev_event| async move {
-					if prev_event.room_id() != Some(room_id) {
-						return Err(err!(Database("prev_event is not in the same room")));
-					}
-					Ok((prev_eventid, prev_event))
-				})
+			let timeline = self.services.timeline.clone();
+			let runtime = self.services.server.runtime().clone();
+			let lookup_room_id = room_id.to_owned();
+			async move {
+				let lookup_id = prev_eventid.clone();
+				let prev_event = runtime
+					.spawn_blocking(move || {
+						timeline.get_pdu_in_room(Some(&lookup_room_id), &lookup_id)
+					})
+					.await
+					.map_err(|e| err!(Database("blocking prev_event lookup failed: {e}")))??;
+				if prev_event.room_id() != Some(room_id) {
+					return Err(err!(Database("prev_event is not in the same room")));
+				}
+				Ok((prev_eventid, prev_event))
+			}
 		})
 		.broad_and_then(|(prev_eventid, prev_event)| {
 			self.services
@@ -300,16 +305,15 @@ where
 {
 	let Ok(extremity_roothandles) = prev_events
 		.try_stream()
-		.broad_and_then(|prev_eventid| {
-			self.services
+		.broad_and_then(|prev_eventid| async move {
+			let prev_event = self
+				.services
 				.timeline
-				.get_pdu_in_room(Some(room_id), prev_eventid)
-				.and_then(move |prev_event| async move {
-					if prev_event.room_id() != Some(room_id) {
-						return Err(err!(Database("prev_event is not in the same room")));
-					}
-					Ok((prev_eventid, prev_event))
-				})
+				.get_pdu_in_room(Some(room_id), prev_eventid)?;
+			if prev_event.room_id() != Some(room_id) {
+				return Err(err!(Database("prev_event is not in the same room")));
+			}
+			Ok((prev_eventid, prev_event))
 		})
 		.broad_and_then(|(prev_eventid, prev_event)| {
 			self.services
@@ -346,22 +350,17 @@ where
 	let mut entries = Vec::with_capacity(new_state.len());
 	for ((ty, sk), id) in &new_state {
 		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
-
-		let shortstatekey = self
-			.services
-			.short
-			.get_or_create_shortstatekey(ty, sk)
-			.await;
-		let shorteventid = self.services.short.get_or_create_shorteventid(id).await;
-		entries.push((shortstatekey, shorteventid));
+		entries.push((
+			crate::rooms::state_hamt::hamt_key(ty, sk),
+			self.services
+				.state_hamt
+				.leaf_value_in(room_version_id, id.as_str())?,
+		));
 	}
 
-	let structural_key = crate::rooms::state_hamt::room_structural_key(
-		&self.services.globals.server_secret,
-		room_id,
-	);
+	let structural_key = crate::rooms::state_hamt::room_structural_key(room_id);
 	let (root_handle, root_node) =
-		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+		crate::rooms::state_hamt::build_root(&structural_key, &lattice, entries)
 			.map_err(|e| err!("Failed to build HAMT root: {e:?}"))?;
 
 	self.services
@@ -408,12 +407,7 @@ where
 			continue;
 		}
 
-		let Ok(prev_event) = self
-			.services
-			.timeline
-			.get_pdu_in_room(Some(room_id), prev)
-			.await
-		else {
+		let Ok(prev_event) = self.services.timeline.get_pdu_in_room(Some(room_id), prev) else {
 			return Ok(None);
 		};
 		let Ok(root_handle) = self

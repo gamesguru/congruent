@@ -162,10 +162,11 @@ pub async fn get_summary_and_children_local(
 	}
 
 	let children_pdus: Vec<_> = self
-		.get_space_child_events(current_room)
+		.get_space_child_events_ordered(current_room)
+		.await
+		.into_iter()
 		.map(Event::into_format)
-		.collect()
-		.await;
+		.collect();
 
 	let Ok(summary) = self
 		.get_room_summary(current_room, children_pdus, identifier)
@@ -195,10 +196,11 @@ async fn get_summary_and_children_local_fallback(
 	identifier: &Identifier<'_>,
 ) -> Result<Option<SummaryAccessibility>> {
 	let children_pdus: Vec<_> = self
-		.get_space_child_events(current_room)
+		.get_space_child_events_ordered(current_room)
+		.await
+		.into_iter()
 		.map(Event::into_format)
-		.collect()
-		.await;
+		.collect();
 
 	let Ok(summary) = self
 		.get_room_summary(current_room, children_pdus, identifier)
@@ -321,13 +323,11 @@ fn get_space_child_events<'a>(
 				.await
 		})
 		.map_ok(|current_root_handle| {
-			self.services
-				.state_accessor
-				.state_keys_with_ids_hamt::<OwnedEventId>(
-					room_id,
-					current_root_handle,
-					&StateEventType::SpaceChild,
-				)
+			self.services.state_accessor.state_keys_with_ids_hamt(
+				room_id,
+				current_root_handle,
+				&StateEventType::SpaceChild,
+			)
 		})
 		.map(Result::into_iter)
 		.map(IterStream::stream)
@@ -337,9 +337,8 @@ fn get_space_child_events<'a>(
 			self.services
 				.timeline
 				.get_pdu(&event_id)
-				.map_ok(move |pdu| (state_key, pdu))
+				.map(move |pdu| (state_key, pdu))
 				.ok()
-				.await
 		})
 		.ready_filter_map(move |(state_key, pdu)| {
 			if let Ok(content) = pdu.get_content::<SpaceChildEventContent>() {
@@ -356,6 +355,45 @@ fn get_space_child_events<'a>(
 
 			Some(pdu)
 		})
+}
+
+/// The stripped m.space.child events of a room in the spec's child order: by
+/// `order`, then `origin_server_ts`, then room ID. State iteration order is
+/// not insertion order, so `children_state` must never be built unsorted.
+#[implement(Service)]
+async fn get_space_child_events_ordered(&self, room_id: &RoomId) -> Vec<PduEvent> {
+	let mut children: Vec<(Option<String>, PduEvent)> = self
+		.get_space_child_events(room_id)
+		.map(|pdu| {
+			let order = pdu
+				.get_content::<SpaceChildEventContent>()
+				.ok()
+				.and_then(|content| content.order.as_deref().map(str::to_owned));
+			(order, pdu)
+		})
+		.collect()
+		.await;
+	children.sort_by(|(order_a, a), (order_b, b)| {
+		compare_children(
+			&(order_a.as_deref(), a.origin_server_ts(), a.state_key().unwrap_or_default()),
+			&(order_b.as_deref(), b.origin_server_ts(), b.state_key().unwrap_or_default()),
+		)
+	});
+	children.into_iter().map(|(_, pdu)| pdu).collect()
+}
+
+/// The spec's child ordering, as (`order`, `origin_server_ts`, room ID): a
+/// valid `order` sorts first, lexicographically; the rest follow by timestamp,
+/// and ties break on room ID.
+fn compare_children<T: Ord>(
+	a: &(Option<&str>, T, &str),
+	b: &(Option<&str>, T, &str),
+) -> std::cmp::Ordering {
+	a.0.is_none()
+		.cmp(&b.0.is_none())
+		.then_with(|| a.0.unwrap_or_default().cmp(b.0.unwrap_or_default()))
+		.then_with(|| a.1.cmp(&b.1))
+		.then_with(|| a.2.cmp(b.2))
 }
 
 /// Gets the summary of a space using either local or remote (federation)
@@ -650,20 +688,11 @@ pub fn get_parent_children_via(
 		.filter(|ce| !suggested_only || ce.content.suggested)
 		.collect();
 
-	children.sort_by(|a, b| match (a.content.order.as_deref(), b.content.order.as_deref()) {
-		| (Some(order_a), Some(order_b)) => match order_a.cmp(order_b) {
-			| std::cmp::Ordering::Equal => match a.origin_server_ts.cmp(&b.origin_server_ts) {
-				| std::cmp::Ordering::Equal => a.state_key.cmp(&b.state_key),
-				| ordering => ordering,
-			},
-			| ordering => ordering,
-		},
-		| (Some(_), None) => std::cmp::Ordering::Less,
-		| (None, Some(_)) => std::cmp::Ordering::Greater,
-		| (None, None) => match a.origin_server_ts.cmp(&b.origin_server_ts) {
-			| std::cmp::Ordering::Equal => a.state_key.cmp(&b.state_key),
-			| ordering => ordering,
-		},
+	children.sort_by(|a, b| {
+		compare_children(
+			&(a.content.order.as_deref(), a.origin_server_ts, a.state_key.as_str()),
+			&(b.content.order.as_deref(), b.origin_server_ts, b.state_key.as_str()),
+		)
 	});
 
 	children
@@ -707,10 +736,11 @@ async fn cache_insert(
 		allowed_room_ids,
 		room_id: room_id.clone(),
 		children_state: self
-			.get_space_child_events(&room_id)
+			.get_space_child_events_ordered(&room_id)
+			.await
+			.into_iter()
 			.map(Event::into_format)
-			.collect()
-			.await,
+			.collect(),
 		encryption,
 		room_version,
 	};

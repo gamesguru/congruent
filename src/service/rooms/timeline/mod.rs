@@ -18,6 +18,7 @@ mod redact;
 pub mod reindex;
 mod reorder;
 mod repair_unsigned;
+pub(crate) mod retry;
 
 use std::{fmt::Write, ops::Bound, sync::Arc};
 
@@ -37,7 +38,7 @@ use conduwuit_core::{
 		event::Event,
 		pdu::{PduCount, PduEvent},
 	},
-	utils::{MutexMap, MutexMapGuard, future::TryExtExt, stream::TryIgnore},
+	utils::{MutexMap, MutexMapGuard, stream::TryIgnore},
 };
 use futures::{Future, Stream, StreamExt, TryStreamExt, pin_mut};
 use slipstream::{
@@ -47,6 +48,11 @@ use slipstream::{
 	events::{GlobalAccountDataEventType, push_rules::PushRulesEvent, room::encrypted::Relation},
 	json::Value,
 };
+
+/// Number of `StaleRead` conflicts the timeline retry policy has absorbed since
+/// startup. Exhausted conflicts are not counted; they are returned to callers.
+#[must_use]
+pub fn stale_read_retries() -> u64 { retry::retry_count() }
 
 // Update Relationships
 struct ExtractRelatesTo {
@@ -148,6 +154,7 @@ use crate::{
 /// Expiry makes a late `room_diff` fail and the initiator retry; it never makes
 /// a sketch wrong.
 const ADVERTISED_FRAME_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Upper bound on remembered `(room, frame)` pairs.
 const ADVERTISED_FRAMES_MAX: u64 = 4096;
 /// Total events across cached reconciliation snapshots.
@@ -231,7 +238,6 @@ struct Services {
 	users: Dep<users::Service>,
 	pusher: Dep<pusher::Service>,
 	threads: Dep<rooms::threads::Service>,
-	search: Dep<rooms::search::Service>,
 	spaces: Dep<rooms::spaces::Service>,
 	state_hamt: Dep<rooms::state_hamt::Service>,
 	event_handler: Dep<rooms::event_handler::Service>,
@@ -281,7 +287,6 @@ impl crate::Service for Service {
 				users: args.depend::<users::Service>("users"),
 				pusher: args.depend::<pusher::Service>("pusher"),
 				threads: args.depend::<rooms::threads::Service>("rooms::threads"),
-				search: args.depend::<rooms::search::Service>("rooms::search"),
 				spaces: args.depend::<rooms::spaces::Service>("rooms::spaces"),
 				outlier: args.depend::<rooms::outlier::Service>("rooms::outlier"),
 				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
@@ -341,24 +346,6 @@ impl Service {
 					&& verified_from == from
 					&& verified_limit >= scan_limit
 			})
-	}
-
-	/// Index a PDU's body for full-text search if it's a RoomMessage.
-	/// Encapsulates the pattern duplicated across append, backfill, and heal.
-	pub(super) fn index_pdu_search(
-		&self,
-		shortroomid: ShortRoomId,
-		pdu_id: &RawPduId,
-		pdu: &PduEvent,
-	) {
-		use slipstream::events::TimelineEventType;
-		if pdu.kind == TimelineEventType::RoomMessage {
-			if let Ok(content) = pdu.get_content::<ExtractBody>() {
-				if let Some(body) = &content.body {
-					self.services.search.index_pdu(shortroomid, pdu_id, body);
-				}
-			}
-		}
 	}
 
 	pub fn db_batch(&self) -> database::Batch<'_> { self.db.db_batch() }
@@ -431,13 +418,13 @@ impl Service {
 	}
 
 	/// Returns the json of a pdu.
-	pub async fn get_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
-		self.db.get_pdu_json(event_id).await
+	pub fn get_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
+		self.db.get_pdu_json(event_id)
 	}
 
 	#[inline]
-	pub async fn get_outlier_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
-		self.db.get_outlier_pdu_json(event_id).await
+	pub fn get_outlier_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
+		self.db.get_outlier_pdu_json(event_id)
 	}
 
 	#[inline]
@@ -585,8 +572,8 @@ impl Service {
 	}
 
 	#[inline]
-	pub async fn get_pdu_outlier(&self, event_id: &EventId) -> Result<PduEvent> {
-		self.services.outlier.get_pdu_outlier(event_id).await
+	pub fn get_pdu_outlier(&self, event_id: &EventId) -> Result<PduEvent> {
+		self.services.outlier.get_pdu_outlier(event_id)
 	}
 
 	#[inline]
@@ -669,20 +656,32 @@ impl Service {
 	///
 	/// Checks the `eventid_outlierpdu` Tree if not found in the timeline.
 	#[inline]
-	pub async fn get_pdu(&self, event_id: &EventId) -> Result<PduEvent> {
-		self.db.get_pdu_in_room(None, event_id).await
+	pub fn get_pdu(&self, event_id: &EventId) -> Result<PduEvent> {
+		self.db.get_pdu_in_room(None, event_id)
 	}
 
 	/// Returns the pdu, populating room_id.
 	///
 	/// Checks the `eventid_outlierpdu` Tree if not found in the timeline.
 	#[inline]
-	pub async fn get_pdu_in_room(
+	pub fn get_pdu_in_room(
 		&self,
 		room_id: Option<&RoomId>,
 		event_id: &EventId,
 	) -> Result<PduEvent> {
-		self.db.get_pdu_in_room(room_id, event_id).await
+		self.db.get_pdu_in_room(room_id, event_id)
+	}
+
+	/// Preload events reachable through the auth chains of the supplied PDUs.
+	/// Used by room-version 12 state resolution to avoid serial reads on deep
+	/// chains.
+	#[inline]
+	pub fn get_mtxdb_auth_context(
+		&self,
+		room_id: &RoomId,
+		starting_events: &[OwnedEventId],
+	) -> Result<Vec<PduEvent>> {
+		self.db.get_mtxdb_auth_context(room_id, starting_events)
 	}
 
 	/// Returns the pdu.
@@ -793,7 +792,7 @@ impl Service {
 		&'a self,
 		event_id: &'a EventId,
 	) -> impl Future<Output = bool> + Send + 'a {
-		self.db.pdu_exists(event_id).is_ok()
+		std::future::ready(self.db.pdu_exists(event_id).is_ok())
 	}
 
 	/// Removes a pdu and creates a new one with the same id.
@@ -931,6 +930,25 @@ impl Service {
 		I: Stream<Item = ShortEventId> + Send + 'a,
 	{
 		self.db.multi_get_shortauthevents(shorteventids)
+	}
+
+	/// Persist a verified batch of a room's events and edges in one mtxdb
+	/// transaction.
+	pub async fn write_events_to_mtxdb(
+		&self,
+		room_id: &RoomId,
+		events: &[(&PduEvent, &CanonicalJsonObject)],
+	) -> Result {
+		self.db.write_events_to_mtxdb(room_id, events).await
+	}
+
+	/// Which of `event_ids` already have a stored body in this room.
+	pub fn event_ids_present(
+		&self,
+		room_id: &RoomId,
+		event_ids: &[OwnedEventId],
+	) -> Result<Vec<bool>> {
+		self.db.event_ids_present(room_id, event_ids)
 	}
 }
 

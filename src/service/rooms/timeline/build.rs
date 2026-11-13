@@ -35,9 +35,30 @@ pub async fn build_and_append_pdu(
 	room_id: Option<&RoomId>,
 	state_lock: &RoomMutexGuard,
 ) -> Result<OwnedEventId> {
+	self.build_and_append_pdu_tracked(pdu_builder, sender, room_id, state_lock, None)
+		.boxed()
+		.await
+}
+
+/// Build and append a PDU while exposing its ID as soon as it has been
+/// constructed. Retrying callers can persist this ID and determine whether a
+/// later error happened before or after the timeline append.
+#[implement(super::Service)]
+pub async fn build_and_append_pdu_tracked(
+	&self,
+	pdu_builder: PduBuilder,
+	sender: &UserId,
+	room_id: Option<&RoomId>,
+	state_lock: &RoomMutexGuard,
+	pending: Option<&mut Option<OwnedEventId>>,
+) -> Result<OwnedEventId> {
 	let (pdu, pdu_json) = self
 		.create_hash_and_sign_event(pdu_builder, sender, room_id, state_lock)
 		.await?;
+
+	if let Some(slot) = pending {
+		*slot = Some(pdu.event_id().to_owned());
+	}
 
 	let room_id = room_id.map_or_else(
 		|| pdu.room_id_or_hash().expect("built PDU has a room ID"),
@@ -92,6 +113,12 @@ pub async fn build_and_append_pdu(
 			.short
 			.get_or_create_shortroomid(&room_id)
 			.await;
+		// Persist the create event and its room-version record together before
+		// state insertion needs to resolve the room version. Take the insert lock
+		// for the write: it updates the room-global auth-closure collection, and
+		// same-room appends must be serialized before that compare-and-swap.
+		let _insert_lock = self.mutex_insert.lock(&room_id).await;
+		self.db.write_event_to_mtxdb(&pdu, &pdu_json).await?;
 	}
 
 	let previous_root_handle = self.services.state.get_room_state_hamt(&room_id).await.ok();
@@ -133,6 +160,7 @@ pub async fn build_and_append_pdu(
 				prev_state_root_handle: previous_root_handle,
 				advance_current_state: false,
 				was_joined_before_state_install: None,
+				mtxdb_prewritten: *pdu.kind() == TimelineEventType::RoomCreate,
 			},
 		)
 		.boxed()
@@ -164,7 +192,8 @@ pub async fn build_and_append_pdu(
 	if !crate::rooms::state::is_state_event(&pdu) {
 		self.services
 			.state
-			.set_room_state_hamt(&room_id, &state_root_handle, state_lock)?;
+			.set_room_state_hamt(&room_id, &state_root_handle, state_lock)
+			.await?;
 	}
 
 	let mut servers: HashSet<OwnedServerName> = self

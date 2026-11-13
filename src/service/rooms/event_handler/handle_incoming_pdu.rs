@@ -20,7 +20,10 @@ use slipstream::{
 };
 
 use super::handle_outlier_pdu::AuthRecoveryStage;
-use crate::rooms::timeline::{RawPduId, pdu_fits};
+use crate::rooms::{
+	pdu_metadata::RejectionCode,
+	timeline::{RawPduId, pdu_fits},
+};
 
 /// [`super::fetch_prev`]'s full return tuple, threaded from the
 /// `MissingAuthEvents` retry path (which fetches this event's own
@@ -182,10 +185,27 @@ pub async fn handle_incoming_pdu<'a>(
 			// referencing it as a prev_event have something to build on.
 			// Do NOT mark it soft-failed — it didn't fail auth, it just
 			// ran out of time. It can be retried or upgraded later.
-			self.services
-				.outlier
-				.add_pdu_outlier(event_id, &outlier_value, Some(room_id))
-				.await;
+			//
+			// The body is pre-persisted without an auth check, so mark it with
+			// a retryable rejection first: a later delivery must re-run auth
+			// instead of trusting the stored body as "already known".
+			let pending_recorded = match self
+				.services
+				.pdu_metadata
+				.mark_event_rejected(event_id, RejectionCode::MissingAuthEvent.tag())
+			{
+				| Ok(()) => true,
+				| Err(error) => {
+					warn!(%error, %event_id, "failed to record pending rejection verdict; not storing outlier");
+					false
+				},
+			};
+			if pending_recorded {
+				self.services
+					.outlier
+					.add_pdu_outlier(event_id, &outlier_value, Some(room_id))
+					.await;
+			}
 
 			Err!(Request(Unknown("PDU processing timed out, please retry later.")))
 		},
@@ -211,20 +231,8 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 
 	// NATIVE RETRY INTERCEPTION: If it's a known outlier that was rejected, check
 	// local auth.
-	if is_timeline_event
-		&& self
-			.services
-			.outlier
-			.get_pdu_outlier(event_id)
-			.await
-			.is_ok()
-	{
-		let pdu = self
-			.services
-			.outlier
-			.get_pdu_outlier(event_id)
-			.await
-			.unwrap();
+	if is_timeline_event && self.services.outlier.get_pdu_outlier(event_id).is_ok() {
+		let pdu = self.services.outlier.get_pdu_outlier(event_id).unwrap();
 		let is_accepted = self.services.pdu_metadata.is_event_accepted(event_id)?;
 		let is_rejected = self.services.pdu_metadata.is_event_rejected(event_id)?;
 		info!(
@@ -271,7 +279,6 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					.services
 					.outlier
 					.get_outlier_pdu_json(event_id)
-					.await
 					.unwrap_or_else(|_| value.clone());
 				return Box::pin(self.process_timeline_upgrade(
 					pdu,
@@ -460,6 +467,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 		value.clone(),
 		false,
 		false,
+		false,
 		room_version,
 		first_stage,
 	))
@@ -501,8 +509,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 						.await;
 					self.services.pdu_metadata.mark_event_rejected(
 						event_id,
-						&crate::rooms::pdu_metadata::RejectionCode::DependsOnRejectedAuthEvent
-							.with_detail(mid),
+						&RejectionCode::DependsOnRejectedAuthEvent.with_detail(mid),
 					)?;
 					return Ok(None);
 				}
@@ -654,6 +661,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 						value,
 						false,
 						false,
+						false,
 						&room_version_id,
 						AuthRecoveryStage::AfterStateIds,
 					))
@@ -671,6 +679,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					event_id,
 					room_id,
 					value.clone(),
+					false,
 					false,
 					false,
 					room_version,
@@ -737,8 +746,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			if msg.contains("Event depends on rejected auth event") {
 				self.services.pdu_metadata.mark_event_rejected(
 					event_id,
-					&crate::rooms::pdu_metadata::RejectionCode::DependsOnRejectedAuthEvent
-						.with_detail(msg),
+					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(msg),
 				)?;
 			}
 			return Ok(None);
@@ -832,7 +840,7 @@ pub async fn process_timeline_upgrade(
 			.await;
 		self.services.pdu_metadata.mark_event_rejected(
 			&event_id,
-			&crate::rooms::pdu_metadata::RejectionCode::StructurallyInvalidInGetMissingEvents
+			&RejectionCode::StructurallyInvalidInGetMissingEvents
 				.with_detail("prev_event contained structurally invalid data"),
 		)?;
 		return Err(err!(Request(InvalidParam(
@@ -867,6 +875,7 @@ pub async fn process_timeline_upgrade(
 					prev_id,
 					room_id,
 					val,
+					false,
 					false,
 					false,
 					&room_version_id,

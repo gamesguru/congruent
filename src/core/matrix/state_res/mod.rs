@@ -724,7 +724,7 @@ where
 	Id: Clone + Eq + Hash + Send + Sync + 'a,
 	Hasher: BuildHasher + Send + Sync,
 {
-	use roaring::RoaringBitmap;
+	use rezzy::bitmap::Bitmap;
 
 	if auth_chain_sets.len() == 2 {
 		let diff: Vec<Id> = auth_chain_sets[0]
@@ -745,12 +745,12 @@ where
 		}
 	}
 
-	let mut union = RoaringBitmap::new();
-	let mut intersection = RoaringBitmap::new();
+	let mut union = Bitmap::new();
+	let mut intersection = Bitmap::new();
 	let mut first = true;
 
 	for set in auth_chain_sets {
-		let mut bitmap = RoaringBitmap::new();
+		let mut bitmap = Bitmap::new();
 		for id in set {
 			if let Some(&idx) = id_to_index.get(id) {
 				bitmap.insert(idx);
@@ -762,7 +762,7 @@ where
 			first = false;
 		} else {
 			union |= &bitmap;
-			intersection &= bitmap;
+			intersection &= &bitmap;
 		}
 	}
 

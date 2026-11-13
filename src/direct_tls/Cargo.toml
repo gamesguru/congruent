@@ -8,6 +8,10 @@ version = "0.5.10"
 [lib]
 path = "lib.rs"
 
+# `log` is required by the `conduwuit_core` logging macros, which expand to `log::` paths.
+[package.metadata.cargo-machete]
+ignored = ["log"]
+
 [dependencies]
 async-fs = "2.2.0"
 async-net = "2.0.0"

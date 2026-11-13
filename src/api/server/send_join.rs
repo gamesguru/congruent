@@ -125,19 +125,13 @@ async fn create_join_event(
 	.await?;
 
 	trace!("Fetching current state IDs");
-	// Resolve short event IDs in batches rather than one lookup per state
-	// event; any traversal or lookup failure aborts the join response.
-	let short_event_ids: Vec<_> = services
-		.rooms
-		.state_accessor
-		.state_full_shortids_hamt(room_id, root_handle.clone())
-		.map_ok(at!(1))
-		.try_collect()
-		.await?;
+	// The HAMT leaves hold the event IDs; any traversal failure aborts the
+	// join response.
 	let state_ids: Vec<OwnedEventId> = services
 		.rooms
-		.short
-		.multi_get_eventid_from_short::<OwnedEventId, _>(short_event_ids.into_iter().stream())
+		.state_accessor
+		.state_full_entries_hamt(room_id, root_handle.clone())
+		.map_ok(at!(1))
 		.try_collect()
 		.await?;
 
@@ -175,15 +169,20 @@ async fn create_join_event(
 		.try_stream::<conduwuit::Error>()
 		.broad_filter_map(|event_id| {
 			let heroes = &heroes;
+			let timeline = services.rooms.timeline.clone();
+			let runtime = services.server.runtime().clone();
+			let room_id = room_id.to_owned();
 			async move {
 				if omit_members {
 					if let Ok(e) = event_id.as_ref() {
-						let pdu = services
-							.rooms
-							.timeline
-							.get_pdu_in_room(Some(room_id), e)
+						let lookup_id: OwnedEventId = (*e).clone();
+						let lookup_room_id = room_id.clone();
+						let pdu = runtime
+							.spawn_blocking(move || {
+								timeline.get_pdu_in_room(Some(&lookup_room_id), &lookup_id)
+							})
 							.await;
-						if let Ok(p) = pdu {
+						if let Ok(Ok(p)) = pdu {
 							if p.kind().to_cow_str() == "m.room.member"
 								&& !p.state_key().is_some_and(|sk| heroes.contains(sk))
 							{
@@ -203,7 +202,17 @@ async fn create_join_event(
 	let state = retained_state_ids
 		.iter()
 		.try_stream()
-		.broad_and_then(|event_id| services.rooms.timeline.get_pdu_json(event_id))
+		.and_then(|event_id| {
+			let timeline = services.rooms.timeline.clone();
+			let runtime = services.server.runtime().clone();
+			let event_id = event_id.clone();
+			async move {
+				runtime
+					.spawn_blocking(move || timeline.get_pdu_json(&event_id))
+					.await
+					.map_err(|e| err!(Database("blocking PDU lookup failed: {e}")))?
+			}
+		})
 		.broad_and_then(|pdu| {
 			services
 				.sending
@@ -235,8 +244,15 @@ async fn create_join_event(
 				}
 			}
 		})
-		.broad_and_then(|event_id| async move {
-			services.rooms.timeline.get_pdu_json(&event_id).await
+		.broad_and_then(|event_id| {
+			let timeline = services.rooms.timeline.clone();
+			let runtime = services.server.runtime().clone();
+			async move {
+				runtime
+					.spawn_blocking(move || timeline.get_pdu_json(&event_id))
+					.await
+					.map_err(|e| err!(Database("blocking PDU lookup failed: {e}")))?
+			}
 		})
 		.broad_and_then(|pdu| {
 			services

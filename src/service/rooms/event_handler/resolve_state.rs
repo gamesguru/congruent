@@ -1,17 +1,18 @@
 use std::{collections::HashMap, sync::Arc};
 
 use conduwuit::{
-	Error, Result, err, implement,
+	Error, Result, debug, err, implement,
 	state_res::StateMap,
 	trace,
 	utils::stream::{IterStream, ReadyExt, WidebandExt},
 	warn,
 };
+use conduwuit_mtxdb::lattice::LatticeDelta;
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use parking_lot::RwLock;
 use slipstream::{OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
 
-use crate::rooms::short::{ShortEventId, ShortStateKey};
+use crate::rooms::state_hamt::{StateHamtKey, StateHamtValue, hamt_key};
 
 /// Pre-loaded event cache to avoid per-event RocksDB lookups during
 /// state resolution. Populated once at the start of bulk operations
@@ -113,44 +114,77 @@ pub async fn resolve_state(
 	// for deciding which leaves actually changed.
 	let previous_statemap = &forkstates[0];
 
-	let mut lattice = rezzy::incremental::LtHash::default();
 	// Only the changed leaves become mutations, so this stays proportional to
-	// the state delta rather than the state size.
-	let mut mutations: Vec<(ShortStateKey, Option<ShortEventId>)> = Vec::new();
+	// the state delta rather than the state size. The same changes become the
+	// lattice delta used to avoid writing a full checkpoint on every event.
+	let mut mutations: Vec<(StateHamtKey, Option<StateHamtValue>)> = Vec::new();
+	let mut deltas: Vec<LatticeDelta> = Vec::new();
 
 	for ((ty, sk), id) in &state {
-		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
-
-		let shortstatekey = self
-			.services
-			.short
-			.get_or_create_shortstatekey(ty, sk)
-			.await;
-		let shorteventid = self.services.short.get_or_create_shorteventid(id).await;
-
-		if previous_statemap.get(&(ty.clone(), sk.clone())) != Some(id) {
-			mutations.push((shortstatekey, Some(shorteventid)));
+		let previous = previous_statemap.get(&(ty.clone(), sk.clone()));
+		if previous == Some(id) {
+			continue;
 		}
+
+		if let Some(previous_id) = previous {
+			deltas.push(LatticeDelta::Remove {
+				event_type: ty.to_string(),
+				state_key: sk.to_string(),
+				event_id: previous_id.to_string(),
+			});
+		}
+		deltas.push(LatticeDelta::Insert {
+			event_type: ty.to_string(),
+			state_key: sk.to_string(),
+			event_id: id.to_string(),
+		});
+		let value = self
+			.services
+			.state_hamt
+			.leaf_value_in(room_version_id, id.as_str())?;
+		mutations.push((hamt_key(ty, sk), Some(value)));
 	}
 
 	// Resolution picks a winner per `(type, state_key)` from the union of the
 	// forks, so it should not drop a key the previous root carried. Handle it
 	// anyway rather than silently leaving a stale leaf behind.
-	for (ty, sk) in previous_statemap.keys() {
+	for ((ty, sk), previous_id) in previous_statemap {
 		if !state.contains_key(&(ty.clone(), sk.clone())) {
-			let shortstatekey = self
-				.services
-				.short
-				.get_or_create_shortstatekey(ty, sk)
-				.await;
-			mutations.push((shortstatekey, None));
+			mutations.push((hamt_key(ty, sk), None));
+			deltas.push(LatticeDelta::Remove {
+				event_type: ty.to_string(),
+				state_key: sk.to_string(),
+				event_id: previous_id.to_string(),
+			});
 		}
 	}
 
-	let structural_key = crate::rooms::state_hamt::room_structural_key(
-		&self.services.globals.server_secret,
-		room_id,
-	);
+	let structural_key = crate::rooms::state_hamt::room_structural_key(room_id);
+
+	// Start from the current root's lattice and apply only the changed entries.
+	// Re-hashing the full resolved state would make every state event O(S) even
+	// though the tree mutation itself is only O(D log32 S).
+	let base_lattice = self
+		.services
+		.state
+		.get_root_lattice(&current_root_handle)
+		.await;
+	let lattice = match base_lattice {
+		| Some(mut lattice) => {
+			for delta in &deltas {
+				delta.apply(&mut lattice);
+			}
+			lattice
+		},
+		| None => {
+			// No usable base lattice: rebuild from the resolved state.
+			let mut lattice = rezzy::incremental::LtHash::default();
+			for ((ty, sk), id) in &state {
+				lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
+			}
+			lattice
+		},
+	};
 
 	// Copy-on-write from the current root: only the changed spines are written.
 	// Materializing the whole tree here would rewrite every node on every
@@ -162,6 +196,7 @@ pub async fn resolve_state(
 			&current_root_handle,
 			mutations,
 			&lattice,
+			&deltas,
 		)
 	})
 }
@@ -210,6 +245,35 @@ where
 	let timeline = &self.services.timeline;
 	let prefetch_cache_ref = prefetch_cache;
 	let meta = &self.services.pdu_metadata;
+	let prefetched_auth_context: HashMap<OwnedEventId, conduwuit_core::PduEvent> = if matches!(
+		version,
+		rezzy::StateResVersion::V2_1
+			| rezzy::StateResVersion::V2_1_1
+			| rezzy::StateResVersion::V2_2
+	) {
+		let starting_events: Vec<OwnedEventId> = lean_state_sets
+			.iter()
+			.flat_map(rezzy::PersistentOrdMap::values)
+			.filter_map(|event_id| OwnedEventId::parse(event_id.as_str()).ok())
+			.collect();
+		match timeline.get_mtxdb_auth_context(room_id, &starting_events) {
+			| Ok(events) => events
+				.into_iter()
+				.map(|event| (event.event_id.clone(), event))
+				.collect(),
+			| Err(error) => {
+				debug!(
+					%error,
+					room_id = %room_id,
+					"Failed to preload mtxdb auth context; using event-by-event lookup"
+				);
+				HashMap::new()
+			},
+		}
+	} else {
+		HashMap::new()
+	};
+	let prefetched_auth_context_ref = &prefetched_auth_context;
 	let fetch_pdu = move |eid: &OwnedEventId| -> Option<conduwuit_core::PduEvent> {
 		// This synchronous provider may block only on database-pool I/O. The
 		// prefetch cache uses a synchronous lock so cache hits never depend on
@@ -223,49 +287,49 @@ where
 					}
 				}
 
-				if let Ok(mut pdu) = timeline.get_pdu_in_room(Some(room_id), eid).await {
-					let rejected = match meta.is_event_rejected(&pdu.event_id) {
-						| Ok(rejected) => rejected,
-						| Err(error) => {
-							warn!(
-								%error,
-								event_id = %pdu.event_id,
-								"state_res: failed to read rejection flag; treating event as unavailable"
-							);
-							return None;
-						},
-					};
-					if rejected {
-						// An auth failure is a verdict about the event; keep it, like
-						// Synapse does, and keep the event out of resolved state.
-						// Rejections of another kind on a timeline event are stale.
-						// If the reason can't be read, keep the rejection.
-						let auth_failed =
-							meta.get_rejection_reason(&pdu.event_id)
-								.map_or(true, |reason| {
-									reason.is_some_and(|reason| {
-										reason
-										== crate::rooms::pdu_metadata::RejectionCode::AuthCheckFailed
-											.tag()
-									})
-								});
-						if !auth_failed && timeline.non_outlier_pdu_exists(&pdu.event_id).await {
-							warn!(
-								event_id = %pdu.event_id,
-								"state_res: clearing stale rejection flag on timeline event"
-							);
-							if let Err(error) = meta.unmark_event_rejected(&pdu.event_id) {
-								warn!(%error, event_id = %pdu.event_id, "state_res: failed to clear stale rejection flag");
-							}
-							pdu.rejected = false;
-						} else {
-							pdu.rejected = true;
+				let mut pdu = prefetched_auth_context_ref
+					.get(eid)
+					.cloned()
+					.or_else(|| timeline.get_pdu_in_room(Some(room_id), eid).ok())?;
+				let rejected = match meta.is_event_rejected(&pdu.event_id) {
+					| Ok(rejected) => rejected,
+					| Err(error) => {
+						warn!(
+							%error,
+							event_id = %pdu.event_id,
+							"state_res: failed to read rejection flag; treating event as unavailable"
+						);
+						return None;
+					},
+				};
+				if rejected {
+					// An auth failure is a verdict about the event; keep it, like
+					// Synapse does, and keep the event out of resolved state.
+					// Rejections of another kind on a timeline event are stale.
+					// If the reason can't be read, keep the rejection.
+					let auth_failed =
+						meta.get_rejection_reason(&pdu.event_id)
+							.map_or(true, |reason| {
+								reason.is_some_and(|reason| {
+									reason
+									== crate::rooms::pdu_metadata::RejectionCode::AuthCheckFailed
+										.tag()
+								})
+							});
+					if !auth_failed && timeline.non_outlier_pdu_exists(&pdu.event_id).await {
+						warn!(
+							event_id = %pdu.event_id,
+							"state_res: clearing stale rejection flag on timeline event"
+						);
+						if let Err(error) = meta.unmark_event_rejected(&pdu.event_id) {
+							warn!(%error, event_id = %pdu.event_id, "state_res: failed to clear stale rejection flag");
 						}
+						pdu.rejected = false;
+					} else {
+						pdu.rejected = true;
 					}
-					Some(pdu)
-				} else {
-					None
 				}
+				Some(pdu)
 			})
 		};
 
@@ -287,28 +351,17 @@ where
 	) {
 		// V2.1+ subgraph computation needs full auth chain visibility.
 		// Build event context by BFS-walking auth chains from all fork state events.
-		let mut ctx: HashMap<String, rezzy::LeanEvent<String, rezzy::JsonValue>> = HashMap::new();
-		let mut q: std::collections::VecDeque<String> = lean_state_sets
-			.iter()
-			.flat_map(|ss| ss.values().cloned())
-			.collect();
-		while let Some(eid) = q.pop_front() {
-			if ctx.contains_key(&eid) {
-				continue;
-			}
-			let ev = <_ as rezzy::basespec::rezzy_types::EventProvider<
-				String,
-				rezzy::JsonValue,
-			>>::get_event(&provider, &eid);
-			if let Some(ev) = ev {
-				for aid in &ev.auth_events {
-					if !ctx.contains_key(aid) {
-						q.push_back(aid.clone());
-					}
-				}
-				ctx.insert(eid, ev.clone());
-			}
-		}
+		let ctx = collect_auth_context(
+			lean_state_sets.iter().flat_map(|ss| ss.values().cloned()),
+			|eid| {
+				<_ as rezzy::basespec::rezzy_types::EventProvider<
+				String, rezzy::JsonValue,
+			>>::get_event(&provider, eid).cloned()
+			},
+		)
+		.inspect_err(|error| {
+			warn!(%room_id, %error, "State resolution requires a complete auth context");
+		})?;
 		rezzy::resolve::multi::resolve_state_maps(&lean_state_sets, &ctx, version)
 	} else {
 		// V2 and below: lazy BFS is sufficient.
@@ -331,6 +384,33 @@ where
 	}
 
 	Ok(resolved)
+}
+
+// Shared by the V2.1+ production path and its missing-ancestry regressions.
+fn collect_auth_context<I, F>(
+	starting: I,
+	mut fetch: F,
+) -> Result<HashMap<String, rezzy::LeanEvent<String, rezzy::JsonValue>>>
+where
+	I: IntoIterator<Item = String>,
+	F: FnMut(&String) -> Option<rezzy::LeanEvent<String, rezzy::JsonValue>>,
+{
+	let mut context = HashMap::new();
+	let mut queue: std::collections::VecDeque<String> = starting.into_iter().collect();
+	while let Some(id) = queue.pop_front() {
+		if context.contains_key(&id) {
+			continue;
+		}
+		let event = fetch(&id)
+			.ok_or_else(|| err!(Database("State resolution auth context is incomplete: {id}")))?;
+		for parent in &event.auth_events {
+			if !context.contains_key(parent) {
+				queue.push_back(parent.clone());
+			}
+		}
+		context.insert(id, event);
+	}
+	Ok(context)
 }
 
 fn sender_power_level_from_auth<F>(
@@ -476,5 +556,58 @@ fn pdu_to_lean(
 		depth: pdu.depth,
 		rejected: pdu.rejected,
 		..Default::default()
+	}
+}
+
+#[cfg(test)]
+mod auth_context_tests {
+	use super::*;
+
+	fn event(id: &str, parents: &[&str]) -> rezzy::LeanEvent<String, rezzy::JsonValue> {
+		rezzy::LeanEvent {
+			event_id: id.to_owned(),
+			auth_events: parents.iter().map(|id| (*id).to_owned()).collect(),
+			..Default::default()
+		}
+	}
+
+	#[test]
+	fn missing_transitive_ancestor_errors_with_all_starting_bodies_present() {
+		let events = HashMap::from([
+			("left".to_owned(), event("left", &["parent"])),
+			("right".to_owned(), event("right", &["parent"])),
+			("parent".to_owned(), event("parent", &["missing"])),
+		]);
+		let error = collect_auth_context(["left".to_owned(), "right".to_owned()], |id| {
+			events.get(id).cloned()
+		})
+		.unwrap_err();
+		assert!(error.to_string().contains("missing"));
+	}
+
+	#[test]
+	fn missing_starting_event_returns_error_instead_of_reaching_resolver() {
+		collect_auth_context(["missing".to_owned()], |_| None)
+			.map(|_| ())
+			.unwrap_err();
+	}
+
+	#[test]
+	fn shared_ancestors_and_duplicate_roots_are_fetched_once() {
+		let events = HashMap::from([
+			("left".to_owned(), event("left", &["parent", "root"])),
+			("right".to_owned(), event("right", &["parent"])),
+			("parent".to_owned(), event("parent", &["root"])),
+			("root".to_owned(), event("root", &[])),
+		]);
+		let mut reads = HashMap::<String, usize>::new();
+		let context = collect_auth_context(["left", "right", "left"].map(str::to_owned), |id| {
+			*reads.entry(id.clone()).or_default() += 1;
+			events.get(id).cloned()
+		})
+		.unwrap();
+		assert_eq!(context.len(), events.len());
+		assert!(reads.values().all(|count| *count == 1));
+		rezzy::auth::roaring::AuthGraph::try_build(&context).unwrap();
 	}
 }

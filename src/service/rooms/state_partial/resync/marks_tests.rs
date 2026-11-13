@@ -202,6 +202,11 @@ async fn install_refuses_and_keeps_the_mark_for_an_event_outside_the_window() {
 	let partial = &services.rooms.state_partial;
 	let room = &room_id!("!a:test.conduwuit.local");
 	let late = &event_id!("$late:test.conduwuit.local");
+	services
+		.rooms
+		.short
+		.set_room_version(room, &slipstream::RoomVersionId::V11)
+		.expect("room version must be persisted");
 
 	// Accepted after the walk: deeper than the anchor and not in the window.
 	let pdu = pdu_at_depth(room, late, 9);
@@ -213,9 +218,16 @@ async fn install_refuses_and_keeps_the_mark_for_an_event_outside_the_window() {
 		.await
 		.unwrap();
 	partial.mark_pending_event(room, late);
+	let expected_extremities = partial.sorted_extremities(room).await;
 
 	let installed = partial
-		.install_current_state(room, HashMap::default(), Some(3), &HashSet::new(), &[])
+		.install_current_state(
+			room,
+			HashMap::default(),
+			Some(3),
+			&HashSet::new(),
+			&expected_extremities,
+		)
 		.await
 		.unwrap();
 

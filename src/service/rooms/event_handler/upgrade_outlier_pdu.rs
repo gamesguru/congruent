@@ -244,7 +244,12 @@ where
 	let partial_auth_events: Vec<PduEvent> = if partial_room {
 		let mut v = Vec::new();
 		for id in incoming_pdu.auth_events() {
-			if let Ok(pdu) = self.services.timeline.get_pdu(id).await {
+			if let Ok(pdu) = self.services.timeline.get_pdu(id) {
+				// A rejected (including pre-persisted/pending) event has no
+				// validated auth verdict and must not be trusted as auth context.
+				if self.services.pdu_metadata.is_event_rejected(id)? {
+					continue;
+				}
 				v.push(pdu);
 			}
 		}
@@ -274,7 +279,7 @@ where
 		let from_state = async {
 			let shortstatekey = self.services.short.get_shortstatekey(&k, &s).await.ok()?;
 			let event_id = state_fetch_state.get(&shortstatekey)?;
-			self.services.timeline.get_pdu(event_id).await.ok()
+			self.services.timeline.get_pdu(event_id).ok()
 		}
 		.await;
 		from_state.or_else(|| {
@@ -403,7 +408,7 @@ where
 				// TODO: If pending-redaction tracking is added, bound its per-room
 				// entries and age. The current path stores no additional pending index;
 				// the bound is needed for the future target-to-redaction lookup.
-				self.services.timeline.get_pdu(&redact_id).await.is_ok()
+				self.services.timeline.get_pdu(&redact_id).is_ok()
 					&& !self
 						.services
 						.state_accessor
@@ -616,6 +621,7 @@ where
 					|| predecessors_were_recovered)
 				&& new_room_state.is_some(),
 			was_joined_before_state_install: None,
+			mtxdb_prewritten: false,
 		};
 
 		Box::pin(self.services.timeline.append_incoming_pdu(
@@ -629,9 +635,11 @@ where
 		.await?;
 
 		// Soft fail, we keep the event as an outlier but don't add it to the timeline
-		self.services.pdu_metadata.mark_event_soft_failed(
+		let arrival = self.services.globals.next_count()?;
+		self.services.pdu_metadata.mark_event_soft_failed_at(
 			incoming_pdu.event_id(),
 			crate::rooms::pdu_metadata::SoftFailCode::AuthCheckFailed,
+			arrival,
 		)?;
 
 		warn!(
@@ -691,6 +699,7 @@ where
 				|| predecessors_were_recovered)
 			&& new_room_state.is_some(),
 		was_joined_before_state_install: None,
+		mtxdb_prewritten: false,
 	};
 
 	let pdu_id = Box::pin(self.services.timeline.append_incoming_pdu(
@@ -741,7 +750,6 @@ async fn reusable_predecessor_root_handle(
 		.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), prev_event)
-		.await
 	{
 		| Ok(pdu) => pdu,
 		| Err(e) if e.is_not_found() => return Ok(None),
@@ -804,18 +812,15 @@ pub async fn state_map_to_root_handle(
 		.collect()
 		.await;
 
-	for ((shortstatekey, event_id), key_result) in
-		short_state_keys.into_iter().zip(event_ids).zip(string_keys)
-	{
-		let event_id = event_id.as_ref();
-		let shorteventid = self
-			.services
-			.short
-			.get_or_create_shorteventid(event_id)
-			.await;
-		entries.push((shortstatekey, shorteventid));
-
+	for (event_id, key_result) in event_ids.into_iter().zip(string_keys) {
+		let event_id: &slipstream::EventId = event_id.as_ref();
 		if let Ok((event_type, state_key)) = key_result {
+			entries.push((
+				crate::rooms::state_hamt::hamt_key(&event_type, &state_key),
+				self.services
+					.state_hamt
+					.leaf_value(room_id, event_id.as_str())?,
+			));
 			lattice.insert(
 				event_type.to_string().as_str(),
 				state_key.as_str(),
@@ -824,12 +829,9 @@ pub async fn state_map_to_root_handle(
 		}
 	}
 
-	let structural_key = crate::rooms::state_hamt::room_structural_key(
-		&self.services.globals.server_secret,
-		room_id,
-	);
+	let structural_key = crate::rooms::state_hamt::room_structural_key(room_id);
 	let (root_handle, root_node) =
-		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+		crate::rooms::state_hamt::build_root(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
 
 	let nodes = self

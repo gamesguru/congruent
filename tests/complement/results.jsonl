@@ -92,6 +92,13 @@
 {"Action":"pass","Test":"TestDeactivateAccount/Can_deactivate_account"}
 {"Action":"pass","Test":"TestDeactivateAccount/Password_flow_is_available"}
 {"Action":"pass","Test":"TestDelayedEvents"}
+{"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay"}
+{"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay/missing_content"}
+{"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay/missing_delay_ms"}
+{"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay/negative_delay_ms"}
+{"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay/non-integer_delay_ms"}
+{"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay/string_delay_ms"}
+{"Action":"pass","Test":"TestDelayedEvents/cannot_schedule_a_delayed_event_without_a_positive_delay/zero_delay_ms"}
 {"Action":"pass","Test":"TestDelayedEvents/cannot_update_a_delayed_event_with_an_invalid_action"}
 {"Action":"pass","Test":"TestDelayedEvents/cannot_update_a_delayed_event_without_an_action"}
 {"Action":"pass","Test":"TestDelayedEvents/delayed_event_lookups_are_authenticated"}
@@ -152,9 +159,14 @@
 {"Action":"pass","Test":"TestEventRelationships"}
 {"Action":"pass","Test":"TestFederatedClientSpaces"}
 {"Action":"pass","Test":"TestFederatedEventRelationships"}
+{"Action":"pass","Test":"TestFederationBackfillAheadOfStaleCursor"}
+{"Action":"pass","Test":"TestFederationBackfilledHistoryReachableFromPrevBatch"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery/Can_claim_remote_one_time_key_using_POST"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery/Can_query_remote_device_keys_using_POST"}
+{"Action":"pass","Test":"TestFederationLateEventSyncBatchOrder"}
+{"Action":"pass","Test":"TestFederationLateSameDepthEventPagination"}
+{"Action":"pass","Test":"TestFederationMessagesDoesNotBackfillNewerGaps"}
 {"Action":"pass","Test":"TestFederationRedactSendsWithoutEvent"}
 {"Action":"pass","Test":"TestFederationRejectInvite"}
 {"Action":"pass","Test":"TestFederationRoomsInvite"}
@@ -683,6 +695,7 @@
 {"Action":"pass","Test":"TestMessagesPaginationStress/TokenStability/limit=100"}
 {"Action":"pass","Test":"TestMessagesPaginationStress/TokenStability/limit=25"}
 {"Action":"pass","Test":"TestMessagesPaginationStress/TokenStability/limit=5"}
+{"Action":"pass","Test":"TestMissingStateEventUnavailableDoesNotAcceptEvent"}
 {"Action":"pass","Test":"TestNetworkPartitionOrdering"}
 {"Action":"pass","Test":"TestNotPresentUserCannotBanOthers"}
 {"Action":"pass","Test":"TestOlderLeftRoomsNotInLeaveSection"}

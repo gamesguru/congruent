@@ -217,7 +217,7 @@ pub async fn create_event(
 			.iter()
 			.stream()
 			.map(Ok)
-			.and_then(|event_id| self.get_pdu(event_id))
+			.map(|event_id| event_id.and_then(|event_id| self.get_pdu(event_id)))
 			.and_then(|pdu| future::ok(pdu.depth))
 			.ignore_err()
 			.ready_fold(uint!(0), cmp::max)
@@ -334,7 +334,6 @@ pub async fn create_event(
 			.ok_or_else(|| err!(Request(Forbidden("Event has no room_id"))))?;
 		pdu.room_id = Some(internal_room_id);
 	}
-
 	Ok((pdu, pdu_json))
 }
 

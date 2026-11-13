@@ -100,18 +100,13 @@ This entry is historical. Current `reorder_timeline` does not call
 `eventid_metadata.deprecated_local_topo_depth`; the PDU store and event JSON are
 untouched.
 
-### 10. Search Inverted Index (LOW by default, HIGH with `--force-reindex`)
+### 10. Search Inverted Index (removed in v28)
 
-The search index (`tokenids`) is keyed by PDU id (shortroomid + shorteventid,
-where shorteventid is the stream PDU count). The default reorder preserves PDU
-counts, so entries stay valid. `--force-reindex` renumbers counts and does NOT
-rebuild the search index.
-
-**Effect**: full-text search may return stale/missing results after
-`--force-reindex`.
-
-**Mitigation**: Rebuild search (`reindex-short` or the reindex path) after a
-`--force-reindex` run. Not automated by the reorder command itself.
+Historically search used the `tokenids` inverted index, keyed by PDU id
+(shortroomid + shorteventid, where shorteventid is the stream PDU count). That
+map is retired in v28: search now scans the room's event bodies directly, so
+reordering or renumbering PDU counts cannot leave stale search entries behind.
+This section is kept for the historical migration notes only.
 
 ## Related: Membership Semantics Difference vs Synapse
 
@@ -131,8 +126,9 @@ should track both transitions for full compatibility.
 
 1. **Always tell clients to re-sync** after reorder (already done)
 2. **Run `repair-unsigned`** after reorder to fix `prev_content` metadata
-3. **Rebuild the timestamp and search indexes** after a `--force-reindex` run
-   (the default path preserves PDU counts and needs neither)
+3. **Rebuild the timestamp index** after a `--force-reindex` run (the default
+   path preserves PDU counts and needs no rebuild; search no longer has an
+   index to rebuild)
 4. **Run `audit-membership`** to verify state consistency
 5. **Future**: Add a `yolo audit-state-snapshots` command to detect timeline PDUs
    missing `pdu_shortstatehash` entries

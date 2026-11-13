@@ -1,3 +1,24 @@
+###############################
+Tue 2026/10/27
+###############################
+
+That report matches what I found, so there's nothing new to act on. I also cut off my last message mid-sentence. The status in it was right, and the rest is below.
+
+Settled
+- Policy-server signatures stay outside event-signature verification. They have no valid_until_ts and no effect on late or corroboration accounting.
+- The required signers are the origin plus the restricted-join authorizer. Both Synapse and Continuwuity enforce that.
+- The importer's whole-event "late" label is safe. Tracking corroboration per signer would be more precise, but it affects at most 11 events here and isn't blocking.
+
+Still open
+1. The base64 decision for the 18 events, which needs the eventid_rejections lookup.
+2. A real-server open test of the migrated DB.
+3. The read-only strings check of the source DB for servernamekeyid_response, in case there is key history the exporter hasn't read.
+4. The per-signer corroboration change, if you want it.
+5. The tally tests for the cascade and fallback rejection codes.
+6. The uncommitted one-word test rename in export_import.rs, plus pushing the unpushed commits.
+
+Tell me which of these to start on. I'd take the strings check first, because it's read-only and could turn up recoverable key history for the 109 events on keys that always fail.
+
 
 ###############################
 Wed 2026/10/07

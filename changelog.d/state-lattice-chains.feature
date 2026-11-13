@@ -1,0 +1,1 @@
+Store room state lattices as a 500-hop checkpoint chain instead of writing the full 2 KiB lattice on every state event. This removes the live-path redb lattice mirror write, keeps storage linear, and verifies replayed lattices against the root's state-group id.

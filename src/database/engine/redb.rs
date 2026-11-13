@@ -33,15 +33,26 @@ pub struct RedbEngine {
 	stats: CommitStats,
 }
 
-/// Write-path counters, logged when the engine is dropped. Totals over the
+/// Logical access counters, logged when the engine is dropped. Totals over the
 /// engine's lifetime; commit time is summed across threads, not wall-clock.
 #[derive(Default)]
 struct CommitStats {
+	reads: AtomicU64,
 	commits: AtomicU64,
 	operations: AtomicU64,
 	corked_commits: AtomicU64,
 	commit_nanos: AtomicU64,
 	max_commit_nanos: AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StatsSnapshot {
+	/// Logical metadata read accessor calls.
+	pub reads: u64,
+	/// Commit attempts.
+	pub commits: u64,
+	/// Logical insert/remove operations submitted to commits.
+	pub write_operations: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +96,14 @@ impl RedbEngine {
 		self.commit(operations)
 	}
 
+	pub(crate) fn stats_snapshot(&self) -> StatsSnapshot {
+		StatsSnapshot {
+			reads: self.stats.reads.load(Ordering::Relaxed),
+			commits: self.stats.commits.load(Ordering::Relaxed),
+			write_operations: self.stats.operations.load(Ordering::Relaxed),
+		}
+	}
+
 	pub(crate) fn flush(&self) -> Result<()> {
 		let _ = Arc::strong_count(&self.db);
 		Ok(())
@@ -113,6 +132,7 @@ impl RedbEngine {
 	/// Whether the map holds any rows. Maps are only prefixes of one shared
 	/// table, so an empty one is indistinguishable from one that never existed.
 	pub fn cf_exists(&self, name: &str) -> bool {
+		self.stats.reads.fetch_add(1, Ordering::Relaxed);
 		let prefix = composite_key(name, &[]);
 		let upper = prefix_end(&prefix);
 		let Ok(transaction) = self.db.begin_read() else {
@@ -255,6 +275,7 @@ impl RedbEngine {
 	}
 
 	pub(crate) fn get(&self, map_name: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+		self.stats.reads.fetch_add(1, Ordering::Relaxed);
 		let transaction = self
 			.db
 			.begin_read()
@@ -282,6 +303,7 @@ impl RedbEngine {
 		upper: Option<&[u8]>,
 		strip: usize,
 	) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+		self.stats.reads.fetch_add(1, Ordering::Relaxed);
 		let transaction = self
 			.db
 			.begin_read()
@@ -302,6 +324,33 @@ impl RedbEngine {
 			entries.push((key.value()[strip..].to_vec(), value.value().to_vec()));
 		}
 		Ok(entries)
+	}
+
+	/// Whether `map_name` has no rows, reading only the first row.
+	pub(crate) fn is_empty(&self, map_name: &str) -> Result<bool> {
+		self.stats.reads.fetch_add(1, Ordering::Relaxed);
+		let prefix = composite_key(map_name, &[]);
+		let end = prefix_end(&prefix);
+		let transaction = self
+			.db
+			.begin_read()
+			.map_err(|error| err!(Database("failed to begin redb read: {error}")))?;
+		let table = transaction
+			.open_table(TABLE)
+			.map_err(|error| err!(Database("failed to open redb metadata table: {error}")))?;
+		let mut iter = match end {
+			| Some(end) => table.range::<&[u8]>(prefix.as_slice()..end.as_slice()),
+			| None => table.range::<&[u8]>(prefix.as_slice()..),
+		}
+		.map_err(|error| err!(Database("failed to iterate redb metadata: {error}")))?;
+
+		match iter.next() {
+			| Some(item) => {
+				item.map_err(|error| err!(Database("failed to read redb metadata: {error}")))?;
+				Ok(false)
+			},
+			| None => Ok(true),
+		}
 	}
 
 	/// Entries of `map_name` whose key starts with `prefix`, in key order,
@@ -365,14 +414,16 @@ impl RedbEngine {
 	/// call repeatedly; counters are cumulative and never reset.
 	pub(crate) fn log_stats(&self) {
 		let stats = &self.stats;
+		let reads = stats.reads.load(Ordering::Relaxed);
 		let commits = stats.commits.load(Ordering::Relaxed);
 		let operations = stats.operations.load(Ordering::Relaxed);
 		let corked = stats.corked_commits.load(Ordering::Relaxed);
 		let total_ms = stats.commit_nanos.load(Ordering::Relaxed) / 1_000_000;
 		let max_ms = stats.max_commit_nanos.load(Ordering::Relaxed) / 1_000_000;
 		conduwuit::info!(
-			"redb write stats (lifetime totals): commits={commits} operations={operations} \
-			 corked_commits={corked} commit_ms_total={total_ms} commit_ms_max={max_ms}"
+			"redb stats (lifetime totals): reads={reads} commits={commits} \
+			 write_operations={operations} corked_commits={corked} commit_ms_total={total_ms} \
+			 commit_ms_max={max_ms}"
 		);
 	}
 }

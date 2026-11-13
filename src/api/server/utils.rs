@@ -408,7 +408,7 @@ pub(super) async fn state_ids_at_event(
 		.try_collect()
 		.await?;
 
-	if let Ok(pdu) = services.rooms.timeline.get_pdu(event_id).await {
+	if let Ok(pdu) = services.rooms.timeline.get_pdu(event_id) {
 		if let Some(state_key) = pdu.state_key.as_deref() {
 			let ssk = services
 				.rooms

@@ -1,5 +1,5 @@
-use conduwuit::{Event, Result};
-use futures::StreamExt;
+use conduwuit::{Event, Result, err};
+use futures::TryStreamExt;
 use slipstream::{OwnedEventId, api::federation::event::event_relationships};
 
 use super::AccessCheck;
@@ -58,23 +58,26 @@ pub(crate) async fn get_event_relationships_route(
 				.rooms
 				.auth_chain
 				.event_ids_iter(&room_id, std::iter::once(pdu.event_id()))
-				.filter_map(|r| async move { r.ok() })
-				.collect()
-				.await;
+				.try_collect()
+				.await?;
 			auth_chain_ids.extend(chain);
 		}
 	}
 
 	let mut auth_chain = Vec::with_capacity(auth_chain_ids.len());
 	for event_id in auth_chain_ids {
-		if let Ok(pdu) = services.rooms.timeline.get_pdu(&event_id).await {
-			auth_chain.push(
-				services
-					.sending
-					.convert_to_outgoing_federation_event(pdu.to_canonical_object())
-					.await,
-			);
-		}
+		let services_for_read = services.services();
+		let runtime = services.server.runtime().clone();
+		let pdu = runtime
+			.spawn_blocking(move || services_for_read.rooms.timeline.get_pdu(&event_id))
+			.await
+			.map_err(|error| err!(Database("blocking auth PDU lookup failed: {error}")))??;
+		auth_chain.push(
+			services
+				.sending
+				.convert_to_outgoing_federation_event(pdu.to_canonical_object())
+				.await,
+		);
 	}
 
 	Ok(event_relationships::unstable::Response {
