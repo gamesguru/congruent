@@ -114,7 +114,10 @@ pub async fn build_and_append_pdu_tracked(
 			.get_or_create_shortroomid(&room_id)
 			.await;
 		// Persist the create event and its room-version record together before
-		// state insertion needs to resolve the room version.
+		// state insertion needs to resolve the room version. Take the insert lock
+		// for the write: it updates the room-global auth-closure collection, and
+		// same-room appends must be serialized before that compare-and-swap.
+		let _insert_lock = self.mutex_insert.lock(&room_id).await;
 		self.db.write_event_to_mtxdb(&pdu, &pdu_json).await?;
 	}
 
@@ -157,6 +160,7 @@ pub async fn build_and_append_pdu_tracked(
 				prev_state_root_handle: previous_root_handle,
 				advance_current_state: false,
 				was_joined_before_state_install: None,
+				mtxdb_prewritten: *pdu.kind() == TimelineEventType::RoomCreate,
 			},
 		)
 		.boxed()

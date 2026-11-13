@@ -621,6 +621,7 @@ where
 					|| predecessors_were_recovered)
 				&& new_room_state.is_some(),
 			was_joined_before_state_install: None,
+			mtxdb_prewritten: false,
 		};
 
 		Box::pin(self.services.timeline.append_incoming_pdu(
@@ -698,6 +699,7 @@ where
 				|| predecessors_were_recovered)
 			&& new_room_state.is_some(),
 		was_joined_before_state_install: None,
+		mtxdb_prewritten: false,
 	};
 
 	let pdu_id = Box::pin(self.services.timeline.append_incoming_pdu(

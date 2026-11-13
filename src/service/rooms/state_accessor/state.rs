@@ -416,6 +416,11 @@ pub fn parse_state_hamt_leaves(
 	room_id: &RoomId,
 	leaves: &[(StateHamtKey, StateHamtValue)],
 ) -> Result<Vec<((StateEventType, StateKey), OwnedEventId)>> {
+	// An empty root has no leaf to decode, so it must not require a room
+	// version (which may not be resolvable yet while the room is being set up).
+	if leaves.is_empty() {
+		return Ok(Vec::new());
+	}
 	let room_version = self.services.short.get_room_version_blocking(room_id)?;
 	leaves
 		.iter()

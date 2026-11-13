@@ -319,12 +319,17 @@ fn apply_outlier_claims(
 	}
 }
 
-/// Events kept as outliers have no timeline position by design. Any other
-/// event without one lost its legacy index row, so give it an ordering after
-/// the room's existing ones: the importer only needs the value to place the
-/// event in the timeline index, and the state rebuild orders by DAG position.
+/// Events proven to be timeline events by a legacy timeline index have no
+/// stream ordering to carry over, so give them one after the room's existing
+/// orderings: the importer only needs the value to place the event in the
+/// timeline index, and the state rebuild orders by DAG position.
+///
+/// An `eventid_pdu` body with no timeline-index entry and no outlier claim is
+/// not proven to be a timeline event (it may be an auth/state-fetch body), so
+/// leave it unpositioned rather than promoting it into the timeline.
 fn synthesize_stream_orderings(
 	events: &mut BTreeMap<String, BTreeMap<String, Event>>,
+	timeline_ids: &HashSet<String>,
 	outlier_ids: &HashSet<String>,
 ) -> usize {
 	let mut synthesized = 0_usize;
@@ -337,7 +342,9 @@ fn synthesize_stream_orderings(
 		let mut missing: Vec<(Option<i64>, String)> = by_id
 			.iter()
 			.filter(|(id, event)| {
-				event.stream_ordering.is_none() && !outlier_ids.contains(*id)
+				event.stream_ordering.is_none()
+					&& timeline_ids.contains(*id)
+					&& !outlier_ids.contains(*id)
 			})
 			.map(|(id, event)| (event.depth, id.to_string()))
 			.collect();
@@ -639,8 +646,10 @@ pub fn export(
 	let mut event_to_stream_order: HashMap<String, i64> = HashMap::new();
 	let rejection_codes = event_codes(&db, "eventid_rejections")?;
 	let soft_fail_codes = event_codes(&db, "eventid_softfailed")?;
+	let mut timeline_ids: HashSet<String> = HashSet::new();
 	for (event_id, pdu_id) in rows(&db, "eventid_pduid")? {
 		if let Ok(event_id_str) = std::str::from_utf8(&event_id) {
+			timeline_ids.insert(event_id_str.to_owned());
 			if pdu_id.len() >= 8 {
 				let mut short = [0u8; 8];
 				short.copy_from_slice(&pdu_id[0..8]);
@@ -655,6 +664,7 @@ pub fn export(
 	}
 	for (pdu_id, event_id) in rows(&db, "room_pducount_eventid")? {
 		if let Ok(event_id_str) = std::str::from_utf8(&event_id) {
+			timeline_ids.insert(event_id_str.to_owned());
 			if pdu_id.len() >= 8 {
 				let mut short = [0u8; 8];
 				short.copy_from_slice(&pdu_id[0..8]);
@@ -702,6 +712,7 @@ pub fn export(
 		// timeline PDUs, so pass the fallback as None.
 		let (mut event, mismatch) = parse_pdu(&raw, None, &mut event_to_room)
 			.map_err(|error| format!("bad pduid_pdu row {}: {error}", hex(&pdu_id)))?;
+		timeline_ids.insert(event.id.clone());
 		if event.stream_ordering.is_none() {
 			event.stream_ordering = decode_stream_ordering(&pdu_id);
 		}
@@ -729,11 +740,12 @@ pub fn export(
 		);
 	}
 	apply_outlier_claims(&mut events, &outlier_ids);
-	let synthesized = synthesize_stream_orderings(&mut events, &outlier_ids);
+	let synthesized = synthesize_stream_orderings(&mut events, &timeline_ids, &outlier_ids);
 	if synthesized > 0 {
 		eprintln!(
-			"warning: {synthesized} timeline events had no stream-ordering index entry in the \
-			 legacy store; assigned synthetic orderings so the state rebuild includes them"
+			"warning: {synthesized} events proven to be timeline events by a legacy index had no \
+			 usable stream ordering; assigned synthetic orderings so the state rebuild includes \
+			 them"
 		);
 	}
 	let unpositioned_outliers = events
@@ -847,6 +859,40 @@ mod tests {
 		assert!(
 			!claimed["$timeline"].outlier,
 			"a timeline position wins over a stale outlier row"
+		);
+	}
+
+	#[test]
+	fn synthesis_requires_a_timeline_index_entry() {
+		let event = |id: &str| Event {
+			id: id.to_owned(),
+			room: "!room:example.org".to_owned(),
+			pdu: Value::Object(Object::new()),
+			prev: Value::Array(Vec::new()),
+			auth: Value::Array(Vec::new()),
+			stream_ordering: None,
+			depth: None,
+			outlier: false,
+			rejection_code: None,
+			soft_fail_code: None,
+		};
+		let mut by_id = BTreeMap::new();
+		by_id.insert("$indexed".to_owned(), event("$indexed"));
+		by_id.insert("$unindexed".to_owned(), event("$unindexed"));
+		let mut events = BTreeMap::new();
+		events.insert("!room:example.org".to_owned(), by_id);
+		let mut timeline_ids = HashSet::new();
+		timeline_ids.insert("$indexed".to_owned());
+
+		let synthesized =
+			synthesize_stream_orderings(&mut events, &timeline_ids, &HashSet::new());
+
+		let exported = &events["!room:example.org"];
+		assert_eq!(synthesized, 1);
+		assert!(exported["$indexed"].stream_ordering.is_some());
+		assert!(
+			exported["$unindexed"].stream_ordering.is_none(),
+			"an event with no timeline-index entry must not be promoted into the timeline"
 		);
 	}
 

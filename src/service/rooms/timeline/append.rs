@@ -39,6 +39,10 @@ pub struct AppendPduContext<'a> {
 	/// `/send_join` state root was installed. `None` means "no such prior
 	/// sample"; the live cache is consulted instead.
 	pub was_joined_before_state_install: Option<(&'a UserId, bool)>,
+	/// The caller already wrote this event body and its edges to mtxdb (for
+	/// example to make a create event's room version resolvable before state
+	/// insertion). Skip the otherwise-idempotent rewrite in `append_pdu`.
+	pub mtxdb_prewritten: bool,
 }
 
 /// Inputs shared by push-rule evaluation in live append and receipt-based
@@ -91,6 +95,7 @@ where
 		prev_state_root_handle,
 		advance_current_state,
 		was_joined_before_state_install,
+		mtxdb_prewritten,
 	} = ctx;
 
 	// Soft-failed events pass auth against the state at the event but fail
@@ -137,6 +142,7 @@ where
 			prev_state_root_handle,
 			advance_current_state,
 			was_joined_before_state_install,
+			mtxdb_prewritten,
 		})
 		.await?;
 
@@ -204,6 +210,7 @@ where
 		prev_state_root_handle,
 		advance_current_state,
 		was_joined_before_state_install,
+		mtxdb_prewritten,
 	} = ctx;
 
 	// A failed v23 rebuild leaves this room without a trustworthy current-state
@@ -314,7 +321,9 @@ where
 	// deduplicates the identical entry; the missing legacy batch is rebuilt and
 	// applied last. A repair must re-run the whole append, not just insert a
 	// missing row.
-	self.db.write_event_to_mtxdb(pdu, &pdu_json).await?;
+	if !mtxdb_prewritten {
+		self.db.write_event_to_mtxdb(pdu, &pdu_json).await?;
+	}
 
 	let mut needs_legacy_batch = false;
 	let existing_pdu = if self.non_outlier_pdu_exists(pdu.event_id()).await {

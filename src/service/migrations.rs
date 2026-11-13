@@ -33,7 +33,7 @@ use crate::{Services, media};
 /// - If database is opened at lesser version we apply migrations up to this.
 ///   Note that named-feature migrations may also be performed when opening at
 ///   equal or lesser version. These are expected to be backward-compatible.
-pub(crate) const DATABASE_VERSION: u64 = 28;
+pub(crate) const DATABASE_VERSION: u64 = 29;
 
 /// Column families explicitly dropped in migrations. These are included
 /// in the fingerprint hash (prefixed with '-') so that a branch which
@@ -501,6 +501,15 @@ async fn migrate(services: &Services) -> Result<()> {
 		db_lt_28(services)
 			.await
 			.map_err(|e| err!("Failed to run v28 migrations: {e}"))?;
+	}
+
+	// Version 29 - state HAMT leaves changed from event-hash pairs to event ID
+	// strings. Roots written by v23 use the old leaf encoding, so rebuild every
+	// room's state HAMT with the current representation.
+	if services.globals.db.database_version().await < 29 {
+		Box::pin(db_lt_29(services))
+			.await
+			.map_err(|e| err!("Failed to run v29 migrations: {e}"))?;
 	}
 
 	if services.globals.db.database_version().await != DATABASE_VERSION {
@@ -2385,7 +2394,20 @@ async fn db_lt_22(services: &Services) -> Result<()> {
 /// A room that fails to rebuild is recorded and remains blocked from timeline
 /// writes until `yolo rebuild-state <room>` successfully restores its state.
 async fn db_lt_23(services: &Services) -> Result<()> {
-	info!("Running v23 migration (rebuilding room state HAMTs from the timeline)...");
+	rebuild_all_room_states(services, 23).await?;
+	services.globals.db.bump_database_version(23);
+	Ok(())
+}
+
+/// Rebuild every room's state HAMT from its timeline for a schema migration.
+async fn db_lt_29(services: &Services) -> Result<()> {
+	rebuild_all_room_states(services, 29).await?;
+	services.globals.db.bump_database_version(29);
+	Ok(())
+}
+
+async fn rebuild_all_room_states(services: &Services, version: u64) -> Result<()> {
+	info!("Running v{version} migration (rebuilding room state HAMTs from the timeline)...");
 
 	let mut room_stream = services.rooms.metadata.iter_ids();
 	while let Some(room_id) = room_stream.next().await {
@@ -2393,20 +2415,20 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 		if let Err(e) = services.rooms.timeline.latest_pdu_in_room(&room_id).await {
 			if e.is_not_found() {
 				debug_warn!(
-					"Skipping room {room_id} in v23 migration: no timeline events (room may be \
-					 incomplete)"
+					"Skipping room {room_id} in v{version} migration: no timeline events (room \
+					 may be incomplete)"
 				);
 			} else {
 				error!(
-					"Failed to read the timeline for room {room_id} in v23 migration: {e}; run \
-					 `yolo rebuild-state {room_id}` to retry"
+					"Failed to read the timeline for room {room_id} in v{version} migration: \
+					 {e}; run `yolo rebuild-state {room_id}` to retry"
 				);
 				services.rooms.state.mark_state_rebuild_pending(&room_id);
 			}
 		} else if let Err(e) = services.rooms.timeline.rebuild_state(&room_id).await {
 			error!(
-				"Failed to rebuild state HAMTs for room {room_id} in v23 migration: {e}; run \
-				 `yolo rebuild-state {room_id}` to retry"
+				"Failed to rebuild state HAMTs for room {room_id} in v{version} migration: {e}; \
+				 run `yolo rebuild-state {room_id}` to retry"
 			);
 			services.rooms.state.mark_state_rebuild_pending(&room_id);
 		} else {
@@ -2438,14 +2460,13 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 
 		if !rebuilt {
 			debug_warn!(
-				"Room {room_id} was not rebuilt in v23; membership was reconciled only if a \
-				 state root was available and must be rebuilt after `yolo rebuild-state \
+				"Room {room_id} was not rebuilt in v{version}; membership was reconciled only \
+				 if a state root was available and must be rebuilt after `yolo rebuild-state \
 				 {room_id}`"
 			);
 		}
 	}
 
-	services.globals.db.bump_database_version(23);
 	Ok(())
 }
 
@@ -2598,7 +2619,7 @@ mod tests {
 
 	#[test]
 	fn test_schema_fingerprint_includes_version() {
-		assert_eq!(DATABASE_VERSION, 28);
+		assert_eq!(DATABASE_VERSION, 29);
 		assert_ne!(
 			compute_schema_fingerprint(DATABASE_VERSION - 1),
 			compute_schema_fingerprint(DATABASE_VERSION),

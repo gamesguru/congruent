@@ -471,6 +471,7 @@ async fn knock_room_helper_local(
 			prev_state_root_handle: previous_root_handle,
 			advance_current_state: false,
 			was_joined_before_state_install: None,
+			mtxdb_prewritten: false,
 		},
 	))
 	.await?;
@@ -655,20 +656,18 @@ async fn knock_room_helper_remote(
 
 	let mut entries = Vec::with_capacity(state_map.len());
 	for (&shortstatekey, event_id) in &state_map {
-		if let Ok((kind, state_key)) = services
+		let (kind, state_key) = services
 			.rooms
 			.short
 			.get_statekey_from_short(shortstatekey)
-			.await
-		{
-			entries.push((
-				service::rooms::state_hamt::hamt_key(&kind, &state_key),
-				services
-					.rooms
-					.state_hamt
-					.leaf_value_in(&room_version_id, event_id.as_str())?,
-			));
-		}
+			.await?;
+		entries.push((
+			service::rooms::state_hamt::hamt_key(&kind, &state_key),
+			services
+				.rooms
+				.state_hamt
+				.leaf_value_in(&room_version_id, event_id.as_str())?,
+		));
 	}
 
 	let structural_key = service::rooms::state_hamt::room_structural_key(room_id);
@@ -711,6 +710,7 @@ async fn knock_room_helper_remote(
 			prev_state_root_handle: previous_root_handle,
 			advance_current_state: false,
 			was_joined_before_state_install: None,
+			mtxdb_prewritten: false,
 		},
 	))
 	.await?;

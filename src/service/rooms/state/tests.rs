@@ -1937,6 +1937,7 @@ async fn append_pdu_takes_insert_lock_before_writing_body() {
 			prev_state_root_handle: None,
 			advance_current_state: false,
 			was_joined_before_state_install: None,
+			mtxdb_prewritten: false,
 		},
 	);
 	let mut append = pin!(append);
@@ -2034,6 +2035,7 @@ async fn failed_timeline_insert_leaves_no_extremity_or_reference() {
 			prev_state_root_handle: None,
 			advance_current_state: false,
 			was_joined_before_state_install: None,
+			mtxdb_prewritten: false,
 		})
 		.await;
 	assert!(result.is_err(), "the corrupt head must fail the append");
@@ -2077,6 +2079,7 @@ async fn failed_timeline_insert_leaves_no_extremity_or_reference() {
 			prev_state_root_handle: None,
 			advance_current_state: false,
 			was_joined_before_state_install: None,
+			mtxdb_prewritten: false,
 		})
 		.await;
 	assert!(result.is_ok(), "redelivery after the failed insert: {result:?}");
@@ -2238,6 +2241,7 @@ async fn redelivery_after_the_timeline_row_repairs_the_missing_writes() {
 			prev_state_root_handle: None,
 			advance_current_state: false,
 			was_joined_before_state_install: None,
+			mtxdb_prewritten: false,
 		})
 		.await;
 	assert!(result.is_ok(), "redelivery after the row: {result:?}");
@@ -2293,6 +2297,7 @@ async fn redelivery_after_the_state_root_restores_the_gate() {
 			prev_state_root_handle: None,
 			advance_current_state: false,
 			was_joined_before_state_install: None,
+			mtxdb_prewritten: false,
 		})
 		.await;
 	assert!(result.is_ok(), "first append: {result:?}");
@@ -2328,6 +2333,7 @@ async fn redelivery_after_the_state_root_restores_the_gate() {
 			prev_state_root_handle: None,
 			advance_current_state: false,
 			was_joined_before_state_install: None,
+			mtxdb_prewritten: false,
 		})
 		.await;
 	assert!(result.is_ok(), "redelivery after the state root: {result:?}");

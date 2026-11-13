@@ -407,25 +407,30 @@ impl Service {
 		let load_pdus = |leaves: Vec<(
 			rooms::state_hamt::StateHamtKey,
 			rooms::state_hamt::StateHamtValue,
-		)>| {
+		)>|
+		 -> Result<Vec<Arc<PduEvent>>> {
 			leaves
 				.into_iter()
-				.filter_map(|(_, value)| {
+				.map(|(_, value)| {
+					// Only relevant leaves are passed here, so the room version was
+					// resolved above. Propagate a missing leaf mapping instead of
+					// updating the caches from an incomplete delta.
+					let room_version = room_version
+						.as_ref()
+						.expect("relevant leaf needs a room version");
 					let event_id = self
 						.services
 						.state_hamt
-						.leaf_event_id_in(room_version.as_ref()?, &value)
-						.ok()?;
+						.leaf_event_id_in(room_version, &value)?;
 					self.services
 						.timeline
 						.get_pdu_in_room(Some(room_id), &event_id)
-						.ok()
 						.map(Arc::new)
 				})
-				.collect::<Vec<_>>()
+				.collect()
 		};
-		let added_pdus = load_pdus(added);
-		let removed_pdus = load_pdus(removed);
+		let added_pdus = load_pdus(added)?;
+		let removed_pdus = load_pdus(removed)?;
 
 		self.services
 			.state_cache

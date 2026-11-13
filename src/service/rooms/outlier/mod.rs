@@ -248,9 +248,11 @@ pub fn add_pdu_outlier_batch_demote<'a>(
 /// `room_id` supplies room context; `demote` permits replacing timeline metadata.
 /// Otherwise, a known timeline event is left untouched.
 ///
-/// When the room has a persisted version, also write the event and edges to
-/// mtxdb separately from `batch`. Room-version lookup and mtxdb write failures
-/// do not prevent staging the outlier. Short-ID allocation failures panic.
+/// When the room version can be resolved through the local fallback chain
+/// (mtxdb metadata, collection metadata, then the legacy room-version map),
+/// also write the event and edges to mtxdb separately from `batch`. A missing
+/// version (after those fallbacks) or an mtxdb write failure skips staging the
+/// outlier, because mtxdb is authoritative. Short-ID allocation failures panic.
 #[implement(Service)]
 fn add_pdu_outlier_batch_impl<'a>(
 	&'a self,
@@ -311,7 +313,20 @@ fn add_pdu_outlier_batch_impl<'a>(
 			};
 		if create_version.is_none() {
 			if let Err(error) = self.services.short.get_room_version_blocking(room_id) {
-				warn!(?error, %room_id, %event_id, "Skipping outlier before room version is established");
+				if error.is_not_found() {
+					warn!(
+						%room_id,
+						%event_id,
+						"Skipping outlier before room version is established"
+					);
+				} else {
+					warn!(
+						?error,
+						%room_id,
+						%event_id,
+						"Room-version lookup failed; skipping outlier"
+					);
+				}
 				return;
 			}
 		}
