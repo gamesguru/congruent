@@ -1,6 +1,6 @@
 [submodule "complement-src"]
 	path = complement-src
-	url = https://github.com/gamesguru/complement
+	url = https://git.nutra.tk/gamesguru/complement
 [submodule "complement-crypto-src"]
 	path = complement-crypto-src
 	url = https://github.com/wombat-foundation/complement-crypto

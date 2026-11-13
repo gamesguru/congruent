@@ -166,6 +166,7 @@
 {"Action":"pass","Test":"TestFederationKeyUploadQuery/Can_query_remote_device_keys_using_POST"}
 {"Action":"pass","Test":"TestFederationLateEventSyncBatchOrder"}
 {"Action":"pass","Test":"TestFederationLateSameDepthEventPagination"}
+{"Action":"pass","Test":"TestFederationMessagesDoesNotBackfillNewerGaps"}
 {"Action":"pass","Test":"TestFederationRedactSendsWithoutEvent"}
 {"Action":"pass","Test":"TestFederationRejectInvite"}
 {"Action":"pass","Test":"TestFederationRoomsInvite"}
