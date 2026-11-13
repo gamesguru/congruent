@@ -38,12 +38,6 @@ pub(crate) async fn get_relating_events_with_rel_type_and_event_type_route(
 		body.dir,
 	)
 	.await
-	.map(|res| get_relating_events_with_rel_type_and_event_type::v1::Response {
-		chunk: res.chunk,
-		next_batch: res.next_batch,
-		prev_batch: res.prev_batch,
-		recursion_depth: res.recursion_depth,
-	})
 }
 
 /// # `GET /_matrix/client/r0/rooms/{roomId}/relations/{eventId}/{relType}`
@@ -65,12 +59,6 @@ pub(crate) async fn get_relating_events_with_rel_type_route(
 		body.dir,
 	)
 	.await
-	.map(|res| get_relating_events_with_rel_type::v1::Response {
-		chunk: res.chunk,
-		next_batch: res.next_batch,
-		prev_batch: res.prev_batch,
-		recursion_depth: res.recursion_depth,
-	})
 }
 
 /// # `GET /_matrix/client/r0/rooms/{roomId}/relations/{eventId}`
