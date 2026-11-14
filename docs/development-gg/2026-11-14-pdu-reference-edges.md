@@ -119,15 +119,15 @@ room ids, covered in section 6.
 
 ## 4. Edges in real PDUs that the spec does not define
 
-Vendor and unstable fields. Only the Nheko mirror is checked today; the rest are
-not. For each, decide whether the id is a same-room edge (check it), an
+Vendor and unstable fields. Only the Nheko mirror is checked today; the rest
+are not. For each, decide whether the id is a same-room edge (check it), an
 origin-room reference (forwards, cross-room by design) or an opaque external id
 (ignore).
 
 - **Nheko relations**: `content.im.nheko.relations.v1.relations[].event_id`
   Appears on `m.room.message` (6,372), `m.reaction` (531) and `m.room.encrypted`
-  (122). It mirrors `m.relates_to` for encrypted rooms. Semantic, yes: a
-  cross-room target is rejected; malformed entries are skipped.
+  (122). It mirrors `m.relates_to` for encrypted rooms. Semantic, yes:
+  a cross-room target is rejected; malformed entries are skipped.
 - **Nested replacement relation**: `content.m.new_content.m.relates_to...`
   Appears on edits (8 + 8). Not an edge on its own: the spec says any
   `m.relates_to` inside `m.new_content` is ignored, and the outer `m.relates_to`
