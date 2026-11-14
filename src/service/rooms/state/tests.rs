@@ -2436,3 +2436,181 @@ fn test_state_root_golden_hash() {
 		});
 	assert_eq!(hex, "43300744c5d0b6a1e4c6e5f948780a339da4bb5c1029cc11a2e5c485327fccf4");
 }
+
+// `create_event` only builds local events, so these pin that it refuses to
+// reference missing or other-room events however the room's indexes got corrupted.
+
+fn room_ids() -> (slipstream::OwnedRoomId, slipstream::OwnedRoomId) {
+	(
+		slipstream::OwnedRoomId::parse("!room-a:test.conduwuit.local").unwrap(),
+		slipstream::OwnedRoomId::parse("!room-b:test.conduwuit.local").unwrap(),
+	)
+}
+
+/// Make `event_id` a forward extremity of `room`, bypassing eligibility checks.
+fn corrupt_leaf(services: &Services, room: &RoomId, event_id: &EventId) {
+	use conduwuit_database::{Batch, serialize_to_vec};
+
+	let leaves = &services.rooms.state.db.roomid_pduleaves;
+	let mut batch = Batch::new();
+	leaves.batch_put(
+		&mut batch,
+		&serialize_to_vec((room, event_id)).unwrap(),
+		event_id.as_bytes(),
+	);
+	leaves.apply_batch(batch);
+}
+
+async fn create_local_event(
+	services: &Services,
+	room: &RoomId,
+) -> conduwuit_core::Result<(PduEvent, CanonicalJsonObject)> {
+	let mutex = services.rooms.state.mutex.lock(room).await;
+	services
+		.rooms
+		.timeline
+		.create_event(
+			conduwuit_core::matrix::pdu::PduBuilder::default(),
+			&user_id!("@alice:test.conduwuit.local"),
+			Some(room),
+			&mutex,
+		)
+		.await
+}
+
+#[conduwuit_macros::async_test]
+async fn create_event_rejects_cross_room_prev_event() {
+	let (_guard, _server, services) = setup_test_services().await;
+	let (room_a, room_b) = room_ids();
+	for room in [&room_a, &room_b] {
+		services
+			.rooms
+			.short
+			.set_room_version(room, &slipstream::RoomVersionId::V1)
+			.expect("set room version");
+	}
+
+	let foreign = slipstream::OwnedEventId::parse("$foreign:test.conduwuit.local").unwrap();
+	let create = slipstream::OwnedEventId::parse("$create-room-a:test.conduwuit.local").unwrap();
+	persist_dummy_pdu(
+		&services,
+		&room_a,
+		&create_dummy_pdu(&room_a, &create, "m.room.create", ""),
+	)
+	.await;
+	persist_dummy_pdu(
+		&services,
+		&room_a,
+		&create_dummy_pdu(&room_a, &foreign, "m.room.message", ""),
+	)
+	.await;
+	corrupt_leaf(&services, &room_b, &foreign);
+
+	// Room B has no state, so auth would fail anyway; pin the room-mismatch
+	// error so this cannot pass for an unrelated reason.
+	let err = create_local_event(&services, &room_b)
+		.await
+		.expect_err("cross-room prev_event must be rejected");
+	assert!(err.to_string().contains("belong"), "wrong rejection reason: {err}");
+}
+
+#[conduwuit_macros::async_test]
+async fn create_event_rejects_cross_room_relation_and_redaction() {
+	use conduwuit_core::matrix::pdu::{PduBuilder, RawJson};
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let (room_a, room_b) = room_ids();
+	for room in [&room_a, &room_b] {
+		services
+			.rooms
+			.short
+			.set_room_version(room, &slipstream::RoomVersionId::V1)
+			.expect("set room version");
+	}
+	let create = slipstream::OwnedEventId::parse("$create-room-a:test.conduwuit.local").unwrap();
+	persist_dummy_pdu(
+		&services,
+		&room_a,
+		&create_dummy_pdu(&room_a, &create, "m.room.create", ""),
+	)
+	.await;
+	let foreign = slipstream::OwnedEventId::parse("$foreign:test.conduwuit.local").unwrap();
+	persist_dummy_pdu(
+		&services,
+		&room_a,
+		&create_dummy_pdu(&room_a, &foreign, "m.room.message", ""),
+	)
+	.await;
+
+	let content = |json: &str| {
+		RawJson::from_value(&slipstream::json::Value::parse(json).expect("valid json"))
+	};
+	let cases = [
+		PduBuilder {
+			content: content(&format!(
+				r#"{{"m.relates_to":{{"rel_type":"m.annotation","event_id":"{foreign}","key":"x"}}}}"#
+			)),
+			..PduBuilder::default()
+		},
+		PduBuilder {
+			content: content(&format!(
+				r#"{{"m.relates_to":{{"m.in_reply_to":{{"event_id":"{foreign}"}}}}}}"#
+			)),
+			..PduBuilder::default()
+		},
+		PduBuilder {
+			redacts: Some(foreign.clone()),
+			..PduBuilder::default()
+		},
+		PduBuilder {
+			content: content(&format!(r#"{{"redacts":"{foreign}"}}"#)),
+			..PduBuilder::default()
+		},
+		PduBuilder {
+			event_type: "m.room.pinned_events".into(),
+			state_key: Some(String::new().into()),
+			content: content(&format!(r#"{{"pinned":["{foreign}"]}}"#)),
+			..PduBuilder::default()
+		},
+		PduBuilder {
+			content: content(&format!(
+				r#"{{"im.nheko.relations.v1":{{"relations":[{{"rel_type":"m.annotation","event_id":"{foreign}"}}]}}}}"#
+			)),
+			..PduBuilder::default()
+		},
+	];
+	for builder in cases {
+		let mutex = services.rooms.state.mutex.lock(&room_b).await;
+		let err = services
+			.rooms
+			.timeline
+			.create_event(
+				builder,
+				&user_id!("@alice:test.conduwuit.local"),
+				Some(&room_b),
+				&mutex,
+			)
+			.await
+			.expect_err("cross-room pointer must be rejected");
+		assert!(err.to_string().contains("belong"), "wrong rejection reason: {err}");
+	}
+}
+
+#[conduwuit_macros::async_test]
+async fn create_event_rejects_missing_prev_event() {
+	let (_guard, _server, services) = setup_test_services().await;
+	let (_room_a, room_b) = room_ids();
+	services
+		.rooms
+		.short
+		.set_room_version(&room_b, &slipstream::RoomVersionId::V1)
+		.expect("set room version");
+
+	let ghost = slipstream::OwnedEventId::parse("$ghost:test.conduwuit.local").unwrap();
+	corrupt_leaf(&services, &room_b, &ghost);
+
+	let err = create_local_event(&services, &room_b)
+		.await
+		.expect_err("missing prev_event must be rejected");
+	assert!(err.is_not_found(), "wrong rejection reason: {err}");
+}

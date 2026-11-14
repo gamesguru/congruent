@@ -1622,7 +1622,7 @@ impl Service {
 						.ok()?;
 					self.services
 						.timeline
-						.get_pdu(&event_id)
+						.get_pdu_in_room(room_id, &event_id)
 						.map(move |pdu| ((event_type, state_key), pdu))
 						.inspect_err(|e| warn!("Failed to get auth event {event_id}: {e:?}"))
 						.ok()

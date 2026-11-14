@@ -8,10 +8,9 @@ use conduwuit_core::{
 		pdu::{EventHash, PduBuilder, PduEvent, RawJson},
 		state_res::RoomVersion,
 	},
-	utils::{self, IterStream, ReadyExt, stream::TryIgnore},
-	warn,
+	utils, warn,
 };
-use futures::{StreamExt, TryStreamExt, future};
+use futures::StreamExt;
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId,
 	UserId,
@@ -212,19 +211,67 @@ pub async fn create_event(
 		}
 	}
 	// Our depth is the maximum depth of prev_events + 1
+	//
+	// A missing or cross-room prev_event is an error, never silently skipped.
 	let depth = match room_id {
-		| Some(_) => prev_events
-			.iter()
-			.stream()
-			.map(Ok)
-			.map(|event_id| event_id.and_then(|event_id| self.get_pdu(event_id)))
-			.and_then(|pdu| future::ok(pdu.depth))
-			.ignore_err()
-			.ready_fold(uint!(0), cmp::max)
-			.await
-			.saturating_add(uint!(1)),
+		| Some(room_id) => {
+			let mut max_depth = uint!(0);
+			for prev_event_id in &prev_events {
+				let prev_pdu = self.get_pdu_in_room(room_id, prev_event_id)?;
+				max_depth = cmp::max(max_depth, prev_pdu.depth);
+			}
+			max_depth.saturating_add(uint!(1))
+		},
 		| None => uint!(1),
 	};
+
+	// A relation, reply, pin or redaction may not point into another room. An unknown
+	// target is allowed: a local user can react to an event we have not backfilled.
+	if let Some(room_id) = room_id {
+		let body = slipstream::json::Value::parse(content.get()).ok();
+		let body = body.as_ref().and_then(|body| body.as_object());
+		let relation = body.and_then(|body| body.get("m.relates_to")?.as_object());
+		let id = |value: Option<&slipstream::json::Value>| {
+			value
+				.and_then(slipstream::json::Value::as_str)
+				.and_then(|id| OwnedEventId::parse(id).ok())
+		};
+		// Pins live in `content.pinned[]`, but only for pinned-events state.
+		let pinned = (event_type.as_str() == "m.room.pinned_events")
+			.then(|| body.and_then(|body| body.get("pinned")?.as_array()))
+			.flatten();
+		// Nheko mirrors `m.relates_to` here for encrypted rooms. Entries that are
+		// not event ids are skipped, like any other malformed relation.
+		let nheko = body.and_then(|body| {
+			body.get("im.nheko.relations.v1")?
+				.as_object()?
+				.get("relations")?
+				.as_array()
+		});
+		let listed = pinned.into_iter().flatten().map(|pin| id(Some(pin)));
+		let mirrored = nheko
+			.into_iter()
+			.flatten()
+			.map(|rel| id(rel.as_object().and_then(|rel| rel.get("event_id"))));
+		let targets = [
+			id(relation.and_then(|rel| rel.get("event_id"))),
+			id(relation.and_then(|rel| rel.get("m.in_reply_to")?.as_object()?.get("event_id"))),
+			// Room v11+ keeps the canonical redaction target in content.
+			id(body.and_then(|body| body.get("redacts"))),
+		]
+		.into_iter()
+		.chain(listed)
+		.chain(mirrored)
+		.flatten()
+		.chain(redacts.clone());
+		for target in targets {
+			match self.get_pdu_in_room(room_id, &target) {
+				| Err(error) if error.is_not_found() => {},
+				| Err(error) => return Err(error),
+				| Ok(_) => {},
+			}
+		}
+	}
 
 	let mut unsigned = unsigned.unwrap_or_default();
 
