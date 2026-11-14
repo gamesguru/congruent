@@ -28,11 +28,7 @@ where
 	// Not found locally is a legitimate, common case (the prev_event was never
 	// delivered to us, we joined after it, etc.), not a database malfunction.
 	// Return None so the caller falls back to fetch_state().
-	let Ok(mut prev_pdu) = self
-		.services
-		.timeline
-		.get_pdu_in_room(Some(room_id), prev_event)
-	else {
+	let Ok(mut prev_pdu) = self.services.timeline.get_pdu_in_room(room_id, prev_event) else {
 		debug!("prev_event {prev_event} not found locally; falling back to fetch_state");
 		return Ok(None);
 	};
@@ -71,11 +67,7 @@ where
 			};
 			parent.to_owned()
 		};
-		let Ok(parent_pdu) = self
-			.services
-			.timeline
-			.get_pdu_in_room(Some(room_id), &parent)
-		else {
+		let Ok(parent_pdu) = self.services.timeline.get_pdu_in_room(room_id, &parent) else {
 			return Ok(None);
 		};
 		prev_event = parent;
@@ -129,9 +121,7 @@ where
 			async move {
 				let lookup_id = prev_eventid.clone();
 				let prev_event = runtime
-					.spawn_blocking(move || {
-						timeline.get_pdu_in_room(Some(&lookup_room_id), &lookup_id)
-					})
+					.spawn_blocking(move || timeline.get_pdu_in_room(&lookup_room_id, &lookup_id))
 					.await
 					.map_err(|e| err!(Database("blocking prev_event lookup failed: {e}")))??;
 				if prev_event.room_id() != Some(room_id) {
@@ -309,7 +299,7 @@ where
 			let prev_event = self
 				.services
 				.timeline
-				.get_pdu_in_room(Some(room_id), prev_eventid)?;
+				.get_pdu_in_room(room_id, prev_eventid)?;
 			if prev_event.room_id() != Some(room_id) {
 				return Err(err!(Database("prev_event is not in the same room")));
 			}
@@ -407,7 +397,7 @@ where
 			continue;
 		}
 
-		let Ok(prev_event) = self.services.timeline.get_pdu_in_room(Some(room_id), prev) else {
+		let Ok(prev_event) = self.services.timeline.get_pdu_in_room(room_id, prev) else {
 			return Ok(None);
 		};
 		let Ok(root_handle) = self

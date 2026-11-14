@@ -290,7 +290,7 @@ where
 				let mut pdu = prefetched_auth_context_ref
 					.get(eid)
 					.cloned()
-					.or_else(|| timeline.get_pdu_in_room(Some(room_id), eid).ok())?;
+					.or_else(|| timeline.get_pdu_in_room(room_id, eid).ok())?;
 				let rejected = match meta.is_event_rejected(&pdu.event_id) {
 					| Ok(rejected) => rejected,
 					| Err(error) => {

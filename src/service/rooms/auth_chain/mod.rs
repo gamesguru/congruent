@@ -308,7 +308,7 @@ async fn add_derived_create_event(
 	if self
 		.services
 		.timeline
-		.get_pdu_in_room(Some(room_id), &create_id)
+		.get_pdu_in_room(room_id, &create_id)
 		.is_err()
 	{
 		return false;

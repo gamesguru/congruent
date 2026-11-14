@@ -997,41 +997,38 @@ impl Data {
 	/// Returns the pdu.
 	///
 	/// Checks the mtxdb event store if not found in the timeline.
-	/// If `room_id` is provided, validates the PDU belongs to that room.
 	pub(super) fn get_pdu_in_room(
 		&self,
-		room_id: Option<&RoomId>,
+		room_id: &RoomId,
 		event_id: &EventId,
 	) -> Result<PduEvent> {
-		// When the room is known, read the body straight from its event
-		// collection instead of paying for a locator lookup first. This is the
-		// hot path when auth-checking a large fetched auth chain. A miss falls
-		// back to the locator so an event stored under another room still
-		// reports the room mismatch rather than a bare NotFound.
-		let bytes = match room_id {
-			| Some(room_id) => match self
-				.mtxdb_events
-				.get_event(room_id.as_bytes(), event_id.as_bytes())
-				.map_err(|error| err!(Database("mtxdb event lookup failed: {error}")))?
-			{
-				| Some(bytes) => bytes,
-				| None => self.get_event_json_bytes(event_id.as_bytes())?,
-			},
+		// Read the room-local body first. A miss falls back through the global
+		// locator so a foreign-room event reports a room mismatch, not NotFound.
+		let bytes = match self
+			.mtxdb_events
+			.get_event(room_id.as_bytes(), event_id.as_bytes())
+			.map_err(|error| err!(Database("mtxdb event lookup failed: {error}")))?
+		{
+			| Some(bytes) => bytes,
 			| None => self.get_event_json_bytes(event_id.as_bytes())?,
 		};
 		let pdu: PduEvent = database::from_json_slice(&bytes)?;
 
-		if let Some(expected_room) = room_id {
-			let actual_room = pdu.room_id_or_hash();
-			if actual_room.as_ref() != Some(expected_room) {
-				return Err!(Database(
-					"PDU {event_id} does belong to room {actual_room:?} (expected \
-					 {expected_room})"
-				));
-			}
+		let actual_room = pdu.room_id_or_hash();
+		if actual_room.as_ref() != Some(room_id) {
+			return Err!(Database(
+				"PDU {event_id} does belong to room {actual_room:?} (expected {room_id})"
+			));
 		}
 
 		Ok(pdu)
+	}
+
+	/// Returns a PDU without asserting its room. Callers that know the expected
+	/// room should use [`Self::get_pdu_in_room`].
+	pub(super) fn get_pdu(&self, event_id: &EventId) -> Result<PduEvent> {
+		let bytes = self.get_event_json_bytes(event_id.as_bytes())?;
+		database::from_json_slice(&bytes)
 	}
 
 	/// Which of `event_ids` already have a stored event body in this room,

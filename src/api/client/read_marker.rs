@@ -253,7 +253,7 @@ async fn update_read_receipt(
 	services
 		.rooms
 		.timeline
-		.get_pdu_in_room(Some(room_id), event_id)
+		.get_pdu_in_room(room_id, event_id)
 		.map_err(|_| conduwuit::err!(Request(NotFound("Event not found in room."))))?;
 	let new_count = services
 		.rooms
@@ -344,7 +344,7 @@ async fn update_private_read_receipt(
 	services
 		.rooms
 		.timeline
-		.get_pdu_in_room(Some(room_id), event_id)
+		.get_pdu_in_room(room_id, event_id)
 		.map_err(|_| conduwuit::err!(Request(NotFound("Event not found in room."))))?;
 	let count = services
 		.rooms

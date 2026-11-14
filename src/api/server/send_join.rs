@@ -179,7 +179,7 @@ async fn create_join_event(
 						let lookup_room_id = room_id.clone();
 						let pdu = runtime
 							.spawn_blocking(move || {
-								timeline.get_pdu_in_room(Some(&lookup_room_id), &lookup_id)
+								timeline.get_pdu_in_room(&lookup_room_id, &lookup_id)
 							})
 							.await;
 						if let Ok(Ok(p)) = pdu {

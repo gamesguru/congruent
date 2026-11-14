@@ -1440,7 +1440,7 @@ pub async fn reindex_timeline_events(
 		let Ok(pdu_id) = self.get_pdu_id(event_id).await else {
 			continue;
 		};
-		let Ok(pdu) = self.get_pdu_in_room(Some(room_id), event_id) else {
+		let Ok(pdu) = self.get_pdu_in_room(room_id, event_id) else {
 			continue;
 		};
 		pdus.insert(event_id.clone(), (pdu_id, pdu));

@@ -746,11 +746,7 @@ async fn reusable_predecessor_root_handle(
 	// A missing predecessor PDU/root or an absent state slot is a legitimate
 	// reason to rebuild. Any other failure (storage/transient) must propagate
 	// rather than silently forcing the expensive fallback and masking it.
-	let prev_pdu = match self
-		.services
-		.timeline
-		.get_pdu_in_room(Some(room_id), prev_event)
-	{
+	let prev_pdu = match self.services.timeline.get_pdu_in_room(room_id, prev_event) {
 		| Ok(pdu) => pdu,
 		| Err(e) if e.is_not_found() => return Ok(None),
 		| Err(e) => return Err(e),

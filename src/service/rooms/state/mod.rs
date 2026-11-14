@@ -424,7 +424,7 @@ impl Service {
 						.leaf_event_id_in(room_version, &value)?;
 					self.services
 						.timeline
-						.get_pdu_in_room(Some(room_id), &event_id)
+						.get_pdu_in_room(room_id, &event_id)
 						.map(Arc::new)
 				})
 				.collect()

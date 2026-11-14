@@ -427,7 +427,7 @@ where
 			continue;
 		}
 
-		if let Ok(auth_event) = self.services.timeline.get_pdu_in_room(Some(room_id), aid) {
+		if let Ok(auth_event) = self.services.timeline.get_pdu_in_room(room_id, aid) {
 			check_room_id(room_id, &auth_event)?;
 			if auth_event.state_key.is_none() {
 				self.services.pdu_metadata.mark_event_rejected(

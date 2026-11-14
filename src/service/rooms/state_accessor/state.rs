@@ -170,9 +170,7 @@ pub async fn state_get_in_room_hamt(
 	let event_id = self
 		.state_get_event_id_hamt(room_id, root_handle, event_type, state_key)
 		.await?;
-	self.services
-		.timeline
-		.get_pdu_in_room(Some(room_id), &event_id)
+	self.services.timeline.get_pdu_in_room(room_id, &event_id)
 }
 
 /// Returns a single EventId at the given HAMT root with key

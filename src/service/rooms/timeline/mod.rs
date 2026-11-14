@@ -656,19 +656,13 @@ impl Service {
 	///
 	/// Checks the `eventid_outlierpdu` Tree if not found in the timeline.
 	#[inline]
-	pub fn get_pdu(&self, event_id: &EventId) -> Result<PduEvent> {
-		self.db.get_pdu_in_room(None, event_id)
-	}
+	pub fn get_pdu(&self, event_id: &EventId) -> Result<PduEvent> { self.db.get_pdu(event_id) }
 
 	/// Returns the pdu, populating room_id.
 	///
 	/// Checks the `eventid_outlierpdu` Tree if not found in the timeline.
 	#[inline]
-	pub fn get_pdu_in_room(
-		&self,
-		room_id: Option<&RoomId>,
-		event_id: &EventId,
-	) -> Result<PduEvent> {
+	pub fn get_pdu_in_room(&self, room_id: &RoomId, event_id: &EventId) -> Result<PduEvent> {
 		self.db.get_pdu_in_room(room_id, event_id)
 	}
 
