@@ -253,11 +253,16 @@ pub async fn create_event(
 			.into_iter()
 			.flatten()
 			.map(|rel| id(rel.as_object().and_then(|rel| rel.get("event_id"))));
+		// Room v11+ keeps the canonical redaction target in content, but only
+		// redaction events may carry it. Other event types can have an unrelated
+		// `redacts`-shaped field, which must not be treated as an edge.
+		let content_redacts = (event_type.as_str() == "m.room.redaction")
+			.then(|| body.and_then(|body| body.get("redacts")))
+			.flatten();
 		let targets = [
 			id(relation.and_then(|rel| rel.get("event_id"))),
 			id(relation.and_then(|rel| rel.get("m.in_reply_to")?.as_object()?.get("event_id"))),
-			// Room v11+ keeps the canonical redaction target in content.
-			id(body.and_then(|body| body.get("redacts"))),
+			id(content_redacts),
 		]
 		.into_iter()
 		.chain(listed)

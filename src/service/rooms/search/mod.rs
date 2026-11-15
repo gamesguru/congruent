@@ -32,6 +32,9 @@ pub struct RoomQuery<'a> {
 
 const WORD_MAX_LEN: usize = 50;
 
+/// Most events one search request reads per room, newest first.
+const MAX_SCAN_EVENTS: usize = 20_000;
+
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
@@ -57,6 +60,7 @@ pub async fn search_pdus<'a>(
 	let filter = &query.criteria.filter;
 	let mut count = 0_usize;
 	let mut skipped = 0_usize;
+	let mut scanned = 0_usize;
 	let mut results = Vec::new();
 
 	let mut pdus = std::pin::pin!(
@@ -65,7 +69,15 @@ pub async fn search_pdus<'a>(
 			.pdus_rev(query.room_id, Bound::Unbounded)
 	);
 
-	while let Some(item) = pdus.next().await {
+	// Bodies are read straight from the event store, so bound the work per
+	// request: scan at most `MAX_SCAN_EVENTS` newest events. `count` is then a
+	// lower bound for very large rooms, which the API allows (it is an
+	// estimate). An empty query matches nothing, so scan nothing.
+	while !tokens.is_empty() && scanned < MAX_SCAN_EVENTS {
+		let Some(item) = pdus.next().await else {
+			break;
+		};
+		scanned = scanned.saturating_add(1);
 		let Ok((_pdu_count, pdu)) = item else {
 			continue;
 		};

@@ -2563,6 +2563,7 @@ async fn create_event_rejects_cross_room_relation_and_redaction() {
 			..PduBuilder::default()
 		},
 		PduBuilder {
+			event_type: "m.room.redaction".into(),
 			content: content(&format!(r#"{{"redacts":"{foreign}"}}"#)),
 			..PduBuilder::default()
 		},
@@ -2593,6 +2594,54 @@ async fn create_event_rejects_cross_room_relation_and_redaction() {
 			.await
 			.expect_err("cross-room pointer must be rejected");
 		assert!(err.to_string().contains("belong"), "wrong rejection reason: {err}");
+	}
+}
+
+#[conduwuit_macros::async_test]
+async fn create_event_ignores_content_redacts_on_non_redaction() {
+	use conduwuit_core::matrix::pdu::{PduBuilder, RawJson};
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let (room_a, room_b) = room_ids();
+	for room in [&room_a, &room_b] {
+		services
+			.rooms
+			.short
+			.set_room_version(room, &slipstream::RoomVersionId::V1)
+			.expect("set room version");
+	}
+	let foreign = slipstream::OwnedEventId::parse("$foreign:test.conduwuit.local").unwrap();
+	persist_dummy_pdu(
+		&services,
+		&room_a,
+		&create_dummy_pdu(&room_a, &foreign, "m.room.message", ""),
+	)
+	.await;
+
+	let content = |json: &str| {
+		RawJson::from_value(&slipstream::json::Value::parse(json).expect("valid json"))
+	};
+	// A non-redaction event whose content happens to contain `redacts` must not
+	// be rejected just because the named event belongs to another room.
+	let mutex = services.rooms.state.mutex.lock(&room_b).await;
+	let result = services
+		.rooms
+		.timeline
+		.create_event(
+			PduBuilder {
+				content: content(&format!(r#"{{"redacts":"{foreign}"}}"#)),
+				..PduBuilder::default()
+			},
+			&user_id!("@alice:test.conduwuit.local"),
+			Some(&room_b),
+			&mutex,
+		)
+		.await;
+	if let Err(error) = result {
+		assert!(
+			!error.to_string().contains("belong"),
+			"content.redacts on a non-redaction event was treated as a cross-room edge: {error}"
+		);
 	}
 }
 

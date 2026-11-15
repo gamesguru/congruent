@@ -59,6 +59,7 @@ async fn load_timeline(
 	ending_count: Option<PduCount>,
 	limit: usize,
 	is_expanded_timeline: bool,
+	initial_timeline: bool,
 ) -> Result<TimelinePdus> {
 	info!(
 		target: "timeline_debug",
@@ -243,11 +244,13 @@ async fn load_timeline(
 	//
 	// The spec says events in a sync response are ordered by their arrival time
 	// at the homeserver, and MSC4445 only permits topological ordering for
-	// initial sync and newly joined rooms (both of which have no
-	// `starting_count`). Do not re-sort an incremental batch: a late federated
-	// event which arrived after a local event would otherwise be moved ahead of
-	// it by the DAG/origin_server_ts tie-break, breaking arrival order.
-	if starting_count.is_none() && !pdus.is_empty() {
+	// initial sync and newly joined rooms. Do not re-sort an incremental batch: a
+	// late federated event which arrived after a local event would otherwise be
+	// moved ahead of it by the DAG/origin_server_ts tie-break, breaking arrival
+	// order. `initial_timeline` is supplied by the caller because some initial
+	// timelines (v5 rooms, initial left rooms) still pass a concrete
+	// `starting_count`.
+	if initial_timeline && !pdus.is_empty() {
 		let mut event_to_count = std::collections::HashMap::new();
 		let events: Vec<_> = pdus
 			.into_iter()

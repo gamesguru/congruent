@@ -20,20 +20,23 @@ cross-room by design).
 
 ## How this was derived
 
-- **Spec** (`../spec`, `data/event-schemas/schema/*.yaml` and
-  `content/**/*.md`): every schema field typed as an event id, plus the module
-  docs for relations, replies, threads, replacements, annotations, references,
-  redactions (room v11) and pinned events.
-- **Real PDUs** (`/run/media/shane/shane4tb-ent/dags/merged`): 456,982 event
-  objects across 25 PDU JSONL files (23 merged or remote DAG inputs and two
-  local-DAG fixtures). One `*.rezzy-meta.jsonl` file has 82,235 metadata records
-  and is excluded. The 539,217 total counts PDU and metadata lines together, not
-  just events. The scan checks event-id-shaped strings under `prev_events`,
-  `auth_events`, `redacts`, `content` and `unsigned`, grouped by event type and
-  normalised JSON path. Counts below are occurrences, not distinct events. The
-  scan scripts are throwaway, not in-tree.
-- Not measured: whether any edge in that data actually crosses rooms. This is an
-  inventory of where ids appear, not of which are violated.
+- The edge categories and field paths are a code/spec review. The spec source is
+  [matrix-org/matrix-spec](https://github.com/matrix-org/matrix-spec); it is not
+  vendored in this repository, and this document is an implementation
+  inventory, not a claim that every current spec schema has been exhaustively
+  scanned.
+- The checked-in corpus scanner is
+  [`pdu-reference-edges-scan.py`](pdu-reference-edges-scan.py). Run it from the
+  repository root with `python3 docs/development-gg/pdu-reference-edges-scan.py
+  <merged-pdu-jsonl-dir>`. It scans `*.jsonl` files, excluding
+  `*.rezzy-meta.jsonl`, and groups event-id-shaped strings under `prev_events`,
+  `auth_events`, `redacts`, `content` and `unsigned` by event type and JSON path.
+- The corpus used for the original review is a working tree of
+  [gamesguru/dags](https://github.com/gamesguru/dags) (`merged/*.jsonl`), which
+  is maintained separately and not checked in here. Therefore its event counts
+  and per-field occurrence counts are omitted; the command above reproduces the
+  method against any snapshot. The scan identifies where event IDs appear; it
+  does not determine whether references cross rooms.
 
 ## 1. Structural edges (top-level PDU fields)
 
@@ -52,32 +55,31 @@ Details:
 - **`auth_events[]` - structural, yes.** `get_auth_events` is room-scoped; the
   fork path re-reads from the room's own state HAMT.
 - **Top-level `redacts` - semantic, yes.** This is the builder field, used by
-  pre-v11 rooms (4,640 occurrences in the data).
+  pre-v11 rooms.
 - **`content.redacts` - semantic, yes.** This is the canonical field in room v11
-  and later (16,448 occurrences). The client redact API sets both fields
+  and later. The client redact API sets both fields
   (`src/api/client/redact.rs:36-38`); `create_event` checks each independently.
 - **`event_id` and `room_id` - n/a.** These are the event's own identity, not
   references.
 - **Legacy `prev_state[]` - not emitted by the local PDU model.** It appears in
   older room-version redaction allow-lists, but is absent from the local `Pdu`
-  type. The corpus has 55,487 instances, all empty arrays; no event IDs were
-  found in them.
+  type.
 
 ## 2. Relations, enforced
 
 All of these are under `content.m.relates_to` and are covered by the generic
 `m.relates_to.event_id` check, whatever the `rel_type`:
 
-| Relation                                       | Spec                              | Data                |
-| ---------------------------------------------- | --------------------------------- | ------------------- |
-| `m.annotation` (`m.reaction`)                  | event_annotations                 | 25,259              |
-| `m.replace` (edits)                            | event_replacements                | in `m.room.message` |
-| `m.thread`                                     | threading                         | in `m.room.message` |
-| `m.reference`                                  | reference_relations               | in `m.room.message` |
-| in-room verification (`m.key.verification.*`)  | `m.key.verification.m.relates_to` | 4                   |
-| polls (`org.matrix.msc3381.poll.response/end`) | MSC3381                           | 205                 |
-| encrypted wrappers (`m.room.encrypted`)        | relation stays in clear           | 113                 |
-| stickers                                       | `m.relates_to`                    | 1                   |
+| Relation                                       | Spec                             |
+| ---------------------------------------------- | -------------------------------- |
+| `m.annotation` (`m.reaction`)                  | event_annotations                |
+| `m.replace` (edits)                            | event_replacements               |
+| `m.thread`                                     | threading                        |
+| `m.reference`                                  | reference_relations              |
+| in-room verification (`m.key.verification.*`)  | `content.m.relates_to`           |
+| polls (`org.matrix.msc3381.poll.response/end`) | MSC3381                          |
+| encrypted wrappers (`m.room.encrypted`)        | relation stays in clear          |
+| stickers                                       | `m.relates_to`                   |
 
 | Field                                         | Rule     | Status |
 | --------------------------------------------- | -------- | ------ |
@@ -89,8 +91,8 @@ Details:
 - `m.relates_to.event_id` covers annotations, edits, threads, references, poll
   responses/ends and other `rel_type`s.
 - `m.in_reply_to.event_id` covers rich replies and thread fallback replies. It
-  appears 74,190 times in `m.room.message`, 534 in `m.room.encrypted`, 40 in
-  `m.sticker` and 7 in `m.room.member`.
+  also occurs in event types beyond `m.room.message`, including encrypted,
+  sticker and membership events.
 - A reply's `m.in_reply_to` may stand alone (no `rel_type` and no `event_id` in
   `m.relates_to`), so both paths are read independently.
 
@@ -99,20 +101,24 @@ Details:
 | Field                           | Event                            | Rule         | Status |
 | ------------------------------- | -------------------------------- | ------------ | ------ |
 | `content.pinned[]`              | `m.room.pinned_events`           | semantic     | yes    |
-| `content.predecessor.event_id`  | `m.room.create` (removed in v12) | cross-room   | n/a    |
+| `content.predecessor.event_id`  | `m.room.create` (optional in v12; may still be present) | cross-room   | n/a    |
 | `content.event_id`              | `m.fully_read`                   | account data | n/a    |
 | event-id keys                   | `m.receipt`                      | EDU          | n/a    |
-| `content.m.relates_to.event_id` | `m.key.verification.*`           | to-device    | n/a    |
+| `content.m.relates_to.event_id` | `m.key.verification.*` (in-room) | semantic     | yes    |
+| `content.m.relates_to.event_id` | `m.key.verification.*` (to-device) | to-device  | n/a    |
 
 Details:
 
-- `content.pinned[]`: 1,149 occurrences. A pin of a foreign-room event is
-  exactly the poisoning this inventory is meant to catch.
+- `content.pinned[]`: a pin of a foreign-room event is exactly the poisoning
+  this inventory is meant to catch.
 - `content.predecessor.event_id` points at the old room's last event; never
-  enforce room locality.
+  enforce room locality. It is optional since room v12 and may be omitted, but
+  it may still be present and must not be discarded.
 - `m.fully_read` is account data and `m.receipt` is an EDU, so neither is a PDU.
-- `m.key.verification.*` events are to-device messages; their `m.relates_to`
-  does not name a room event.
+- `m.key.verification.*` events are either to-device messages or in-room
+  events. The in-room form uses `content.m.relates_to` to name the
+  `m.key.verification.request` in the same room and is covered by the generic
+  relation check; the to-device form has no room event to check.
 
 No other current spec event schema names an event id. The remaining spec ids are
 room ids, covered in section 6.
@@ -125,44 +131,45 @@ origin-room reference (forwards, cross-room by design) or an opaque external id
 (ignore).
 
 - **Nheko relations**: `content.im.nheko.relations.v1.relations[].event_id`
-  Appears on `m.room.message` (6,372), `m.reaction` (531) and `m.room.encrypted`
-  (122). It mirrors `m.relates_to` for encrypted rooms. Semantic, yes:
+  Appears on messages, reactions and encrypted events. It mirrors
+  `m.relates_to` for encrypted rooms. Semantic, yes:
   a cross-room target is rejected; malformed entries are skipped.
 - **Nested replacement relation**: `content.m.new_content.m.relates_to...`
-  Appears on edits (8 + 8). Not an edge on its own: the spec says any
+  Appears on edits. Not an edge on its own: the spec says any
   `m.relates_to` inside `m.new_content` is ignored, and the outer `m.relates_to`
   is the edge.
-- **Double nesting**: `content.content.m.relates_to.event_id` Appears on
-  `m.room.message` (2) and `m.reaction` (1). Malformed client output; ignore.
-- **Bot pointers**: `content.net.31a05b.triggered_by.event_id` (689),
-  `content.xyz.maubot.reminder.reply_to` (4) and `content.pong.ping` (160), all
-  on `m.room.message`. Proposed: optional semantic checks.
-- **Forwards**: `content.com.famedly.app.forwarded.event_id` and `.room_id` One
-  occurrence. Also `content.moe.sable.message.forward.original_event_id` and
-  `.original_room_id` (2). The id belongs to the origin room: cross-room by
+- **Double nesting**: `content.content.m.relates_to.event_id`. Malformed client
+  output; ignore.
+- **Bot pointers**: `content.net.31a05b.triggered_by.event_id`,
+  `content.xyz.maubot.reminder.reply_to` and `content.pong.ping` on
+  `m.room.message`. Proposed: optional semantic checks.
+- **Forwards**: `content.com.famedly.app.forwarded.event_id` and `.room_id`,
+  and `content.moe.sable.message.forward.original_event_id` and
+  `.original_room_id`. The id belongs to the origin room: cross-room by
   design.
-- **Bridge ids**: `content.origin_id` (1) and `content.remote_id` (11) are
+- **Bridge ids**: `content.origin_id` and `content.remote_id` are
   opaque external ids that happen to look like event ids; ignore.
-- **Message text**: `content.body` (2) just contains an event id typed into the
+- **Message text**: `content.body` can contain an event id typed into the
   message; not an edge.
-- **MSC2836**: `content.m.relationship.event_id` Did not appear in the data. It
-  is a real gap in the spec/MSC sense but has no sample here. Proposed:
+- **MSC2836**: `content.m.relationship.event_id` was not observed in the
+  original corpus. It is a gap in the spec/MSC sense, though there is no checked
+  in sample. Proposed:
   semantic, not enforced.
 
 ## 5. Server-populated, not client-settable
 
 All of these live under `unsigned`, which we populate from our own state:
 
-- `unsigned.replaces_state` (63,379): event id of the previous state event.
+- `unsigned.replaces_state`: event id of the previous state event.
 - `unsigned.prev_content` (for example `.pinned[]`): a copy of the replaced
   state's content, which may itself contain event ids.
-- `unsigned.redacted_by` (180) and `unsigned.redacted_because` (about 9,800):
+- `unsigned.redacted_by` and `unsigned.redacted_because`:
   embed the redaction event, including its `prev_events`, `auth_events` and
   `redacts`.
-- `unsigned.m.relations.<rel_type>.latest_event` (about 270): a bundled
+- `unsigned.m.relations.<rel_type>.latest_event`: a bundled
   aggregation containing an embedded event and its relation ids. The spec
   defines bundles for `m.replace`, `m.thread` and `m.reference`.
-- `unsigned.invite_room_state` and `unsigned.knock_room_state` (26): stripped
+- `unsigned.invite_room_state` and `unsigned.knock_room_state`: stripped
   state of the room being joined or invited to; ids refer to _that_ room.
 
 Not validated at construction. Revisit if any becomes client-settable, since
@@ -181,8 +188,7 @@ Not validated at construction. Revisit if any becomes client-settable, since
 
 Details:
 
-- `m.space.child` and `m.space.parent` use a room id as the state key (198 and
-  29 occurrences in the data).
+- `m.space.child` and `m.space.parent` use a room id as the state key.
 - `content.allow[].room_id` is for restricted joins (room v8+). A policy rule's
   `content.entity` may also be a room id or alias. Both refer to other rooms by
   design.

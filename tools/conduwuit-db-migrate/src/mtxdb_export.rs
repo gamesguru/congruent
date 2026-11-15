@@ -303,6 +303,19 @@ fn write_room(
 	Ok(path)
 }
 
+/// Event IDs whose `eventid_metadata` record says `is_outlier`.
+///
+/// The record is bincode (fixed-width, little-endian) of `EventMetadata`, whose
+/// first two fields are `short_room_id: u64` and `is_outlier: bool`, so the flag
+/// is byte 8. Rows too short to hold it (or with a non-boolean byte) are skipped.
+fn metadata_outlier_ids(db: &DB) -> ExportResult<HashSet<String>> {
+	Ok(rows(db, "eventid_metadata")?
+		.into_iter()
+		.filter(|(_, value)| value.get(8) == Some(&1))
+		.filter_map(|(event_id, _)| String::from_utf8(event_id).ok())
+		.collect())
+}
+
 /// `eventid_pdu` carries every body, including events the source kept only as
 /// outliers. The first record for an ID wins when the maps are merged, so apply
 /// the outlier claim from `eventid_outlierpdu` afterwards — but never to an
@@ -316,6 +329,27 @@ fn apply_outlier_claims(
 		if event.stream_ordering.is_none() && outlier_ids.contains(&event.id) {
 			event.outlier = true;
 		}
+	}
+}
+
+/// A stale secondary index can disagree with the event body's authoritative
+/// ID. When the row's old key is still indexed as a timeline event, transfer
+/// that membership and any real stream ordering to the parsed ID.
+fn adopt_stale_index_entry(
+	event: &mut Event,
+	indexed_id: Option<&str>,
+	timeline_ids: &mut HashSet<String>,
+	event_to_stream_order: &HashMap<String, i64>,
+) {
+	let Some(indexed_id) = indexed_id else {
+		return;
+	};
+	if indexed_id == event.id || !timeline_ids.contains(indexed_id) {
+		return;
+	}
+	timeline_ids.insert(event.id.clone());
+	if event.stream_ordering.is_none() {
+		event.stream_ordering = event_to_stream_order.get(indexed_id).copied();
 	}
 }
 
@@ -697,10 +731,19 @@ pub fn export(
 	// Current layout: eventid_pdu is the source of truth.
 	for (event_id, raw) in rows(&db, "eventid_pdu")? {
 		let fallback = std::str::from_utf8(&event_id).ok();
-		let (event, mismatch) =
+		let (mut event, mismatch) =
 			parse_pdu(&raw, fallback, &mut event_to_room).map_err(|error| {
 				format!("bad eventid_pdu row {}: {error}", String::from_utf8_lossy(&event_id))
 			})?;
+		// A stale secondary index can disagree with the body's authoritative
+		// event ID. If the row's key is still indexed as a timeline event, carry
+		// its membership and stream ordering over to the parsed ID.
+		adopt_stale_index_entry(
+			&mut event,
+			fallback,
+			&mut timeline_ids,
+			&event_to_stream_order,
+		);
 		id_mismatches += usize::from(mismatch);
 		add(event);
 	}
@@ -739,6 +782,9 @@ pub fn export(
 			 event ID"
 		);
 	}
+	// The unified layout keeps outlier bodies in `eventid_pdu` and records their
+	// status only in `eventid_metadata.is_outlier`.
+	outlier_ids.extend(metadata_outlier_ids(&db)?);
 	apply_outlier_claims(&mut events, &outlier_ids);
 	let synthesized = synthesize_stream_orderings(&mut events, &timeline_ids, &outlier_ids);
 	if synthesized > 0 {
@@ -894,6 +940,58 @@ mod tests {
 			exported["$unindexed"].stream_ordering.is_none(),
 			"an event with no timeline-index entry must not be promoted into the timeline"
 		);
+	}
+
+	#[test]
+	fn stale_timeline_index_key_moves_to_the_authoritative_event_id() {
+		let mut event = Event {
+			id: "$stored".to_owned(),
+			room: "!room:example.org".to_owned(),
+			pdu: Value::Object(Object::new()),
+			prev: Value::Array(Vec::new()),
+			auth: Value::Array(Vec::new()),
+			stream_ordering: None,
+			depth: None,
+			outlier: false,
+			rejection_code: None,
+			soft_fail_code: None,
+		};
+		let mut timeline_ids = HashSet::from(["$stale".to_owned()]);
+		let event_to_stream_order = HashMap::from([("$stale".to_owned(), 42_i64)]);
+
+		adopt_stale_index_entry(
+			&mut event,
+			Some("$stale"),
+			&mut timeline_ids,
+			&event_to_stream_order,
+		);
+
+		assert_eq!(event.stream_ordering, Some(42));
+		assert!(timeline_ids.contains("$stored"));
+	}
+
+	#[test]
+	fn metadata_outlier_flag_is_read_from_byte_eight() {
+		let dir = std::env::temp_dir()
+			.join(format!("mtxdb-export-outliers-{}", std::process::id()));
+		let _ = fs::remove_dir_all(&dir);
+		let mut options = Options::default();
+		options.create_if_missing(true);
+		options.create_missing_column_families(true);
+		let db = DB::open_cf(&options, &dir, ["eventid_metadata"]).unwrap();
+		let cf = db.cf_handle("eventid_metadata").unwrap();
+		let mut outlier = vec![0_u8; 9];
+		outlier[8] = 1;
+		let mut timeline = vec![0_u8; 9];
+		timeline[8] = 0;
+		db.put_cf(cf, "$outlier", outlier).unwrap();
+		db.put_cf(cf, "$timeline", timeline).unwrap();
+
+		let ids = metadata_outlier_ids(&db).unwrap();
+		drop(db);
+		let _ = fs::remove_dir_all(&dir);
+
+		assert_eq!(ids, HashSet::from(["$outlier".to_owned()]));
 	}
 
 	#[test]

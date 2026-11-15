@@ -543,6 +543,10 @@ async fn build_timeline(
 	} else {
 		last_sync_end_count.map(PduCount::Normal)
 	};
+	// Capture the initial/newly-joined case before a partial-state join narrows
+	// the window to the user's join; that window is still an initial timeline
+	// and must be topologically ordered.
+	let initial_timeline = starting_count.is_none();
 
 	// A partial-state join promotes the remote room's state events into the
 	// timeline; once the resync is done the user should see those as state and
@@ -575,6 +579,7 @@ async fn build_timeline(
 		Some(PduCount::Normal(current_count)),
 		timeline_limit,
 		false,
+		initial_timeline,
 	)
 	.await
 }

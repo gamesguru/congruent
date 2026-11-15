@@ -480,6 +480,7 @@ async fn build_left_state_and_timeline(
 			Some(timeline_end_count),
 			timeline_limit,
 			false,
+			last_sync_end_count.is_none(),
 		)
 		.await?
 	};

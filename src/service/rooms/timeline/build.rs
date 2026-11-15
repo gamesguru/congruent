@@ -2,8 +2,11 @@ use std::{collections::HashSet, iter::once};
 
 use conduwuit::{debug, info, trace};
 use conduwuit_core::{
-	Err, Result, err, implement,
-	matrix::{event::Event, pdu::PduBuilder},
+	Err, PduEvent, Result, err, implement,
+	matrix::{
+		event::Event,
+		pdu::{PduBuilder, RawPduId},
+	},
 	utils::{IterStream, ReadyExt},
 };
 use futures::{FutureExt, StreamExt};
@@ -196,16 +199,36 @@ pub async fn build_and_append_pdu_tracked(
 			.await?;
 	}
 
+	self.queue_pdu_federation(&pdu, &room_id, pdu_id).await?;
+
+	trace!("Event {} in room {:?} has been appended", pdu.event_id(), room_id);
+	Ok(pdu.event_id().to_owned())
+}
+
+/// Queue an already-appended local PDU for federation to the room's remote
+/// servers (plus the affected server for membership events), notify
+/// reconciliation listeners, and record partial-state sends. Also used to
+/// finish a send whose append succeeded in an earlier, interrupted attempt.
+///
+/// # Errors
+/// Propagates sending-queue errors.
+#[implement(super::Service)]
+pub async fn queue_pdu_federation(
+	&self,
+	pdu: &PduEvent,
+	room_id: &RoomId,
+	pdu_id: RawPduId,
+) -> Result {
 	let mut servers: HashSet<OwnedServerName> = self
 		.services
 		.state_cache
-		.room_servers(&room_id)
+		.room_servers(room_id)
 		.collect()
 		.await;
 
 	// A partial-state room has an incomplete member list, so the server we
 	// joined through may be missing from `room_servers`.
-	if let Ok(Some(partial_server)) = self.services.state_partial.partial_server(&room_id).await {
+	if let Ok(Some(partial_server)) = self.services.state_partial.partial_server(room_id).await {
 		servers.insert(partial_server);
 	}
 
@@ -268,24 +291,23 @@ pub async fn build_and_append_pdu_tracked(
 	}
 
 	// Tell reconciliation a local write happened. No receiver is not an error.
-	let _ = self.activity.send(room_id.clone());
+	let _ = self.activity.send(room_id.to_owned());
 
 	// Our member list is incomplete until the resync finishes; send this event to
 	// the remaining servers then.
 	if self
 		.services
 		.state_partial
-		.partial_server(&room_id)
+		.partial_server(room_id)
 		.await
 		.is_ok_and(|s| s.is_some())
 	{
 		self.services
 			.state_partial
-			.record_partial_send(&room_id, pdu_id, &servers);
+			.record_partial_send(room_id, pdu_id, &servers);
 	}
 
-	trace!("Event {} in room {:?} has been appended", pdu.event_id(), room_id);
-	Ok(pdu.event_id().to_owned())
+	Ok(())
 }
 
 /// Assert invariants about the admin room, to prevent (for example) all admins

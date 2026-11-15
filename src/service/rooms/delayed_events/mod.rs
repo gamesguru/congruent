@@ -493,6 +493,9 @@ impl Service {
 				unsigned.insert("delay_id".to_owned(), delay_id.clone().into());
 				let mut pending_event_id = event.pending_event_id.clone();
 
+				// Set when the event was appended by an earlier, interrupted
+				// attempt: the first attempt never reached federation queueing.
+				let mut recovered = false;
 				let result = if let Some(event_id) = &pending_event_id {
 					let already_appended = match self.delayed_event_is_appended(event_id).await {
 						| Ok(already_appended) => already_appended,
@@ -502,15 +505,18 @@ impl Service {
 						},
 					};
 					if already_appended {
+						recovered = true;
 						Ok(event_id.clone())
 					} else {
 						// The body is written before the timeline row. If a previous
 						// attempt got that far, retrying by building a new PDU would
 						// append a second event; resume the persisted PDU instead.
 						match self.services.timeline.get_pdu_json(event_id) {
-							| Ok(_) =>
+							| Ok(_) => {
+								recovered = true;
 								self.resume_persisted_event(&event, event_id, &state_lock)
-									.await,
+									.await
+							},
 							| Err(error @ Error::Database(_)) => Err(error),
 							| Err(_) =>
 								self.send_scheduled_event(
@@ -542,11 +548,34 @@ impl Service {
 								.delayid_scheduleddelayedevent
 								.put(delay_id, Json(event.clone()));
 							match self.delayed_event_is_appended(&event_id).await {
-								| Ok(true) => Ok(event_id),
+								| Ok(true) => {
+									recovered = true;
+									Ok(event_id)
+								},
 								| _ => Err(error),
 							}
 						} else {
 							Err(error)
+						}
+					},
+					| result => result,
+				};
+
+				// The append is durable but federation may never have been queued.
+				// Queueing is idempotent for receivers (they dedupe by event ID), so
+				// do it before the schedule is dropped; on failure keep the schedule
+				// so the retry can finish the send.
+				let result = match result {
+					| Ok(event_id) if recovered => {
+						match self
+							.queue_recovered_federation(&event.room_id, &event_id)
+							.await
+						{
+							| Ok(()) => Ok(event_id),
+							| Err(error) => {
+								self.scheduled_events.lock().await.insert(delay_id.clone());
+								return Err(error);
+							},
 						}
 					},
 					| result => result,
@@ -727,6 +756,21 @@ impl Service {
 		}
 
 		Ok(event_id.clone())
+	}
+
+	/// Queue an event that an earlier attempt appended to the timeline for
+	/// federation, as the normal send path does right after the append.
+	async fn queue_recovered_federation(
+		&self,
+		room_id: &RoomId,
+		event_id: &OwnedEventId,
+	) -> Result {
+		let pdu = self.services.timeline.get_pdu(event_id)?;
+		let pdu_id = self.services.timeline.get_pdu_id(event_id).await?;
+		self.services
+			.timeline
+			.queue_pdu_federation(&pdu, room_id, pdu_id)
+			.await
 	}
 
 	async fn delayed_event_is_appended(&self, event_id: &OwnedEventId) -> Result<bool> {

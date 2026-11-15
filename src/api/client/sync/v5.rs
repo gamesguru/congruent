@@ -1332,6 +1332,7 @@ where
 				Some(PduCount::from(next_batch)),
 				timeline_limit,
 				is_expanded_timeline,
+				*roomsince == 0,
 			)
 			.await
 			{

@@ -8,8 +8,11 @@ it is.
 Complement is included as a git submodule in this repository at `complement-src`. To initialize it, run:
 
 ```bash
+git submodule sync -- complement-src
 git submodule update --init --recursive
 ```
+
+`sync` refreshes the submodule URL in existing clones if `.gitmodules` has changed.
 
 To test against Complement, with Nix (or [Lix](https://lix.systems) and
 [direnv installed and set up][direnv] (run `direnv allow` after setting up the hook), you can:
@@ -29,8 +32,13 @@ and run the script.
 
 If you're on macOS and need to build an image, run `nix build .#linux-complement`.
 
-We have a Complement fork as some tests have needed to be fixed. This can be found
-at [continuwuation/complement](https://forgejo.ellis.link/continuwuation/complement)
+We carry a Complement fork as some tests have needed to be fixed. The
+`complement-src` submodule tracks
+[gamesguru/complement](https://github.com/gamesguru/complement), which is the
+supported source for fresh checkouts. An older continuwuation fork also exists
+at [continuwuation/complement](https://forgejo.ellis.link/continuwuation/complement);
+if you switch an existing checkout between the two, run
+`git submodule sync -- complement-src` before updating it.
 
 ### Troubleshooting
 
