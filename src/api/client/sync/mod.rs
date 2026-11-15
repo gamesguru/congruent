@@ -51,6 +51,7 @@ impl TimelinePdus {
 }
 
 /// Load up to `limit` PDUs in the range (starting_count, ending_count].
+#[allow(clippy::too_many_arguments)]
 async fn load_timeline(
 	services: &Services,
 	sender_user: &UserId,
