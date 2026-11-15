@@ -42,7 +42,7 @@ cross-room by design).
 | Previous events  | `prev_events[]`          | structural | yes    |
 | Auth events      | `auth_events[]`          | structural | yes    |
 | Redaction target | top-level `redacts`      | semantic   | yes    |
-| Redaction target | `content.redacts` (v11+) | semantic   | no     |
+| Redaction target | `content.redacts` (v11+) | semantic   | yes    |
 | Event identity   | `event_id`, `room_id`    | n/a        | n/a    |
 
 Details:
