@@ -322,6 +322,32 @@ just replace tier 1's/2's code path outright on day one.
 - Whether to keep tiers 1/2's caches after this lands, or clean them up in the
   same change.
 
+## Complexity estimates (code-derived, not benchmarked)
+
+Derived by reading `backfill.rs`, `data.rs`, mtxdb's CSR store and Dendrite's
+`syncapi/routing/messages.go`. Nothing here was measured; treat them as shapes,
+not timings. Notation: E = events in the room, W = scanned timeline window
+(clamped to 100-500), P = `prev_events` edges among those W events, R = rounds
+(at most 5), G = open backward extremities in the room, H = indexed edge records
+in the scanned depth range, c = children of one missing parent, p = missing
+`prev_events` of one event.
+
+| Path                                            | Cost                                                    | Notes                                                                                                                                                                                                                                               |
+| ----------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Current `backfill_if_required` scan             | O(R \* (W + P)) per `/messages` call                    | Bounded by the window, not E. The scan and gap detection rerun every round. The failed-gap cache only avoids repeating federation attempts.                                                                                                         |
+| Fallback anchor lookup (`nearest_older_events`) | O(log E + 10) per attempted gap                         | A `topo_pdus_rev` seek plus at most 10 rows, not a scan of the in-memory window. At most 4 gaps are attempted per round, each with one federation call.                                                                                             |
+| Persisted per-edge index, read                  | O(log E + H) per page                                   | A cursor-bounded range scan, then a batch check of the H parents and a dedup of child IDs. H can exceed the real open-gap count: entries may be stale, and a child with several missing parents has several records.                                |
+| Persisted per-edge index, write                 | O(p) puts per event; O(c) deletes when a parent arrives | Delete goes through the parent-keyed index, in the same batch as the event insert.                                                                                                                                                                  |
+| mtxdb `reverse_family`                          | O(prev edges in the room) per call                      | Rebuilt from the family's forward rows each call; sealed segments are not cached, only the decoded tail. Viable only if built once per request.                                                                                                     |
+| Dendrite (forward gaps)                         | O(G log G) per candidate-list build                     | It loads all open extremities and sorts by position, then memoises with a cursor and a `tried` set. A backfill that stores events invalidates the list, so a request can rebuild it in later rounds; worst case is more than one build per request. |
+
+The unbounded O(E^2) failure is repeated processing of the same gaps across
+rounds or requests. In this implementation the round cap bounds the work per
+call, and the failed-gap cache (60s TTL) reduces repeat federation calls, but
+the scan still runs. Dendrite's cursor and `tried` set avoid repeated selection
+within a request without making selection proportional to gaps near the cursor.
+Only a cursor-bounded read on the persisted index does that.
+
 ## Sizing
 
 Not a single sitting. Rough shape: schema + write-time bookkeeping + its own
