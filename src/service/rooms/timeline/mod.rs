@@ -207,6 +207,12 @@ pub struct Service {
 	/// pure CPU/network waste. This is intentionally short TTL so a transient
 	/// remote failure can still be retried shortly after.
 	pub backfill_gap_repeat_cache: moka::sync::Cache<(OwnedRoomId, u64), ()>,
+	/// Backward extremities (the event whose parent is missing) that neither
+	/// `/backfill` nor the `/get_missing_events` fallback could fill. They are
+	/// left out of later scans so one unservable gap cannot spend the retry
+	/// budget of every `/messages` request and starve the gaps behind it.
+	/// Short TTL: the remote may serve it later.
+	pub backfill_failed_gaps: moka::sync::Cache<(OwnedRoomId, OwnedEventId), ()>,
 	pub last_timeline_count_cache: moka::sync::Cache<OwnedRoomId, PduCount>,
 	/// Arbiter between outlier promotions (see
 	/// [`Self::promote_outlier_batch`]) and event rejections racing for the
@@ -263,6 +269,10 @@ impl crate::Service for Service {
 			backfill_gap_repeat_cache: moka::sync::Cache::builder()
 				.max_capacity(100_000)
 				.time_to_live(std::time::Duration::from_secs(15))
+				.build(),
+			backfill_failed_gaps: moka::sync::Cache::builder()
+				.max_capacity(100_000)
+				.time_to_live(std::time::Duration::from_secs(60))
 				.build(),
 			services: Services {
 				server: args.server.clone(),
