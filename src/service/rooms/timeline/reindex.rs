@@ -1,5 +1,3 @@
-use std::{collections::HashMap, sync::Arc};
-
 use conduwuit_core::{
 	Result, info,
 	matrix::{
@@ -9,7 +7,6 @@ use conduwuit_core::{
 	warn,
 };
 use futures::StreamExt;
-use roaring::RoaringTreemap;
 use slipstream::{OwnedEventId, RoomId};
 
 use super::{Service, metadata::EventMetadata};
@@ -29,7 +26,6 @@ pub struct ReindexStats {
 	pub repaired_topo_index: usize,
 	pub repaired_relations: usize,
 	pub repaired_references: usize,
-	pub repaired_search_index: usize,
 	pub extremities_updated: bool,
 	pub extremities_count: usize,
 }
@@ -40,7 +36,7 @@ impl std::fmt::Display for ReindexStats {
 			f,
 			"total={}, missing_pdu={}, hash_mismatches={}, short_ids={}, metadata={}, \
 			 prev_events={}, auth_events={}, auth_chains={}, topo_index={}, relations={}, \
-			 references={}, search={}, extremities={} (updated={})",
+			 references={}, extremities={} (updated={})",
 			self.total_events,
 			self.missing_pdu,
 			self.hash_mismatches,
@@ -52,7 +48,6 @@ impl std::fmt::Display for ReindexStats {
 			self.repaired_topo_index,
 			self.repaired_relations,
 			self.repaired_references,
-			self.repaired_search_index,
 			self.extremities_count,
 			self.extremities_updated,
 		)
@@ -61,7 +56,7 @@ impl std::fmt::Display for ReindexStats {
 
 impl Service {
 	/// Sweep all events in a room and repopulate any missing derived data
-	/// from the `eventid_pdu` source of truth.
+	/// from the authoritative mtxdb event store.
 	///
 	/// This is safe to run at any time. It preserves canonical stream order and
 	/// existing local topo depths, while rebuilding the room topo index from
@@ -115,25 +110,21 @@ impl Service {
 			info!("reindex_short: cleared {cleared_topo} topo index rows for {room_id}");
 		}
 
-		// Auth chain cache for incremental computation (roaring bitmaps)
-		let mut auth_chain_cache: HashMap<ShortEventId, Arc<RoaringTreemap>> = HashMap::new();
-
 		for (i, (count, event_id)) in events.iter().enumerate() {
 			if i.is_multiple_of(1000) {
 				info!(
 					"reindex_short: room={room_id} progress: {i}/{} events (hash_mismatches={}, \
-					 metadata={}, prev_events={}, auth_events={}, auth_chains={}, search={})",
+					 metadata={}, prev_events={}, auth_events={}, auth_chains={})",
 					stats.total_events,
 					stats.hash_mismatches,
 					stats.repaired_metadata,
 					stats.repaired_prev_events,
 					stats.repaired_auth_events,
 					stats.repaired_auth_chains,
-					stats.repaired_search_index,
 				);
 			}
 
-			let Ok((pdu, raw_bytes)) = self.db.get_pdu_and_raw_bytes(event_id).await else {
+			let Ok((pdu, raw_bytes)) = self.db.get_pdu_and_raw_bytes(event_id) else {
 				stats.missing_pdu = stats.missing_pdu.saturating_add(1);
 				continue;
 			};
@@ -259,8 +250,12 @@ impl Service {
 
 			let stored_auth_shorts = self.db.get_shortauthevents(short_eid).await.ok();
 			let auth_events_repaired = stored_auth_shorts.as_ref() != Some(&auth_shorts);
+			// The mtxdb closure is written together with the event's edges.
+			let mut closure_persisted = false;
 			if auth_events_repaired {
-				self.db.store_shortauthevents(short_eid, &auth_shorts);
+				let json = self.db.get_pdu_json(event_id)?;
+				self.db.write_event_to_mtxdb(&pdu, &json).await?;
+				closure_persisted = true;
 				stats.repaired_auth_events = stats.repaired_auth_events.saturating_add(1);
 			}
 
@@ -274,31 +269,28 @@ impl Service {
 					.await
 					.is_err()
 			{
-				let mut full_chain = RoaringTreemap::new();
-				for &auth_short in &auth_shorts {
-					full_chain.insert(auth_short);
-					// Use our local cache (built during this sweep) for ancestors
-					if let Some(ancestor_chain) = auth_chain_cache.get(&auth_short) {
-						full_chain |= ancestor_chain.as_ref();
-					}
+				// Edges matched but no closure exists: persist it before counting
+				// the chain as repaired, so the RAM cache never diverges from mtxdb.
+				if !closure_persisted && let Ok(json) = self.db.get_pdu_json(event_id) {
+					self.db.write_event_to_mtxdb(&pdu, &json).await?;
+					closure_persisted = true;
 				}
 
-				let chain_arc = Arc::new(full_chain);
-				self.services.auth_chain.cache_auth_chain_bitmap(
-					shortroomid,
-					short_eid,
-					&chain_arc,
-				);
-				auth_chain_cache.insert(short_eid, chain_arc);
-				stats.repaired_auth_chains = stats.repaired_auth_chains.saturating_add(1);
-			} else if let Ok(existing) = self
-				.services
-				.auth_chain
-				.get_cached_eventid_authchain(shortroomid, short_eid)
-				.await
-			{
-				// Populate local cache for descendants
-				auth_chain_cache.insert(short_eid, existing);
+				// A write does not guarantee a persisted closure: mtxdb omits it when
+				// an auth ancestor lacks one. Count and cache the chain only if the
+				// persisted closure is actually readable.
+				let persisted = if closure_persisted {
+					self.services
+						.auth_chain
+						.reload_persisted_eventid_authchain(shortroomid, short_eid)
+						.await
+						.ok()
+				} else {
+					None
+				};
+				if persisted.is_some() {
+					stats.repaired_auth_chains = stats.repaired_auth_chains.saturating_add(1);
+				}
 			}
 
 			// --- tofrom_relation ---
@@ -319,10 +311,6 @@ impl Service {
 					.mark_as_referenced(room_id, prev_event_ids.iter().map(AsRef::as_ref));
 				stats.repaired_references = stats.repaired_references.saturating_add(1);
 			}
-
-			// --- tokenids (search index) ---
-			self.index_pdu_search(shortroomid, &pdu_id, &pdu);
-			stats.repaired_search_index = stats.repaired_search_index.saturating_add(1);
 		}
 
 		if rebuild_topo && topo_batch_len > 0 {

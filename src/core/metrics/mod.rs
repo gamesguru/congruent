@@ -1,5 +1,9 @@
 use std::sync::atomic::{AtomicU32, AtomicU64};
 
+pub mod outbound;
+
+pub use outbound::{OutboundMetrics, OutboundSnapshot, SelectionSource, SendOutcome};
+
 pub struct Metrics {
 	// TODO: move stats
 	pub requests_handle_active: AtomicU32,
@@ -36,6 +40,9 @@ pub struct Metrics {
 	pub state_res_active: AtomicU32,
 	pub auth_chain_fetches_active: AtomicU32,
 	pub space_hierarchy_workers_active: AtomicU32,
+
+	// Outbound federation sends
+	pub outbound: OutboundMetrics,
 }
 
 impl Metrics {
@@ -69,6 +76,7 @@ impl Metrics {
 			state_res_active: AtomicU32::new(0),
 			auth_chain_fetches_active: AtomicU32::new(0),
 			space_hierarchy_workers_active: AtomicU32::new(0),
+			outbound: OutboundMetrics::default(),
 		}
 	}
 

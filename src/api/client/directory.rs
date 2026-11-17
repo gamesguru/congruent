@@ -108,12 +108,7 @@ pub(crate) async fn get_public_rooms_route(
 		err!(Request(Unknown(warn!(?body.server, "Failed to return /publicRooms: {e}"))))
 	})?;
 
-	Ok(get_public_rooms::v3::Response {
-		chunk: response.chunk,
-		prev_batch: response.prev_batch,
-		next_batch: response.next_batch,
-		total_room_count_estimate: response.total_room_count_estimate,
-	})
+	Ok(response)
 }
 
 /// # `PUT /_matrix/client/r0/directory/list/room/{roomId}`
@@ -244,12 +239,7 @@ pub(crate) async fn get_public_rooms_filtered_helper(
 			)
 			.await?;
 
-		return Ok(get_public_rooms_filtered::v3::Response {
-			chunk: response.chunk,
-			prev_batch: response.prev_batch,
-			next_batch: response.next_batch,
-			total_room_count_estimate: response.total_room_count_estimate,
-		});
+		return Ok(response);
 	}
 
 	// Use the spec maximum as the implicit default. A smaller default page can

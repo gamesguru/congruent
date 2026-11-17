@@ -34,6 +34,10 @@ impl Service {
 		force_reindex: bool,
 		allow_incomplete: bool,
 	) -> Result<usize> {
+		self.services
+			.state
+			.ensure_room_state_rebuilt(room_id)
+			.await?;
 		let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
 		let insert_lock = self.mutex_insert.lock(room_id).await;
 
@@ -285,11 +289,10 @@ impl Service {
 					.await
 				{
 					let state_lock = self.services.state.mutex.lock(room_id).await;
-					self.services.state.set_room_state_hamt(
-						room_id,
-						&root_handle,
-						&state_lock,
-					)?;
+					self.services
+						.state
+						.set_room_state_hamt(room_id, &root_handle, &state_lock)
+						.await?;
 					info!(
 						"reorder_timeline: bootstrapped room state to latest root handle from \
 						 latest event {latest_eid}"

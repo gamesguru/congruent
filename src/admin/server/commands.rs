@@ -509,6 +509,102 @@ pub(super) async fn build_info(&self) -> Result {
 	self.write_str(&info).await
 }
 
+/// Render outbound federation send metrics.
+///
+/// Durations run from the start of `send_events_dest_federation` to the
+/// response being collected, so they include the remote round trip. The DB
+/// figures count explicit sender-path accessor calls (PDU fetches and
+/// destination selection), not every redb or mtxdb operation.
+fn write_outbound_metrics(
+	info: &mut String,
+	snap: &conduwuit::metrics::OutboundSnapshot,
+	minute: &conduwuit::metrics::OutboundSnapshot,
+) -> std::fmt::Result {
+	use conduwuit::metrics::outbound::{LATENCY_BUCKETS, bucket_upper_ms};
+
+	writeln!(info, "\n## Outbound Federation Sends (since start)")?;
+	writeln!(info, "**Attempts:** {}", snap.attempts)?;
+	writeln!(
+		info,
+		"**Outcomes:** ok {}, timeout {}, connect {}, remote error {}, other {}, aborted {}",
+		snap.ok, snap.timeout, snap.connect, snap.remote, snap.other, snap.aborted
+	)?;
+	writeln!(
+		info,
+		"**Connection setup:** TCP dials {} ({} failed), TLS handshakes {} ({} failed)",
+		snap.connect_attempts,
+		snap.connect_failures,
+		snap.tls_handshakes,
+		snap.tls_handshake_failures
+	)?;
+
+	let timed = snap.timed();
+	if timed > 0 {
+		// Tenths of a millisecond, as integers: this report is rendered on the
+		// admin path and does not need float conversions.
+		let avg_tenths_ms = snap.time_us.checked_div(timed).unwrap_or(0) / 100;
+		let max_tenths_ms = snap.time_max_us / 100;
+		writeln!(
+			info,
+			"**Send time (selection to response):** avg {}.{}ms, max {}.{}ms",
+			avg_tenths_ms / 10,
+			avg_tenths_ms % 10,
+			max_tenths_ms / 10,
+			max_tenths_ms % 10,
+		)?;
+		let mut line = String::new();
+		for i in 0..LATENCY_BUCKETS {
+			if snap.latency[i] == 0 {
+				continue;
+			}
+			match bucket_upper_ms(i) {
+				| Some(ms) => write!(line, "<={ms}ms: {}  ", snap.latency[i])?,
+				| None =>
+					write!(line, ">{}ms: {}  ", 1_u64 << (LATENCY_BUCKETS - 2), snap.latency[i])?,
+			}
+		}
+		writeln!(info, "**Latency buckets:** {}", line.trim_end())?;
+	}
+
+	writeln!(
+		info,
+		"**PDU fetches while building transactions:** {}",
+		snap.sender_path_db_calls
+	)?;
+	write_selection_line(info, "Selections (since start)", snap)?;
+	write_selection_line(info, "Selections (last 1m)", minute)?;
+	Ok(())
+}
+
+/// One line of destination-selection accessor-call counts.
+///
+/// These are explicit call sites in the sender's selection path, one per
+/// accessor invocation (loops count per iteration). They are not redb or
+/// mtxdb operation counts: lookups nested inside an accessor are not included.
+fn write_selection_line(
+	info: &mut String,
+	label: &str,
+	snap: &conduwuit::metrics::OutboundSnapshot,
+) -> std::fmt::Result {
+	use conduwuit::metrics::SelectionSource;
+
+	let mut parts = String::new();
+	for source in SelectionSource::ALL {
+		write!(parts, "{} {}  ", source.label(), snap.selection_calls[source.index()])?;
+	}
+	let total: u64 = snap
+		.selection_calls
+		.iter()
+		.fold(0, |a, b| a.saturating_add(*b));
+	let per = total.checked_div(snap.selections).unwrap_or(0);
+	writeln!(
+		info,
+		"**{label}:** {} selections, {total} accessor calls (~{per}/selection): {}",
+		snap.selections,
+		parts.trim_end()
+	)
+}
+
 #[admin_command]
 pub(super) async fn diagnostics(&self) -> Result {
 	let mut info = String::new();
@@ -613,6 +709,27 @@ pub(super) async fn diagnostics(&self) -> Result {
 		metrics
 			.dns_requests_fail
 			.load(std::sync::atomic::Ordering::Relaxed)
+	)?;
+
+	write_outbound_metrics(
+		&mut info,
+		&metrics.outbound.snapshot(),
+		&metrics.outbound.last_minute(),
+	)?;
+	let mtxdb = self.services.mtxdb.operation_stats();
+	let redb = self.services.db.stats_snapshot();
+	writeln!(info, "\n## Database Operations (since start)")?;
+	writeln!(
+		info,
+		"**mtxdb store calls:** reads {}, scans {}, writes {}, commits {} (logical API calls; \
+		 not physical I/O)",
+		mtxdb.reads, mtxdb.scans, mtxdb.writes, mtxdb.commits
+	)?;
+	writeln!(
+		info,
+		"**redb metadata calls:** reads {}, commits {}, write operations {} (logical \
+		 operations; not physical I/O)",
+		redb.reads, redb.commits, redb.write_operations
 	)?;
 
 	writeln!(info, "\n## Background Tasks")?;

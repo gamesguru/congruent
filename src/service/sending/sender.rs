@@ -12,6 +12,7 @@ use conduwuit::{debug, info};
 use conduwuit_core::{
 	Error, Event, Result, debug_info, err,
 	matrix::pdu::RawJson as RawJsonValue,
+	metrics::{SelectionSource, SendOutcome},
 	result::LogErr,
 	trace,
 	utils::{ReadyExt, calculate_hash, continue_exponential_backoff_secs, stream::BroadbandExt},
@@ -141,7 +142,7 @@ async fn compute_outbound_state_hashes(
 			| None => StateHashEntry::limited(with_inputs),
 			| Some(digests) => {
 				let inputs = if with_inputs {
-					let pdu = services.timeline.get_pdu(event_id).await.ok();
+					let pdu = services.timeline.get_pdu(event_id).ok();
 					let digest = match pdu {
 						| Some(pdu) =>
 							services
@@ -718,6 +719,15 @@ impl Service {
 		}
 	}
 
+	/// Count `n` explicit accessor calls made while selecting what to send.
+	#[inline]
+	fn count_selection(&self, source: SelectionSource, n: u64) {
+		self.server
+			.metrics
+			.outbound
+			.record_selection_calls(source, n);
+	}
+
 	async fn select_events(
 		&self,
 		dest: &Destination,
@@ -725,6 +735,7 @@ impl Service {
 		statuses: &mut CurTransactionStatus,
 		epoch: Option<u64>,
 	) -> Result<Option<(Vec<SendingEvent>, Option<u64>)>> {
+		self.server.metrics.outbound.record_selection();
 		let has_pdu = new_events
 			.iter()
 			.any(|(_, e)| matches!(e, SendingEvent::Pdu(_)));
@@ -746,6 +757,7 @@ impl Service {
 
 		// Must retry any previous transaction for this remote.
 		if retry {
+			self.count_selection(SelectionSource::Queue, 1);
 			self.db
 				.active_requests_for(dest)
 				.ready_for_each(|(_, e)| events.push(e))
@@ -759,6 +771,7 @@ impl Service {
 		// Compose the next transaction
 		let _cork = self.db.db.cork();
 		if !new_events.is_empty() {
+			self.count_selection(SelectionSource::Queue, 1);
 			if !self
 				.mark_as_active_if_current(dest, epoch, &new_events)
 				.await
@@ -839,6 +852,7 @@ impl Service {
 
 	async fn select_edus(&self, server_name: &ServerName) -> Result<(EduVec, u64)> {
 		// selection window
+		self.count_selection(SelectionSource::Queue, 1);
 		let since = self.db.get_latest_educount(server_name).await;
 		// Wait out in-flight writers so every count <= `since_upper` is visible to the
 		// scans below (see `Service::edu_barrier`).
@@ -932,6 +946,8 @@ impl Service {
 			return (EduVec::new(), since.1);
 		}
 
+		// server_rooms + partial_rooms_via
+		self.count_selection(SelectionSource::DeviceLists, 2);
 		let server_rooms = self.services.state_cache.server_rooms(server_name);
 
 		let mut rooms: Vec<OwnedRoomId> = server_rooms.collect().await;
@@ -949,6 +965,8 @@ impl Service {
 		let mut all_changes = BTreeMap::<u64, HashSet<OwnedUserId>>::new();
 
 		while let Some(room_id) = server_rooms.next().await {
+			// room_keys_changed, plus partial_since on a first send
+			self.count_selection(SelectionSource::DeviceLists, if since.0 == 0 { 2 } else { 1 });
 			// A server never sent anything before doesn't need the history from before
 			// we joined the room through it.
 			let from = if since.0 == 0 {
@@ -979,6 +997,7 @@ impl Service {
 		for users in all_changes.values() {
 			for user_id in users {
 				if !user_devices.contains_key(user_id) {
+					self.count_selection(SelectionSource::DeviceLists, 1);
 					let devices: Vec<OwnedDeviceId> =
 						self.services.users.all_device_ids(user_id).collect().await;
 					user_devices.insert(user_id.clone(), devices);
@@ -1004,6 +1023,7 @@ impl Service {
 		since: (u64, u64),
 	) -> (Option<EduBuf>, u64) {
 		let num = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+		self.count_selection(SelectionSource::Receipts, 1);
 		let receipts: BTreeMap<OwnedRoomId, ReceiptMap> = self
 			.services
 			.state_cache
@@ -1047,6 +1067,7 @@ impl Service {
 			%room_id, since_lower = since.0, since_upper = since.1,
 			"select_edus_receipts_room: scanning"
 		);
+		self.count_selection(SelectionSource::Receipts, 1);
 		let receipts_stream = self
 			.services
 			.read_receipt
@@ -1081,7 +1102,10 @@ impl Service {
 					continue;
 				};
 				let event_count = match OwnedEventId::parse(event_id.as_str()) {
-					| Ok(event_id) => self.services.timeline.get_pdu_count(&event_id).await.ok(),
+					| Ok(event_id) => {
+						self.count_selection(SelectionSource::Receipts, 1);
+						self.services.timeline.get_pdu_count(&event_id).await.ok()
+					},
 					| Err(_) => None,
 				};
 				collected.push((user_id, count, read_receipt.get().to_owned(), event_count));
@@ -1139,6 +1163,7 @@ impl Service {
 				break;
 			}
 
+			self.count_selection(SelectionSource::Presence, 1);
 			let Ok((_, presence_event)) = self
 				.services
 				.presence
@@ -1158,6 +1183,7 @@ impl Service {
 			attempted_users.push(user_id.clone());
 
 			// Send-time visibility check. Only send to servers that still see the user.
+			self.count_selection(SelectionSource::Presence, 1);
 			if !self
 				.services
 				.state_cache
@@ -1452,12 +1478,15 @@ impl Service {
 		edu_count: Option<u64>,
 		epoch: u64,
 	) -> SendingResponse {
+		let started = Instant::now();
+		let mut sender_db_calls = 0_u64;
 		let mut source_pdus: Vec<(OwnedEventId, CanonicalJsonObject)> = Vec::new();
 		for event in &events {
 			let SendingEvent::Pdu(pdu_id) = event else {
 				continue;
 			};
 
+			sender_db_calls = sender_db_calls.saturating_add(1);
 			let Ok(pdu) = self.services.timeline.get_pdu_json_from_id(pdu_id).await else {
 				continue;
 			};
@@ -1471,6 +1500,11 @@ impl Service {
 
 			source_pdus.push((event_id, pdu));
 		}
+
+		self.server
+			.metrics
+			.outbound
+			.record_db_calls(sender_db_calls);
 
 		let state_hashes = compute_outbound_state_hashes(
 			&self.services,
@@ -1550,6 +1584,7 @@ impl Service {
 			.outgoing_pdus
 			.fetch_add(outbound_pdus.len().try_into().unwrap_or(u64::MAX), Ordering::Relaxed);
 		self.stats.outgoing_txns.fetch_add(1, Ordering::Relaxed);
+		self.server.metrics.outbound.record_attempt();
 
 		let now = MilliSecondsSinceUnixEpoch::now();
 		// Monotonic counter seeded from unix-ms at startup, incremented per
@@ -1558,10 +1593,10 @@ impl Service {
 		// transaction ID this process emits is distinct, and per-process
 		// uniqueness is all the spec requires (`origin` + `txn_id` together
 		// identify a transaction).
-		let txn_id = self.next_txn_id.fetch_add(1, Ordering::Relaxed).to_string();
+		let txn_id = format!("0x{:x}", self.next_txn_id.fetch_add(1, Ordering::Relaxed));
 		let request = send_transaction_message::v1::Request {
 			transaction_id: slipstream::OwnedTransactionId::parse(&txn_id)
-				.expect("numeric transaction counter is a valid transaction ID"),
+				.expect("hexadecimal transaction counter is a valid transaction ID"),
 			origin: self.server.name.clone(),
 			origin_server_ts: now,
 			pdus: outbound_pdus,
@@ -1580,6 +1615,15 @@ impl Service {
 			)
 			.await;
 		conduwuit::debug!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
+		let outcome = match &result {
+			| Ok(Some(_)) => SendOutcome::Ok,
+			| Ok(None) => SendOutcome::Aborted,
+			| Err(error) => classify_send_error(error),
+		};
+		self.server
+			.metrics
+			.outbound
+			.record_outcome(outcome, started.elapsed());
 		let result = match result {
 			| Ok(Some(result)) => Ok(result),
 			| Ok(None) => return Ok(Destination::Federation(server)),
@@ -1592,7 +1636,6 @@ impl Service {
 					.services
 					.timeline
 					.get_pdu(event_id)
-					.await
 					.ok()
 					.and_then(|pdu| pdu.room_id_or_hash().map(|r| r.to_string()))
 					.unwrap_or_default();
@@ -1831,6 +1874,16 @@ pub(crate) fn build_receipt_map(
 	}
 
 	ReceiptMap { read }
+}
+
+/// Bucket a send error for outbound metrics.
+fn classify_send_error(error: &Error) -> SendOutcome {
+	match error {
+		| Error::HttpClientTimeout(..) | Error::FederationTimeout(_) => SendOutcome::Timeout,
+		| Error::HttpClientConnect(..) | Error::FederationConnection(_) => SendOutcome::Connect,
+		| Error::Federation(..) => SendOutcome::Remote,
+		| _ => SendOutcome::Other,
+	}
 }
 
 #[cfg(test)]

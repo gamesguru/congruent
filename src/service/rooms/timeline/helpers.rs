@@ -32,6 +32,7 @@ pub async fn send_message_event_helper(
 	txn_id: Option<&TransactionId>,
 	timestamp: Option<MilliSecondsSinceUnixEpoch>,
 	mut unsigned: Option<BTreeMap<String, slipstream::json::Value>>,
+	pending: Option<&mut Option<OwnedEventId>>,
 ) -> Result<OwnedEventId> {
 	// let json: &mut Raw<AnyMessageLikeEventContent> = &mut json.clone();
 	self.allowed_to_send_message_event(room_id, event_type)
@@ -45,7 +46,7 @@ pub async fn send_message_event_helper(
 			.insert("transaction_id".to_owned(), txn_id.to_string().into());
 	}
 
-	let event_id = Box::pin(self.build_and_append_pdu(
+	let event_id = Box::pin(self.build_and_append_pdu_tracked(
 		PduBuilder {
 			event_type: event_type.to_string().into(),
 			content,
@@ -57,6 +58,7 @@ pub async fn send_message_event_helper(
 		sender,
 		Some(room_id),
 		state_lock,
+		pending,
 	))
 	.await?;
 
@@ -97,6 +99,7 @@ pub async fn send_state_event_for_key_helper(
 	state_key: &str,
 	timestamp: Option<MilliSecondsSinceUnixEpoch>,
 	unsigned: Option<BTreeMap<String, slipstream::json::Value>>,
+	pending: Option<&mut Option<OwnedEventId>>,
 ) -> Result<OwnedEventId> {
 	let mut content: Raw<AnyStateEventContent> = content.clone();
 	self.allowed_to_send_state_event(room_id, event_type, state_key, &mut content)
@@ -104,7 +107,7 @@ pub async fn send_state_event_for_key_helper(
 
 	let content = content.cast();
 
-	let event_id = Box::pin(self.build_and_append_pdu(
+	let event_id = Box::pin(self.build_and_append_pdu_tracked(
 		PduBuilder {
 			event_type: event_type.to_string().into(),
 			content,
@@ -116,6 +119,7 @@ pub async fn send_state_event_for_key_helper(
 		sender,
 		Some(room_id),
 		state_lock,
+		pending,
 	))
 	.await?;
 

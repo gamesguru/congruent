@@ -61,8 +61,8 @@ pub struct Service {
 	/// startup when their destination's abort epoch changes.
 	abort_notifications: tokio::sync::watch::Sender<()>,
 	/// Monotonic counter for outgoing federation transaction IDs, seeded from
-	/// the current unix-ms timestamp at startup and incremented per
-	/// transaction sent (same scheme Synapse's `TransactionManager` uses).
+	/// the current unix-ms timestamp at startup and incremented per transaction.
+	/// IDs are formatted as `0x` followed by the counter in lowercase hex.
 	/// Seeding from wall-clock time rather than starting at 0 keeps IDs
 	/// unique across restarts without needing to persist the counter.
 	pub(super) next_txn_id: std::sync::atomic::AtomicU64,

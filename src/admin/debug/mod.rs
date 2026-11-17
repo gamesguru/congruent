@@ -240,6 +240,9 @@ pub enum DebugCommand {
 		verbose: bool,
 	},
 
+	/// Print mtxdb write-lock contention and StaleRead retry counters
+	MtxdbContention,
+
 	/// Trim memory usage
 	TrimMemory,
 

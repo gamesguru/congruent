@@ -38,12 +38,6 @@ pub(crate) async fn get_relating_events_with_rel_type_and_event_type_route(
 		body.dir,
 	)
 	.await
-	.map(|res| get_relating_events_with_rel_type_and_event_type::v1::Response {
-		chunk: res.chunk,
-		next_batch: res.next_batch,
-		prev_batch: res.prev_batch,
-		recursion_depth: res.recursion_depth,
-	})
 }
 
 /// # `GET /_matrix/client/r0/rooms/{roomId}/relations/{eventId}/{relType}`
@@ -65,12 +59,6 @@ pub(crate) async fn get_relating_events_with_rel_type_route(
 		body.dir,
 	)
 	.await
-	.map(|res| get_relating_events_with_rel_type::v1::Response {
-		chunk: res.chunk,
-		next_batch: res.next_batch,
-		prev_batch: res.prev_batch,
-		recursion_depth: res.recursion_depth,
-	})
 }
 
 /// # `GET /_matrix/client/r0/rooms/{roomId}/relations/{eventId}`
@@ -121,7 +109,6 @@ async fn paginate_relations_with_filter(
 		.rooms
 		.timeline
 		.get_pdu(target)
-		.await
 		.map_err(|_| err!(Request(NotFound("Event not found."))))?;
 	// Return M_SENDER_IGNORED if the sender of base_event is ignored (MSC4406)
 	is_ignored_pdu(services, &target_pdu, sender_user).await?;

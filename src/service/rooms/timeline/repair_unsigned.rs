@@ -70,7 +70,7 @@ pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 			let state_key = pdu.state_key().unwrap_or_default().to_owned();
 			async move {
 				// Get the stored JSON
-				let pdu_json = self.get_pdu_json(&event_id).await;
+				let pdu_json = self.get_pdu_json(&event_id);
 
 				let mut already_has_prev_content = false;
 				if let Ok(ref json) = pdu_json {
@@ -168,7 +168,7 @@ pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 					.filter(|eid| *eid != event_id);
 
 				match replaces {
-					| Some(prev_eid) => self.get_pdu(&prev_eid).await.ok(),
+					| Some(prev_eid) => self.get_pdu(&prev_eid).ok(),
 					| None => {
 						skipped = skipped.saturating_add(1);
 						continue;

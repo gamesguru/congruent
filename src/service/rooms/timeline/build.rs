@@ -2,8 +2,11 @@ use std::{collections::HashSet, iter::once};
 
 use conduwuit::{debug, info, trace};
 use conduwuit_core::{
-	Err, Result, err, implement,
-	matrix::{event::Event, pdu::PduBuilder},
+	Err, PduEvent, Result, err, implement,
+	matrix::{
+		event::Event,
+		pdu::{PduBuilder, RawPduId},
+	},
 	utils::{IterStream, ReadyExt},
 };
 use futures::{FutureExt, StreamExt};
@@ -35,9 +38,30 @@ pub async fn build_and_append_pdu(
 	room_id: Option<&RoomId>,
 	state_lock: &RoomMutexGuard,
 ) -> Result<OwnedEventId> {
+	self.build_and_append_pdu_tracked(pdu_builder, sender, room_id, state_lock, None)
+		.boxed()
+		.await
+}
+
+/// Build and append a PDU while exposing its ID as soon as it has been
+/// constructed. Retrying callers can persist this ID and determine whether a
+/// later error happened before or after the timeline append.
+#[implement(super::Service)]
+pub async fn build_and_append_pdu_tracked(
+	&self,
+	pdu_builder: PduBuilder,
+	sender: &UserId,
+	room_id: Option<&RoomId>,
+	state_lock: &RoomMutexGuard,
+	pending: Option<&mut Option<OwnedEventId>>,
+) -> Result<OwnedEventId> {
 	let (pdu, pdu_json) = self
 		.create_hash_and_sign_event(pdu_builder, sender, room_id, state_lock)
 		.await?;
+
+	if let Some(slot) = pending {
+		*slot = Some(pdu.event_id().to_owned());
+	}
 
 	let room_id = room_id.map_or_else(
 		|| pdu.room_id_or_hash().expect("built PDU has a room ID"),
@@ -92,6 +116,12 @@ pub async fn build_and_append_pdu(
 			.short
 			.get_or_create_shortroomid(&room_id)
 			.await;
+		// Persist the create event and its room-version record together before
+		// state insertion needs to resolve the room version. Take the insert lock
+		// for the write: it updates the room-global auth-closure collection, and
+		// same-room appends must be serialized before that compare-and-swap.
+		let _insert_lock = self.mutex_insert.lock(&room_id).await;
+		self.db.write_event_to_mtxdb(&pdu, &pdu_json).await?;
 	}
 
 	let previous_root_handle = self.services.state.get_room_state_hamt(&room_id).await.ok();
@@ -133,6 +163,7 @@ pub async fn build_and_append_pdu(
 				prev_state_root_handle: previous_root_handle,
 				advance_current_state: false,
 				was_joined_before_state_install: None,
+				mtxdb_prewritten: *pdu.kind() == TimelineEventType::RoomCreate,
 			},
 		)
 		.boxed()
@@ -164,19 +195,40 @@ pub async fn build_and_append_pdu(
 	if !crate::rooms::state::is_state_event(&pdu) {
 		self.services
 			.state
-			.set_room_state_hamt(&room_id, &state_root_handle, state_lock)?;
+			.set_room_state_hamt(&room_id, &state_root_handle, state_lock)
+			.await?;
 	}
 
+	self.queue_pdu_federation(&pdu, &room_id, pdu_id).await?;
+
+	trace!("Event {} in room {:?} has been appended", pdu.event_id(), room_id);
+	Ok(pdu.event_id().to_owned())
+}
+
+/// Queue an already-appended local PDU for federation to the room's remote
+/// servers (plus the affected server for membership events), notify
+/// reconciliation listeners, and record partial-state sends. Also used to
+/// finish a send whose append succeeded in an earlier, interrupted attempt.
+///
+/// # Errors
+/// Propagates sending-queue errors.
+#[implement(super::Service)]
+pub async fn queue_pdu_federation(
+	&self,
+	pdu: &PduEvent,
+	room_id: &RoomId,
+	pdu_id: RawPduId,
+) -> Result {
 	let mut servers: HashSet<OwnedServerName> = self
 		.services
 		.state_cache
-		.room_servers(&room_id)
+		.room_servers(room_id)
 		.collect()
 		.await;
 
 	// A partial-state room has an incomplete member list, so the server we
 	// joined through may be missing from `room_servers`.
-	if let Ok(Some(partial_server)) = self.services.state_partial.partial_server(&room_id).await {
+	if let Ok(Some(partial_server)) = self.services.state_partial.partial_server(room_id).await {
 		servers.insert(partial_server);
 	}
 
@@ -239,24 +291,23 @@ pub async fn build_and_append_pdu(
 	}
 
 	// Tell reconciliation a local write happened. No receiver is not an error.
-	let _ = self.activity.send(room_id.clone());
+	let _ = self.activity.send(room_id.to_owned());
 
 	// Our member list is incomplete until the resync finishes; send this event to
 	// the remaining servers then.
 	if self
 		.services
 		.state_partial
-		.partial_server(&room_id)
+		.partial_server(room_id)
 		.await
 		.is_ok_and(|s| s.is_some())
 	{
 		self.services
 			.state_partial
-			.record_partial_send(&room_id, pdu_id, &servers);
+			.record_partial_send(room_id, pdu_id, &servers);
 	}
 
-	trace!("Event {} in room {:?} has been appended", pdu.event_id(), room_id);
-	Ok(pdu.event_id().to_owned())
+	Ok(())
 }
 
 /// Assert invariants about the admin room, to prevent (for example) all admins

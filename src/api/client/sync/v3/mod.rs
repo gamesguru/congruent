@@ -1311,11 +1311,12 @@ async fn process_presence_updates(
 					.rooms
 					.state_cache
 					.user_sees_user(syncing_user, &user_id)
-					.await || services
-					.rooms
-					.state_partial
-					.shares_partial_server(syncing_user, &user_id)
 					.await
+					|| services
+						.rooms
+						.state_partial
+						.shares_partial_server(syncing_user, &user_id)
+						.await
 			}
 		})
 		.filter_map(|(user_id, _, presence_bytes)| async move {

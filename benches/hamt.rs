@@ -44,10 +44,9 @@ fn measure(group: &str, case: &str, elements: u64, iters: u64, mut f: impl FnMut
 
 fn bench_hamt_construction(measure_iters: bool) {
 	let sizes: [u64; 5] = [10, 100, 1_000, 10_000, 50_000];
-	let server_secret = [7_u8; 32];
 	let room_id =
 		slipstream::OwnedRoomId::parse("!bench_room:test.local").expect("valid room ID");
-	let structural_key = room_structural_key(&server_secret, &room_id);
+	let structural_key = room_structural_key(&room_id);
 	let lattice = rezzy::incremental::LtHash::default();
 
 	for &size in &sizes {
@@ -69,10 +68,9 @@ fn bench_hamt_construction(measure_iters: bool) {
 
 fn bench_hamt_point_lookups(measure_iters: bool) {
 	let sizes: [u64; 5] = [10, 100, 1_000, 10_000, 50_000];
-	let server_secret = [7_u8; 32];
 	let room_id =
 		slipstream::OwnedRoomId::parse("!bench_room:test.local").expect("valid room ID");
-	let structural_key = room_structural_key(&server_secret, &room_id);
+	let structural_key = room_structural_key(&room_id);
 
 	for &size in &sizes {
 		let entries: Vec<(u64, u64)> = (0..size)
@@ -112,10 +110,9 @@ fn bench_hamt_point_lookups(measure_iters: bool) {
 fn bench_hamt_delta_isolation(measure_iters: bool) {
 	let base_size: u64 = 50_000;
 	let delta_sizes: [u64; 4] = [1, 10, 100, 1_000];
-	let server_secret = [7_u8; 32];
 	let room_id =
 		slipstream::OwnedRoomId::parse("!bench_room:test.local").expect("valid room ID");
-	let structural_key = room_structural_key(&server_secret, &room_id);
+	let structural_key = room_structural_key(&room_id);
 
 	let base_entries: Vec<(u64, u64)> = (0..base_size)
 		.map(|i| (i, i.saturating_mul(1_000).saturating_add(7)))

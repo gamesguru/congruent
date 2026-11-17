@@ -146,6 +146,7 @@ pub(crate) async fn send_message_event_route(
 			room_id: body.room_id.clone(),
 			running_since: std::time::SystemTime::now(),
 			delay,
+			pending_event_id: None,
 		};
 		let delay_id = services
 			.rooms
@@ -237,6 +238,7 @@ pub(crate) async fn send_message_event_route(
 		&body.body.body,
 		Some(&body.txn_id),
 		if appservice_info.is_some() { body.ts } else { None },
+		None,
 		None,
 	))
 	.await?;

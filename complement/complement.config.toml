@@ -22,12 +22,13 @@ allow_registration = true
 registration_shared_secret = "complement"
 database_path = "/var/lib/continuwuity"
 # By default we use info/warn, only for failures/debugging verbose
-log = "info,presence_debug=debug"
+log = "debug"
 # log = "trace,h2=debug,hyper=debug,conduwuit_database=warn,conduwuit_service::manager=info,conduwuit_api::router=error,conduwuit_router=error,tower_http=error"
 port = [8008, 8448]
 default_room_version = "12"
 fast_joins = true
-partial_state_resync_give_up_after = 5
+partial_state_resync_give_up_after = 2
+partial_state_resync_initial_delay_ms = 50
 trusted_servers = []
 only_query_trusted_key_servers = false
 query_trusted_key_servers_first = false

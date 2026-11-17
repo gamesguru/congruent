@@ -1,16 +1,12 @@
 use conduwuit_core::{Result, err, implement, matrix::event::Event};
 use slipstream::EventId;
 
-use super::ExtractBody;
-use crate::rooms::short::ShortRoomId;
-
 /// Replace a PDU with the redacted form.
 #[implement(super::Service)]
 pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 	&self,
 	event_id: &EventId,
 	reason: &Pdu,
-	shortroomid: ShortRoomId,
 ) -> Result {
 	// TODO: Don't reserialize, keep original json
 	let Ok(pdu_id) = self.get_pdu_id(event_id).await else {
@@ -25,14 +21,6 @@ pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 		.map_err(|e| {
 			err!(Database(error!(?pdu_id, %event_id, ?e, "PDU ID points to invalid PDU.")))
 		})?;
-
-	if let Ok(content) = pdu.get_content::<ExtractBody>() {
-		if let Some(body) = content.body {
-			self.services
-				.search
-				.deindex_pdu(shortroomid, &pdu_id, &body);
-		}
-	}
 
 	let room_id = pdu
 		.room_id_or_hash()
