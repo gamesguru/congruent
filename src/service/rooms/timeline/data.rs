@@ -2130,7 +2130,14 @@ impl Data {
 				let token_pdu_id = self
 					.count_to_id(room_id, from.pdu_count, Direction::Forward)
 					.await?;
-				let anchor_depth = self.pdu_id_to_depth(&token_pdu_id).await.ok();
+				let anchor_depth = match self.pdu_id_to_depth(&token_pdu_id).await.ok() {
+					| Some(depth) => Some(depth),
+					// The cursor's count may belong to no event of this room (counts are
+					// global). Use the nearest event of the room at or before it, so
+					// history backfilled between that event and the next one is not
+					// skipped.
+					| None => self.depth_at_or_before(&token_pdu_id).await,
+				};
 				let current = self
 					.count_to_id(
 						room_id,
@@ -2295,6 +2302,22 @@ impl Data {
 		let pdu_id = PduId { shortroomid, shorteventid };
 
 		Ok(pdu_id.into())
+	}
+
+	/// Depth of the nearest event of the room whose stream position is at or
+	/// before `token_pdu_id`.
+	async fn depth_at_or_before(&self, token_pdu_id: &RawPduId) -> Option<u64> {
+		use futures::StreamExt;
+
+		let prefix = token_pdu_id.shortroomid();
+		let mut stream = Box::pin(
+			self.room_pducount_eventid
+				.rev_raw_stream_from(token_pdu_id)
+				.ready_try_take_while(|(k, _)| Ok(k.starts_with(&prefix))),
+		);
+		let (k, _) = stream.next().await?.ok()?;
+		let pdu_id = RawPduId::from(k);
+		self.pdu_id_to_depth(&pdu_id).await.ok()
 	}
 
 	async fn legacy_seek_topo_key(

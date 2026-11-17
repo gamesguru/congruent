@@ -163,7 +163,7 @@
 {"Action":"pass","Test":"TestFederationBackfilledHistoryReachableFromPrevBatch"}
 {"Action":"pass","Test":"TestFederationForwardGapWithManyOpenGapsStaysBounded"}
 {"Action":"pass","Test":"TestFederationForwardMessagesDoesNotRepeatFailedGap"}
-{"Action":"fail","Test":"TestFederationForwardMessagesFillsGapBehindWedgedOne"}
+{"Action":"pass","Test":"TestFederationForwardMessagesFillsGapBehindWedgedOne"}
 {"Action":"pass","Test":"TestFederationJoinedRoomFillsPartitionHoleBehindWedgedGap"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery/Can_claim_remote_one_time_key_using_POST"}
