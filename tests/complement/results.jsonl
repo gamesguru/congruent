@@ -84,7 +84,7 @@
 {"Action":"pass","Test":"TestContent"}
 {"Action":"pass","Test":"TestContentCSAPIMediaV1"}
 {"Action":"pass","Test":"TestContentMediaV1"}
-{"Action":"fail","Test":"TestCorruptedAuthChain"}
+{"Action":"pass","Test":"TestCorruptedAuthChain"}
 {"Action":"pass","Test":"TestCumulativeJoinLeaveJoinSync"}
 {"Action":"pass","Test":"TestDeactivateAccount"}
 {"Action":"pass","Test":"TestDeactivateAccount/After_deactivating_account,_can't_log_in_with_password"}
@@ -709,12 +709,12 @@
 {"Action":"pass","Test":"TestOutboundFederationProfile"}
 {"Action":"pass","Test":"TestOutboundFederationProfile/Outbound_federation_can_query_profile_data"}
 {"Action":"pass","Test":"TestOutboundFederationSend"}
-{"Action":"fail","Test":"TestPartialStateJoin"}
+{"Action":"pass","Test":"TestPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanFastJoinDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanLazyLoadingSyncDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveDeviceListUpdateDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveEventsDuringPartialStateJoin"}
-{"Action":"fail","Test":"TestPartialStateJoin/CanReceiveEventsWithHalfMissingGrandparentsDuringPartialStateJoin"}
+{"Action":"pass","Test":"TestPartialStateJoin/CanReceiveEventsWithHalfMissingGrandparentsDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveEventsWithHalfMissingParentsDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceiveEventsWithMissingParentsDuringPartialStateJoin"}
 {"Action":"pass","Test":"TestPartialStateJoin/CanReceivePresenceDuringPartialStateJoin"}
@@ -767,7 +767,7 @@
 {"Action":"pass","Test":"TestPartialStateJoin/Rejects_make_knock_during_partial_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/Rejects_send_join_during_partial_join"}
 {"Action":"pass","Test":"TestPartialStateJoin/Rejects_send_knock_during_partial_join"}
-{"Action":"fail","Test":"TestPartialStateJoin/Resync_completes_even_when_events_arrive_before_their_prev_events"}
+{"Action":"pass","Test":"TestPartialStateJoin/Resync_completes_even_when_events_arrive_before_their_prev_events"}
 {"Action":"pass","Test":"TestPartialStateJoin/Room_aliases_can_be_added_and_deleted_during_a_resync"}
 {"Action":"pass","Test":"TestPartialStateJoin/Room_aliases_can_be_added_and_queried_during_a_resync"}
 {"Action":"pass","Test":"TestPartialStateJoin/Room_stats_are_correctly_updated_once_state_re-sync_completes"}

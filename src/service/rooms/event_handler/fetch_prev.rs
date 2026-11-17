@@ -21,6 +21,9 @@ use super::check_room_id;
 /// Most follow-up /get_missing_events requests one `fetch_prev` call makes after
 /// a capped answer that still ends at a missing parent.
 const MAX_PREV_GAP_ROUNDS: usize = 5;
+/// Servers commonly cap /get_missing_events at 20 events. An answer shorter
+/// than this was not truncated, so asking again cannot find more.
+const MISSING_EVENTS_CAP_HINT: usize = 20;
 
 #[implement(super::Service)]
 #[allow(clippy::type_complexity)]
@@ -254,8 +257,12 @@ where
 	// first), so one answer can end at a parent we still lack. Keep asking
 	// below the oldest events of the answer until the gap closes, an answer
 	// adds nothing new, or the round limit is reached.
+	let mut last_answer_len = missing_events.len();
 	if let Some(server) = answered_server.as_ref() {
 		for _ in 0..MAX_PREV_GAP_ROUNDS {
+			if last_answer_len < MISSING_EVENTS_CAP_HINT {
+				break;
+			}
 			let mut held: HashSet<OwnedEventId> = HashSet::new();
 			let mut parents: HashMap<OwnedEventId, Vec<OwnedEventId>> = HashMap::new();
 			for raw_json in &missing_events {
@@ -310,6 +317,7 @@ where
 			};
 
 			let before = held.len();
+			last_answer_len = more.events.len();
 			for raw_json in more.events {
 				if let Ok((eid, _)) = conduwuit::matrix::event::gen_event_id_canonical_json(
 					&raw_json,
