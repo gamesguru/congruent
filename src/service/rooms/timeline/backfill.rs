@@ -11,7 +11,7 @@ use std::{
 use async_lock::Mutex;
 use conduwuit::{Err, Error, PduEvent, RoomVersion, matrix::pdu::RawJson as RawJsonValue};
 use conduwuit_core::{
-	Result, debug, debug_warn, err, error, implement, info,
+	Result, debug, err, error, implement, info,
 	matrix::{
 		event::Event,
 		pdu::{PduCount, PduId, RawPduId},
@@ -350,20 +350,23 @@ pub async fn backfill_if_required(
 			return Ok(());
 		}
 
-		// Build the /backfill request: send child event IDs (events that have
-		// missing parents), which is what the /backfill API expects.
+		// Build the /backfill request from the missing parents, as Synapse and
+		// Dendrite do: the remote returns each event named in `v` and its
+		// ancestors, so the missing parent is exactly where history resumes.
+		// Naming the child instead only works if the remote knows the child (an
+		// event only we hold, such as a local message or join, makes the remote
+		// return nothing for that gap) and always returns an event we already have.
 		// `gaps` iterates a HashMap-backed event_map, so its order is not
 		// stable across runs; sort so the request (and any resulting
 		// insertion order) is reproducible for debugging and testing.
-		let mut backwards_extremities: Vec<OwnedEventId> =
-			gaps.iter().map(|gap| gap.event_id.clone()).collect();
-		backwards_extremities.sort_unstable();
 		let mut unique_missing: Vec<&EventId> = gaps
 			.iter()
 			.flat_map(|gap| gap.missing_prev_events.iter().map(AsRef::as_ref))
 			.collect();
 		unique_missing.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
 		unique_missing.dedup();
+		let backwards_extremities: Vec<OwnedEventId> =
+			unique_missing.iter().map(|id| (*id).to_owned()).collect();
 
 		let mut repeat_hasher = DefaultHasher::new();
 		room_id.as_str().hash(&mut repeat_hasher);
@@ -498,6 +501,10 @@ pub async fn backfill_if_required(
 			}
 			fallback_gaps = fallback_gaps.saturating_add(1);
 			attempted_fallback = true;
+			info!(
+				"backfill: trying /get_missing_events for gap at {} (missing: {:?}) in {room_id}",
+				gap.event_id, gap.missing_prev_events
+			);
 
 			let earliest = match token_by_id.get(&gap.event_id) {
 				| Some(anchor) =>
@@ -606,6 +613,9 @@ async fn fill_gap_with_missing_events(
 		{
 			| Ok(response) => {
 				if response.events.is_empty() {
+					info!(
+						"backfill: {server} returned no events below {extremity} for {room_id}"
+					);
 					continue;
 				}
 				info!(
@@ -661,11 +671,215 @@ async fn insert_backfilled_batch(
 
 	for (pdu, count) in pdus.into_iter().zip(counts).rev() {
 		if let Err(e) = self.backfill_pdu(server, pdu, Some(count)).boxed().await {
-			debug_warn!("Failed to add backfilled pdu in room {room_id}: {e}");
+			warn!("Failed to add backfilled pdu in room {room_id}: {e}");
 		}
 	}
 
 	Ok(())
+}
+
+/// Gaps (and their missing parents) sent in one forward-gap `/backfill`.
+const FORWARD_GAPS_PER_REQUEST: usize = 25;
+
+/// Most `/backfill` requests one forward `/messages` call makes, so a room with
+/// thousands of holes cannot turn a single page into an unbounded burst.
+const MAX_FORWARD_GAP_REQUESTS: usize = 40;
+
+/// Most stored events a forward request scans for gaps.
+const FORWARD_GAP_SCAN_LIMIT: usize = 2_000;
+
+/// Return bounded, ordered batches of missing-parent IDs plus their source gap
+/// ranges. The ranges let the caller record which gaps failed after each
+/// federation request without copying the gap records.
+fn forward_gap_batches<Id>(
+	gaps: &[rezzy::state::at::BackwardExtremity<Id>],
+) -> Vec<(usize, usize, Vec<Id>)>
+where
+	Id: Clone + Ord,
+{
+	let mut batches = Vec::new();
+	for (batch_index, chunk) in gaps
+		.chunks(FORWARD_GAPS_PER_REQUEST)
+		.take(MAX_FORWARD_GAP_REQUESTS)
+		.enumerate()
+	{
+		let start = batch_index
+			.checked_mul(FORWARD_GAPS_PER_REQUEST)
+			.expect("forward gap batch index is bounded");
+		let end = start
+			.checked_add(chunk.len())
+			.expect("forward gap batch end is bounded");
+		let mut parents: Vec<Id> = chunk
+			.iter()
+			.flat_map(|gap| gap.missing_prev_events.iter().cloned())
+			.collect();
+		parents.sort_unstable();
+		parents.dedup();
+		batches.push((start, end, parents));
+	}
+	batches
+}
+
+/// Fills the backward extremities that lie ahead of a forward cursor.
+///
+/// Forward pagination only walks stored events, so a hole ahead of the cursor
+/// would otherwise stay open for ever. Gaps are taken oldest first, each is
+/// asked about by its missing parent (as the backward path does), and one that
+/// is still open afterwards is remembered in `backfill_failed_gaps`, so a
+/// wedged gap neither repeats on every request nor keeps newer gaps from being
+/// tried. Work per call is bounded by [`FORWARD_GAP_SCAN_LIMIT`] events and
+/// [`MAX_FORWARD_GAP_REQUESTS`] requests.
+#[implement(super::Service)]
+pub async fn backfill_forward_gaps(&self, room_id: &RoomId, from: TopoToken) -> Result<()> {
+	let has_remote_servers = self
+		.services
+		.state_cache
+		.room_servers(room_id)
+		.ready_any(|server| !self.services.globals.server_is_ours(&server))
+		.await || self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|s| s.is_some());
+	if !has_remote_servers {
+		return Ok(());
+	}
+
+	// One scan-and-fetch at a time per room, as in the backward path.
+	let _backfill_lock = self.mutex_backfill.lock(room_id).await;
+
+	let mut event_map: HashMap<OwnedEventId, PduEvent> = HashMap::new();
+	let mut pdus = self
+		.topo_pdus(room_id, Some(from))
+		.take(FORWARD_GAP_SCAN_LIMIT)
+		.boxed();
+	while let Some(Ok((_, pdu))) = pdus.next().await {
+		event_map.insert(pdu.event_id.clone(), pdu);
+	}
+	drop(pdus);
+
+	let mut known_ids: HashSet<OwnedEventId> = HashSet::new();
+	for pdu in event_map.values() {
+		for prev_id in &pdu.prev_events {
+			if !event_map.contains_key(prev_id)
+				&& !known_ids.contains(prev_id)
+				&& self.non_outlier_pdu_exists(prev_id).await
+			{
+				known_ids.insert(prev_id.clone());
+			}
+		}
+	}
+
+	let mut gaps = rezzy::find_backward_extremities(&event_map, |id| known_ids.contains(id));
+	gaps.retain(|gap| {
+		!self
+			.backfill_failed_gaps
+			.contains_key(&(room_id.to_owned(), gap.event_id.clone()))
+	});
+	if gaps.is_empty() {
+		return Ok(());
+	}
+	gaps.sort_by(|a, b| {
+		let depth = |id: &OwnedEventId| event_map.get(id).map(Event::depth);
+		depth(&a.event_id)
+			.cmp(&depth(&b.event_id))
+			.then_with(|| a.event_id.cmp(&b.event_id))
+	});
+	info!(
+		"backfill: {} open forward gaps in {room_id} (scanned {} events from {from})",
+		gaps.len(),
+		event_map.len()
+	);
+
+	let servers: Vec<slipstream::OwnedServerName> = self
+		.get_backfill_servers(room_id, std::iter::empty())
+		.await
+		.boxed()
+		.collect()
+		.await;
+
+	for (start, end, parents) in forward_gap_batches(&gaps) {
+		let chunk = &gaps[start..end];
+		for server in &servers {
+			let request = federation::backfill::get_backfill::v1::Request {
+				room_id: room_id.to_owned(),
+				v: parents.clone(),
+				limit: UInt::from(100_u32),
+			};
+			match self
+				.services
+				.sending
+				.send_federation_request(server, request)
+				.await
+			{
+				| Ok(response) if !response.pdus.is_empty() => {
+					self.insert_backfilled_batch(room_id, server, response.pdus)
+						.await?;
+					break;
+				},
+				| Ok(_) => {},
+				| Err(e) => {
+					warn!("{server} failed forward /backfill for {room_id}: {e}");
+				},
+			}
+		}
+
+		// A gap whose parent is still missing is not retried for a while.
+		for gap in chunk {
+			for missing in &gap.missing_prev_events {
+				if !self.non_outlier_pdu_exists(missing).await {
+					self.backfill_failed_gaps
+						.insert((room_id.to_owned(), gap.event_id.clone()), ());
+					break;
+				}
+			}
+		}
+	}
+
+	Ok(())
+}
+
+#[cfg(test)]
+mod forward_gap_tests {
+	use super::*;
+
+	fn gap(event_id: &str, missing: &[&str]) -> rezzy::state::at::BackwardExtremity<String> {
+		rezzy::state::at::BackwardExtremity {
+			event_id: event_id.to_owned(),
+			missing_prev_events: missing.iter().map(|id| (*id).to_owned()).collect(),
+		}
+	}
+
+	#[test]
+	fn forward_gap_batches_deduplicate_and_sort_parents_without_reordering_gaps() {
+		let gaps = vec![
+			gap("gap-a", &["parent-z", "parent-a", "parent-a"]),
+			gap("gap-b", &["parent-z"]),
+		];
+
+		assert_eq!(forward_gap_batches(&gaps), vec![(0, 2, vec![
+			"parent-a".to_owned(),
+			"parent-z".to_owned()
+		])]);
+	}
+
+	#[test]
+	fn forward_gap_batches_bound_requests_and_keep_oldest_gaps_first() {
+		let gaps: Vec<_> = (0..=(FORWARD_GAPS_PER_REQUEST * MAX_FORWARD_GAP_REQUESTS))
+			.map(|i| {
+				let event_id = format!("gap-{i:04}");
+				let parent_id = format!("parent-{i:04}");
+				gap(&event_id, &[&parent_id])
+			})
+			.collect();
+		let batches = forward_gap_batches(&gaps);
+
+		assert_eq!(batches.len(), MAX_FORWARD_GAP_REQUESTS);
+		assert_eq!(batches.first().map(|batch| (batch.0, batch.1)), Some((0, 25)));
+		assert_eq!(batches.last().map(|batch| (batch.0, batch.1)), Some((975, 1_000)));
+		assert_eq!(batches.iter().map(|batch| batch.2.len()).sum::<usize>(), 1_000);
+	}
 }
 
 #[implement(super::Service)]

@@ -50,6 +50,20 @@ struct Services {
 pub type PdusIterItem = (PduCount, PduEvent);
 pub type TopoIterItem = (TopoToken, PduEvent);
 
+fn legacy_forward_item_is_after_cursor(
+	item: TopoToken,
+	floor: PduCount,
+	anchor_depth: Option<u64>,
+) -> bool {
+	match item.pdu_count {
+		| PduCount::Normal(_) => item.pdu_count > floor,
+		// Historical parents are deliberately assigned negative stream counts.
+		// For a legacy forward cursor, their topological depth establishes
+		// whether they belong after that cursor.
+		| PduCount::Backfilled(_) => anchor_depth.is_some_and(|depth| item.depth > depth),
+	}
+}
+
 impl Data {
 	pub(super) fn new(args: &crate::Args<'_>) -> Self {
 		let db = &args.db;
@@ -2110,24 +2124,39 @@ impl Data {
 				.to_be_bytes()
 				.to_vec();
 
-			let topo_key = if from.is_legacy() {
-				// Legacy tokens don't have depth, fallback to the old buggy behavior just for
-				// them
-				self.count_to_id(
-					room_id,
-					from.pdu_count.saturating_inc(Direction::Forward),
-					Direction::Forward,
-				)
-				.and_then(move |current| async move {
+			let (topo_key, legacy_anchor_depth) = if from.is_legacy() {
+				// Legacy tokens omit depth, so recover it from the event at the
+				// stream-count cursor when possible.
+				let token_pdu_id = self
+					.count_to_id(room_id, from.pdu_count, Direction::Forward)
+					.await?;
+				let anchor_depth = self.pdu_id_to_depth(&token_pdu_id).await.ok();
+				let current = self
+					.count_to_id(
+						room_id,
+						from.pdu_count.saturating_inc(Direction::Forward),
+						Direction::Forward,
+					)
+					.await?;
+				let key = if let Some(depth) = anchor_depth {
+					// Backfilled events use negative stream counts. Starting at the
+					// token's normal count would skip a newly inserted parent at the
+					// same depth, so start at the lowest count for this depth and apply
+					// the legacy stream-count filter to ordinary events below.
+					let first = self
+						.count_to_id(room_id, PduCount::min(), Direction::Forward)
+						.await?;
+					Self::topo_pducount_key(&first, depth)
+				} else {
 					self.legacy_seek_topo_key(
 						room_id,
 						from.pdu_count,
 						&current,
 						Direction::Forward,
 					)
-					.await
-				})
-				.await?
+					.await?
+				};
+				(key, anchor_depth)
 			} else {
 				let current = self
 					.count_to_id(
@@ -2136,7 +2165,7 @@ impl Data {
 						Direction::Forward,
 					)
 					.await?;
-				Self::topo_pducount_key(&current, from.depth)
+				(Self::topo_pducount_key(&current, from.depth), None)
 			};
 
 			conduwuit::debug!(
@@ -2154,7 +2183,13 @@ impl Data {
 			Ok(self
 				.parse_topo_stream(raw_stream, prefix)
 				.ready_try_filter_map(move |item| match count_floor {
-					| Some(floor) if item.0.pdu_count <= floor => Ok(None),
+					| Some(floor)
+						if !legacy_forward_item_is_after_cursor(
+							item.0,
+							floor,
+							legacy_anchor_depth,
+						) =>
+						Ok(None),
 					| _ => Ok(Some(item)),
 				}))
 		};
@@ -2752,11 +2787,41 @@ fn increment(db: &Arc<Map>, key: &[u8]) {
 #[cfg(test)]
 mod tests {
 	use conduwuit::Result;
-	use conduwuit_core::matrix::pdu::{Count as PduCount, Id as PduId, RawId as RawPduId};
+	use conduwuit_core::matrix::pdu::{
+		Count as PduCount, Id as PduId, RawId as RawPduId, TopoToken,
+	};
 	use rezzy::{HashMap, LeanEvent, verify_pagination};
 	use slipstream::api::Direction;
 
-	use super::Data;
+	use super::{Data, legacy_forward_item_is_after_cursor};
+
+	#[test]
+	fn legacy_forward_cursor_includes_newer_backfilled_depths_only() {
+		let floor = PduCount::Normal(46);
+		let anchor_depth = Some(7);
+		let token = |depth, pdu_count| TopoToken { depth, pdu_count };
+
+		assert!(legacy_forward_item_is_after_cursor(
+			token(8, PduCount::Backfilled(-53)),
+			floor,
+			anchor_depth,
+		));
+		assert!(!legacy_forward_item_is_after_cursor(
+			token(7, PduCount::Backfilled(-53)),
+			floor,
+			anchor_depth,
+		));
+		assert!(!legacy_forward_item_is_after_cursor(
+			token(6, PduCount::Normal(45)),
+			floor,
+			anchor_depth,
+		));
+		assert!(legacy_forward_item_is_after_cursor(
+			token(6, PduCount::Normal(47)),
+			floor,
+			anchor_depth,
+		));
+	}
 
 	/// Helper: build a RawPduId from (room, count).
 	fn make_pdu_id(room: u64, count: i64) -> RawPduId {

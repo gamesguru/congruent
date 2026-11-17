@@ -159,6 +159,17 @@ pub(crate) async fn get_message_events_route(
 			.ok();
 	}
 
+	if matches!(body.dir, Direction::Forward) {
+		services
+			.rooms
+			.timeline
+			.backfill_forward_gaps(room_id, from)
+			.boxed()
+			.await
+			.log_err()
+			.ok();
+	}
+
 	let it = match body.dir {
 		| Direction::Forward => services
 			.rooms
