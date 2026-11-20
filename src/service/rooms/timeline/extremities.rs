@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+	collections::{HashMap, HashSet},
+	time::{Duration, Instant},
+};
 
 use conduwuit_core::{Result, info, warn};
 use futures::StreamExt;
@@ -7,6 +10,9 @@ use slipstream::{EventId, OwnedEventId};
 
 use super::Service;
 use crate::rooms::short::ShortEventId;
+
+/// Duration as fractional milliseconds, for timing log fields.
+fn ms(d: Duration) -> f64 { d.as_secs_f64() * 1000.0 }
 
 /// Detect stored extremities that are provably broken: they appear in the
 /// window graph AND have children there (meaning they shouldn't be tips).
@@ -222,7 +228,14 @@ impl Service {
 		room_id: &slipstream::RoomId,
 		update_db: bool,
 	) -> Result<(bool, usize)> {
+		let t_total = Instant::now();
 		let state_lock = self.services.state.mutex.lock(room_id).await;
+		// Time spent waiting for the room lock vs. holding it.
+		let lock_wait = t_total.elapsed();
+		let t_locked = Instant::now();
+		let mut t_prevs = Duration::ZERO;
+		let mut t_resolve = Duration::ZERO;
+		let mut t_verdicts = Duration::ZERO;
 
 		let mut stream =
 			std::pin::pin!(self.db.room_shorteventids_rev(room_id, None).chunks(1024));
@@ -239,10 +252,13 @@ impl Service {
 			let short_ids: Vec<ShortEventId> = chunk.into_iter().filter_map(Result::ok).collect();
 
 			// Fast path: bulk resolve ShortEventId -> shortprevevents
+			let t_phase = Instant::now();
 			let prevs_stream = self
 				.db
 				.multi_get_shortprevevents(futures::stream::iter(short_ids.clone()));
 			let all_prevs: Vec<Result<Vec<ShortEventId>>> = prevs_stream.collect().await;
+			t_prevs = t_prevs.saturating_add(t_phase.elapsed());
+			let t_phase = Instant::now();
 
 			// Batch-resolve the whole chunk's ShortEventId -> EventId and then
 			// batch-read metadata for the resolved ids. Doing these per event
@@ -265,6 +281,7 @@ impl Service {
 				.get_event_metadata_batch(&metadata_ids)
 				.await
 				.into_iter();
+			t_resolve = t_resolve.saturating_add(t_phase.elapsed());
 
 			// Non-outlier event ids in this chunk, deferred so their rejection/soft-fail
 			// verdicts can be batch-read below instead of two sequential single-key
@@ -315,6 +332,7 @@ impl Service {
 			// event -- `recalculate_extremities` sweeps the whole room history
 			// while holding the room state lock, so per-event RocksDB reads here
 			// would substantially lengthen the lock hold.
+			let t_phase = Instant::now();
 			let non_outlier_ids: Vec<OwnedEventId> = non_outlier_pairs
 				.iter()
 				.map(|(_, event_id)| event_id.clone())
@@ -323,6 +341,7 @@ impl Service {
 				.services
 				.pdu_metadata
 				.verdict_flagged_batch(&non_outlier_ids)?;
+			t_verdicts = t_verdicts.saturating_add(t_phase.elapsed());
 			for (short_id, event_id) in non_outlier_pairs {
 				if flagged.contains(&event_id) {
 					bridge_event_ids.insert(short_id);
@@ -331,6 +350,9 @@ impl Service {
 				}
 			}
 		}
+
+		let scan = t_locked.elapsed();
+		let edge_count: usize = raw_edges.values().map(Vec::len).sum();
 
 		if missing_shortprevevents > 0 {
 			warn!(
@@ -357,7 +379,9 @@ impl Service {
 
 		// Lightning fast true forward extremity computation (entire room history) via
 		// rezzy
+		let t_graph = Instant::now();
 		let true_tips_short = rezzy::state::at::find_forward_extremities_roaring(graph_edges);
+		let graph = t_graph.elapsed();
 		let calculated_tips = true_tips_short.len();
 
 		let current_extremities = self.services.state.get_forward_extremities(room_id);
@@ -458,6 +482,27 @@ impl Service {
 				"extremity recalculation changed room tips"
 			);
 		}
+
+		// Macro-timing: where a whole-room recalculation spends its time, and
+		// how long it held the room state lock.
+		info!(
+			target: "timeline_debug",
+			%room_id,
+			update_db,
+			changed,
+			scanned_events = raw_edges.len(),
+			scanned_edges = edge_count,
+			final_tips = num_true_extremities,
+			lock_wait_ms = ms(lock_wait),
+			lock_held_ms = ms(t_locked.elapsed()),
+			total_ms = ms(t_total.elapsed()),
+			scan_ms = ms(scan),
+			prevs_read_ms = ms(t_prevs),
+			resolve_ids_and_meta_ms = ms(t_resolve),
+			verdicts_ms = ms(t_verdicts),
+			graph_ms = ms(graph),
+			"recalculate_extremities timing"
+		);
 
 		if final_set == current_set {
 			return Ok((false, num_true_extremities));

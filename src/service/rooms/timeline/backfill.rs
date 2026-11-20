@@ -6,6 +6,7 @@ use std::{
 		Arc,
 		atomic::{AtomicUsize, Ordering},
 	},
+	time::Instant,
 };
 
 use async_lock::Mutex;
@@ -262,6 +263,7 @@ pub async fn backfill_if_required(
 		// can be found for the /get_missing_events fallback.
 		let mut token_by_id: HashMap<OwnedEventId, TopoToken> = HashMap::new();
 		let mut scanned = 0_usize;
+		let t_scan = Instant::now();
 		let mut pdus = self
 			.topo_pdus_rev(room_id, Some(from))
 			.take(scan_limit.saturating_add(1))
@@ -281,6 +283,9 @@ pub async fn backfill_if_required(
 			token_by_id.insert(pdu.event_id.clone(), topo_token);
 			event_map.insert(pdu.event_id.clone(), pdu);
 		}
+
+		let scan_ms = t_scan.elapsed().as_secs_f64() * 1000.0;
+		let t_known = Instant::now();
 
 		// Phase 2: Pre-collect which prev_event IDs exist in the DB so the
 		// rezzy `exists` predicate is synchronous.
@@ -304,8 +309,23 @@ pub async fn backfill_if_required(
 			}
 		}
 
+		let known_ms = t_known.elapsed().as_secs_f64() * 1000.0;
+		let t_gaps = Instant::now();
+
 		// Phase 3: Call rezzy for correct backward extremity detection.
 		let mut gaps = rezzy::find_backward_extremities(&event_map, |id| known_ids.contains(id));
+
+		let gaps_ms = t_gaps.elapsed().as_secs_f64() * 1000.0;
+		info!(
+			target: "backfill_debug",
+			%room_id,
+			scanned,
+			parent_lookups = all_prev_ids.len(),
+			scan_ms,
+			known_parent_checks_ms = known_ms,
+			gap_detect_ms = gaps_ms,
+			"backfill phase timing"
+		);
 
 		// Leave out gaps that already failed both /backfill and the
 		// /get_missing_events fallback, so they stop costing budget and the
