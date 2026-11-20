@@ -2338,7 +2338,10 @@ mod tests {
 	/// difference. It is only in the chain of `IMC` (the conflicted join). If it
 	/// leaks into the conflicted set it is replayed over the partial state and
 	/// can overwrite the newer `JRI` (invite) join rules, admitting `IMC`.
-	async fn auth_difference_scenario(full_state_chains: bool) {
+	async fn auth_difference_scenario(
+		full_state_chains: bool,
+		public_era_member: bool,
+	) -> StateMap<OwnedEventId> {
 		use futures::future::ready;
 		let mut inner = INITIAL_EVENTS();
 		let extra = vec![
@@ -2377,18 +2380,26 @@ mod tests {
 			ids.iter()
 				.map(|id| {
 					let ev = inner.get(&event_id(id)).unwrap();
-					(
-						ev.event_type().with_state_key(ev.state_key().unwrap()),
-						ev.event_id.clone(),
-					)
+					(ev.event_type().with_state_key(ev.state_key().unwrap()), ev.event_id.clone())
 				})
 				.collect::<StateMap<_>>()
 		};
 
 		// Both forks share CREATE, IMA, IPOWER, JRI and IMB. Fork 2 additionally
 		// has a concurrent join (IMC) made while the room was still public.
-		let state_set_1 = to_set(&["CREATE", "IMA", "IPOWER", "JRI", "IMB", "T1"]);
-		let state_set_2 = to_set(&["CREATE", "IMA", "IPOWER", "JRI", "IMB", "IMC", "T2"]);
+		// Without the public-era member IMB nothing in U cites IJR, so IJR is not
+		// in A(U) and the spec's own difference contains it.
+		let mut shared = vec!["CREATE", "IMA", "IPOWER", "JRI"];
+		if public_era_member {
+			shared.push("IMB");
+		}
+		let with = |extra: &[&'static str]| {
+			let mut ids = shared.clone();
+			ids.extend_from_slice(extra);
+			to_set(&ids)
+		};
+		let state_set_1 = with(&["T1"]);
+		let state_set_2 = with(&["IMC", "T2"]);
 
 		// Reference: exact spec auth difference over the FULL state sets.
 		let full_chain = |set: &StateMap<OwnedEventId>| {
@@ -2398,8 +2409,9 @@ mod tests {
 		};
 		let (c1, c2) = (full_chain(&state_set_1), full_chain(&state_set_2));
 		let spec_diff: HashSet<OwnedEventId> = c1.symmetric_difference(&c2).cloned().collect();
-		assert!(
-			!spec_diff.contains(&event_id("IJR")),
+		assert_eq!(
+			spec_diff.contains(&event_id("IJR")),
+			!public_era_member,
 			"IJR is in both full chains via IMB, so the spec difference excludes it"
 		);
 
@@ -2431,26 +2443,43 @@ mod tests {
 		)
 		.await
 		.expect("resolution succeeds");
+		resolved
+	}
 
-		// With the invite-only join rules in force, charlie's join must be
-		// rejected and the join rules must stay as JRI.
+	fn charlie_joined(resolved: &StateMap<OwnedEventId>) -> bool {
+		resolved.contains_key(&(StateEventType::RoomMember, charlie().as_str().into()))
+	}
+
+	/// Current behaviour: auth chains of the conflicting events only. With the
+	/// invite-only join rules in force, charlie's join must be rejected.
+	#[conduwuit_macros::async_test]
+	async fn auth_difference_uses_full_state_sets() {
+		let resolved = auth_difference_scenario(false, true).await;
 		let join_rules_key = (StateEventType::RoomJoinRules, "".into());
 		assert_eq!(resolved.get(&join_rules_key), Some(&event_id("JRI")));
-		let charlie_key = (StateEventType::RoomMember, charlie().as_str().into());
 		assert!(
-			!resolved.contains_key(&charlie_key),
-			"charlie joined an invite-only room: auth difference leaked an event \
-			 from A(U) (resolved: {resolved:?})"
+			!charlie_joined(&resolved),
+			"charlie joined an invite-only room: auth difference leaked an event from A(U) \
+			 (resolved: {resolved:?})"
 		);
 	}
 
-	/// Current behaviour: auth chains of the conflicting events only.
-	#[conduwuit_macros::async_test]
-	async fn auth_difference_uses_full_state_sets() { auth_difference_scenario(false).await; }
-
 	/// Control: the same scenario with full-state-set auth chains.
 	#[conduwuit_macros::async_test]
-	async fn auth_difference_full_state_sets_control() { auth_difference_scenario(true).await; }
+	async fn auth_difference_full_state_sets_control() {
+		let resolved = auth_difference_scenario(true, true).await;
+		assert!(!charlie_joined(&resolved));
+	}
+
+	/// Variant without the public-era member: IJR is not in A(U), so the spec's
+	/// own difference contains it and both chain scopes must agree.
+	#[conduwuit_macros::async_test]
+	async fn auth_difference_variant_without_public_era_member() {
+		let narrow = auth_difference_scenario(false, false).await;
+		let full = auth_difference_scenario(true, false).await;
+		assert_eq!(narrow, full);
+		eprintln!("variant resolved: charlie_joined={}", charlie_joined(&full));
+	}
 
 	#[conduwuit_macros::async_test]
 	async fn join_rule_with_auth_chain() {
