@@ -50,7 +50,7 @@ pub(super) async fn view_extremities(
 					.collect()
 					.await;
 				for eid in &extremities {
-					let detail = match self.services.rooms.timeline.get_pdu(eid).await {
+					let detail = match self.services.rooms.timeline.get_pdu(eid) {
 						| Ok(pdu) => {
 							let ts = pdu.origin_server_ts;
 							let kind = pdu.kind.to_string();
@@ -87,7 +87,7 @@ pub(super) async fn view_extremities(
 	let num = extremities.len();
 	let mut body = String::new();
 	for event_id in extremities {
-		let pdu = self.services.rooms.timeline.get_pdu(&event_id).await;
+		let pdu = self.services.rooms.timeline.get_pdu(&event_id);
 		match pdu {
 			| Ok(pdu) => {
 				let ts = pdu.origin_server_ts;

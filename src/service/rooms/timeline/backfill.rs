@@ -6,12 +6,13 @@ use std::{
 		Arc,
 		atomic::{AtomicUsize, Ordering},
 	},
+	time::Instant,
 };
 
 use async_lock::Mutex;
 use conduwuit::{Err, Error, PduEvent, RoomVersion, matrix::pdu::RawJson as RawJsonValue};
 use conduwuit_core::{
-	Result, debug, debug_warn, err, error, implement, info,
+	Result, debug, err, error, implement, info,
 	matrix::{
 		event::Event,
 		pdu::{PduCount, PduId, RawPduId},
@@ -39,6 +40,17 @@ use super::{PromotionClaims, TopoToken};
 /// rather than handed out fresh at each hop -- see
 /// [`get_remote_pdu_limited`]'s doc comment.
 const MAX_REMOTE_HISTORY_DEPTH: usize = 64;
+
+/// How many open gaps one backfill round asks `/get_missing_events` about.
+/// The rest wait for the next round, so a room with many holes cannot turn a
+/// single `/messages` request into a burst of federation calls.
+const MAX_FALLBACK_GAPS_PER_ROUND: usize = 4;
+
+/// `limit` of a gap-fill `/get_missing_events` request.
+const MISSING_EVENTS_LIMIT: u32 = 50;
+
+/// How many of the nearest older events we hold are sent as `earliest_events`.
+const MISSING_EVENTS_EARLIEST_MARKERS: usize = 10;
 
 struct RemoteHistoryBudget {
 	remaining: AtomicUsize,
@@ -247,7 +259,11 @@ pub async fn backfill_if_required(
 		// Phase 1: Collect scanned PDUs into an event map. With `impl DagNode
 		// for Pdu`, rezzy operates directly on PduEvent — no LeanEvent conversion.
 		let mut event_map: HashMap<OwnedEventId, PduEvent> = HashMap::new();
+		// Where each scanned event sits, so a gap's nearest older held events
+		// can be found for the /get_missing_events fallback.
+		let mut token_by_id: HashMap<OwnedEventId, TopoToken> = HashMap::new();
 		let mut scanned = 0_usize;
+		let t_scan = Instant::now();
 		let mut pdus = self
 			.topo_pdus_rev(room_id, Some(from))
 			.take(scan_limit.saturating_add(1))
@@ -264,8 +280,12 @@ pub async fn backfill_if_required(
 				prev_events = ?pdu.prev_events,
 				"backfill: scanned timeline PDU"
 			);
+			token_by_id.insert(pdu.event_id.clone(), topo_token);
 			event_map.insert(pdu.event_id.clone(), pdu);
 		}
+
+		let scan_ms = t_scan.elapsed().as_secs_f64() * 1000.0;
+		let t_known = Instant::now();
 
 		// Phase 2: Pre-collect which prev_event IDs exist in the DB so the
 		// rezzy `exists` predicate is synchronous.
@@ -279,7 +299,7 @@ pub async fn backfill_if_required(
 		}
 		let mut known_ids: HashSet<OwnedEventId> = HashSet::with_capacity(all_prev_ids.len());
 		for prev_id in &all_prev_ids {
-			// Outliers exist in `eventid_pdu`, but they are still gaps in the
+			// Outliers exist in mtxdb, but they are still gaps in the
 			// timeline because `/messages` scans the non-outlier topo index. If
 			// we treat an outlier parent as "known" here, pagination can advance
 			// past its depth and only upgrade it later during a deeper backfill,
@@ -289,8 +309,42 @@ pub async fn backfill_if_required(
 			}
 		}
 
+		let known_ms = t_known.elapsed().as_secs_f64() * 1000.0;
+		let t_gaps = Instant::now();
+
 		// Phase 3: Call rezzy for correct backward extremity detection.
-		let gaps = rezzy::find_backward_extremities(&event_map, |id| known_ids.contains(id));
+		let mut gaps = rezzy::find_backward_extremities(&event_map, |id| known_ids.contains(id));
+
+		let gaps_ms = t_gaps.elapsed().as_secs_f64() * 1000.0;
+		info!(
+			target: "backfill_debug",
+			%room_id,
+			scanned,
+			parent_lookups = all_prev_ids.len(),
+			scan_ms,
+			known_parent_checks_ms = known_ms,
+			gap_detect_ms = gaps_ms,
+			"backfill phase timing"
+		);
+
+		// Leave out gaps that already failed both /backfill and the
+		// /get_missing_events fallback, so they stop costing budget and the
+		// gaps behind them are reached.
+		let total_gaps = gaps.len();
+		gaps.retain(|gap| {
+			!self
+				.backfill_failed_gaps
+				.contains_key(&(room_id.to_owned(), gap.event_id.clone()))
+		});
+		if gaps.is_empty() && total_gaps > 0 {
+			// Not gap-free: every remaining gap is a known failure, so do not
+			// record this window as verified.
+			info!(
+				"backfill: {total_gaps} gaps in {room_id} all failed recently; not retrying \
+				 them (scanned {scanned} events from {from})"
+			);
+			return Ok(());
+		}
 
 		if gaps.is_empty() {
 			info!("backfill: no gaps in {room_id} (scanned {scanned} events from {from})");
@@ -316,20 +370,23 @@ pub async fn backfill_if_required(
 			return Ok(());
 		}
 
-		// Build the /backfill request: send child event IDs (events that have
-		// missing parents), which is what the /backfill API expects.
+		// Build the /backfill request from the missing parents, as Synapse and
+		// Dendrite do: the remote returns each event named in `v` and its
+		// ancestors, so the missing parent is exactly where history resumes.
+		// Naming the child instead only works if the remote knows the child (an
+		// event only we hold, such as a local message or join, makes the remote
+		// return nothing for that gap) and always returns an event we already have.
 		// `gaps` iterates a HashMap-backed event_map, so its order is not
 		// stable across runs; sort so the request (and any resulting
 		// insertion order) is reproducible for debugging and testing.
-		let mut backwards_extremities: Vec<OwnedEventId> =
-			gaps.iter().map(|gap| gap.event_id.clone()).collect();
-		backwards_extremities.sort_unstable();
 		let mut unique_missing: Vec<&EventId> = gaps
 			.iter()
 			.flat_map(|gap| gap.missing_prev_events.iter().map(AsRef::as_ref))
 			.collect();
 		unique_missing.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
 		unique_missing.dedup();
+		let backwards_extremities: Vec<OwnedEventId> =
+			unique_missing.iter().map(|id| (*id).to_owned()).collect();
 
 		let mut repeat_hasher = DefaultHasher::new();
 		room_id.as_str().hash(&mut repeat_hasher);
@@ -398,7 +455,7 @@ pub async fn backfill_if_required(
 				"Asking {backfill_server} for backfill in {room_id} (extremities: \
 				 {backwards_extremities:?})"
 			);
-			let response = self
+			match self
 				.services
 				.sending
 				.send_federation_request(
@@ -409,8 +466,8 @@ pub async fn backfill_if_required(
 						limit: UInt::from(scan_limit_u32),
 					},
 				)
-				.await;
-			match response {
+				.await
+			{
 				| Ok(response) => {
 					let pdus = response.pdus;
 					info!(
@@ -421,26 +478,8 @@ pub async fn backfill_if_required(
 						continue;
 					}
 
-					// Sort the batch by actual DAG topology before assigning Backfilled
-					// positions. `backfill_pdu` hands out each event's
-					// `PduCount::Backfilled` slot from a bare `next_count()` call in
-					// whatever order it's given the batch, so the order we hand it *is*
-					// the timeline order. The wire order the spec asks servers to send
-					// (newest-first) is not guaranteed to be a total order -- same-depth
-					// siblings can legally arrive in either relative order, and a remote
-					// server's tiebreak need not match ours. Left untreated, that drift
-					// becomes a permanent wrong position for one event, which then falls
-					// outside a `/messages` page boundary and looks like a dropped event.
-					let pdus = topo_sort_backfill_batch(pdus);
-
-					// Handle timeline events newest-first (maintain timeline integrity)
-					for pdu in pdus {
-						if let Err(e) =
-							self.backfill_pdu(backfill_server, pdu, None).boxed().await
-						{
-							debug_warn!("Failed to add backfilled pdu in room {room_id}: {e}");
-						}
-					}
+					self.insert_backfilled_batch(room_id, backfill_server, pdus)
+						.await?;
 					got_events = true;
 					break; // Got events from this server, re-scan for new gaps
 				},
@@ -457,13 +496,409 @@ pub async fn backfill_if_required(
 			}
 		}
 
-		if !got_events {
+		// /backfill walks back through the gap's missing parent, so a parent the
+		// remote will not serve (or a walk cut off by the limit) leaves the gap
+		// open. Ask /get_missing_events for those gaps, bounded by the nearest
+		// events we hold below each one, then remember what still cannot be
+		// filled so it stops costing budget.
+		let mut attempted_fallback = false;
+		let mut fallback_filled = false;
+		let mut fallback_gaps = 0_usize;
+		for gap in &gaps {
+			let mut resolved = false;
+			for missing in &gap.missing_prev_events {
+				if self.non_outlier_pdu_exists(missing).await {
+					resolved = true;
+					break;
+				}
+			}
+			if resolved {
+				continue;
+			}
+			if fallback_gaps >= MAX_FALLBACK_GAPS_PER_ROUND {
+				// Left for the next round; not a failure.
+				continue;
+			}
+			fallback_gaps = fallback_gaps.saturating_add(1);
+			attempted_fallback = true;
+			info!(
+				"backfill: trying /get_missing_events for gap at {} (missing: {:?}) in {room_id}",
+				gap.event_id, gap.missing_prev_events
+			);
+
+			let earliest = match token_by_id.get(&gap.event_id) {
+				| Some(anchor) =>
+					self.nearest_older_events(room_id, *anchor, &gap.event_id)
+						.await,
+				| None => Vec::new(),
+			};
+			if self
+				.fill_gap_with_missing_events(room_id, &gap.event_id, earliest, &room_mods)
+				.await?
+			{
+				fallback_filled = true;
+			}
+
+			let mut filled = false;
+			for missing in &gap.missing_prev_events {
+				if self.non_outlier_pdu_exists(missing).await {
+					filled = true;
+					break;
+				}
+			}
+			if !filled {
+				info!(
+					"backfill: gap at {} in {room_id} could not be filled by /backfill or \
+					 /get_missing_events; not retrying it for a while",
+					gap.event_id
+				);
+				self.backfill_failed_gaps
+					.insert((room_id.to_owned(), gap.event_id.clone()), ());
+			}
+		}
+
+		if !got_events && !fallback_filled {
 			if federated_room {
 				warn!("No servers could backfill, but backfill was needed in room {room_id}");
 			}
-			return Ok(());
+			// Without the fallback having run there is nothing new to scan for.
+			// With it, the failures just recorded drop out of the next scan, so
+			// the gaps behind them still get their turn.
+			if !attempted_fallback {
+				return Ok(());
+			}
 		}
 		// Loop back to re-scan for new gaps created by backfilled events
+	}
+}
+
+/// Newest events we hold strictly below `anchor`, used as the stop markers
+/// (`earliest_events`) of a `/get_missing_events` request for a gap at
+/// `anchor`. The remote does not expand past them, so the answer stays between
+/// the gap and what we already have.
+#[implement(super::Service)]
+async fn nearest_older_events(
+	&self,
+	room_id: &RoomId,
+	anchor: TopoToken,
+	anchor_id: &EventId,
+) -> Vec<OwnedEventId> {
+	let mut found = Vec::new();
+	let mut stream = self.topo_pdus_rev(room_id, Some(anchor)).boxed();
+	while let Some(Ok((_, pdu))) = stream.next().await {
+		if pdu.event_id.as_str() == anchor_id.as_str() {
+			continue;
+		}
+		found.push(pdu.event_id.clone());
+		if found.len() >= MISSING_EVENTS_EARLIEST_MARKERS {
+			break;
+		}
+	}
+	found
+}
+
+/// Fills the gap below `extremity` with `/get_missing_events`, for when
+/// `/backfill` cannot reach its missing parent. Returns whether a server
+/// answered with events, which are inserted as backfilled history.
+#[implement(super::Service)]
+async fn fill_gap_with_missing_events(
+	&self,
+	room_id: &RoomId,
+	extremity: &EventId,
+	earliest_events: Vec<OwnedEventId>,
+	room_mods: &[slipstream::OwnedServerName],
+) -> Result<bool> {
+	let mut servers = self
+		.get_backfill_servers(room_id, room_mods.iter().map(AsRef::as_ref))
+		.await
+		.boxed();
+	while let Some(ref server) = servers.next().await {
+		info!(
+			"Asking {server} for /get_missing_events below {extremity} in {room_id} (earliest: \
+			 {})",
+			earliest_events.len()
+		);
+		let request = federation::event::get_missing_events::v1::Request {
+			room_id: room_id.to_owned(),
+			earliest_events: earliest_events.clone(),
+			latest_events: vec![extremity.to_owned()],
+			limit: UInt::from(MISSING_EVENTS_LIMIT),
+			min_depth: UInt::from(0_u32),
+		};
+		match self
+			.services
+			.sending
+			.send_federation_request(server, request)
+			.await
+		{
+			| Ok(response) => {
+				if response.events.is_empty() {
+					info!(
+						"backfill: {server} returned no events below {extremity} for {room_id}"
+					);
+					continue;
+				}
+				info!(
+					"backfill: {server} returned {} events below {extremity} for {room_id}",
+					response.events.len()
+				);
+				self.insert_backfilled_batch(room_id, server, response.events)
+					.await?;
+				return Ok(true);
+			},
+			| Err(e) => {
+				warn!("{server} failed /get_missing_events below {extremity} in {room_id}: {e}");
+			},
+		}
+	}
+
+	Ok(false)
+}
+
+/// Inserts a batch of PDUs received from `server` as backfilled history.
+#[implement(super::Service)]
+async fn insert_backfilled_batch(
+	&self,
+	room_id: &RoomId,
+	server: &ServerName,
+	pdus: Vec<RawJsonValue>,
+) -> Result<()> {
+	// Sort the batch by actual DAG topology before assigning Backfilled
+	// positions. `backfill_pdu` hands out each event's
+	// `PduCount::Backfilled` slot from a bare `next_count()` call in
+	// whatever order it's given the batch, so the order we hand it *is*
+	// the timeline order. The wire order the spec asks servers to send
+	// (newest-first) is not guaranteed to be a total order -- same-depth
+	// siblings can legally arrive in either relative order, and a remote
+	// server's tiebreak need not match ours. Left untreated, that drift
+	// becomes a permanent wrong position for one event, which then falls
+	// outside a `/messages` page boundary and looks like a dropped event.
+	let pdus = topo_sort_backfill_batch(pdus);
+
+	// Reserve stream positions in newest-first order, then process
+	// oldest-first so each event's predecessors from this batch are
+	// already available during auth and state resolution. The assigned
+	// positions preserve the existing newest-first timeline ordering.
+	let batch_size = u64::try_from(pdus.len())?;
+	let mut count = self.services.globals.next_count_batch(batch_size)?;
+	let mut counts = Vec::with_capacity(pdus.len());
+	for _ in &pdus {
+		count = count
+			.checked_add(1)
+			.ok_or_else(|| err!(Arithmetic("Counter overflow")))?;
+		counts.push(count);
+	}
+
+	for (pdu, count) in pdus.into_iter().zip(counts).rev() {
+		if let Err(e) = self.backfill_pdu(server, pdu, Some(count)).boxed().await {
+			warn!("Failed to add backfilled pdu in room {room_id}: {e}");
+		}
+	}
+
+	Ok(())
+}
+
+/// Gaps (and their missing parents) sent in one forward-gap `/backfill`.
+const FORWARD_GAPS_PER_REQUEST: usize = 25;
+
+/// Most `/backfill` requests one forward `/messages` call makes, so a room with
+/// thousands of holes cannot turn a single page into an unbounded burst.
+const MAX_FORWARD_GAP_REQUESTS: usize = 40;
+
+/// Most stored events a forward request scans for gaps.
+const FORWARD_GAP_SCAN_LIMIT: usize = 2_000;
+
+/// Return bounded, ordered batches of missing-parent IDs plus their source gap
+/// ranges. The ranges let the caller record which gaps failed after each
+/// federation request without copying the gap records.
+fn forward_gap_batches<Id>(
+	gaps: &[rezzy::state::at::BackwardExtremity<Id>],
+) -> Vec<(usize, usize, Vec<Id>)>
+where
+	Id: Clone + Ord,
+{
+	let mut batches = Vec::new();
+	for (batch_index, chunk) in gaps
+		.chunks(FORWARD_GAPS_PER_REQUEST)
+		.take(MAX_FORWARD_GAP_REQUESTS)
+		.enumerate()
+	{
+		let start = batch_index
+			.checked_mul(FORWARD_GAPS_PER_REQUEST)
+			.expect("forward gap batch index is bounded");
+		let end = start
+			.checked_add(chunk.len())
+			.expect("forward gap batch end is bounded");
+		let mut parents: Vec<Id> = chunk
+			.iter()
+			.flat_map(|gap| gap.missing_prev_events.iter().cloned())
+			.collect();
+		parents.sort_unstable();
+		parents.dedup();
+		batches.push((start, end, parents));
+	}
+	batches
+}
+
+/// Fills the backward extremities that lie ahead of a forward cursor.
+///
+/// Forward pagination only walks stored events, so a hole ahead of the cursor
+/// would otherwise stay open for ever. Gaps are taken oldest first, each is
+/// asked about by its missing parent (as the backward path does), and one that
+/// is still open afterwards is remembered in `backfill_failed_gaps`, so a
+/// wedged gap neither repeats on every request nor keeps newer gaps from being
+/// tried. Work per call is bounded by [`FORWARD_GAP_SCAN_LIMIT`] events and
+/// [`MAX_FORWARD_GAP_REQUESTS`] requests.
+#[implement(super::Service)]
+pub async fn backfill_forward_gaps(&self, room_id: &RoomId, from: TopoToken) -> Result<()> {
+	let has_remote_servers = self
+		.services
+		.state_cache
+		.room_servers(room_id)
+		.ready_any(|server| !self.services.globals.server_is_ours(&server))
+		.await || self
+		.services
+		.state_partial
+		.partial_server(room_id)
+		.await
+		.is_ok_and(|s| s.is_some());
+	if !has_remote_servers {
+		return Ok(());
+	}
+
+	// One scan-and-fetch at a time per room, as in the backward path.
+	let _backfill_lock = self.mutex_backfill.lock(room_id).await;
+
+	let mut event_map: HashMap<OwnedEventId, PduEvent> = HashMap::new();
+	let mut pdus = self
+		.topo_pdus(room_id, Some(from))
+		.take(FORWARD_GAP_SCAN_LIMIT)
+		.boxed();
+	while let Some(Ok((_, pdu))) = pdus.next().await {
+		event_map.insert(pdu.event_id.clone(), pdu);
+	}
+	drop(pdus);
+
+	let mut known_ids: HashSet<OwnedEventId> = HashSet::new();
+	for pdu in event_map.values() {
+		for prev_id in &pdu.prev_events {
+			if !event_map.contains_key(prev_id)
+				&& !known_ids.contains(prev_id)
+				&& self.non_outlier_pdu_exists(prev_id).await
+			{
+				known_ids.insert(prev_id.clone());
+			}
+		}
+	}
+
+	let mut gaps = rezzy::find_backward_extremities(&event_map, |id| known_ids.contains(id));
+	gaps.retain(|gap| {
+		!self
+			.backfill_failed_gaps
+			.contains_key(&(room_id.to_owned(), gap.event_id.clone()))
+	});
+	if gaps.is_empty() {
+		return Ok(());
+	}
+	gaps.sort_by(|a, b| {
+		let depth = |id: &OwnedEventId| event_map.get(id).map(Event::depth);
+		depth(&a.event_id)
+			.cmp(&depth(&b.event_id))
+			.then_with(|| a.event_id.cmp(&b.event_id))
+	});
+	info!(
+		"backfill: {} open forward gaps in {room_id} (scanned {} events from {from})",
+		gaps.len(),
+		event_map.len()
+	);
+
+	let servers: Vec<slipstream::OwnedServerName> = self
+		.get_backfill_servers(room_id, std::iter::empty())
+		.await
+		.boxed()
+		.collect()
+		.await;
+
+	for (start, end, parents) in forward_gap_batches(&gaps) {
+		let chunk = &gaps[start..end];
+		for server in &servers {
+			let request = federation::backfill::get_backfill::v1::Request {
+				room_id: room_id.to_owned(),
+				v: parents.clone(),
+				limit: UInt::from(100_u32),
+			};
+			match self
+				.services
+				.sending
+				.send_federation_request(server, request)
+				.await
+			{
+				| Ok(response) if !response.pdus.is_empty() => {
+					self.insert_backfilled_batch(room_id, server, response.pdus)
+						.await?;
+					break;
+				},
+				| Ok(_) => {},
+				| Err(e) => {
+					warn!("{server} failed forward /backfill for {room_id}: {e}");
+				},
+			}
+		}
+
+		// A gap whose parent is still missing is not retried for a while.
+		for gap in chunk {
+			for missing in &gap.missing_prev_events {
+				if !self.non_outlier_pdu_exists(missing).await {
+					self.backfill_failed_gaps
+						.insert((room_id.to_owned(), gap.event_id.clone()), ());
+					break;
+				}
+			}
+		}
+	}
+
+	Ok(())
+}
+
+#[cfg(test)]
+mod forward_gap_tests {
+	use super::*;
+
+	fn gap(event_id: &str, missing: &[&str]) -> rezzy::state::at::BackwardExtremity<String> {
+		rezzy::state::at::BackwardExtremity {
+			event_id: event_id.to_owned(),
+			missing_prev_events: missing.iter().map(|id| (*id).to_owned()).collect(),
+		}
+	}
+
+	#[test]
+	fn forward_gap_batches_deduplicate_and_sort_parents_without_reordering_gaps() {
+		let gaps = vec![
+			gap("gap-a", &["parent-z", "parent-a", "parent-a"]),
+			gap("gap-b", &["parent-z"]),
+		];
+
+		assert_eq!(forward_gap_batches(&gaps), vec![(0, 2, vec![
+			"parent-a".to_owned(),
+			"parent-z".to_owned()
+		])]);
+	}
+
+	#[test]
+	fn forward_gap_batches_bound_requests_and_keep_oldest_gaps_first() {
+		let gaps: Vec<_> = (0..=(FORWARD_GAPS_PER_REQUEST * MAX_FORWARD_GAP_REQUESTS))
+			.map(|i| {
+				let event_id = format!("gap-{i:04}");
+				let parent_id = format!("parent-{i:04}");
+				gap(&event_id, &[&parent_id])
+			})
+			.collect();
+		let batches = forward_gap_batches(&gaps);
+
+		assert_eq!(batches.len(), MAX_FORWARD_GAP_REQUESTS);
+		assert_eq!(batches.first().map(|batch| (batch.0, batch.1)), Some((0, 25)));
+		assert_eq!(batches.last().map(|batch| (batch.0, batch.1)), Some((975, 1_000)));
+		assert_eq!(batches.iter().map(|batch| batch.2.len()).sum::<usize>(), 1_000);
 	}
 }
 
@@ -653,7 +1088,7 @@ async fn get_remote_pdu_limited(
 ) -> Result<PduEvent> {
 	let _mutex = self.mutex_fetch.lock(event_id).await;
 
-	let local = self.get_pdu(event_id).await;
+	let local = self.get_pdu(event_id);
 	if local.is_ok() {
 		// `get_pdu` also finds outliers, e.g. one a resync stored first. Those have
 		// no timeline position yet, so give them the same treatment as a freshly
@@ -773,7 +1208,7 @@ async fn get_remote_pdu_limited(
 						self.promote_outlier(room_id, event_id).await?;
 					}
 					debug!("Successfully backfilled {event_id} from {backfill_server}");
-					Some(self.get_pdu(event_id).await)
+					Some(self.get_pdu(event_id))
 				},
 				| Err(e) => {
 					warn!(
@@ -813,7 +1248,7 @@ async fn materialize_remote_history_limited(
 		return Ok(());
 	}
 
-	let pdu = self.get_pdu(event_id).await?;
+	let pdu = self.get_pdu(event_id)?;
 	for prev_id in pdu.prev_events() {
 		if self.get_pdu_id(prev_id).await.is_ok() {
 			continue;
@@ -823,7 +1258,7 @@ async fn materialize_remote_history_limited(
 			continue;
 		}
 
-		if self.get_pdu(prev_id).await.is_err() {
+		if self.get_pdu(prev_id).is_err() {
 			let _ = Box::pin(self.get_remote_pdu_limited(room_id, prev_id, budget)).await;
 		} else {
 			Box::pin(self.materialize_remote_history_limited(room_id, prev_id, budget)).await?;
@@ -886,6 +1321,7 @@ pub async fn backfill_pdu(
 		value.clone(),
 		false,
 		false,
+		true,
 		&room_version_id,
 		crate::rooms::event_handler::AuthRecoveryStage::AfterStateIds,
 	))
@@ -972,16 +1408,14 @@ pub async fn backfill_pdu(
 
 	// Insert pdu
 	self.db
-		.prepend_backfill_pdu(&pdu_id, &event_id, &json_value, &pdu_event)
-		.await;
+		.append_pdu(&pdu_id, &pdu_event, &json_value, pdu_id.pdu_count())
+		.await?;
 	self.reconciliation_cache.invalidate(&room_id);
 	drop(reconciliation_lock);
 
 	info!(target: "backfill_debug", %event_id, count, "backfill_pdu: insert complete");
 
 	drop(insert_lock);
-
-	self.index_pdu_search(shortroomid, &pdu_id, &pdu_event);
 
 	debug!("Prepended backfill pdu");
 	Ok(())
@@ -1073,7 +1507,7 @@ pub async fn promote_outlier_batch<'a>(
 		return Ok(PromoteOutlierOutcome::Skipped);
 	}
 
-	let value = self.get_outlier_pdu_json(event_id).await?;
+	let value = self.get_outlier_pdu_json(event_id)?;
 
 	let pdu: PduEvent =
 		slipstream::codec::from_value(&slipstream::json::Value::Object(value.clone()))
@@ -1144,12 +1578,10 @@ pub async fn promote_outlier_batch<'a>(
 
 	self.associate_current_state(room_id, event_id).await?;
 	self.db
-		.prepend_backfill_pdu_batch(batch, &pdu_id, event_id, &value, &pdu)
-		.await;
+		.append_pdu_batch(batch, &pdu_id, &pdu, &value, pdu_id.pdu_count())
+		.await?;
 
 	drop(insert_lock);
-
-	self.index_pdu_search(shortroomid, &pdu_id, &pdu);
 
 	// Remove from outlier room index
 	self.clear_outlier_flag(event_id);
@@ -1331,7 +1763,7 @@ pub async fn promote_outliers_sorted(
 			continue;
 		}
 
-		let Ok(pdu) = self.get_pdu_outlier(event_id).await else {
+		let Ok(pdu) = self.get_pdu_outlier(event_id) else {
 			continue;
 		};
 
@@ -1393,8 +1825,8 @@ pub async fn promote_outliers_sorted(
 	Ok(promoted)
 }
 
-/// Repair derived data (topological index + search index) for events that
-/// are already in the timeline (non-outliers), scoped to an explicit list.
+/// Repair derived topological data for events that are already in the
+/// timeline (non-outliers), scoped to an explicit list.
 ///
 /// Used by `admin/yolo heal rescue-room --timeline-limit`, which passes a
 /// bounded window of recent timeline PDUs for re-processing. These events
@@ -1402,7 +1834,7 @@ pub async fn promote_outliers_sorted(
 /// deliberately skips anything already in the timeline), but the caller
 /// still wants their derived data repaired -- mirroring what the removed
 /// `heal_room` helper did for non-outlier events in its non-outlier branch
-/// (`clear_pdu_markers` + `reindex_topo` + `index_pdu_search`; marker
+/// (`clear_pdu_markers` + `reindex_topo`; marker
 /// clearing is handled separately by the caller's own `--force` handling).
 ///
 /// Events not already present as timeline (non-outlier) PDUs are silently
@@ -1415,7 +1847,6 @@ pub async fn reindex_timeline_events(
 ) -> Result<usize> {
 	use conduwuit_core::debug;
 
-	let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
 	let mut repaired = 0_usize;
 
 	// Fetch every non-outlier event up front. This lets us both build a
@@ -1429,7 +1860,7 @@ pub async fn reindex_timeline_events(
 		let Ok(pdu_id) = self.get_pdu_id(event_id).await else {
 			continue;
 		};
-		let Ok(pdu) = self.get_pdu_in_room(Some(room_id), event_id).await else {
+		let Ok(pdu) = self.get_pdu_in_room(room_id, event_id) else {
 			continue;
 		};
 		pdus.insert(event_id.clone(), (pdu_id, pdu));
@@ -1468,8 +1899,6 @@ pub async fn reindex_timeline_events(
 				.reindex_topo_batch(&mut batch, pdu_id, &event_id, new_topo_depth);
 			self.db_apply_batch(batch);
 		}
-
-		self.index_pdu_search(shortroomid, pdu_id, pdu);
 		repaired = repaired.saturating_add(1);
 	}
 
@@ -1574,17 +2003,9 @@ pub async fn force_insert_pdu(
 	let (pdu_count, pdu_id, value) =
 		self.prepare_pdu_insert(shortroomid, event_id, value, backfill)?;
 
-	if backfill {
-		self.db
-			.prepend_backfill_pdu(&pdu_id, event_id, &value, pdu)
-			.await;
-	} else {
-		self.db.append_pdu(&pdu_id, pdu, &value, pdu_count).await;
-	}
+	self.db.append_pdu(&pdu_id, pdu, &value, pdu_count).await?;
 
 	drop(insert_lock);
-
-	self.index_pdu_search(shortroomid, &pdu_id, pdu);
 
 	Ok(pdu_id)
 }
@@ -1609,17 +2030,9 @@ pub async fn force_insert_pdu_batch<'a>(
 	let (pdu_count, pdu_id, value) =
 		self.prepare_pdu_insert(shortroomid, event_id, value, backfill)?;
 
-	if backfill {
-		self.db
-			.prepend_backfill_pdu_batch(batch, &pdu_id, event_id, &value, pdu)
-			.await;
-	} else {
-		self.db
-			.append_pdu_batch(batch, &pdu_id, pdu, &value, pdu_count)
-			.await;
-	}
-
-	self.index_pdu_search(shortroomid, &pdu_id, pdu);
+	self.db
+		.append_pdu_batch(batch, &pdu_id, pdu, &value, pdu_count)
+		.await?;
 
 	Ok(pdu_id)
 }

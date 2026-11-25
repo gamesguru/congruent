@@ -161,6 +161,15 @@ pub trait Event: Clone + Debug {
 	/// create event.
 	fn room_id_or_hash(&self) -> Option<OwnedRoomId>;
 
+	/// The room ID associated with this event, including for a v12 create event
+	/// whose room ID is derived from its event ID.
+	#[inline]
+	fn room_id_derived(&self) -> Option<OwnedRoomId> {
+		self.room_id()
+			.map(ToOwned::to_owned)
+			.or_else(|| self.room_id_or_hash())
+	}
+
 	/// The `UserId` of this event.
 	fn sender(&self) -> &UserId;
 

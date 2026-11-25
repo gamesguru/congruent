@@ -402,6 +402,22 @@ impl Service {
 		self.db.mark_event_soft_failed(event_id, code)
 	}
 
+	/// Mark the event soft-failed and record when soft-fail finished in one
+	/// verdict update.
+	#[inline]
+	pub fn mark_event_soft_failed_at(
+		&self,
+		event_id: &EventId,
+		code: SoftFailCode,
+		ordering: u64,
+	) -> Result<()> {
+		self.db.mark_event_soft_failed_at(event_id, code, ordering)
+	}
+
+	pub fn get_arrival_ordering(&self, event_id: &EventId) -> Result<Option<u64>> {
+		self.db.get_arrival_ordering(event_id)
+	}
+
 	pub fn get_soft_fail_reason(&self, event_id: &EventId) -> Result<Option<String>> {
 		self.db.get_soft_fail_reason(event_id)
 	}
@@ -413,6 +429,17 @@ impl Service {
 
 	pub fn is_event_rejected(&self, event_id: &EventId) -> Result<bool> {
 		self.db.is_event_rejected(event_id)
+	}
+
+	/// Read authoritative mtxdb verdicts for multiple event IDs in one batch.
+	pub fn get_verdicts<'a, I>(
+		&self,
+		event_ids: I,
+	) -> Result<Vec<Option<conduwuit_mtxdb::verdicts::Verdict>>>
+	where
+		I: IntoIterator<Item = &'a EventId>,
+	{
+		self.db.get_verdicts(event_ids)
 	}
 
 	/// Returns the subset of `event_ids` carrying a rejection or soft-fail
@@ -431,6 +458,16 @@ impl Service {
 		// Resolution caches events together with their verdict.
 		self.services.short.leanevent_cache.invalidate(event_id);
 		self.db.mark_event_rejected(event_id, reason)
+	}
+
+	/// Batch variant of [`Self::mark_event_rejected`]: same verdict merge
+	/// semantics, but the markers are staged in one transaction per verdict
+	/// bucket instead of one per event.
+	pub fn mark_events_rejected(&self, event_ids: &[&EventId], reason: &str) -> Result<()> {
+		for &event_id in event_ids {
+			self.services.short.leanevent_cache.invalidate(event_id);
+		}
+		self.db.mark_events_rejected(event_ids, reason)
 	}
 
 	/// Directly marks an event as rejected, bypassing timeline checks.

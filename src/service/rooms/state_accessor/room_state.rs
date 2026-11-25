@@ -1,12 +1,9 @@
-use std::borrow::Borrow;
-
 use conduwuit::{
 	Pdu, Result, err, implement,
 	matrix::{Event, StateKey},
-	utils::stream::ReadyExt,
 };
 use futures::{Stream, StreamExt, TryFutureExt};
-use slipstream::{EventId, RoomId, codec::Deserialize, events::StateEventType};
+use slipstream::{OwnedEventId, RoomId, codec::Deserialize, events::StateEventType};
 
 /// Returns a single PDU from `room_id` with key (`event_type`,`state_key`).
 #[implement(super::Service)]
@@ -77,23 +74,14 @@ pub fn room_state_full_pdus_strict<'a>(
 /// Returns a single EventId from `room_id` with key (`event_type`,
 /// `state_key`).
 #[implement(super::Service)]
-pub async fn room_state_get_id<Id>(
+pub async fn room_state_get_id(
 	&self,
 	room_id: &RoomId,
 	event_type: &StateEventType,
 	state_key: &str,
-) -> Result<Id>
-where
-	Id: Deserialize + Sized + ToOwned,
-	<Id as ToOwned>::Owned: Borrow<EventId>,
-{
+) -> Result<OwnedEventId> {
 	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
-	let shorteventid = self
-		.state_get_shortid_hamt(room_id, &root_handle, event_type, state_key)
-		.await?;
-	self.services
-		.short
-		.get_eventid_from_short(shorteventid)
+	self.state_get_event_id_hamt(room_id, &root_handle, event_type, state_key)
 		.await
 }
 
@@ -148,19 +136,12 @@ pub async fn room_state_keys(
 ) -> Result<Vec<String>> {
 	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 
-	let full_state = self.load_full_state_hamt(room_id, &root_handle)?;
-
-	// Batch-resolve the short state keys through the caching key store rather
-	// than awaiting a database lookup for each entry serially.
-	let shortstatekeys = futures::stream::iter(full_state.into_keys());
 	let state_keys = self
-		.services
-		.short
-		.multi_get_statekey_from_short(shortstatekeys)
-		.ready_filter_map(Result::ok)
-		.ready_filter_map(move |(ty, key)| (ty == *event_type).then_some(key.to_string()))
-		.collect()
-		.await;
+		.load_full_state_hamt(room_id, &root_handle)?
+		.into_keys()
+		.filter(|(ty, _)| ty == event_type)
+		.map(|(_, key)| key.to_string())
+		.collect();
 
 	Ok(state_keys)
 }

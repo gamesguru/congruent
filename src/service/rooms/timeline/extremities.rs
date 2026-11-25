@@ -1,12 +1,18 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+	collections::{HashMap, HashSet},
+	time::{Duration, Instant},
+};
 
 use conduwuit_core::{Result, info, warn};
 use futures::StreamExt;
-use roaring::RoaringBitmap;
+use rezzy::bitmap::Bitmap;
 use slipstream::{EventId, OwnedEventId};
 
 use super::Service;
 use crate::rooms::short::ShortEventId;
+
+/// Duration as fractional milliseconds, for timing log fields.
+fn ms(d: Duration) -> f64 { d.as_secs_f64() * 1000.0 }
 
 /// Detect stored extremities that are provably broken: they appear in the
 /// window graph AND have children there (meaning they shouldn't be tips).
@@ -91,32 +97,29 @@ pub fn merge_true_extremities<S: ::std::hash::BuildHasher>(
 	true_extremities_set
 }
 
-// --- Roaring bitmap variants for high-performance extremity calculations ---
+// --- Bitmap variants for high-performance extremity calculations ---
 
 #[must_use]
-pub fn detect_phantom_extremities_roaring(
-	graph: &[RoaringBitmap],
-	stored_extremities: &RoaringBitmap,
-) -> RoaringBitmap {
-	let mut has_children = RoaringBitmap::new();
+pub fn detect_phantom_extremities_bitmap(
+	graph: &[Bitmap],
+	stored_extremities: &Bitmap,
+) -> Bitmap {
+	let mut has_children = Bitmap::new();
 	for parents in graph {
 		has_children |= parents;
 	}
 
-	stored_extremities & has_children
+	&has_children & stored_extremities
 }
 
 #[must_use]
-pub fn calculate_true_extremities_roaring(
-	graph: &[RoaringBitmap],
-	sorted: &[u32],
-) -> RoaringBitmap {
-	let mut has_children = RoaringBitmap::new();
+pub fn calculate_true_extremities_bitmap(graph: &[Bitmap], sorted: &[u32]) -> Bitmap {
+	let mut has_children = Bitmap::new();
 	for parents in graph {
 		has_children |= parents;
 	}
 
-	let mut true_extremities = RoaringBitmap::new();
+	let mut true_extremities = Bitmap::new();
 	for &id in sorted {
 		if !has_children.contains(id) {
 			true_extremities.insert(id);
@@ -133,14 +136,14 @@ pub fn calculate_true_extremities_roaring(
 }
 
 #[must_use]
-pub fn merge_true_extremities_roaring(
-	true_extremities: &RoaringBitmap,
-	current_set: &RoaringBitmap,
-	phantom_tips: &RoaringBitmap,
-) -> RoaringBitmap {
+pub fn merge_true_extremities_bitmap(
+	true_extremities: &Bitmap,
+	current_set: &Bitmap,
+	phantom_tips: &Bitmap,
+) -> Bitmap {
 	let mut true_extremities_set = true_extremities.clone();
-	let valid_current = <&RoaringBitmap as std::ops::Sub>::sub(current_set, phantom_tips);
-	true_extremities_set |= valid_current;
+	let valid_current = std::ops::Sub::sub(current_set.clone(), phantom_tips);
+	true_extremities_set |= &valid_current;
 	true_extremities_set
 }
 
@@ -225,7 +228,14 @@ impl Service {
 		room_id: &slipstream::RoomId,
 		update_db: bool,
 	) -> Result<(bool, usize)> {
+		let t_total = Instant::now();
 		let state_lock = self.services.state.mutex.lock(room_id).await;
+		// Time spent waiting for the room lock vs. holding it.
+		let lock_wait = t_total.elapsed();
+		let t_locked = Instant::now();
+		let mut t_prevs = Duration::ZERO;
+		let mut t_resolve = Duration::ZERO;
+		let mut t_verdicts = Duration::ZERO;
 
 		let mut stream =
 			std::pin::pin!(self.db.room_shorteventids_rev(room_id, None).chunks(1024));
@@ -242,10 +252,13 @@ impl Service {
 			let short_ids: Vec<ShortEventId> = chunk.into_iter().filter_map(Result::ok).collect();
 
 			// Fast path: bulk resolve ShortEventId -> shortprevevents
+			let t_phase = Instant::now();
 			let prevs_stream = self
 				.db
 				.multi_get_shortprevevents(futures::stream::iter(short_ids.clone()));
 			let all_prevs: Vec<Result<Vec<ShortEventId>>> = prevs_stream.collect().await;
+			t_prevs = t_prevs.saturating_add(t_phase.elapsed());
+			let t_phase = Instant::now();
 
 			// Batch-resolve the whole chunk's ShortEventId -> EventId and then
 			// batch-read metadata for the resolved ids. Doing these per event
@@ -268,6 +281,7 @@ impl Service {
 				.get_event_metadata_batch(&metadata_ids)
 				.await
 				.into_iter();
+			t_resolve = t_resolve.saturating_add(t_phase.elapsed());
 
 			// Non-outlier event ids in this chunk, deferred so their rejection/soft-fail
 			// verdicts can be batch-read below instead of two sequential single-key
@@ -318,6 +332,7 @@ impl Service {
 			// event -- `recalculate_extremities` sweeps the whole room history
 			// while holding the room state lock, so per-event RocksDB reads here
 			// would substantially lengthen the lock hold.
+			let t_phase = Instant::now();
 			let non_outlier_ids: Vec<OwnedEventId> = non_outlier_pairs
 				.iter()
 				.map(|(_, event_id)| event_id.clone())
@@ -326,6 +341,7 @@ impl Service {
 				.services
 				.pdu_metadata
 				.verdict_flagged_batch(&non_outlier_ids)?;
+			t_verdicts = t_verdicts.saturating_add(t_phase.elapsed());
 			for (short_id, event_id) in non_outlier_pairs {
 				if flagged.contains(&event_id) {
 					bridge_event_ids.insert(short_id);
@@ -334,6 +350,9 @@ impl Service {
 				}
 			}
 		}
+
+		let scan = t_locked.elapsed();
+		let edge_count: usize = raw_edges.values().map(Vec::len).sum();
 
 		if missing_shortprevevents > 0 {
 			warn!(
@@ -360,7 +379,9 @@ impl Service {
 
 		// Lightning fast true forward extremity computation (entire room history) via
 		// rezzy
+		let t_graph = Instant::now();
 		let true_tips_short = rezzy::state::at::find_forward_extremities_roaring(graph_edges);
+		let graph = t_graph.elapsed();
 		let calculated_tips = true_tips_short.len();
 
 		let current_extremities = self.services.state.get_forward_extremities(room_id);
@@ -461,6 +482,27 @@ impl Service {
 				"extremity recalculation changed room tips"
 			);
 		}
+
+		// Macro-timing: where a whole-room recalculation spends its time, and
+		// how long it held the room state lock.
+		info!(
+			target: "timeline_debug",
+			%room_id,
+			update_db,
+			changed,
+			scanned_events = raw_edges.len(),
+			scanned_edges = edge_count,
+			final_tips = num_true_extremities,
+			lock_wait_ms = ms(lock_wait),
+			lock_held_ms = ms(t_locked.elapsed()),
+			total_ms = ms(t_total.elapsed()),
+			scan_ms = ms(scan),
+			prevs_read_ms = ms(t_prevs),
+			resolve_ids_and_meta_ms = ms(t_resolve),
+			verdicts_ms = ms(t_verdicts),
+			graph_ms = ms(graph),
+			"recalculate_extremities timing"
+		);
 
 		if final_set == current_set {
 			return Ok((false, num_true_extremities));
@@ -976,20 +1018,18 @@ mod tests {
 		assert_ne!(merged, current_event_ids);
 	}
 
-	// --- Roaring bitmap variant tests ---
+	// --- Bitmap variant tests ---
 
 	#[test]
-	fn test_calculate_true_extremities_roaring_fork() {
-		use roaring::RoaringBitmap;
-
-		let mut graph = vec![RoaringBitmap::new(); 3];
+	fn test_calculate_true_extremities_bitmap_fork() {
+		let mut graph = vec![Bitmap::new(); 3];
 		graph[1].insert(0); // 1 depends on 0
 		graph[2].insert(0); // 2 depends on 0
 
 		let sorted = vec![0, 1, 2];
-		let tips = calculate_true_extremities_roaring(&graph, &sorted);
+		let tips = calculate_true_extremities_bitmap(&graph, &sorted);
 
-		let mut expected = RoaringBitmap::new();
+		let mut expected = Bitmap::new();
 		expected.insert(1);
 		expected.insert(2);
 
@@ -997,44 +1037,40 @@ mod tests {
 	}
 
 	#[test]
-	fn test_detect_phantom_extremities_roaring() {
-		use roaring::RoaringBitmap;
-
-		let mut graph = vec![RoaringBitmap::new(); 3];
+	fn test_detect_phantom_extremities_bitmap() {
+		let mut graph = vec![Bitmap::new(); 3];
 		graph[1].insert(0);
 		graph[2].insert(1);
 
-		let mut stored_extremities = RoaringBitmap::new();
+		let mut stored_extremities = Bitmap::new();
 		stored_extremities.insert(0); // 0 is a phantom tip because it's a parent
 		stored_extremities.insert(2); // 2 is a true tip
 
-		let phantoms = detect_phantom_extremities_roaring(&graph, &stored_extremities);
+		let phantoms = detect_phantom_extremities_bitmap(&graph, &stored_extremities);
 
-		let mut expected = RoaringBitmap::new();
+		let mut expected = Bitmap::new();
 		expected.insert(0); // 0 should be detected as phantom
 
 		assert_eq!(phantoms, expected);
 	}
 
 	#[test]
-	fn test_merge_true_extremities_roaring() {
-		use roaring::RoaringBitmap;
-
-		let mut true_exts = RoaringBitmap::new();
+	fn test_merge_true_extremities_bitmap() {
+		let mut true_exts = Bitmap::new();
 		true_exts.insert(1);
 
-		let mut current_set = RoaringBitmap::new();
+		let mut current_set = Bitmap::new();
 		current_set.insert(2);
 		current_set.insert(3);
 		current_set.insert(4);
 
-		let mut phantoms = RoaringBitmap::new();
+		let mut phantoms = Bitmap::new();
 		phantoms.insert(2);
 		phantoms.insert(3);
 
-		let result = merge_true_extremities_roaring(&true_exts, &current_set, &phantoms);
+		let result = merge_true_extremities_bitmap(&true_exts, &current_set, &phantoms);
 
-		let mut expected = RoaringBitmap::new();
+		let mut expected = Bitmap::new();
 		expected.insert(1); // from true_exts
 		expected.insert(4); // from current_set (not a phantom)
 

@@ -543,6 +543,10 @@ async fn build_timeline(
 	} else {
 		last_sync_end_count.map(PduCount::Normal)
 	};
+	// Capture the initial/newly-joined case before a partial-state join narrows
+	// the window to the user's join; that window is still an initial timeline
+	// and must be topologically ordered.
+	let initial_timeline = starting_count.is_none();
 
 	// A partial-state join promotes the remote room's state events into the
 	// timeline; once the resync is done the user should see those as state and
@@ -575,6 +579,7 @@ async fn build_timeline(
 		Some(PduCount::Normal(current_count)),
 		timeline_limit,
 		false,
+		initial_timeline,
 	)
 	.await
 }
@@ -913,7 +918,7 @@ async fn check_joined_since_last_sync(
 			if let Ok(event_id) = services
 				.rooms
 				.state_accessor
-				.state_get_id_hamt::<OwnedEventId>(
+				.state_get_id_hamt(
 					room_id,
 					current_root_handle,
 					&StateEventType::RoomMember,
@@ -1057,17 +1062,10 @@ async fn build_heroes(
 	// then as a last resort fetch every membership event
 	let all_members_stream = services
 		.rooms
-		.short
-		.multi_get_statekey_from_short(
-			services
-				.rooms
-				.state_accessor
-				.state_full_shortids_hamt(room_id, current_root_handle)
-				.ignore_err()
-				.ready_filter_map(|(key, _)| Some(key)),
-		)
+		.state_accessor
+		.state_full_entries_hamt(room_id, current_root_handle)
 		.ignore_err()
-		.ready_filter_map(|(event_type, state_key)| {
+		.ready_filter_map(|((event_type, state_key), _)| {
 			if event_type == StateEventType::RoomMember {
 				UserId::parse(state_key).ok()
 			} else {

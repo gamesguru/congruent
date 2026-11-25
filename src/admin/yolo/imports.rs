@@ -6,6 +6,19 @@ use slipstream::{
 
 use crate::admin_command;
 
+/// One parsed PDU plus its imported soft-fail/outlier/rejection markers.
+type ParsedPdu = (
+	OwnedEventId,
+	std::collections::BTreeMap<String, slipstream::CanonicalJsonValue>,
+	conduwuit::Pdu,
+	bool,
+	bool,
+	bool,
+);
+
+/// Rows parsed per streaming batch. Import never holds the whole file in RAM.
+const IMPORT_CHUNK: usize = 5_000;
+
 #[admin_command]
 pub(super) async fn import_pdus(
 	&self,
@@ -63,7 +76,7 @@ pub(super) async fn import_pdus(
 
 	let room_version = match room_version {
 		| Some(v) => {
-			self.services.rooms.short.set_room_version(&room_id, &v);
+			self.services.rooms.short.set_room_version(&room_id, &v)?;
 			v
 		},
 		| None => match self.services.rooms.state.get_room_version(&room_id).await {
@@ -97,62 +110,76 @@ pub(super) async fn import_pdus(
 	let room_version_ref = room_version.clone();
 
 	let room_id_ref = room_id.clone();
-	let parsed_pdus: Vec<_> = self
-		.services
-		.server
-		.runtime()
-		.spawn_blocking(move || {
-			use std::io::BufRead;
-			let file = std::fs::File::open(&path).expect("Failed to open file for parsing");
-			let reader = std::io::BufReader::new(file);
+	let total = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+	let total_parse = total.clone();
+	let (tx, rx) = smol::channel::bounded::<Vec<ParsedPdu>>(8);
+	let parse_task = self.services.server.runtime().spawn_blocking(move || {
+		use std::io::BufRead;
+		let file = match std::fs::File::open(&path) {
+			| Ok(file) => file,
+			| Err(e) => {
+				warn!("Failed to open file for parsing: {e}");
+				return;
+			},
+		};
+		let reader = std::io::BufReader::new(file);
+		let mut chunk = Vec::with_capacity(IMPORT_CHUNK);
+		let mut count = 0_usize;
 
-			reader
-				.lines()
-				.map_while(Result::ok)
-				.filter(|line| !line.trim().is_empty())
-				.filter_map(|line| {
-					let value: CanonicalJsonObject = match slipstream::codec::from_str(&line) {
-						| Ok(v) => v,
-						| Err(e) => {
-							warn!("Failed to parse JSON: {e}");
-							return None;
-						},
-					};
+		for line in reader.lines().map_while(Result::ok) {
+			if line.trim().is_empty() {
+				continue;
+			}
 
-					let is_outlier = value
-						.get("__outlier")
-						.and_then(slipstream::CanonicalJsonValue::as_bool)
-						.unwrap_or(false);
-					let is_soft_failed = value
-						.get("__soft_failed")
-						.and_then(slipstream::CanonicalJsonValue::as_bool)
-						.unwrap_or(false);
-					let is_rejected = value
-						.get("__rejected")
-						.and_then(slipstream::CanonicalJsonValue::as_bool)
-						.unwrap_or(false);
+			let value: CanonicalJsonObject = match slipstream::codec::from_str(&line) {
+				| Ok(v) => v,
+				| Err(e) => {
+					warn!("Failed to parse JSON: {e}");
+					continue;
+				},
+			};
 
-					let (eid, value, pdu_event) =
-						match conduwuit::utils::pdu_parser::parse_and_clean_pdu(
-							value,
-							room_id_ref.as_ref(),
-							&room_version_ref,
-						) {
-							| Ok(v) => v,
-							| Err(e) => {
-								warn!("Failed to parse_and_clean_pdu: {e}");
-								return None;
-							},
-						};
+			let is_outlier = value
+				.get("__outlier")
+				.and_then(slipstream::CanonicalJsonValue::as_bool)
+				.unwrap_or(false);
+			let is_soft_failed = value
+				.get("__soft_failed")
+				.and_then(slipstream::CanonicalJsonValue::as_bool)
+				.unwrap_or(false);
+			let is_rejected = value
+				.get("__rejected")
+				.and_then(slipstream::CanonicalJsonValue::as_bool)
+				.unwrap_or(false);
 
-					Some((eid, value, pdu_event, is_outlier, is_soft_failed, is_rejected))
-				})
-				.collect()
-		})
-		.await
-		.unwrap();
+			let (eid, value, pdu_event) = match conduwuit::utils::pdu_parser::parse_and_clean_pdu(
+				value,
+				room_id_ref.as_ref(),
+				&room_version_ref,
+			) {
+				| Ok(v) => v,
+				| Err(e) => {
+					warn!("Failed to parse_and_clean_pdu: {e}");
+					continue;
+				},
+			};
 
-	let total = parsed_pdus.len();
+			chunk.push((eid, value, pdu_event, is_outlier, is_soft_failed, is_rejected));
+			count = count.saturating_add(1);
+
+			if chunk.len() >= IMPORT_CHUNK {
+				let ready = std::mem::replace(&mut chunk, Vec::with_capacity(IMPORT_CHUNK));
+				if tx.send_blocking(ready).is_err() {
+					return;
+				}
+			}
+		}
+
+		if !chunk.is_empty() {
+			let _ = tx.send_blocking(chunk);
+		}
+		total_parse.store(count, std::sync::atomic::Ordering::Relaxed);
+	});
 
 	// Cork database writes to batch and sync efficiently on drop
 	let _cork = self.services.db.cork();
@@ -166,212 +193,206 @@ pub(super) async fn import_pdus(
 			.ok(),
 	);
 
-	let chunks: Vec<Vec<_>> = parsed_pdus
-		.chunks(5000)
-		.map(
-			<[(
-				OwnedEventId,
-				std::collections::BTreeMap<String, slipstream::CanonicalJsonValue>,
-				conduwuit::Pdu,
-				bool,
-				bool,
-				bool,
-			)]>::to_vec,
-		)
-		.collect();
-
 	let inserted = std::sync::atomic::AtomicUsize::new(0);
 	let rejected = std::sync::atomic::AtomicUsize::new(0);
 	let failed = std::sync::atomic::AtomicUsize::new(0);
 
-	futures::stream::iter(chunks)
-		.for_each_concurrent(16, |chunk| async {
-			let mut chunk_inserted: usize = 0;
-			let mut chunk_rejected: usize = 0;
-			let mut chunk_failed: usize = 0;
-			let mut batch = self.services.rooms.timeline.db_batch();
-			// promote_outlier_batch's writes land only once `batch` is applied
-			// below; finalize each one's rejection/soft-fail markers afterward
-			// via finish_promote_outlier (see that method's doc comment).
-			let mut queued_promotions: Vec<OwnedEventId> = Vec::new();
-			let mut queued_marker_updates: Vec<(OwnedEventId, bool, bool)> = Vec::new();
+	// Consume the parser's bounded batches as they arrive, keeping at most a
+	// handful of chunks resident instead of the entire JSONL file.
+	futures::stream::unfold(
+		rx,
+		|rx| async move { rx.recv().await.ok().map(|chunk| (chunk, rx)) },
+	)
+	.for_each_concurrent(16, |chunk| async {
+		let mut chunk_inserted: usize = 0;
+		let mut chunk_rejected: usize = 0;
+		let mut chunk_failed: usize = 0;
+		let mut batch = self.services.rooms.timeline.db_batch();
+		// promote_outlier_batch's writes land only once `batch` is applied
+		// below; finalize each one's rejection/soft-fail markers afterward
+		// via finish_promote_outlier (see that method's doc comment).
+		let mut queued_promotions: Vec<OwnedEventId> = Vec::new();
+		let mut queued_marker_updates: Vec<(OwnedEventId, bool, bool)> = Vec::new();
 
-			for (eid, value, pdu, is_outlier, is_soft_failed, is_rejected) in chunk {
-				let is_outlier = is_outlier || force;
+		for (eid, value, pdu, is_outlier, is_soft_failed, is_rejected) in chunk {
+			let is_outlier = is_outlier || force;
 
-				let (skip_further, eid, value, pdu) = if is_outlier {
-					(true, eid, value, pdu)
-				} else if skip_auth {
-					(false, eid, value, pdu)
+			let (skip_further, eid, value, pdu) = if is_outlier {
+				(true, eid, value, pdu)
+			} else if skip_auth {
+				(false, eid, value, pdu)
+			} else {
+				let (eid, val) = if skip_sig_verify {
+					(eid, value.clone())
 				} else {
-					let (eid, val) = if skip_sig_verify {
-						(eid, value.clone())
-					} else {
-						let mut raw_val = value.clone();
-						if room_version != RoomVersionId::V1 && room_version != RoomVersionId::V2
-						{
-							raw_val.remove("event_id");
-						}
-						let raw = match slipstream::sswire::RawJsonValue::from_json_string(
-							slipstream::codec::to_string(&slipstream::json::Value::Object(
-								raw_val.clone(),
-							)),
-						) {
-							| Ok(r) => r,
-							| Err(e) => {
-								warn!("import_pdus insert err: {e}");
-								chunk_failed = chunk_failed.saturating_add(1);
-								continue;
-							},
-						};
-
-						match self
-							.services
-							.server_keys
-							.validate_and_add_event_id(&raw, &room_version)
-							.await
-						{
-							| Ok(result) => result,
-							| Err(_) => {
-								(eid, value.clone()) // Will handle as outlier due to failure
-							},
-						}
+					let mut raw_val = value.clone();
+					if room_version != RoomVersionId::V1 && room_version != RoomVersionId::V2 {
+						raw_val.remove("event_id");
+					}
+					let raw = match slipstream::sswire::RawJsonValue::from_json_string(
+						slipstream::codec::to_string(&slipstream::json::Value::Object(
+							raw_val.clone(),
+						)),
+					) {
+						| Ok(r) => r,
+						| Err(e) => {
+							warn!("import_pdus insert err: {e}");
+							chunk_failed = chunk_failed.saturating_add(1);
+							continue;
+						},
 					};
 
-					let mut pdu_val = val;
-					if room_version != RoomVersionId::V1 && room_version != RoomVersionId::V2 {
-						pdu_val.remove("event_id");
-					}
-
-					let handled = Box::pin(self.services.rooms.event_handler.handle_outlier_pdu(
-						&origin,
-						create_event.as_ref().as_ref(),
-						&eid,
-						&room_id,
-						pdu_val,
-						true,
-						skip_sig_verify,
-						&room_version,
-						AuthRecoveryStage::BeforeStateIds,
-					))
-					.await;
-
-					match handled {
-						| Ok((new_pdu, _)) => {
-							let new_pdu_event = new_pdu.clone();
-							(false, eid, value, new_pdu_event)
-						},
+					match self
+						.services
+						.server_keys
+						.validate_and_add_event_id(&raw, &room_version)
+						.await
+					{
+						| Ok(result) => result,
 						| Err(_) => {
-							// If failed, treat as outlier
-							(true, eid, value, pdu)
+							(eid, value.clone()) // Will handle as outlier due to failure
 						},
 					}
 				};
 
-				let insert_result: Result<(OwnedEventId, bool)> = async {
-					if skip_further && is_outlier {
-						self.services
-							.rooms
-							.outlier
-							.add_pdu_outlier(&eid, &value, Some(&room_id))
-							.await;
-						return Ok((eid.clone(), true));
-					}
-					if force {
-						if let Ok(pdu_id) = self.services.rooms.timeline.get_pdu_id(&eid).await {
-							self.services
-								.rooms
-								.timeline
-								.replace_pdu(&pdu_id, &value, &eid)
-								.await?;
-							return Ok((eid.clone(), true));
-						}
-					}
-					if skip_auth {
-						self.services
-							.rooms
-							.timeline
-							.force_insert_pdu_batch(
-								&mut batch, &room_id, &eid, &pdu, &value, true,
-							)
-							.await?;
-					} else {
-						// Batched like the skip_auth branch above -- one DB commit (and
-						// one /sync wake) per chunk instead of per event. Finalizing
-						// (releasing the reservation, resolving rejection markers)
-						// happens after `batch` is applied below -- see
-						// finish_promote_outlier's doc comment.
-						let outcome = self
-							.services
-							.rooms
-							.timeline
-							.promote_outlier_batch(&mut batch, &room_id, &eid)
-							.await?;
-						if matches!(
-							outcome,
-							conduwuit_service::rooms::timeline::PromoteOutlierOutcome::Queued
-						) {
-							queued_promotions.push(eid.clone());
-						}
-					}
-
-					Ok((eid.clone(), true))
+				let mut pdu_val = val;
+				if room_version != RoomVersionId::V1 && room_version != RoomVersionId::V2 {
+					pdu_val.remove("event_id");
 				}
+
+				let handled = Box::pin(self.services.rooms.event_handler.handle_outlier_pdu(
+					&origin,
+					create_event.as_ref().as_ref(),
+					&eid,
+					&room_id,
+					pdu_val,
+					true,
+					skip_sig_verify,
+					true,
+					&room_version,
+					AuthRecoveryStage::BeforeStateIds,
+				))
 				.await;
 
-				match insert_result {
-					| Ok((eid, true)) => {
-						chunk_inserted = chunk_inserted.saturating_add(1);
-						if is_soft_failed || is_rejected {
-							queued_marker_updates.push((eid, is_soft_failed, is_rejected));
-						}
+				match handled {
+					| Ok((new_pdu, _)) => {
+						let new_pdu_event = new_pdu.clone();
+						(false, eid, value, new_pdu_event)
 					},
-					| Ok((_eid, false)) => {
-						chunk_rejected = chunk_rejected.saturating_add(1);
-					},
-					| Err(e) => {
-						warn!("import_pdus insert err: {e}");
-						chunk_failed = chunk_failed.saturating_add(1);
+					| Err(_) => {
+						// If failed, treat as outlier
+						(true, eid, value, pdu)
 					},
 				}
-			}
+			};
 
-			self.services.rooms.timeline.db_apply_batch(batch);
-			for eid in &queued_promotions {
-				self.services
-					.rooms
-					.timeline
-					.finish_promote_outlier(&room_id, eid);
-			}
-			for (eid, is_soft_failed, is_rejected) in queued_marker_updates {
-				if is_rejected {
-					if let Err(error) = self
+			let insert_result: Result<(OwnedEventId, bool)> = async {
+				if skip_further && is_outlier {
+					self.services
+						.rooms
+						.outlier
+						.add_pdu_outlier(&eid, &value, Some(&room_id))
+						.await;
+					return Ok((eid.clone(), true));
+				}
+				if force {
+					if let Ok(pdu_id) = self.services.rooms.timeline.get_pdu_id(&eid).await {
+						self.services
+							.rooms
+							.timeline
+							.replace_pdu(&pdu_id, &value, &eid)
+							.await?;
+						return Ok((eid.clone(), true));
+					}
+				}
+				if skip_auth {
+					self.services
+						.rooms
+						.timeline
+						.force_insert_pdu_batch(&mut batch, &room_id, &eid, &pdu, &value, true)
+						.await?;
+				} else {
+					// Batched like the skip_auth branch above -- one DB commit (and
+					// one /sync wake) per chunk instead of per event. Finalizing
+					// (releasing the reservation, resolving rejection markers)
+					// happens after `batch` is applied below -- see
+					// finish_promote_outlier's doc comment.
+					let outcome = self
 						.services
 						.rooms
-						.pdu_metadata
-						.mark_event_rejected_skip_visibility_check(&eid, "imported as rejected")
-					{
-						warn!(%error, %eid, "failed to record rejection verdict");
+						.timeline
+						.promote_outlier_batch(&mut batch, &room_id, &eid)
+						.await?;
+					if matches!(
+						outcome,
+						conduwuit_service::rooms::timeline::PromoteOutlierOutcome::Queued
+					) {
+						queued_promotions.push(eid.clone());
 					}
 				}
-				if is_soft_failed {
-					if let Err(error) = self.services.rooms.pdu_metadata.mark_event_soft_failed(
-						&eid,
-						conduwuit_service::rooms::pdu_metadata::SoftFailCode::Imported,
-					) {
-						warn!(%error, %eid, "failed to record soft-fail verdict");
+
+				Ok((eid.clone(), true))
+			}
+			.await;
+
+			match insert_result {
+				| Ok((eid, true)) => {
+					chunk_inserted = chunk_inserted.saturating_add(1);
+					if is_soft_failed || is_rejected {
+						queued_marker_updates.push((eid, is_soft_failed, is_rejected));
 					}
+				},
+				| Ok((_eid, false)) => {
+					chunk_rejected = chunk_rejected.saturating_add(1);
+				},
+				| Err(e) => {
+					warn!("import_pdus insert err: {e}");
+					chunk_failed = chunk_failed.saturating_add(1);
+				},
+			}
+		}
+
+		self.services.rooms.timeline.db_apply_batch(batch);
+		for eid in &queued_promotions {
+			self.services
+				.rooms
+				.timeline
+				.finish_promote_outlier(&room_id, eid);
+		}
+		for (eid, is_soft_failed, is_rejected) in queued_marker_updates {
+			if is_rejected {
+				if let Err(error) = self
+					.services
+					.rooms
+					.pdu_metadata
+					.mark_event_rejected_skip_visibility_check(&eid, "imported as rejected")
+				{
+					warn!(%error, %eid, "failed to record rejection verdict");
 				}
 			}
-			info!(
-				"Finished a chunk: {chunk_inserted} inserted, {chunk_rejected} rejected, \
-				 {chunk_failed} failed"
-			);
-			inserted.fetch_add(chunk_inserted, std::sync::atomic::Ordering::Relaxed);
-			rejected.fetch_add(chunk_rejected, std::sync::atomic::Ordering::Relaxed);
-			failed.fetch_add(chunk_failed, std::sync::atomic::Ordering::Relaxed);
-		})
-		.await;
+			if is_soft_failed {
+				if let Err(error) = self.services.rooms.pdu_metadata.mark_event_soft_failed(
+					&eid,
+					conduwuit_service::rooms::pdu_metadata::SoftFailCode::Imported,
+				) {
+					warn!(%error, %eid, "failed to record soft-fail verdict");
+				}
+			}
+		}
+		info!(
+			"Finished a chunk: {chunk_inserted} inserted, {chunk_rejected} rejected, \
+			 {chunk_failed} failed"
+		);
+		inserted.fetch_add(chunk_inserted, std::sync::atomic::Ordering::Relaxed);
+		rejected.fetch_add(chunk_rejected, std::sync::atomic::Ordering::Relaxed);
+		failed.fetch_add(chunk_failed, std::sync::atomic::Ordering::Relaxed);
+	})
+	.await;
+
+	if let Err(error) = parse_task.await {
+		warn!("PDU import parser task failed: {error}");
+	}
+	let total = total.load(std::sync::atomic::Ordering::Relaxed);
 
 	let inserted = inserted.load(std::sync::atomic::Ordering::Relaxed);
 	let rejected = rejected.load(std::sync::atomic::Ordering::Relaxed);

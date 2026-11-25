@@ -7,6 +7,11 @@
 //! the scan in [`super::store::Store::orphan_scan_dry_run`] reports with.
 //!
 //! Nothing here deletes anything.
+//!
+//! Before a live sweep is built, close the node-before-root window: publishing
+//! nodes does not advance the roots version, so the version pin below cannot
+//! see a node that was written but whose root has not landed yet. Publish nodes
+//! and roots in one transaction, or the sweep can delete live nodes.
 
 use std::fmt::Write as _;
 

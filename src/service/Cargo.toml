@@ -107,7 +107,6 @@ rand.workspace = true
 regex.workspace = true
 rezzy.workspace = true
 rezzy-recon.workspace = true
-roaring.workspace = true
 serde.workspace = true
 slipstream.workspace = true
 sha2.workspace = true

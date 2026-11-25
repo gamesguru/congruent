@@ -291,17 +291,16 @@ macro_rules! impl_event_delegates {
 		#[inline]
 		fn room_id(&self) -> Option<&RoomId> { self.as_pdu().room_id.as_ref() }
 
-#[inline]
-	fn room_id_or_hash(&self) -> Option<OwnedRoomId> {
-		if let Some(room_id) = &self.as_pdu().room_id {
-			return Some(room_id.clone());
+		#[inline]
+		fn room_id_or_hash(&self) -> Option<OwnedRoomId> {
+			if let Some(room_id) = &self.as_pdu().room_id {
+				return Some(room_id.clone());
+			}
+			if *self.as_pdu().event_type() == TimelineEventType::RoomCreate {
+				return crate::matrix::event::room_id_from_event_id(&self.as_pdu().event_id);
+			}
+			None
 		}
-		if *self.as_pdu().event_type() == TimelineEventType::RoomCreate {
-			let reference_hash = self.as_pdu().event_id.as_str().strip_prefix('$')?;
-			return OwnedRoomId::new_v2(reference_hash).ok();
-		}
-		None
-	}
 
 		#[inline]
 		fn sender(&self) -> &UserId { &self.as_pdu().sender }

@@ -4,12 +4,11 @@ use bytes::Bytes;
 use conduwuit::{Err, Error, Result, debug, debug_error, err, implement, trace};
 use http::{HeaderValue, Method, Request, Response, header::AUTHORIZATION};
 use slipstream::{
-	CanonicalJsonObject, CanonicalJsonValue, OwnedServerSigningKeyId, ServerName,
+	CanonicalJsonValue, ServerName,
 	api::{
 		EndpointError, IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken,
-		client::error::Error as RumaError,
+		client::error::Error as RumaError, federation::authentication::XMatrix,
 	},
-	sswire::Base64,
 };
 use url::Url;
 
@@ -209,73 +208,28 @@ fn handle_error(
 
 #[implement(super::Service)]
 fn sign_request(&self, http_request: &mut Request<Vec<u8>>, dest: &ServerName) {
-	type Member = (String, Value);
-	type Value = CanonicalJsonValue;
-	type Object = CanonicalJsonObject;
-
 	let origin = &self.services.server.name;
 	let body = http_request.body();
 	let uri = http_request
 		.uri()
 		.path_and_query()
 		.expect("http::Request missing path_and_query");
-
-	let mut req: Object = if !body.is_empty() {
-		let content: CanonicalJsonValue = slipstream::codec::from_str(
+	let content: Option<CanonicalJsonValue> = (!body.is_empty()).then(|| {
+		slipstream::codec::from_str(
 			std::str::from_utf8(body).expect("request body is not valid UTF-8"),
 		)
-		.expect("failed to serialize body");
-
-		let authorization: [Member; 5] = [
-			("content".into(), content),
-			("destination".into(), dest.as_str().into()),
-			("method".into(), http_request.method().as_str().into()),
-			("origin".into(), origin.as_str().into()),
-			("uri".into(), uri.to_string().into()),
-		];
-
-		authorization.into()
-	} else {
-		let authorization: [Member; 4] = [
-			("destination".into(), dest.as_str().into()),
-			("method".into(), http_request.method().as_str().into()),
-			("origin".into(), origin.as_str().into()),
-			("uri".into(), uri.to_string().into()),
-		];
-
-		authorization.into()
-	};
-
-	self.services
-		.server_keys
-		.sign_json(&mut req)
-		.expect("request signing failed");
-
-	let signatures = req["signatures"]
-		.as_object()
-		.and_then(|object| object[origin.as_str()].as_object())
-		.expect("origin signatures object");
-
-	let key: OwnedServerSigningKeyId = signatures
-		.keys()
-		.next()
-		.and_then(|k| OwnedServerSigningKeyId::parse(k.as_str()).ok())
-		.expect("at least one signature from this origin");
-	let key = &key;
-
-	let sig: Base64 = signatures
-		.values()
-		.next()
-		.map(|s| s.as_str().map(Base64::parse))
-		.expect("at least one signature from this origin")
-		.expect("signature is json string")
-		.expect("signature is valid base64");
-
-	let sig_encoded = sig.encode();
-	let auth_str = format!(
-		"X-Matrix origin=\"{origin}\",key=\"{key}\",sig=\"{sig_encoded}\",destination=\"{dest}\""
-	);
-	let authorization = HeaderValue::from_str(&auth_str).expect("valid header value");
+		.expect("failed to serialize body")
+	});
+	let authorization = XMatrix::sign(
+		self.services.server_keys.keypair(),
+		origin,
+		dest,
+		http_request.method(),
+		uri.as_str(),
+		content.as_ref(),
+	)
+	.expect("request signing failed")
+	.encode();
 
 	debug!(?authorization, "Sending X-Matrix auth");
 	let authorization = http_request

@@ -745,12 +745,7 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 		.unwrap();
 	assert!(!meta_before.is_outlier, "precondition: event should start as a timeline event");
 
-	let pdu_json = services
-		.rooms
-		.timeline
-		.get_pdu_json(&event_id)
-		.await
-		.unwrap();
+	let pdu_json = services.rooms.timeline.get_pdu_json(&event_id).unwrap();
 
 	// Demote to outlier sequence: atomic batch under the room's insert lock.
 	let insert_lock = services.rooms.timeline.mutex_insert.lock(&room_id).await;
@@ -891,12 +886,7 @@ async fn test_yolo_reorder_timeline() {
 	drop(state_lock);
 
 	// Mutate origin_server_ts: Event A = 2000, Event B = 1000
-	let mut json_a = services
-		.rooms
-		.timeline
-		.get_pdu_json(&event_a)
-		.await
-		.unwrap();
+	let mut json_a = services.rooms.timeline.get_pdu_json(&event_a).unwrap();
 	json_a.insert(
 		"origin_server_ts".to_owned(),
 		slipstream::CanonicalJsonValue::Number(2000_u64.into()),
@@ -909,12 +899,7 @@ async fn test_yolo_reorder_timeline() {
 		.await
 		.unwrap();
 
-	let mut json_b = services
-		.rooms
-		.timeline
-		.get_pdu_json(&event_b)
-		.await
-		.unwrap();
+	let mut json_b = services.rooms.timeline.get_pdu_json(&event_b).unwrap();
 	json_b.insert(
 		"origin_server_ts".to_owned(),
 		slipstream::CanonicalJsonValue::Number(1000_u64.into()),
@@ -1489,12 +1474,7 @@ async fn test_set_forward_extremities_skips_outlier_tip() {
 	let (room_id, event_id) = create_test_room_with_message(&services, "valid tip").await;
 
 	let outlier: OwnedEventId = "$outlier_extremity_candidate_0000".try_into().unwrap();
-	let mut json = services
-		.rooms
-		.timeline
-		.get_pdu_json(&event_id)
-		.await
-		.unwrap();
+	let mut json = services.rooms.timeline.get_pdu_json(&event_id).unwrap();
 	json.insert(
 		"room_id".into(),
 		slipstream::CanonicalJsonValue::String(room_id.as_str().to_owned()),
@@ -1696,7 +1676,7 @@ async fn test_busted_dag_resolution() {
 	assert!(res.is_ok(), "import-pdus failed: {res:?}");
 	println!("yolo import-pdus took {:?}", start_import.elapsed());
 
-	// Build derived data (auth chain roaring bitmaps, short IDs, metadata)
+	// Build derived data (auth chain bitmaps, short IDs, metadata)
 	println!("Starting reindex-short...");
 	let start_reindex = std::time::Instant::now();
 	let res = services
@@ -1757,6 +1737,7 @@ async fn test_busted_dag_resolution() {
 		.rooms
 		.state
 		.set_room_state_hamt(&room_id, &root_handle, &state_lock)
+		.await
 		.expect("set room state root");
 	drop(state_lock);
 
@@ -1848,7 +1829,7 @@ async fn test_unredacted_room_dag_resolution() {
 	assert!(res.is_ok(), "import-pdus failed: {res:?}");
 	println!("import-pdus took {:?}", start_import.elapsed());
 
-	// Build derived data (auth chain roaring bitmaps)
+	// Build derived data (auth chain bitmaps)
 	println!("Starting reindex-short...");
 	let start_reindex = std::time::Instant::now();
 	let res = services
@@ -1909,6 +1890,7 @@ async fn test_unredacted_room_dag_resolution() {
 		.rooms
 		.state
 		.set_room_state_hamt(&room_id, &root_handle, &state_lock)
+		.await
 		.expect("set room state root");
 	drop(state_lock);
 
@@ -1993,7 +1975,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 	assert!(res.is_ok(), "import-pdus failed: {res:?}");
 	eprintln!("[LOUNGE] <<< import-pdus took {:?}", start_import.elapsed());
 
-	// Build derived data (auth chain roaring bitmaps)
+	// Build derived data (auth chain bitmaps)
 	eprintln!("[LOUNGE] >>> reindex-short");
 	let start_reindex = std::time::Instant::now();
 	let res = services
@@ -2137,7 +2119,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 		if !resolved_state_ids.contains(&eid) {
 			println!("MISMATCH: expected PRESENT but MISSING: {id}");
 			// Find what's in the same state key slot
-			if let Ok(pdu) = services.rooms.timeline.get_pdu(&eid).await {
+			if let Ok(pdu) = services.rooms.timeline.get_pdu(&eid) {
 				let ty = pdu.kind().to_string();
 				let sk = pdu.state_key().unwrap_or("(none)");
 				println!("  type={ty}, state_key={sk}");
@@ -2203,7 +2185,7 @@ async fn test_nheko_dag_resolution() {
 	assert!(res.is_ok(), "import-pdus failed: {res:?}");
 	println!("import-pdus took {:?}", start_import.elapsed());
 
-	// Build derived data (auth chain roaring bitmaps)
+	// Build derived data (auth chain bitmaps)
 	println!("Starting reindex-short...");
 	let start_reindex = std::time::Instant::now();
 	let res = services
@@ -2264,6 +2246,7 @@ async fn test_nheko_dag_resolution() {
 		.rooms
 		.state
 		.set_room_state_hamt(&room_id, &root_handle, &state_lock)
+		.await
 		.expect("set room state root");
 	drop(state_lock);
 
@@ -2640,7 +2623,7 @@ async fn test_knocking_dag_resolution() {
 		.await;
 	assert!(res.is_ok(), "import-pdus failed: {res:?}");
 
-	// Build derived data (auth chain roaring bitmaps)
+	// Build derived data (auth chain bitmaps)
 	println!("Starting reindex-short...");
 	let res = services
 		.admin

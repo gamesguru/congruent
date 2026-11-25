@@ -10,36 +10,45 @@ import json
 import re
 import tomllib
 
-with open("conduwuit.toml", "rb") as f:
-    user_config = tomllib.load(f)
+with open("conduwuit.toml", "rb") as config_file:
+    user_config = tomllib.load(config_file)
 
-with open("conduwuit-example.toml", "r") as f:
-    example_lines = f.readlines()
+with open("conduwuit-example.toml", "r", encoding="utf-8") as example_file:
+    example_lines = example_file.readlines()
 
 
 def format_value(v):
     if isinstance(v, bool):
         return "true" if v else "false"
     elif isinstance(v, str):
-        return json.dumps(v)
+        return json.dumps(v, ensure_ascii=False)
     elif isinstance(v, list):
         if len(v) == 0:
             return "[]"
-        # Format arrays cleanly
-        contents = ", ".join(json.dumps(i) if isinstance(i, str) else str(i) for i in v)
-        return f"[{contents}]"
+        # Keep arrays readable, including arrays of inline tables.
+        contents = ",\n".join(f"    {format_value(item)}" for item in v)
+        return f"[\n{contents},\n]"
     elif isinstance(v, (int, float)):
         return str(v)
     elif isinstance(v, dict):
-        return json.dumps(
-            v
-        )  # Fallback to json dictionary syntax which TOML supports for inline tables
+        contents = ", ".join(
+            f"{format_key(key)} = {format_value(value)}" for key, value in v.items()
+        )
+        return f"{{ {contents} }}"
     else:
         return str(v)
 
 
+def format_key(key):
+    """Format a TOML key, quoting it when it is not a bare key."""
+    if re.fullmatch(r"[A-Za-z0-9_-]+", key):
+        return key
+    return json.dumps(key, ensure_ascii=False)
+
+
 merged_lines = []
 current_sect = "global"
+emitted_keys = set()
 
 # Apply MSC overwrites explicitly
 if "global" not in user_config:
@@ -52,8 +61,20 @@ user_config["global"]["experimental_features"]["msc3266_enabled"] = True
 user_config["global"]["experimental_features"]["msc4222_enabled"] = True
 
 i = 0
+in_code_fence = False
 while i < len(example_lines):
     line = example_lines[i]
+
+    # Do not interpret TOML examples inside documentation fences as config.
+    if re.match(r"^\s*#?\s*```", line):
+        in_code_fence = not in_code_fence
+        merged_lines.append(line)
+        i += 1
+        continue
+    if in_code_fence:
+        merged_lines.append(line)
+        i += 1
+        continue
 
     # Detect Section
     sect_match = re.match(r"^#?\[([a-zA-Z0-9_\.]+)\]", line)
@@ -103,8 +124,10 @@ while i < len(example_lines):
         else:
             has_val = False
 
-        if has_val:
+        section_key = (current_sect, key)
+        if has_val and section_key not in emitted_keys:
             merged_lines.append(f"{key} = {format_value(val)}\n")
+            emitted_keys.add(section_key)
         else:
             merged_lines.append(line)
         i += 1
@@ -113,7 +136,7 @@ while i < len(example_lines):
     merged_lines.append(line)
     i += 1
 
-with open("conduwuit.toml", "w") as f:
-    f.writelines(merged_lines)
+with open("conduwuit.toml", "w", encoding="utf-8") as output_file:
+    output_file.writelines(merged_lines)
 
 print("Merge completed successfully!")

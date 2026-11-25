@@ -223,7 +223,9 @@
 #stateinfo_cache_capacity = varies by system
 
 # Maximum entries in the LtHash lattice cache (MSC4500).
-# Each entry is 2 KiB; default 512 ≈ 1 MiB.
+# Each entry holds the 2 KiB lattice plus its checkpoint or delta record;
+# most records are small, and full checkpoints are written every 500
+# roots. Default 512 ≈ 1 MiB plus delta records.
 #
 #lthash_cache_capacity = 512
 
@@ -1361,6 +1363,10 @@
 # count towards this. 0 retries forever.
 #
 #partial_state_resync_give_up_after = 0
+
+# Initial delay in milliseconds to wait before retrying a failed partial-state resync.
+#
+#partial_state_resync_initial_delay_ms = 1000
 
 # Allow receiving incoming read receipts from remote servers.
 #

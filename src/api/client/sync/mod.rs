@@ -51,6 +51,7 @@ impl TimelinePdus {
 }
 
 /// Load up to `limit` PDUs in the range (starting_count, ending_count].
+#[allow(clippy::too_many_arguments)]
 async fn load_timeline(
 	services: &Services,
 	sender_user: &UserId,
@@ -59,6 +60,7 @@ async fn load_timeline(
 	ending_count: Option<PduCount>,
 	limit: usize,
 	is_expanded_timeline: bool,
+	initial_timeline: bool,
 ) -> Result<TimelinePdus> {
 	info!(
 		target: "timeline_debug",
@@ -240,7 +242,16 @@ async fn load_timeline(
 	}
 
 	// 6. Execute hotfix branch's Topo Sort for correct DAG traversal ordering
-	if !pdus.is_empty() {
+	//
+	// The spec says events in a sync response are ordered by their arrival time
+	// at the homeserver, and MSC4445 only permits topological ordering for
+	// initial sync and newly joined rooms. Do not re-sort an incremental batch: a
+	// late federated event which arrived after a local event would otherwise be
+	// moved ahead of it by the DAG/origin_server_ts tie-break, breaking arrival
+	// order. `initial_timeline` is supplied by the caller because some initial
+	// timelines (v5 rooms, initial left rooms) still pass a concrete
+	// `starting_count`.
+	if initial_timeline && !pdus.is_empty() {
 		let mut event_to_count = std::collections::HashMap::new();
 		let events: Vec<_> = pdus
 			.into_iter()

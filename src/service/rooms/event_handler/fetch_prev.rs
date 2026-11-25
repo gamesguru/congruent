@@ -18,6 +18,13 @@ use slipstream::{
 
 use super::check_room_id;
 
+/// Most follow-up /get_missing_events requests one `fetch_prev` call makes after
+/// a capped answer that still ends at a missing parent.
+const MAX_PREV_GAP_ROUNDS: usize = 5;
+/// Servers commonly cap /get_missing_events at 20 events. An answer shorter
+/// than this was not truncated, so asking again cannot find more.
+const MISSING_EVENTS_CAP_HINT: usize = 20;
+
 #[implement(super::Service)]
 #[allow(clippy::type_complexity)]
 pub(super) async fn fetch_prev<'a, Events>(
@@ -175,11 +182,13 @@ where
 
 	let room_version_id = self.services.state.get_room_version(room_id).await?;
 	let mut missing_events = Vec::new();
+	let mut answered_server = None;
 
 	while let Some((server, res, latency)) = active.next().await {
 		match res {
 			| Ok(Ok(response)) => {
 				self.update_peer_stats(&server, true, latency);
+				answered_server = Some(server.clone());
 				missing_events = response.events;
 				if missing_events.is_empty() {
 					let Some(fallback_anchor) = remaining.first().cloned() else {
@@ -242,6 +251,86 @@ where
 	if missing_events.is_empty() {
 		warn!("All servers failed to return /get_missing_events");
 		return Ok((Vec::new(), HashMap::new(), None, false));
+	}
+
+	// A server caps /get_missing_events (commonly at 20 events, newest part
+	// first), so one answer can end at a parent we still lack. Keep asking
+	// below the oldest events of the answer until the gap closes, an answer
+	// adds nothing new, or the round limit is reached.
+	let mut last_answer_len = missing_events.len();
+	if let Some(server) = answered_server.as_ref() {
+		for _ in 0..MAX_PREV_GAP_ROUNDS {
+			if last_answer_len < MISSING_EVENTS_CAP_HINT {
+				break;
+			}
+			let mut held: HashSet<OwnedEventId> = HashSet::new();
+			let mut parents: HashMap<OwnedEventId, Vec<OwnedEventId>> = HashMap::new();
+			for raw_json in &missing_events {
+				if let Ok((eid, val)) = conduwuit::matrix::event::gen_event_id_canonical_json(
+					raw_json,
+					&room_version_id,
+				) && let Ok(pdu) = PduEvent::from_id_val(&eid, val, Some(room_id))
+				{
+					parents
+						.insert(eid.clone(), pdu.prev_events().map(ToOwned::to_owned).collect());
+					held.insert(eid);
+				}
+			}
+
+			// Response events with a parent that neither the response nor our
+			// timeline holds are where the next request starts.
+			let mut next_latest: Vec<OwnedEventId> = Vec::new();
+			for (eid, prevs) in &parents {
+				for prev in prevs {
+					if !held.contains(prev) && !self.services.timeline.pdu_exists(prev).await {
+						next_latest.push(eid.clone());
+						break;
+					}
+				}
+			}
+			if next_latest.is_empty() {
+				break;
+			}
+			next_latest.sort_unstable();
+
+			info!(
+				"Asking {server} for more missing events in {room_id} (latest: {next_latest:?}, \
+				 held so far: {})",
+				held.len()
+			);
+			let request = get_missing_events::v1::Request {
+				room_id: room_id.to_owned(),
+				earliest_events: earliest.clone(),
+				latest_events: next_latest,
+				limit: 50_u32.into(),
+				min_depth: 0_u32.into(),
+			};
+			let Ok(Ok(more)) = conduwuit::timeout(
+				Duration::from_secs(self.services.server.config.fetch_prev_timeout),
+				self.services
+					.sending
+					.send_federation_request(server, request),
+			)
+			.await
+			else {
+				break;
+			};
+
+			let before = held.len();
+			last_answer_len = more.events.len();
+			for raw_json in more.events {
+				if let Ok((eid, _)) = conduwuit::matrix::event::gen_event_id_canonical_json(
+					&raw_json,
+					&room_version_id,
+				) && held.insert(eid)
+				{
+					missing_events.push(raw_json);
+				}
+			}
+			if held.len() == before {
+				break;
+			}
+		}
 	}
 
 	let mut unknown_events = Vec::new();

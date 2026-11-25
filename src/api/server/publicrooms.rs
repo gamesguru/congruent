@@ -42,12 +42,7 @@ pub(crate) async fn get_public_rooms_filtered_route(
 		Error::BadRequest(ErrorKind::Unknown, "Failed to return this server's public room list.")
 	})?;
 
-	Ok(get_public_rooms_filtered::v1::Response {
-		chunk: response.chunk,
-		prev_batch: response.prev_batch,
-		next_batch: response.next_batch,
-		total_room_count_estimate: response.total_room_count_estimate,
-	})
+	Ok(response)
 }
 
 /// # `GET /_matrix/federation/v1/publicRooms`
@@ -79,10 +74,5 @@ pub(crate) async fn get_public_rooms_route(
 		Error::BadRequest(ErrorKind::Unknown, "Failed to return this server's public room list.")
 	})?;
 
-	Ok(get_public_rooms::v1::Response {
-		chunk: response.chunk,
-		prev_batch: response.prev_batch,
-		next_batch: response.next_batch,
-		total_room_count_estimate: response.total_room_count_estimate,
-	})
+	Ok(response)
 }

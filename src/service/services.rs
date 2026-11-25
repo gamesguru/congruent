@@ -171,6 +171,11 @@ impl Services {
 		// Appservice tokens must resolve before the first request is served.
 		self.appservice.initialize().await?;
 
+		// Restore scheduled events before the listener can report ready. Otherwise
+		// a restarted server may serve requests before the delayed-event worker
+		// has loaded overdue sends from the database.
+		self.rooms.delayed_events.initialize().await;
+
 		info!("Starting service manager...");
 		let manager = {
 			let mut lock = self.manager.lock().await;
@@ -216,8 +221,27 @@ impl Services {
 			return Ok(());
 		}
 
-		let has_legacy_events = self.db["eventid_pdu"].raw_keys().next().await.is_some();
-		let has_legacy_signing_keys = self.db["server_signingkeys"]
+		let has_legacy_events =
+			self.db
+				.deprecated("eventid_pdu")?
+				.raw_keys()
+				.next()
+				.await
+				.is_some() || (self.db.db.cf_exists("pduid_pdu")
+				&& database::Map::open(&self.db.db, "pduid_pdu")?
+					.raw_keys()
+					.next()
+					.await
+					.is_some_and(|key| key.is_ok()))
+				|| (self.db.db.cf_exists("eventid_outlierpdu")
+					&& database::Map::open(&self.db.db, "eventid_outlierpdu")?
+						.raw_keys()
+						.next()
+						.await
+						.is_some_and(|key| key.is_ok()));
+		let has_legacy_signing_keys = self
+			.db
+			.deprecated("server_signingkeys")?
 			.raw_keys()
 			.next()
 			.await
@@ -233,12 +257,13 @@ impl Services {
 				.map_err(|error| {
 					conduwuit::err!(Database(error!("Checking mtxdb verdict data: {error}")))
 				})?;
-		let has_mtxdb_signing_keys =
-			conduwuit_mtxdb::server_keys::ServerKeysAdapter::new(self.mtxdb.clone())
-				.has_any_records()
-				.map_err(|error| {
-					conduwuit::err!(Database(error!("Checking mtxdb signing-key data: {error}")))
-				})?;
+		let signing_keys =
+			conduwuit_mtxdb::server_keys::ServerKeysAdapter::new(self.mtxdb.clone());
+		let has_mtxdb_signing_keys = signing_keys.has_any_records().map_err(|error| {
+			conduwuit::err!(Database(error!("Checking mtxdb signing-key data: {error}")))
+		})? || signing_keys.has_any_native_records().map_err(
+			|error| conduwuit::err!(Database(error!("Checking mtxdb signing-key data: {error}"))),
+		)?;
 		let has_mtxdb_short_ids = conduwuit_mtxdb::shortids::ShortIdAdapter::has_any_records(
 			&self.mtxdb,
 		)
@@ -259,6 +284,14 @@ impl Services {
 			return Err(conduwuit::err!(Database(error!("{}", Self::INCOMPLETE_IMPORT_MESSAGE))));
 		}
 
+		if self.users.count().await > 0 {
+			return Err(conduwuit::err!(Database(error!(
+				"This database contains users but no mtxdb import marker and no event or \
+				 signing-key data. Refusing to mark it as a fresh import; restore the complete \
+				 export and run `mtxdb import`."
+			))));
+		}
+
 		let tx = self.mtxdb.begin_transaction();
 		marker
 			.put(&tx, ImportMarker {
@@ -274,6 +307,10 @@ impl Services {
 
 	pub async fn stop(&self) {
 		info!("Shutting down services...");
+
+		// Signal workers before the shutdown path can stall, so timers that
+		// become due during teardown do not start new user-visible work.
+		self.interrupt();
 
 		// Report before anything can stall: the container may be killed mid-stop.
 		self.db.log_write_stats();
@@ -298,6 +335,28 @@ impl Services {
 		self.interrupt();
 		if let Some(manager) = self.manager.lock().await.as_ref() {
 			manager.stop().await;
+		}
+
+		// Stop periodic syncing before the final sync and drain checkpoint tails
+		// before recording the storage counters.
+		self.mtxdb.stop_maintenance();
+		if let Err(error) = self.mtxdb.checkpoint_all() {
+			warn!("Failed to checkpoint mtxdb during shutdown: {error}");
+		}
+		for shard in conduwuit_mtxdb::ShardType::ALL {
+			let pool = self.mtxdb.database().pool(shard);
+			let stats = pool.stats();
+			let checkpoint = pool.checkpoint_breakdown();
+			info!(
+				"mtxdb pool={} checkpoint_writes={} background_tails={} tail_waits={} \
+				 delta_appends={} index_rebuilds={} last_checkpoint={checkpoint:?}",
+				shard.as_str(),
+				stats.checkpoint_writes,
+				stats.checkpoint_tails_started,
+				stats.syncs_waited_for_tail,
+				stats.delta_appends,
+				stats.index_rebuild_count,
+			);
 		}
 
 		self.admin.set_services(None);

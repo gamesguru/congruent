@@ -626,17 +626,20 @@ pub enum YoloCommand {
 		fix: bool,
 	},
 
-	/// Sweep `eventid_pdu` (source of truth) and repopulate any missing or
-	/// corrupt derived data:
+	/// Sweep the room's legacy stream index (`room_pducount_eventid`) and
+	/// repopulate missing or corrupt derived data from mtxdb event bodies:
 	///
-	/// - `eventid_shorteventid` / `shorteventid_eventid` (ID mappings)
+	/// - mtxdb short-ID mappings (allocated while the event is processed)
 	/// - `eventid_metadata` (bincode metadata: timestamps, depth, pdu_count)
-	/// - `shorteventid_shortprevevents` / `shortauthevents` (DAG edge caches)
-	/// - `shorteventid_authchain` (transitive auth chain, computed
-	///   incrementally)
+	/// - `shorteventid_shortprevevents` (legacy prev-edge index)
+	/// - mtxdb event bodies, direct auth edges, and auth closures
 	/// - `roomid_topologicalorder_pducount` (topo index entries)
 	/// - `roomid_pduleaves` (forward extremities from true DAG tips)
 	/// - `tofrom_relation` (thread/reply/reaction relations)
+	///
+	/// The event set comes from `room_pducount_eventid`, not mtxdb directly;
+	/// events with no legacy stream-index row are skipped. Rebuild or retain
+	/// that index before relying on this to repair every mtxdb event.
 	///
 	/// Safe to run at any time. Only writes missing entries; never
 	/// overwrites existing data. Run before `recalculate-extremities`

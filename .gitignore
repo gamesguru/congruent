@@ -124,6 +124,9 @@ test_logs.jsonl
 test_results.jsonl
 __pycache__/
 
+# binary files & stuff
+*.pdf
+
 # submodules and unwanted tracks and such
 matrix-spec-txt/
 ruma-upstream/

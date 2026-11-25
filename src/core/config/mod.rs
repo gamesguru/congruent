@@ -335,7 +335,9 @@ pub struct Config {
 	pub stateinfo_cache_capacity: u32,
 
 	/// Maximum entries in the LtHash lattice cache (MSC4500).
-	/// Each entry is 2 KiB; default 512 ≈ 1 MiB.
+	/// Each entry holds the 2 KiB lattice plus its checkpoint or delta record;
+	/// most records are small, and full checkpoints are written every 500
+	/// roots. Default 512 ≈ 1 MiB plus delta records.
 	///
 	/// default: 512
 	#[serde(default = "default_lthash_cache_capacity")]
@@ -1653,6 +1655,12 @@ pub struct Config {
 	/// default: 0
 	#[serde(default = "default_partial_state_resync_give_up_after")]
 	pub partial_state_resync_give_up_after: u64,
+
+	/// Initial delay in milliseconds to wait before retrying a failed partial-state resync.
+	///
+	/// default: 1000
+	#[serde(default = "default_partial_state_resync_initial_delay_ms")]
+	pub partial_state_resync_initial_delay_ms: u64,
 
 	/// Allow receiving incoming read receipts from remote servers.
 	#[serde(default = "true_fn")]
@@ -3340,6 +3348,8 @@ fn default_login_token_ttl() -> u64 { 2 * 60 * 1000 }
 fn default_access_token_ttl() -> u64 { 5 * 60 * 1000 }
 
 fn default_partial_state_resync_give_up_after() -> u64 { 0 }
+
+fn default_partial_state_resync_initial_delay_ms() -> u64 { 1000 }
 
 fn default_turn_ttl() -> u64 { 60 * 60 * 24 }
 
